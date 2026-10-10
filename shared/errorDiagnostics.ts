@@ -56,34 +56,46 @@ export interface BlockedErrorDiagnostics {
 }
 
 import { isRecord } from './typeGuards'
+import { stripTerminalFormatting } from './errorDisplay'
 
 const REDACTED = '[redacted]'
-const CREDENTIAL_WORD_KEY_PATTERN = String.raw`(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret)`
-const CREDENTIAL_VALUE_PATTERN = /(["']?(?:authorization|x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret)["']?\s*[:=]\s*)(["']?)(?:Bearer\s+)?([^"',\s}&]+)(\2)/gi
-const BEARER_TOKEN_PATTERN = /\b(Bearer\s+)([A-Za-z0-9._~+/-]+=*)/gi
-const CREDENTIAL_WORD_PATTERN = new RegExp(
-  String.raw`\b(${CREDENTIAL_WORD_KEY_PATTERN})\s+(?:is\s+)?(["']?)([^"',\s}&]+)(\2)`,
+const CREDENTIAL_WORD_KEY_PATTERN = String.raw`(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|authorization|cookie|set[-_\s]?cookie)`
+const CREDENTIAL_KEY_PATTERN = String.raw`(?:[a-z0-9]+[-_])*(?:authorization|${CREDENTIAL_WORD_KEY_PATTERN}|token|client[-_\s]?secret|private[-_\s]?key|access[-_\s]?key|secret[-_\s]?key)`
+const CREDENTIAL_VALUE = String.raw`(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:Bearer\s+)?[^"',\s}&]+)`
+const CREDENTIAL_VALUE_PATTERN = new RegExp(
+  String.raw`((?<![a-z0-9_-])${CREDENTIAL_KEY_PATTERN}\b["']?\s*[:=]\s*)(${CREDENTIAL_VALUE})`,
   'gi',
 )
+const BEARER_TOKEN_PATTERN = /\b(Bearer\s+)([A-Za-z0-9._~+/-]+=*)/gi
+const CREDENTIAL_WORD_PATTERN = new RegExp(
+  String.raw`(\b${CREDENTIAL_WORD_KEY_PATTERN}\b\s+(?:is\s+)?)(${CREDENTIAL_VALUE})`,
+  'gi',
+)
+const PREFIXED_CREDENTIAL_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|xox[abprs]-[A-Za-z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,})\b/g
 
-function redactSensitive(value: string): string {
+function redactCredentialValue(_match: string, prefix: string, value: string): string {
+  if (/^authorization\s+(?:is\s+)?$/i.test(prefix)
+    && /^(?:required|missing|invalid|expired|denied|failed|unavailable|not|was|has)[.!?]?$/i.test(value)) return _match
+  const quote = value.startsWith('"') || value.startsWith("'") ? value[0] : ''
+  const closingQuote = quote && value.length > 1 && value.endsWith(quote) ? quote : ''
+  return `${prefix}${quote}${REDACTED}${closingQuote}`
+}
+
+/** Clean and redact complete diagnostic text before any preview is shortened. */
+export function sanitizeDiagnosticText(value: string): string {
   CREDENTIAL_VALUE_PATTERN.lastIndex = 0
   BEARER_TOKEN_PATTERN.lastIndex = 0
   CREDENTIAL_WORD_PATTERN.lastIndex = 0
-  return value
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, REDACTED)
-    .replace(CREDENTIAL_VALUE_PATTERN, (_match, prefix: string, quote: string, _secret: string, closingQuote: string) =>
-      `${prefix}${quote}${REDACTED}${closingQuote}`,
-    )
-    .replace(CREDENTIAL_WORD_PATTERN, (_match, key: string, quote: string, _secret: string, closingQuote: string) =>
-      `${key} ${quote}${REDACTED}${closingQuote}`,
-    )
+  return stripTerminalFormatting(value)
+    .replace(PREFIXED_CREDENTIAL_PATTERN, REDACTED)
+    .replace(CREDENTIAL_VALUE_PATTERN, redactCredentialValue)
+    .replace(CREDENTIAL_WORD_PATTERN, redactCredentialValue)
     .replace(BEARER_TOKEN_PATTERN, `$1${REDACTED}`)
 }
 
 function cleanString(value: unknown, maxLength = 1000): string | undefined {
   if (typeof value !== 'string') return undefined
-  const trimmed = redactSensitive(value.trim())
+  const trimmed = sanitizeDiagnosticText(value).trim()
   if (!trimmed) return undefined
   return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 3)}...` : trimmed
 }

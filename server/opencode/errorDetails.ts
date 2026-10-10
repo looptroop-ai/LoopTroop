@@ -1,3 +1,5 @@
+import { sanitizeDiagnosticText } from '../../shared/errorDiagnostics'
+
 export interface ModelErrorInfo {
   name?: string
   message?: string
@@ -19,17 +21,6 @@ export interface ModelErrorSummary {
 }
 
 const MAX_ERROR_PREVIEW_LENGTH = 280
-const REDACTED = '[redacted]'
-const CREDENTIAL_WORD_KEY_PATTERN = String.raw`(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|authorization|cookie|set[-_\s]?cookie)`
-const CREDENTIAL_VALUE_PATTERN = new RegExp(
-  String.raw`(["']?(?:${CREDENTIAL_WORD_KEY_PATTERN})["']?\s*[:=]\s*)(["']?)(?:Bearer\s+)?([^"',\s}&]+)(\2)`,
-  'gi',
-)
-const BEARER_TOKEN_PATTERN = /\b(Bearer\s+)([A-Za-z0-9._~+/-]+=*)/gi
-const CREDENTIAL_WORD_PATTERN = new RegExp(
-  String.raw`\b(${CREDENTIAL_WORD_KEY_PATTERN})\s+(?:is\s+)?(["']?)([^"',\s}&]+)(\2)`,
-  'gi',
-)
 const URL_PATTERN = /\bhttps?:\/\/[^\s"',}]+/gi
 
 function toRecord(value: unknown): Record<string, unknown> | undefined {
@@ -80,21 +71,6 @@ function redactUrlQuery(value: string): string {
   return value.replace(URL_PATTERN, (url) => sanitizeUrl(url) ?? url)
 }
 
-function redactSensitive(value: string): string {
-  CREDENTIAL_VALUE_PATTERN.lastIndex = 0
-  BEARER_TOKEN_PATTERN.lastIndex = 0
-  CREDENTIAL_WORD_PATTERN.lastIndex = 0
-  return redactUrlQuery(value)
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, REDACTED)
-    .replace(CREDENTIAL_VALUE_PATTERN, (_match, prefix: string, quote: string, _secret: string, closingQuote: string) =>
-      `${prefix}${quote}${REDACTED}${closingQuote}`,
-    )
-    .replace(CREDENTIAL_WORD_PATTERN, (_match, key: string, quote: string, _secret: string, closingQuote: string) =>
-      `${key} ${quote}${REDACTED}${closingQuote}`,
-    )
-    .replace(BEARER_TOKEN_PATTERN, `$1${REDACTED}`)
-}
-
 function trimQuotes(value: string): string {
   const trimmed = value.trim()
   if (trimmed.length >= 2) {
@@ -109,7 +85,7 @@ function trimQuotes(value: string): string {
 
 function cleanMessage(value: string | undefined): string | undefined {
   if (!value) return undefined
-  const trimmed = redactSensitive(trimQuotes(value))
+  const trimmed = redactUrlQuery(sanitizeDiagnosticText(trimQuotes(value))).trim()
   return trimmed.length > 0 ? trimmed : undefined
 }
 

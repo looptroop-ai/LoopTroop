@@ -286,6 +286,12 @@ export function buildOpenCodeBlockedErrorDiagnostics(
     providerErrorTitle: info?.responseErrorTitle,
     providerErrorMessage: info?.responseErrorMessage,
     responseBodyPreview: info?.responseBodyPreview,
+    finishReason: input.responseMeta?.latestStepFinishReason,
+    inputTokens: input.responseMeta?.latestStepFinishTokens?.input,
+    outputTokens: input.responseMeta?.latestStepFinishTokens?.output,
+    reasoningTokens: input.responseMeta?.latestStepFinishTokens?.reasoning,
+    cacheReadTokens: input.responseMeta?.latestStepFinishTokens?.cache?.read,
+    cacheWriteTokens: input.responseMeta?.latestStepFinishTokens?.cache?.write,
   })
 
   return {

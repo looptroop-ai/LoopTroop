@@ -29,6 +29,7 @@ import { SessionManager } from '../../opencode/sessionManager'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import {
+  appendBlockedErrorDiagnosticsSummary,
   attachOpenCodeBlockedErrorDiagnostics,
   buildOpenCodeBlockedErrorDiagnostics,
 } from '../../opencode/blockedErrorDiagnostics'
@@ -98,7 +99,15 @@ function withInterviewErrorDiagnostics(
   const responseDiagnostics = buildOpenCodeBlockedErrorDiagnostics({ responseMeta, modelId, sessionId })
   return attachOpenCodeBlockedErrorDiagnostics(error, responseDiagnostics.diagnostics
     ? responseDiagnostics
-    : buildOpenCodeBlockedErrorDiagnostics({ error, modelId, sessionId }))
+    : buildOpenCodeBlockedErrorDiagnostics({ error, modelId, sessionId, responseMeta }))
+}
+
+function withInterviewCleanupCause(cleanupError: unknown, originalError: unknown): unknown {
+  if (!(cleanupError instanceof Error)) return cleanupError
+  cleanupError.cause = originalError
+  const diagnostics = buildOpenCodeBlockedErrorDiagnostics({ error: originalError })
+  cleanupError.message = appendBlockedErrorDiagnosticsSummary(cleanupError.message, diagnostics.diagnostics)
+  return attachOpenCodeBlockedErrorDiagnostics(cleanupError, diagnostics)
 }
 
 function formatResumeQuestionLine(question: ReturnType<typeof buildInterviewQuestionViews>[number]): string {
@@ -234,14 +243,15 @@ export async function startInterviewSession(
       },
     })
   } catch (error) {
-    let failure = error
+    let failure = withInterviewErrorDiagnostics(error, winnerId, sessionId || undefined)
     try {
       if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = withInterviewCleanupCause(cleanupError, failure)
     }
+    throwIfCancelled(error, signal)
     throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, winnerId, sessionId || undefined)
+    throw failure
   }
 
   throwIfAborted(signal)
@@ -260,6 +270,7 @@ export async function startInterviewSession(
       structuredRetryCount,
       restartSession: async (currentSessionId) => {
         await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+        sessionId = ''
         const restarted = await runOpenCodePrompt({
           adapter,
           projectPath,
@@ -300,14 +311,15 @@ export async function startInterviewSession(
     })
     return { sessionId: firstBatch.sessionId ?? result.session.id, firstBatch }
   } catch (error) {
-    let failure = error
+    let failure = withInterviewErrorDiagnostics(error, winnerId, sessionId || undefined)
     try {
       if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = withInterviewCleanupCause(cleanupError, failure)
     }
+    throwIfCancelled(error, signal)
     throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, winnerId, sessionId || undefined)
+    throw failure
   }
 }
 
@@ -373,14 +385,15 @@ export async function submitBatchToSession(
       },
     })
   } catch (error) {
-    let failure = error
+    let failure = withInterviewErrorDiagnostics(error, model, currentSessionId)
     try {
       await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = withInterviewCleanupCause(cleanupError, failure)
     }
+    throwIfCancelled(error, signal)
     throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, model, currentSessionId)
+    throw failure
   }
 
   throwIfAborted(signal)
@@ -400,6 +413,7 @@ export async function submitBatchToSession(
       restartSession: restartOptions
       ? async (sessionIdToRestart) => {
           await stopInterviewSession(adapter, sessionManager, sessionIdToRestart, signal)
+          currentSessionId = ''
           const restarted = await runOpenCodePrompt({
             adapter,
             projectPath: restartOptions.projectPath,
@@ -444,14 +458,15 @@ export async function submitBatchToSession(
       : undefined,
     })
   } catch (error) {
-    let failure = error
+    let failure = withInterviewErrorDiagnostics(error, model, currentSessionId || undefined)
     try {
-      await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+      if (currentSessionId) await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = withInterviewCleanupCause(cleanupError, failure)
     }
+    throwIfCancelled(error, signal)
     throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, model, currentSessionId)
+    throw failure
   }
 }
 

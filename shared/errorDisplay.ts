@@ -10,6 +10,11 @@ function stripControlCharacters(value: string): string {
   }).join('')
 }
 
+/** Removes terminal formatting while preserving structured text and repeated lines. */
+export function stripTerminalFormatting(value: string): string {
+  return stripControlCharacters(stripAnsiSequences(value).replace(/\r\n?/g, '\n'))
+}
+
 function isDecorationOnly(line: string): boolean {
   const trimmed = line.trim()
   return trimmed.length >= 4 && DECORATION_ONLY_LINE.test(trimmed)
@@ -61,9 +66,7 @@ function dedupeConsecutiveLineBlocks(lines: string[]): string[] {
 
 /** Builds a readable view while leaving persisted errors and raw logs unchanged. */
 export function sanitizeErrorForDisplay(value: string): string {
-  const normalized = stripControlCharacters(
-    stripAnsiSequences(value).replace(/\r\n?/g, '\n'),
-  )
+  const normalized = stripTerminalFormatting(value)
   const lines: string[] = []
   let previousComparable: string | null = null
 

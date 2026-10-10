@@ -92,4 +92,28 @@ describe('OpenCode model error details', () => {
     expect(serialized).toContain('[redacted]')
     expect(serialized).toContain('https://example.com/path')
   })
+
+  it.each([
+    'ghp_1234567890abcdefghijklmnopqrstuvwxyz',
+    'AKIA1234567890ABCDEF',
+    'AIzaSyA1234567890abcdefghijklmnopqrstu',
+  ])('redacts credentials crossing the preview boundary before shortening: %s', (credential) => {
+    const responseBody = `${'x'.repeat(270)} ${credential}`
+    const info = extractModelErrorInfo({ name: 'AI_APICallError', responseBody })
+
+    expect(info?.responseBodyPreview).toHaveLength(280)
+    expect(info?.responseBodyPreview).not.toContain(credential.slice(0, 6))
+  })
+
+  it('cleans obfuscated credential fields at source and keeps provider prose readable', () => {
+    const message = 'Your authentication token has been invalidated. Authorization is required.'
+    const info = extractModelErrorInfo({
+      name: 'AI_APICallError',
+      message,
+      responseBody: '{"api_\u001b[31mkey":"privatevalue123","token":"privatevalue456","cookie":"session123"}',
+    })
+
+    expect(info?.message).toBe(message)
+    expect(info?.responseBodyPreview).toBe('{"api_key":"[redacted]","token":"[redacted]","cookie":"[redacted]"}')
+  })
 })

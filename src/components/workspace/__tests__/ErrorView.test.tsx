@@ -1446,15 +1446,14 @@ describe("ErrorView", () => {
     expect(screen.getByText("HTTP:")).not.toBeVisible();
     fireEvent.click(screen.getByText("Technical details"));
     expect(screen.getByText("HTTP:")).toBeVisible();
-    expect(screen.getByText("HTTP:")).toBeInTheDocument();
-    expect(screen.getByText("401")).toBeInTheDocument();
-    expect(screen.getByText("Provider:")).toBeInTheDocument();
-    expect(screen.getByText("openai")).toBeInTheDocument();
-    expect(screen.getByText("Provider model:")).toBeInTheDocument();
-    expect(screen.getByText("Provider type:")).toBeInTheDocument();
-    expect(screen.getByText("invalid_request_error")).toBeInTheDocument();
-    expect(screen.getByText("Retryable:")).toBeInTheDocument();
-    expect(screen.getByText("no")).toBeInTheDocument();
+    expect(screen.getByText("401")).toBeVisible();
+    expect(screen.getByText("Provider:")).toBeVisible();
+    expect(screen.getByText("openai")).toBeVisible();
+    expect(screen.getByText("Provider model:")).toBeVisible();
+    expect(screen.getByText("Provider type:")).toBeVisible();
+    expect(screen.getByText("invalid_request_error")).toBeVisible();
+    expect(screen.getByText("Retryable:")).toBeVisible();
+    expect(screen.getByText("no")).toBeVisible();
     expect(screen.queryByText("Provider message:")).not.toBeInTheDocument();
     expect(
       screen.getAllByText(/Your authentication token has been invalidated/),
@@ -1581,6 +1580,44 @@ describe("ErrorView", () => {
     },
   );
 
+  it.each([false, true])(
+    "keeps open technical details and focus across same-failure polling updates (stored occurrence: %s)",
+    (storedOccurrence) => {
+      const ticket = storedOccurrence
+        ? makeLiveErrorTicket()
+        : makeTicket({
+            status: "BLOCKED_ERROR",
+            previousStatus: "CODING",
+            errorMessage: "Implementation failed.",
+          });
+      ticket.updatedAt = "2026-01-01T00:00:00.000Z";
+      const { rerender } = renderWithProviders(<ErrorView ticket={ticket} />);
+      const summary = screen.getByText("Technical details");
+      const details = summary.closest("details");
+      assert(details);
+      fireEvent.click(summary);
+      summary.focus();
+
+      rerender(
+        <ErrorView
+          ticket={{
+            ...ticket,
+            updatedAt: "2026-01-01T00:00:05.000Z",
+            errorOccurrences: ticket.errorOccurrences?.map((value) => ({
+              ...value,
+            })),
+          }}
+        />,
+      );
+
+      expect(screen.getByText("Technical details").closest("details")).toBe(
+        details,
+      );
+      expect(details).toHaveAttribute("open");
+      expect(summary).toHaveFocus();
+    },
+  );
+
   it("closes technical details when switching failures or tickets without mixing their diagnostics", () => {
     const ticket = makeLiveErrorTicket({
       diagnostics: {
@@ -1660,6 +1697,44 @@ describe("ErrorView", () => {
     expect(document.body.textContent).not.toContain("\u0000");
   });
 
+  it("preserves provider JSON structure in a labelled keyboard-focusable preview", () => {
+    const responseBodyPreview = [
+      "{",
+      '  "errors": [',
+      "    {",
+      '      "message": "rate_limit"',
+      "    },",
+      "    {",
+      '      "message": "rate_limit"',
+      "    }",
+      "  ]",
+      "}",
+    ].join("\n");
+    const ticket = makeLiveErrorTicket({
+      diagnostics: {
+        kind: "opencode_provider",
+        source: "provider",
+        summary: "Provider rejected the request.",
+        responseBodyPreview,
+      },
+    });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    expect(
+      screen.getByRole("region", { name: "Provider response preview" }),
+    ).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
+    const preview = screen.getByRole("region", {
+      name: "Provider response preview",
+    });
+    expect(preview).toBeVisible();
+    expect(preview.textContent).toBe(responseBodyPreview);
+    expect(preview).toHaveAttribute("tabindex", "0");
+    preview.focus();
+    expect(preview).toHaveFocus();
+  });
+
   it("renders model output truncation diagnostics with finish reason and token counts", () => {
     const ticket = makeTicket({
       status: "BLOCKED_ERROR",
@@ -1700,13 +1775,15 @@ describe("ErrorView", () => {
         /The model stopped because OpenCode reported finish reason/,
       ),
     ).toBeVisible();
-    expect(screen.getByText("Model Output Truncated")).toBeInTheDocument();
-    expect(screen.getByText("Finish reason:")).toBeInTheDocument();
-    expect(screen.getByText("length")).toBeInTheDocument();
-    expect(screen.getByText("Output tokens:")).toBeInTheDocument();
-    expect(screen.getByText("2,923")).toBeInTheDocument();
-    expect(screen.getByText("Reasoning tokens:")).toBeInTheDocument();
-    expect(screen.getByText("29,077")).toBeInTheDocument();
+    expect(screen.getByText("Model Output Truncated")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(screen.getByText("Model Output Truncated")).toBeVisible();
+    expect(screen.getByText("Finish reason:")).toBeVisible();
+    expect(screen.getByText("length")).toBeVisible();
+    expect(screen.getByText("Output tokens:")).toBeVisible();
+    expect(screen.getByText("2,923")).toBeVisible();
+    expect(screen.getByText("Reasoning tokens:")).toBeVisible();
+    expect(screen.getByText("29,077")).toBeVisible();
   });
 
   it("does not repeat the diagnostic summary when it already appears in the primary error", () => {
@@ -1740,8 +1817,10 @@ describe("ErrorView", () => {
 
     expect(screen.getAllByText(duplicateMessage)).toHaveLength(1);
     expect(screen.getByText(duplicateMessage)).toBeVisible();
-    expect(screen.getByText("Kind:")).toBeInTheDocument();
-    expect(screen.getByText("Runtime")).toBeInTheDocument();
+    expect(screen.getByText("Kind:")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(screen.getByText("Kind:")).toBeVisible();
+    expect(screen.getByText("Runtime")).toBeVisible();
   });
 
   it("omits milliseconds from occurrence timestamps", () => {

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import * as jsYaml from 'js-yaml'
-import { describe, expect, it } from 'vitest'
+import { assert, describe, expect, it } from 'vitest'
 import { repairInterviewBatchFieldTags } from '../interviewBatchTagRepair'
 import { normalizeInterviewTurnOutput } from '../interviewOutput'
 import { buildYamlDocument, collectTaggedCandidates } from '../yamlUtils'
@@ -32,11 +32,13 @@ describe('interview batch field tag recovery', () => {
   it.each([['original', original], ['retry', retry], ['CRLF', original.replace(/\n/g, '\r\n')]])(
     'recovers the real RICH-3 %s response without changing emitted text or choices',
     (_label, response) => {
-      const body = collectTaggedCandidates(response, PROTOCOL_TAGS.INTERVIEW_BATCH)[0]!.replace(/\r\n?/g, '\n')
+      const candidate = collectTaggedCandidates(response, PROTOCOL_TAGS.INTERVIEW_BATCH)[0]
+      assert(candidate)
+      const body = candidate.replace(/\r\n?/g, '\n')
       const repaired = repairInterviewBatchFieldTags(body)
-      expect(repaired).not.toBeNull()
+      assert(repaired)
       const emittedQuestions = jsYaml.load(body.slice(body.indexOf('<questions>') + '<questions>'.length, body.indexOf('</parameter>')))
-      const repairedPayload = jsYaml.load(repaired!.content.replace('</parameter>', '')) as Record<string, unknown>
+      const repairedPayload = jsYaml.load(repaired.content) as Record<string, unknown>
       expect(repairedPayload.questions).toEqual(emittedQuestions)
       expect(repairedPayload.ai_commentary).toBe(body.split('<ai_commentary>\n')[1]!.split('\n</ai_commentary>')[0])
 
@@ -49,7 +51,8 @@ describe('interview batch field tag recovery', () => {
         (emittedQuestions as Array<Record<string, unknown>>).map(({ id, question, options }) => ({ id, question, options })),
       )
       expect(result.repairWarnings).toContain('Repaired interview batch field tag at batch_number, payload line 1: "<batch_number>1</batch_number>" -> "batch_number: 1".')
-      expect(result.repairWarnings.some((warning) => warning.includes('</parameter>'))).toBe(true)
+      expect(result.repairWarnings).toContain(`Repaired interview batch field tag at questions, payload line ${body.split('\n').indexOf('</parameter>') + 1}: "</parameter>" -> "".`)
+      expect(result.repairWarnings.some((warning) => warning.startsWith('Stripped XML-style tags'))).toBe(false)
       expect(result.repairWarnings.some((warning) => warning.includes('tags <progress>'))).toBe(false)
     },
   )
@@ -96,6 +99,56 @@ describe('interview batch field tag recovery', () => {
     expect(result.ok).toBe(true)
     if (!result.ok || result.value.kind !== 'batch') return
     expect(result.value.batch.questions[0]!.question).toBe('<questions>\n  <batch_number>example</batch_number>\n</questions>')
+  })
+
+  it.each([
+    ['plain', '    question: Which is correct?\n      <answer>\n      yes\n      </answer>\n      <br/>'],
+    ['quoted', '    question: "Which is correct?\n      <answer>\n      yes\n      </answer>\n      <br/>"'],
+    ['block', '    question: |-\n      Which is correct?\n      <answer>\n      yes\n      </answer>\n      <br/>'],
+  ])('preserves literal XML in %s question scalars with normal or stray questions closers', (_label, question) => {
+    const expectedQuestions = jsYaml.load(`  - id: Q01\n${question}`)
+    assert(Array.isArray(expectedQuestions))
+    for (const closer of ['</questions>', '</parameter>']) {
+      const body = simple.replace('    question: "What should happen?"', question).replace('</questions>', closer)
+      const repaired = repairInterviewBatchFieldTags(body)
+      assert(repaired)
+      const parsed = jsYaml.load(repaired.content) as Record<string, unknown>
+      expect(parsed.questions).toEqual(expectedQuestions)
+      expect(repaired.content).not.toContain(closer)
+      const result = normalizeInterviewTurnOutput(batchResponse(body))
+      assert(result.ok && result.value.kind === 'batch')
+      expect(result.value.batch.questions).toEqual(expectedQuestions)
+      expect(result.repairWarnings.some((warning) => warning.startsWith('Stripped XML-style tags'))).toBe(false)
+    }
+  })
+
+  it.each(['tagged', 'untagged', 'fenced'])('keeps a later normally valid %s batch ahead of field-tag recovery', (kind) => {
+    const canonical = buildYamlDocument({
+      batch_number: 2,
+      progress: { current: 2, total: 9 },
+      is_final_free_form: false,
+      ai_commentary: 'The ordinary candidate.',
+      questions: [{ id: 'Q02', question: 'Use this ordinary question?' }],
+    })
+    const candidate = kind === 'tagged' ? batchResponse(canonical) : kind === 'fenced' ? `\`\`\`yaml\n${canonical}\`\`\`` : canonical
+    const result = normalizeInterviewTurnOutput(`${batchResponse(simple)}\n${candidate}`)
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch.batchNumber).toBe(2)
+    expect(result.value.batch.questions).toEqual([{ id: 'Q02', question: 'Use this ordinary question?' }])
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
+  it('keeps a normally valid fallback completion ahead of field-tag recovery', () => {
+    const complete = buildYamlDocument({
+      schema_version: '1.0',
+      summary: 'The interview is complete.',
+      questions: [{ id: 'Q02', question: 'Finished question' }],
+      answers: [{ question_id: 'Q02', answer: 'Finished answer' }],
+    })
+    const result = normalizeInterviewTurnOutput(`${batchResponse(simple)}\n\`\`\`yaml\n${complete}\`\`\``)
+    assert(result.ok && result.value.kind === 'complete')
+    expect(result.value.finalYaml).toContain('The interview is complete.')
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
   })
 
   it('supports mixed native YAML fields and recognized tags', () => {
@@ -145,7 +198,10 @@ describe('interview batch field tag recovery', () => {
     const repaired = repairInterviewBatchFieldTags(body)
     expect(repaired).not.toBeNull()
     expect(repaired!.content).not.toContain('question:')
-    expect(normalizeInterviewTurnOutput(batchResponse(body)).ok).toBe(false)
+    const result = normalizeInterviewTurnOutput(batchResponse(body))
+    assert(!result.ok)
+    expect(result.error).toContain('question text at index 0')
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(true)
   })
 
   it.each([
@@ -157,7 +213,11 @@ describe('interview batch field tag recovery', () => {
   ])('rejects conflicting %s aliases in the recovery branch', (_label, questionFields) => {
     const body = simple.replace('    question: "What should happen?"', questionFields)
     expect(repairInterviewBatchFieldTags(body)).not.toBeNull()
-    expect(normalizeInterviewTurnOutput(batchResponse(body)).ok).toBe(false)
+    const result = normalizeInterviewTurnOutput(batchResponse(body))
+    assert(!result.ok)
+    expect(result.error).toContain('Interview batch field-tag recovery has conflicting aliases:')
+    expect(result.error).toContain('conflicting value')
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(true)
   })
 
   it('accepts equal nested aliases without discarding different emitted values', () => {

@@ -402,9 +402,7 @@ function ErrorTechnicalDetails({
   const diagnosticRows = diagnostics
     ? buildDiagnosticRows(diagnostics, primaryErrorMessage)
     : [];
-  const responseBodyPreview = sanitizeErrorForDisplay(
-    diagnostics?.responseBodyPreview ?? "",
-  );
+  const responseBodyPreview = diagnostics?.responseBodyPreview ?? "";
   const displayErrorCodes = occurrence.errorCodes
     .map((code) => sanitizeErrorForDisplay(code))
     .filter((code) => code.length > 0);
@@ -480,7 +478,12 @@ function ErrorTechnicalDetails({
                 <div className="text-muted-foreground/80">
                   Provider response preview
                 </div>
-                <pre className="max-h-48 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
+                <pre
+                  role="region"
+                  aria-label="Provider response preview"
+                  tabIndex={0}
+                  className="max-h-48 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
+                >
                   {responseBodyPreview}
                 </pre>
               </div>
@@ -616,6 +619,12 @@ export function ErrorView({
   const logCtx = useLogs();
   const activeOccurrence = getActiveErrorOccurrence(ticket);
   const visibleOccurrence = occurrence ?? activeOccurrence;
+  // Synthetic occurrence timestamps follow polling updates, not new failures.
+  const technicalDetailsOccurrenceId =
+    !ticket.errorOccurrences?.length &&
+    visibleOccurrence?.id === activeOccurrence?.id
+      ? [visibleOccurrence?.blockedFromStatus, visibleOccurrence?.errorMessage]
+      : visibleOccurrence?.id;
   const retryActionLabel =
     visibleOccurrence?.blockedFromStatus === "CODING" &&
     visibleOccurrence.errorCodes.includes(BEAD_RETRY_BUDGET_EXHAUSTED) &&
@@ -964,7 +973,7 @@ export function ErrorView({
               )}
               {isLiveCodingError && <LiveCodingBeadContext ticket={ticket} />}
               <ErrorTechnicalDetails
-                key={JSON.stringify([ticket.id, visibleOccurrence?.id])}
+                key={JSON.stringify([ticket.id, technicalDetailsOccurrenceId])}
                 occurrence={visibleOccurrence}
                 primaryErrorMessage={primaryErrorMessage}
               />

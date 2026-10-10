@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeErrorForDisplay } from '../errorDisplay'
+import { sanitizeErrorForDisplay, stripTerminalFormatting } from '../errorDisplay'
+
+describe('stripTerminalFormatting', () => {
+  it('keeps indentation, repeated lines, and punctuation in structured text', () => {
+    const raw = '\u001b[31m{\r\n  "items": [\r\n    {},\r\n    {},\r\n    {}\r\n  ]\r\n}\u001b[0m\u0007'
+
+    expect(stripTerminalFormatting(raw)).toBe('{\n  "items": [\n    {},\n    {},\n    {}\n  ]\n}')
+  })
+})
 
 describe('sanitizeErrorForDisplay', () => {
   it('removes terminal escapes, control characters, decoration lines, and consecutive duplicate warnings', () => {

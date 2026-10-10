@@ -49,7 +49,7 @@ export function repairInterviewBatchFieldTags(content: string): {
         const field = opening[1]!
         claim(field)
         let end = lines.findIndex((candidate, position) => position > index && candidate.trimEnd() === `</${field}>`)
-        // The observed stray closing tag already has a safe repair in yamlUtils.
+        // Remove the known terminal closer here so generic XML repair cannot strip question text.
         const strayQuestionsClose = field === 'questions' && end < 0
         if (strayQuestionsClose) {
           end = lines.findIndex((candidate, position) => position > index && candidate.trimEnd() === '</parameter>')
@@ -74,8 +74,7 @@ export function repairInterviewBatchFieldTags(content: string): {
               output.push(child)
             }
           }
-          if (strayQuestionsClose) output.push(lines[end]!)
-          else warn(field, end, lines[end]!, '')
+          warn(field, end, lines[end]!, '')
         }
         index = end + 1
         continue
@@ -94,8 +93,7 @@ export function repairInterviewBatchFieldTags(content: string): {
 
     if (repairWarnings.length === 0) return null
     const repaired = output.join('\n')
-    const strictContent = repaired.replace(/^<\/parameter>\s*$/m, '')
-    const parsed = jsYaml.load(strictContent)
+    const parsed = jsYaml.load(repaired)
     if (!isRecord(parsed)) return null
     const fields = new Map(Object.entries(parsed).map(([key, value]) => [normalizeKey(key), value]))
     const progress = fields.get('progress')

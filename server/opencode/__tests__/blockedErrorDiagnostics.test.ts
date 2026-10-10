@@ -10,6 +10,52 @@ import {
 } from '../blockedErrorDiagnostics'
 
 describe('OpenCode blocked error diagnostics', () => {
+  it.each([
+    { message: 'Output failed validation', reason: 'stop', kind: 'runtime', errorCodes: [] },
+    { message: 'HTTP 429 provider rate limit', reason: 'stop', kind: 'opencode_provider', errorCodes: [OPENCODE_PROVIDER_ERROR] },
+    { message: 'HTTP 429 provider rate limit', reason: 'length', kind: 'opencode_provider', errorCodes: [OPENCODE_PROVIDER_ERROR] },
+  ])('retains reported $reason metrics without changing $kind classification', ({ message, reason, kind, errorCodes }) => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({
+      error: new Error(message),
+      modelId: 'provider/model-a',
+      sessionId: 'session-a',
+      responseMeta: {
+        hasAssistantMessage: true,
+        latestAssistantWasEmpty: false,
+        latestAssistantHasError: false,
+        latestAssistantWasStale: false,
+        sessionErrored: false,
+        latestStepFinishReason: reason,
+        latestStepFinishTokens: { input: 100, output: 200, reasoning: 50, cache: { read: 20, write: 0 } },
+      },
+    })
+
+    expect(result.errorCodes).toEqual(errorCodes)
+    expect(result.diagnostics).toMatchObject({
+      kind,
+      modelId: 'provider/model-a',
+      sessionId: 'session-a',
+      finishReason: reason,
+      inputTokens: 100,
+      outputTokens: 200,
+      reasoningTokens: 50,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 0,
+    })
+  })
+
+  it('does not treat token metrics on a successful response as an error', () => {
+    expect(buildOpenCodeBlockedErrorDiagnostics({ responseMeta: {
+      hasAssistantMessage: true,
+      latestAssistantWasEmpty: false,
+      latestAssistantHasError: false,
+      latestAssistantWasStale: false,
+      sessionErrored: false,
+      latestStepFinishReason: 'stop',
+      latestStepFinishTokens: { output: 100 },
+    } })).toEqual({ diagnostics: null, errorCodes: [] })
+  })
+
   it('classifies provider auth failures from structured OpenCode error details', () => {
     const result = buildOpenCodeBlockedErrorDiagnostics({
       modelId: 'openai/gpt-5.3-codex',

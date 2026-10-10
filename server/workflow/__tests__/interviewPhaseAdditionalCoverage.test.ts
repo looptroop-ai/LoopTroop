@@ -8,7 +8,7 @@ import {
 import type { DraftPhaseResult } from '../../council/types'
 import type { deliberateInterview as DeliberateInterview } from '../../phases/interview/deliberate'
 import { opencodeSessions } from '../../db/schema'
-import { getLatestPhaseArtifact, getTicketContext } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketContext, insertPhaseArtifact } from '../../storage/tickets'
 import * as atomicWrite from '../../io/atomicWrite'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -16,6 +16,7 @@ import { listSkipEvents, writeSkipReceipts } from '../skipReceipts'
 import { interviewQASessions, phaseIntermediate } from '../phases/state'
 import * as interviewQa from '../../phases/interview/qa'
 import { openCodeAuthAdvice } from '../../opencode/connection'
+import { buildStructuredOutputMetadata } from '../../structuredOutput'
 
 const { checkHealthMock, getSessionMock, deliberateInterviewMock } = vi.hoisted(() => ({
   checkHealthMock: vi.fn(),
@@ -36,6 +37,7 @@ import {
   claimInterviewBatch,
   handleInterviewDeliberate,
   handleInterviewQABatch,
+  handleInterviewQAStart,
   handleMockInterviewQAStart,
   processInterviewBatchAsync,
   readInterviewSessionSnapshotArtifact,
@@ -94,6 +96,62 @@ describe('additional interview phase flows', () => {
     repoManager.cleanup()
     if (originalMockMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
     else process.env.LOOPTROOP_OPENCODE_MODE = originalMockMode
+  })
+
+  it.each(['repair', 'retry', 'clean'])('persists the first PROM4 batch with appropriate %s notices', async (kind) => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const winnerId = TEST.councilMembers[0]
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COMPILING_INTERVIEW', artifactType: 'interview_winner', content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COMPILING_INTERVIEW', artifactType: 'interview_compiled',
+      content: JSON.stringify({ refinedContent: draftContent('Which outcome matters most?') }),
+    })
+    const commentary = 'Keep this exact commentary. '.repeat(200)
+    const warning = `Repaired interview batch field tag at ai_commentary, payload line 7: ${JSON.stringify(`<ai_commentary>${commentary}</ai_commentary>`)} -> ${JSON.stringify(`ai_commentary: ${JSON.stringify(commentary)}`)}.`
+    const structuredOutput = kind === 'repair'
+      ? buildStructuredOutputMetadata({ repairApplied: true, repairWarnings: [warning], autoRetryCount: 0 })
+      : kind === 'retry'
+        ? buildStructuredOutputMetadata({ repairApplied: false, repairWarnings: [], autoRetryCount: 1, validationError: 'The previous response was invalid.' })
+        : undefined
+    const start = vi.spyOn(interviewQa, 'startInterviewSession').mockResolvedValue({
+      sessionId: 'first-prom4-session',
+      firstBatch: {
+        questions: [{ id: 'Q01', phase: 'Foundation', question: 'Which outcome matters most?' }],
+        progress: { current: 1, total: 1 }, isComplete: false, isFinalFreeForm: false,
+        aiCommentary: commentary, batchNumber: 1, ...(structuredOutput ? { structuredOutput } : {}),
+      },
+    })
+
+    try {
+      await handleInterviewQAStart(ticket.id, context, vi.fn(), new AbortController().signal)
+      expect(readInterviewSessionSnapshotArtifact(ticket.id)?.currentBatch?.aiCommentary).toBe(commentary)
+      const notices = readFileSync(paths.executionLogPath, 'utf8').trim().split('\n')
+        .map((line) => JSON.parse(line)).filter((entry) => entry.content.startsWith('Interview output normalization:'))
+      if (kind === 'clean') {
+        expect(notices).toHaveLength(0)
+      } else {
+        expect(notices).toHaveLength(1)
+        expect(notices[0]).toMatchObject({ phase: 'WAITING_INTERVIEW_ANSWERS', modelId: winnerId, sessionId: 'first-prom4-session' })
+        if (kind === 'repair') {
+          expect(notices[0].content).toContain('Corrected the formatting of ai_commentary at payload line 7. The emitted value was preserved.')
+          expect(notices[0].content).not.toContain(commentary)
+          const logged = notices[0].data.structuredOutput
+          expect(logged.repairWarnings[0]).toContain('(truncated')
+          expect(logged.interventions[0].technicalDetail).toContain('(truncated')
+          expect(logged.interventions[0].rawMessages[0]).toContain('(truncated')
+          expect(logged.interventions[0].examples[0].before).toContain('(truncated')
+          expect(logged.interventions[0].examples[0].after).toContain('(truncated')
+          expect(JSON.stringify(logged)).not.toContain(commentary)
+        } else {
+          expect(notices[0].content).toContain('accepted after 1 structured retry attempt(s)')
+          expect(notices[0].data.structuredOutput).toMatchObject({ autoRetryCount: 1, validationError: 'The previous response was invalid.' })
+        }
+      }
+    } finally {
+      start.mockRestore()
+    }
   })
 
   it('forwards live draft session, stream, prompt, and progress events into the phase logs', async () => {
@@ -370,8 +428,8 @@ describe('additional interview phase flows', () => {
         phase: 'WAITING_INTERVIEW_ANSWERS',
         modelId: TEST.councilMembers[0],
         sessionId: 'replacement-prom4-session',
-        content: `Interview output normalization repairs:\n${firstBatch.structuredOutput.repairWarnings[0]}`,
-        data: expect.objectContaining({ structuredOutput: firstBatch.structuredOutput }),
+        content: expect.stringContaining('Corrected the formatting of batch_number at payload line 1. The emitted value was preserved.'),
+        data: expect.objectContaining({ structuredOutput: expect.objectContaining(firstBatch.structuredOutput) }),
       }))
       expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_qa_session')!.content)).toEqual({
         sessionId: 'replacement-prom4-session',
@@ -383,7 +441,7 @@ describe('additional interview phase flows', () => {
     }
   })
 
-  it('commits the completed PROM4 snapshot and canonical interview after the final answer', async () => {
+  it.each(['repair', 'retry', 'clean'])('commits the completed PROM4 interview with appropriate %s notices', async (kind) => {
     const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Complete a PROM4 interview after its final answer',
     })
@@ -391,6 +449,12 @@ describe('additional interview phase flows', () => {
     interviewQASessions.set(ticket.id, { sessionId: 'prom4-session', winnerId: active.winnerId })
     const claim = claimInterviewBatch(ticket.id)
     expect(claim).toBeTruthy()
+    const structuredOutput = kind === 'clean' ? undefined : buildStructuredOutputMetadata({
+      repairApplied: kind === 'repair',
+      repairWarnings: kind === 'repair' ? ['Removed Markdown code fence wrapper around payload.'] : [],
+      autoRetryCount: kind === 'retry' ? 1 : 0,
+      ...(kind === 'retry' ? { validationError: 'The completion response was invalid.' } : {}),
+    })
     const submit = vi.spyOn(interviewQa, 'submitBatchToSession').mockResolvedValue({
       questions: [],
       progress: { current: 1, total: 1 },
@@ -398,6 +462,7 @@ describe('additional interview phase flows', () => {
       isFinalFreeForm: false,
       aiCommentary: 'The interview is complete.',
       batchNumber: 1,
+      ...(structuredOutput ? { structuredOutput } : {}),
     })
 
     try {
@@ -417,6 +482,19 @@ describe('additional interview phase flows', () => {
         answers: { Q01: { answer: 'The main outcome is stable behavior.' } },
       })
       expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf8')).toContain('The main outcome is stable behavior.')
+      const notices = readFileSync(paths.executionLogPath, 'utf8').trim().split('\n')
+        .map((line) => JSON.parse(line)).filter((entry) => entry.content.startsWith('Interview output normalization:'))
+      if (kind === 'clean') expect(notices).toHaveLength(0)
+      else {
+        expect(notices).toHaveLength(1)
+        expect(notices[0]).toMatchObject({
+          phase: 'WAITING_INTERVIEW_ANSWERS', modelId: active.winnerId, sessionId: 'prom4-session',
+          data: { structuredOutput },
+        })
+        expect(notices[0].content).toContain(kind === 'retry'
+          ? 'accepted after 1 structured retry attempt(s)'
+          : structuredOutput!.interventions![0]!.exactCorrection)
+      }
     } finally {
       submit.mockRestore()
       releaseInterviewBatch(ticket.id, claim ?? undefined)

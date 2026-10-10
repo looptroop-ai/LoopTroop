@@ -148,6 +148,19 @@ describe('parser fix interventions', () => {
     expect(i.rawMessages).toEqual([warning])
   })
 
+  it.each(['inspiration', 'ignored because', 'rebuilt', 'terminal noise'])(
+    'keeps field-tag repair classification when commentary contains %s',
+    (commentary) => {
+      const before = `<ai_commentary>${commentary}</ai_commentary>`
+      const after = `ai_commentary: ${JSON.stringify(commentary)}`
+      const warning = `Repaired interview batch field tag at ai_commentary, payload line 8: ${JSON.stringify(before)} -> ${JSON.stringify(after)}.`
+      const intervention = deriveOne(warning)
+
+      expectIntervention(intervention, { code: 'parser_interview_batch_field_tags', stage: 'parse', category: 'parser_fix' })
+      expect(intervention.examples).toEqual([{ scope: 'ai_commentary (payload line 8)', before, after }])
+    },
+  )
+
   it('keeps closing tag removal visible after intervention normalization', () => {
     const i = deriveOne('Repaired interview batch field tag at progress, payload line 5: "</progress>" -> "".')
     expect(normalizeStructuredInterventions([i])[0]!.examples).toEqual([
@@ -557,7 +570,7 @@ describe('exact correction details', () => {
 
     const emptyFinal = deriveOne('Accepted empty final_free_form answer as an explicit no-additions response for AI-filled question QFF1.')
     expect(emptyFinal.exactCorrection).toBe('Accepted the empty final free-form answer for question QFF1 as an explicit no-additions response.')
-    
+
     const noPrdRefs = deriveOne('Bead "bead-abc" has no PRD references (prdRefs is empty).')
     expect(noPrdRefs.exactCorrection).toBe('Flagged bead "bead-abc" for having no PRD references.')
   })

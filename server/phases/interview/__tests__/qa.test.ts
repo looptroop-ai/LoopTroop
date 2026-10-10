@@ -4,6 +4,7 @@ import { SILENT_READ_ONLY_PERMISSIONS } from '../../../opencode/toolPolicy'
 import { startInterviewSession, submitBatchToSession } from '../qa'
 import { buildPersistedBatch, createInterviewSessionSnapshot, recordBatchAnswers, recordPreparedBatch } from '../sessionState'
 import { TEST } from '../../../test/factories'
+import { CancelledError } from '../../../council/types'
 
 class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
   private promptCounts = new Map<string, number>()
@@ -23,6 +24,112 @@ class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
 }
 
 describe.concurrent('PROM4 interview session parsing', () => {
+  const errorStages = ['initial prompt', 'initial parse', 'follow-up prompt', 'follow-up parse'] as const
+
+  it.each(errorStages.flatMap((stage) => ['false', 'throw'].map((cleanup) => ({ stage, cleanup }))))(
+    'keeps the original $stage cause and diagnostics when cleanup returns $cleanup',
+    async ({ stage, cleanup }) => {
+      class CleanupFailureAdapter extends MockOpenCodeAdapter {
+        override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+          if (stage.endsWith('prompt')) throw new Error('HTTP 429 provider rate limit')
+          return await super.promptSession(...args)
+        }
+
+        override async abortSession(_sessionId: string): Promise<boolean> {
+          if (cleanup === 'throw') throw new Error('Remote abort unavailable')
+          return false
+        }
+      }
+
+      const adapter = new CleanupFailureAdapter()
+      const initial = stage.startsWith('initial')
+      const sessionId = initial ? 'mock-session-1' : 'existing-session'
+      adapter.mockResponses.set(sessionId, 'No structured interview artifact was returned.')
+      const action = initial
+        ? startInterviewSession(adapter, '/tmp/test', 'model-a', 'questions: []',
+            { ticketId: TEST.externalId, title: 'Cleanup failure', description: '' },
+            3, 20, undefined, undefined, undefined, undefined, undefined, 0)
+        : submitBatchToSession(adapter, sessionId, {}, undefined, 'model-a',
+            undefined, undefined, undefined, undefined, undefined, 0)
+      await expect(action).rejects.toMatchObject({
+        message: expect.stringContaining(`Could not confirm abort of OpenCode session ${sessionId}`),
+        cause: { message: expect.stringContaining(stage.endsWith('prompt') ? 'HTTP 429 provider rate limit' : 'PROM4 output failed validation') },
+        blockedErrorDiagnostics: {
+          kind: stage.endsWith('prompt') ? 'opencode_provider' : 'runtime',
+          modelId: 'model-a',
+          sessionId,
+          summary: expect.stringContaining(stage.endsWith('prompt') ? 'HTTP 429 provider rate limit' : 'PROM4 output failed validation'),
+        },
+        blockedErrorCodes: stage.endsWith('prompt') ? ['OPENCODE_PROVIDER_ERROR'] : [],
+      })
+    },
+  )
+
+  it.each(errorStages.flatMap((stage) => ['true', 'false', 'throw'].map((cleanup) => ({ stage, cleanup }))))(
+    'keeps $stage cancellation when cleanup returns $cleanup',
+    async ({ stage, cleanup }) => {
+      const controller = new AbortController()
+      class CancelledAdapter extends MockOpenCodeAdapter {
+        override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+          if (stage.endsWith('prompt')) throw new CancelledError()
+          return await super.promptSession(...args)
+        }
+
+        override async abortSession(_sessionId: string): Promise<boolean> {
+          if (stage.endsWith('parse')) controller.abort()
+          if (cleanup === 'throw') throw new Error('Remote abort unavailable')
+          return cleanup === 'true'
+        }
+      }
+
+      const adapter = new CancelledAdapter()
+      const initial = stage.startsWith('initial')
+      const sessionId = initial ? 'mock-session-1' : 'existing-session'
+      adapter.mockResponses.set(sessionId, 'No structured interview artifact was returned.')
+      const action = initial
+        ? startInterviewSession(adapter, '/tmp/test', 'model-a', 'questions: []',
+            { ticketId: TEST.externalId, title: 'Cancelled interview', description: '' },
+            3, 20, controller.signal, undefined, undefined, undefined, undefined, 0)
+        : submitBatchToSession(adapter, sessionId, {}, controller.signal, 'model-a',
+            undefined, undefined, undefined, undefined, undefined, 0)
+      await expect(action).rejects.toBeInstanceOf(CancelledError)
+    },
+  )
+
+  it.each(['initial', 'follow-up'])('does not abort a stopped %s session again when replacement creation fails', async (stage) => {
+    class ReplacementCreationFailureAdapter extends MockOpenCodeAdapter {
+      readonly abortedSessions: string[] = []
+
+      override async createSession(...args: Parameters<MockOpenCodeAdapter['createSession']>) {
+        if (stage === 'follow-up' || this.sessions.length > 0) throw new Error('Replacement ECONNREFUSED')
+        return await super.createSession(...args)
+      }
+
+      override async abortSession(sessionId: string): Promise<boolean> {
+        this.abortedSessions.push(sessionId)
+        return this.abortedSessions.length === 1
+      }
+    }
+
+    const adapter = new ReplacementCreationFailureAdapter()
+    const sessionId = stage === 'initial' ? 'mock-session-1' : 'existing-session'
+    adapter.mockResponses.set(sessionId, '')
+    const ticketState = { ticketId: TEST.externalId, title: 'Replacement creation failure', description: '' }
+    const action = stage === 'initial'
+      ? startInterviewSession(adapter, '/tmp/test', 'model-a', 'questions: []', ticketState, 3, 20)
+      : submitBatchToSession(adapter, sessionId, {}, undefined, 'model-a', undefined, undefined, undefined, undefined,
+          { projectPath: '/tmp/test', ticketState, snapshot: createInterviewSessionSnapshot({ winnerId: 'model-a', compiledQuestions: [], maxInitialQuestions: 3 }) })
+    await expect(action).rejects.toMatchObject({
+      message: expect.stringContaining('Replacement ECONNREFUSED'),
+      blockedErrorDiagnostics: {
+        modelId: 'model-a',
+        kind: 'transport',
+      },
+    })
+    expect(adapter.abortedSessions).toEqual([sessionId])
+    await expect(action).rejects.not.toMatchObject({ blockedErrorDiagnostics: { sessionId } })
+  })
+
   it('frames compiled questions as the working checklist in the initial PROM4 prompt', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()
     const streamedEvents: unknown[] = []
@@ -355,8 +462,11 @@ describe.concurrent('PROM4 interview session parsing', () => {
 
     const adapter = new FailingPromptAdapter()
 
-    await expect(submitBatchToSession(adapter, 'existing-session', { Q01: 'Reliable output' }))
-      .rejects.toThrow('Follow-up prompt failed')
+    await expect(submitBatchToSession(adapter, 'existing-session', { Q01: 'Reliable output' }, undefined, 'model-a'))
+      .rejects.toMatchObject({
+        message: 'Follow-up prompt failed',
+        blockedErrorDiagnostics: { modelId: 'model-a', sessionId: 'existing-session' },
+      })
     expect(adapter.abortedSessions).toEqual(['existing-session'])
   })
 
@@ -464,7 +574,10 @@ describe.concurrent('PROM4 interview session parsing', () => {
       },
       3,
       20,
-    )).rejects.toThrow('Initial interview prompt failed')
+    )).rejects.toMatchObject({
+      message: 'Initial interview prompt failed',
+      blockedErrorDiagnostics: { modelId: 'model-a', sessionId: 'mock-session-1' },
+    })
     expect(adapter.abortedSessions).toContain('mock-session-1')
   })
 
@@ -522,8 +635,17 @@ describe.concurrent('PROM4 interview session parsing', () => {
     })
   })
 
-  it('preserves output-length diagnostics when an incomplete interview batch fails validation', async () => {
+  it.each([
+    { finishReason: 'length', stopped: true },
+    { finishReason: 'length', stopped: false },
+    { finishReason: 'stop', stopped: true },
+    { finishReason: 'stop', stopped: false },
+  ])('preserves reported $finishReason metrics when validation fails and cleanup returns $stopped', async ({ finishReason, stopped }) => {
     class TruncatedResponseAdapter extends MockOpenCodeAdapter {
+      override async abortSession(_sessionId: string): Promise<boolean> {
+        return stopped
+      }
+
       override async getSessionMessages(sessionId: string) {
         const messages = await super.getSessionMessages(sessionId)
         return messages.map((message) => message.role === 'assistant'
@@ -532,7 +654,7 @@ describe.concurrent('PROM4 interview session parsing', () => {
               sessionID: sessionId,
               messageID: message.id,
               type: 'step-finish' as const,
-              reason: 'length',
+              reason: finishReason,
               tokens: { input: 100, output: 200, reasoning: 50, cache: { read: 20, write: 0 } },
             }] }
           : message)
@@ -554,13 +676,16 @@ describe.concurrent('PROM4 interview session parsing', () => {
       undefined,
       0,
     )).rejects.toMatchObject({
-      blockedErrorCodes: ['OPENCODE_OUTPUT_TRUNCATED'],
+      ...(!stopped ? { cause: { message: expect.stringContaining('PROM4 output failed validation') } } : {}),
+      blockedErrorCodes: finishReason === 'length' ? ['OPENCODE_OUTPUT_TRUNCATED'] : [],
       blockedErrorDiagnostics: {
-        kind: 'model_output_truncated',
+        kind: finishReason === 'length' ? 'model_output_truncated' : 'runtime',
         modelId: 'provider/model-a',
         sessionId: 'existing-session',
-        finishReason: 'length',
+        finishReason,
+        inputTokens: 100,
         outputTokens: 200,
+        reasoningTokens: 50,
         cacheReadTokens: 20,
         cacheWriteTokens: 0,
       },

@@ -1230,37 +1230,24 @@ function normalizeInterviewCompletePayload(value: unknown, shouldAllowQuestionsO
   }
 }
 
-function parseInterviewBatchCandidate(candidate: string, repairWarnings: string[]) {
-  const originalWarnings: string[] = []
+function parseRepairedInterviewBatchCandidate(candidate: string, repairWarnings: string[]) {
+  const repaired = repairInterviewBatchFieldTags(candidate)
+  if (!repaired) return null
+  repairWarnings.push(...repaired.repairWarnings)
+  const aliasConflicts: string[] = []
+  const releaseAliasConflicts = collectAliasConflictWarnings(aliasConflicts)
   try {
-    const normalized = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(candidate, {
+    const normalized = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(repaired.content, {
       nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
-      repairWarnings: originalWarnings,
+      repairWarnings,
     }))
-    repairWarnings.push(...originalWarnings, ...normalized.repairWarnings)
+    if (aliasConflicts.length > 0) {
+      throw new Error(`Interview batch field-tag recovery has conflicting aliases: ${aliasConflicts.join(' ')}`)
+    }
+    repairWarnings.push(...normalized.repairWarnings)
     return normalized
-  } catch (error) {
-    const repaired = repairInterviewBatchFieldTags(candidate)
-    if (!repaired) {
-      repairWarnings.push(...originalWarnings)
-      throw error
-    }
-    repairWarnings.push(...repaired.repairWarnings)
-    const aliasConflicts: string[] = []
-    const releaseAliasConflicts = collectAliasConflictWarnings(aliasConflicts)
-    try {
-      const normalized = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(repaired.content, {
-        nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
-        repairWarnings,
-      }))
-      if (aliasConflicts.length > 0) {
-        throw new Error(`Interview batch field-tag recovery has conflicting aliases: ${aliasConflicts.join(' ')}`)
-      }
-      repairWarnings.push(...normalized.repairWarnings)
-      return normalized
-    } finally {
-      releaseAliasConflicts()
-    }
+  } finally {
+    releaseAliasConflicts()
   }
 }
 
@@ -1301,28 +1288,39 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
   }
 
   const batchCandidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.INTERVIEW_BATCH)
+  const buildTaggedBatchResult = (
+    candidate: string,
+    normalizedBatch: ReturnType<typeof normalizeInterviewBatchPayload>,
+    candidateWarnings: string[],
+  ): StructuredOutputResult<InterviewTurnOutput> => {
+    appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_BATCH })
+    return {
+      ok: true,
+      value: {
+        kind: 'batch',
+        batch: normalizedBatch.batch,
+      },
+      normalizedContent: buildYamlDocument({
+        batch_number: normalizedBatch.batch.batchNumber,
+        progress: normalizedBatch.batch.progress,
+        is_final_free_form: normalizedBatch.batch.isFinalFreeForm,
+        ai_commentary: normalizedBatch.batch.aiCommentary,
+        questions: normalizedBatch.batch.questions,
+      }),
+      repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_BATCH }),
+      repairWarnings: candidateWarnings,
+    }
+  }
   for (const candidate of batchCandidates) {
     const candidateWarnings: string[] = []
     const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
-      const normalizedBatch = parseInterviewBatchCandidate(candidate, candidateWarnings)
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_BATCH })
-      return {
-        ok: true,
-        value: {
-          kind: 'batch',
-          batch: normalizedBatch.batch,
-        },
-        normalizedContent: buildYamlDocument({
-          batch_number: normalizedBatch.batch.batchNumber,
-          progress: normalizedBatch.batch.progress,
-          is_final_free_form: normalizedBatch.batch.isFinalFreeForm,
-          ai_commentary: normalizedBatch.batch.aiCommentary,
-          questions: normalizedBatch.batch.questions,
-        }),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_BATCH }),
+      const normalizedBatch = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(candidate, {
+        nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
         repairWarnings: candidateWarnings,
-      }
+      }))
+      candidateWarnings.push(...normalizedBatch.repairWarnings)
+      return buildTaggedBatchResult(candidate, normalizedBatch, candidateWarnings)
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
@@ -1395,6 +1393,19 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
       lastCandidateWarnings = batchCandidateWarnings
     } finally {
       releaseAliasConflicts()
+    }
+  }
+
+  // Preserve ordinary tagged and fallback precedence before trying the new field-tag recovery.
+  for (const candidate of batchCandidates) {
+    const candidateWarnings: string[] = []
+    try {
+      const normalizedBatch = parseRepairedInterviewBatchCandidate(candidate, candidateWarnings)
+      if (normalizedBatch) return buildTaggedBatchResult(candidate, normalizedBatch, candidateWarnings)
+    } catch (error) {
+      lastError = getErrorMessage(error)
+      lastErrorCause = error
+      lastCandidateWarnings = candidateWarnings
     }
   }
 

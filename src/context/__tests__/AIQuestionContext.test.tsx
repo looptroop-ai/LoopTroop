@@ -1,244 +1,356 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AIQuestionProvider } from '../AIQuestionContext'
-import { UIProvider } from '../UIContext'
-import { useAIQuestions } from '../useAIQuestions'
-import { makeTicket, TEST } from '@/test/factories'
-import { QUESTION_RECOVERY_INTERVAL_MS } from '@/lib/constants'
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AIQuestionProvider } from "../AIQuestionContext";
+import { UIProvider } from "../UIContext";
+import { useAIQuestions } from "../useAIQuestions";
+import { makeTicket, TEST } from "@/test/factories";
+import { QUESTION_RECOVERY_INTERVAL_MS } from "@/lib/constants";
+import { PendingQuestionsPanel } from "@/components/workspace/PendingQuestionsPanel";
+import { createJsonResponse } from "@/test/renderHelpers";
 
 class MockEventSource {
-  onerror: (() => void) | null = null
+  onerror: (() => void) | null = null;
   addEventListener() {
-    return undefined
+    return undefined;
   }
   close() {
-    return undefined
+    return undefined;
   }
 }
 
 function Counts({ ticketId }: { ticketId: string }) {
-  const { getPendingCount, getRequestCount } = useAIQuestions()
-  return <div>pending:{getPendingCount(ticketId)} requests:{getRequestCount(ticketId)}</div>
+  const { getPendingCount, getRequestCount } = useAIQuestions();
+  return (
+    <div>
+      pending:{getPendingCount(ticketId)} requests:{getRequestCount(ticketId)}
+    </div>
+  );
 }
 
-function SnapshotRecovery({ ticketId, showNew = false }: { ticketId: string; showNew?: boolean }) {
-  const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+function SnapshotRecovery({
+  ticketId,
+  showNew = false,
+  liveQuestion,
+}: {
+  ticketId: string;
+  showNew?: boolean;
+  liveQuestion?: ReturnType<typeof buildQuestion>;
+}) {
+  const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions();
   return (
     <>
       <div>requests:{getRequestCount(ticketId)}</div>
-      <button onClick={() => ingestSseEvent({
-        type: 'opencode_question_resolved',
-        ticketId,
-        sessionId: 'session-1234567890',
-        requestId: 'question-1',
-      })}>resolve</button>
+      <button
+        onClick={() =>
+          ingestSseEvent({
+            type: "opencode_question_resolved",
+            ticketId,
+            sessionId: "session-1234567890",
+            requestId: "question-1",
+          })
+        }
+      >
+        resolve
+      </button>
       <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+      {liveQuestion && (
+        <button onClick={() => ingestSseEvent(liveQuestion)}>live</button>
+      )}
       {showNew && (
-        <button onClick={() => ingestSseEvent(buildQuestion(ticketId, { requestId: 'question-new' }))}>new</button>
+        <button
+          onClick={() =>
+            ingestSseEvent(
+              buildQuestion(ticketId, { requestId: "question-new" }),
+            )
+          }
+        >
+          new
+        </button>
       )}
     </>
-  )
+  );
 }
 
-function buildQuestion(ticketId: string, overrides: Record<string, unknown> = {}) {
+function buildQuestion(
+  ticketId: string,
+  overrides: Record<string, unknown> = {},
+) {
   return {
-    type: 'opencode_question',
+    type: "opencode_question",
     ticketId,
     ticketExternalId: TEST.externalId,
-    ticketTitle: 'A ticket',
-    status: 'CODING',
-    phase: 'CODING',
+    ticketTitle: "A ticket",
+    status: "CODING",
+    phase: "CODING",
     modelId: TEST.model,
-    sessionId: 'session-1234567890',
-    requestId: 'question-1',
-    questions: [{
-      header: 'Choose path',
-      question: 'Which implementation path should I use?',
-      options: [{ label: 'Small', description: 'Keep the change narrow' }],
-      custom: true,
-    }],
+    sessionId: "session-1234567890",
+    requestId: "question-1",
+    questions: [
+      {
+        header: "Choose path",
+        question: "Which implementation path should I use?",
+        options: [{ label: "Small", description: "Keep the change narrow" }],
+        custom: true,
+      },
+    ],
     timestamp: TEST.timestamp,
     ...overrides,
-  }
+  };
 }
 
 function stubAggregate(body: unknown) {
-  vi.stubGlobal('EventSource', MockEventSource)
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })))
+  vi.stubGlobal("EventSource", MockEventSource);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => createJsonResponse(body)),
+  );
 }
 
-function renderProvider(tickets: ReturnType<typeof makeTicket>[], children: React.ReactNode) {
+function stubStaleSnapshot(ticketId: string) {
+  let releaseStale: ((body: unknown) => void) | undefined;
+  let aggregateCalls = 0;
+  vi.stubGlobal("EventSource", MockEventSource);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/opencode/questions" && ++aggregateCalls === 1) {
+        return createJsonResponse({
+          questions: [buildQuestion(ticketId)],
+          timers: {},
+        });
+      }
+      if (url.endsWith("/opencode/questions")) {
+        return new Promise<Response>((resolve) => {
+          releaseStale = (body) => resolve(createJsonResponse(body));
+        });
+      }
+      return createJsonResponse({ questions: [], timer: null });
+    }),
+  );
+  return {
+    pending: () => releaseStale !== undefined,
+    release: (body: unknown) => {
+      if (!releaseStale) throw new Error("No pending stale snapshot");
+      releaseStale(body);
+    },
+  };
+}
+
+function renderProvider(
+  tickets: ReturnType<typeof makeTicket>[],
+  children: React.ReactNode,
+) {
   return render(
     <UIProvider>
       <AIQuestionProvider tickets={tickets}>{children}</AIQuestionProvider>
     </UIProvider>,
-  )
+  );
 }
 
-describe('AIQuestionProvider', () => {
+describe("AIQuestionProvider", () => {
   afterEach(() => {
-    vi.unstubAllGlobals()
-  })
+    vi.unstubAllGlobals();
+  });
 
-  it('recovers pending questions without covering the app', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} })
+  it("recovers pending questions without covering the app", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} });
 
-    renderProvider([ticket], <Counts ticketId={ticket.id} />)
+    renderProvider([ticket], <Counts ticketId={ticket.id} />);
 
-    await waitFor(() => expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText("pending:1 requests:1")).toBeInTheDocument(),
+    );
     // The old surface was a `fixed inset-0` overlay. Nothing may cover the app.
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(screen.queryByText('Which implementation path should I use?')).not.toBeInTheDocument()
-  })
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Which implementation path should I use?"),
+    ).not.toBeInTheDocument();
+  });
 
-  it('counts models and questions separately', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
+  it("counts models and questions separately", async () => {
+    const ticket = makeTicket({ status: "CODING" });
     stubAggregate({
       questions: [
         buildQuestion(ticket.id),
         buildQuestion(ticket.id, {
-          sessionId: 'session-2',
-          requestId: 'question-2',
+          sessionId: "session-2",
+          requestId: "question-2",
           questions: [
-            { header: 'A', question: 'First?', options: [] },
-            { header: 'B', question: 'Second?', options: [] },
+            { header: "A", question: "First?", options: [] },
+            { header: "B", question: "Second?", options: [] },
           ],
         }),
       ],
       timers: {},
-    })
+    });
 
-    renderProvider([ticket], <Counts ticketId={ticket.id} />)
+    renderProvider([ticket], <Counts ticketId={ticket.id} />);
 
     // Two models asking, three questions between them. The badge and the tab
     // strip mean different things and must not share a number.
-    await waitFor(() => expect(screen.getByText('pending:3 requests:2')).toBeInTheDocument())
-  })
+    await waitFor(() =>
+      expect(screen.getByText("pending:3 requests:2")).toBeInTheDocument(),
+    );
+  });
 
-  it('preserves option values while normalizing incoming questions', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    stubAggregate({ questions: [], timers: {} })
+  it("preserves option values while normalizing incoming questions", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    stubAggregate({ questions: [], timers: {} });
 
     function OptionValue({ ticketId }: { ticketId: string }) {
-      const { getTicketRequests, ingestSseEvent } = useAIQuestions()
-      return (
-        <>
-          <button type="button" onClick={() => ingestSseEvent(buildQuestion(ticketId, {
-            questions: [{
-              header: 'Mode',
-              question: 'Choose a mode',
-              options: [{ label: 'Fast mode', value: 'fast' }],
-            }],
-          }))}>ingest</button>
-          <div>value:{getTicketRequests(ticketId)[0]?.questions[0]?.options[0]?.value ?? 'missing'}</div>
-        </>
-      )
-    }
-
-    renderProvider([ticket], <OptionValue ticketId={ticket.id} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'ingest' }))
-
-    await waitFor(() => expect(screen.getByText('value:fast')).toBeInTheDocument())
-  })
-
-  it('slides a bar in for a question on a ticket you are not looking at', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} })
-
-    renderProvider([ticket], <div>board</div>)
-
-    expect(await screen.findByText(`${TEST.externalId} is waiting on a question`)).toBeInTheDocument()
-  })
-
-  it('keeps the model name when a request arrives on the timer-update path', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    // The aggregate poll finds nothing; the request is only ever seen inside a
-    // timer update, whose rows use the server's `memberId` rather than `modelId`.
-    stubAggregate({ questions: [], timers: {} })
-
-    function Model({ ticketId }: { ticketId: string }) {
-      const { getTicketRequests, ingestSseEvent } = useAIQuestions()
+      const { getTicketRequests, ingestSseEvent } = useAIQuestions();
       return (
         <>
           <button
             type="button"
-            onClick={() => ingestSseEvent({
-              type: 'opencode_question_updated',
-              ticketId,
-              ticketExternalId: TEST.externalId,
-              ticketTitle: 'A ticket',
-              status: 'CODING',
-              requests: [{
-                ticketId,
-                sessionId: 'ses_a',
-                requestId: 'req_a',
-                memberId: TEST.model,
-                phase: 'CODING',
-                phaseAttempt: 1,
-                questions: [{ header: 'H', question: 'Which?', options: [] }],
-                questionCount: 1,
-                receivedAt: TEST.timestamp,
-                timerKey: 'CODING:1',
-              }],
-            })}
+            onClick={() =>
+              ingestSseEvent(
+                buildQuestion(ticketId, {
+                  questions: [
+                    {
+                      header: "Mode",
+                      question: "Choose a mode",
+                      options: [{ label: "Fast mode", value: "fast" }],
+                    },
+                  ],
+                }),
+              )
+            }
           >
             ingest
           </button>
-          <div>model:{getTicketRequests(ticketId)[0]?.modelId ?? 'none'}</div>
+          <div>
+            value:
+            {getTicketRequests(ticketId)[0]?.questions[0]?.options[0]?.value ??
+              "missing"}
+          </div>
         </>
-      )
+      );
     }
 
-    renderProvider([ticket], <Model ticketId={ticket.id} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'ingest' }))
+    renderProvider([ticket], <OptionValue ticketId={ticket.id} />);
+    fireEvent.click(await screen.findByRole("button", { name: "ingest" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("value:fast")).toBeInTheDocument(),
+    );
+  });
+
+  it("slides a bar in for a question on a ticket you are not looking at", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} });
+
+    renderProvider([ticket], <div>board</div>);
+
+    expect(
+      await screen.findByText(`${TEST.externalId} is waiting on a question`),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the model name when a request arrives on the timer-update path", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    // The aggregate poll finds nothing; the request is only ever seen inside a
+    // timer update, whose rows use the server's `memberId` rather than `modelId`.
+    stubAggregate({ questions: [], timers: {} });
+
+    function Model({ ticketId }: { ticketId: string }) {
+      const { getTicketRequests, ingestSseEvent } = useAIQuestions();
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              ingestSseEvent({
+                type: "opencode_question_updated",
+                ticketId,
+                ticketExternalId: TEST.externalId,
+                ticketTitle: "A ticket",
+                status: "CODING",
+                requests: [
+                  {
+                    ticketId,
+                    sessionId: "ses_a",
+                    requestId: "req_a",
+                    memberId: TEST.model,
+                    phase: "CODING",
+                    phaseAttempt: 1,
+                    questions: [
+                      { header: "H", question: "Which?", options: [] },
+                    ],
+                    questionCount: 1,
+                    receivedAt: TEST.timestamp,
+                    timerKey: "CODING:1",
+                  },
+                ],
+              })
+            }
+          >
+            ingest
+          </button>
+          <div>model:{getTicketRequests(ticketId)[0]?.modelId ?? "none"}</div>
+        </>
+      );
+    }
+
+    renderProvider([ticket], <Model ticketId={ticket.id} />);
+    fireEvent.click(await screen.findByRole("button", { name: "ingest" }));
 
     // `upsertRequest` never overwrites an existing row, so a name missed here
     // would stay missing for the life of the request.
-    await waitFor(() => expect(screen.getByText(`model:${TEST.model}`)).toBeInTheDocument())
-  })
+    await waitFor(() =>
+      expect(screen.getByText(`model:${TEST.model}`)).toBeInTheDocument(),
+    );
+  });
 
-  it('corrects the countdown for a browser clock that is wrong', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-01-01T00:05:00.000Z'))
+  it("corrects the countdown for a browser clock that is wrong", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
     // The browser is five minutes ahead of the server. Without skew correction
     // the countdown would read as already expired.
     stubAggregate({
       questions: [buildQuestion(ticket.id)],
       timers: {
         [ticket.id]: {
-          timerKey: 'CODING:1',
+          timerKey: "CODING:1",
           windowMs: 300_000,
-          armedAt: '2026-01-01T00:00:00.000Z',
-          deadlineAt: '2026-01-01T00:05:00.000Z',
+          armedAt: "2026-01-01T00:00:00.000Z",
+          deadlineAt: "2026-01-01T00:05:00.000Z",
           stoppedAt: null,
           stoppedBy: null,
           resetCount: 0,
           revision: 1,
-          serverNow: '2026-01-01T00:00:00.000Z',
+          serverNow: "2026-01-01T00:00:00.000Z",
         },
       },
-    })
+    });
 
     function Remaining({ ticketId }: { ticketId: string }) {
-      const { getRemainingMs } = useAIQuestions()
-      return <div>remaining:{getRemainingMs(ticketId) ?? 'none'}</div>
+      const { getRemainingMs } = useAIQuestions();
+      return <div>remaining:{getRemainingMs(ticketId) ?? "none"}</div>;
     }
 
     await act(async () => {
-      renderProvider([ticket], <Remaining ticketId={ticket.id} />)
-      await vi.advanceTimersByTimeAsync(0)
-    })
-    expect(screen.getByText('remaining:300000')).toBeInTheDocument()
-    vi.useRealTimers()
-  })
+      renderProvider([ticket], <Remaining ticketId={ticket.id} />);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("remaining:300000")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
 
-  it('sends Stop again for the next step’s clock on the same ticket', async () => {
-    const ticket = makeTicket()
-    const question = buildQuestion(ticket.id)
+  it("sends Stop again for the next step’s clock on the same ticket", async () => {
+    const ticket = makeTicket();
+    const question = buildQuestion(ticket.id);
     const first = {
-      timerKey: 'CODING:1',
+      timerKey: "CODING:1",
       generation: 1,
       windowMs: 300_000,
       armedAt: TEST.timestamp,
@@ -248,50 +360,66 @@ describe('AIQuestionProvider', () => {
       resetCount: 0,
       revision: 4,
       serverNow: TEST.timestamp,
-    }
-    stubAggregate({ questions: [question], timers: { [ticket.id]: first } })
+    };
+    stubAggregate({ questions: [question], timers: { [ticket.id]: first } });
 
     function Stopper({ ticketId }: { ticketId: string }) {
-      const { getTimer, stopTimer, ingestSseEvent } = useAIQuestions()
+      const { getTimer, stopTimer, ingestSseEvent } = useAIQuestions();
       return (
         <>
-          <div>generation:{getTimer(ticketId)?.generation ?? 'none'}</div>
+          <div>generation:{getTimer(ticketId)?.generation ?? "none"}</div>
           <button onClick={() => stopTimer(ticketId)}>stop</button>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_updated',
-            ticketId,
-            // A different step, so a different clock — and revisions restart at
-            // 1 for it, below the 4 the previous clock had reached.
-            timer: { ...first, timerKey: 'VERIFYING:1', generation: 9, revision: 1, stoppedAt: null },
-            requests: [],
-          })}>next-step</button>
+          <button
+            onClick={() =>
+              ingestSseEvent({
+                type: "opencode_question_updated",
+                ticketId,
+                // A different step, so a different clock — and revisions restart at
+                // 1 for it, below the 4 the previous clock had reached.
+                timer: {
+                  ...first,
+                  timerKey: "VERIFYING:1",
+                  generation: 9,
+                  revision: 1,
+                  stoppedAt: null,
+                },
+                requests: [],
+              })
+            }
+          >
+            next-step
+          </button>
         </>
-      )
+      );
     }
 
-    renderProvider([ticket], <Stopper ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('generation:1')).toBeInTheDocument())
-    const calls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
-      .filter(([url]) => String(url).includes('question-timer/stop'))
+    renderProvider([ticket], <Stopper ticketId={ticket.id} />);
+    await waitFor(() =>
+      expect(screen.getByText("generation:1")).toBeInTheDocument(),
+    );
+    const calls = () =>
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([url]) => String(url).includes("question-timer/stop"),
+      );
 
-    fireEvent.click(screen.getByText('stop'))
-    await waitFor(() => expect(calls()).toHaveLength(1))
-    fireEvent.click(screen.getByText('stop'))
-    expect(calls()).toHaveLength(1)
+    fireEvent.click(screen.getByText("stop"));
+    await waitFor(() => expect(calls()).toHaveLength(1));
+    fireEvent.click(screen.getByText("stop"));
+    expect(calls()).toHaveLength(1);
 
-    fireEvent.click(screen.getByText('next-step'))
-    fireEvent.click(screen.getByText('stop'))
+    fireEvent.click(screen.getByText("next-step"));
+    fireEvent.click(screen.getByText("stop"));
     // Keyed on the ticket alone, the browser remembered "already stopped" and
     // never sent Stop for the next step's clock at all — so that question would
     // expire under someone who was sitting there answering it.
-    await waitFor(() => expect(calls()).toHaveLength(2))
-  })
+    await waitFor(() => expect(calls()).toHaveLength(2));
+  });
 
-  it('accepts a second clock on the same step, which reuses the timer key', async () => {
-    const ticket = makeTicket()
-    const question = buildQuestion(ticket.id)
+  it("accepts a second clock on the same step, which reuses the timer key", async () => {
+    const ticket = makeTicket();
+    const question = buildQuestion(ticket.id);
     const first = {
-      timerKey: 'CODING:1',
+      timerKey: "CODING:1",
       generation: 4,
       windowMs: 300_000,
       armedAt: TEST.timestamp,
@@ -301,49 +429,57 @@ describe('AIQuestionProvider', () => {
       resetCount: 0,
       revision: 5,
       serverNow: TEST.timestamp,
-    }
-    stubAggregate({ questions: [question], timers: { [ticket.id]: first } })
+    };
+    stubAggregate({ questions: [question], timers: { [ticket.id]: first } });
 
     function Step({ ticketId }: { ticketId: string }) {
-      const { getTimer, stopTimer, ingestSseEvent } = useAIQuestions()
+      const { getTimer, stopTimer, ingestSseEvent } = useAIQuestions();
       return (
         <>
-          <div>gen:{getTimer(ticketId)?.generation ?? 'none'}</div>
+          <div>gen:{getTimer(ticketId)?.generation ?? "none"}</div>
           <button onClick={() => stopTimer(ticketId)}>stop</button>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_updated',
-            ticketId,
-            // The step asked, was answered, and asked again. Same phase and same
-            // attempt, so the same timerKey — but a different clock, whose
-            // revision starts over below the one the first clock reached.
-            timer: { ...first, generation: 5, revision: 1 },
-            requests: [],
-          })}>ask-again</button>
+          <button
+            onClick={() =>
+              ingestSseEvent({
+                type: "opencode_question_updated",
+                ticketId,
+                // The step asked, was answered, and asked again. Same phase and same
+                // attempt, so the same timerKey — but a different clock, whose
+                // revision starts over below the one the first clock reached.
+                timer: { ...first, generation: 5, revision: 1 },
+                requests: [],
+              })
+            }
+          >
+            ask-again
+          </button>
         </>
-      )
+      );
     }
 
-    renderProvider([ticket], <Step ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('gen:4')).toBeInTheDocument())
-    const calls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
-      .filter(([url]) => String(url).includes('question-timer/stop'))
+    renderProvider([ticket], <Step ticketId={ticket.id} />);
+    await waitFor(() => expect(screen.getByText("gen:4")).toBeInTheDocument());
+    const calls = () =>
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([url]) => String(url).includes("question-timer/stop"),
+      );
 
-    fireEvent.click(screen.getByText('stop'))
-    await waitFor(() => expect(calls()).toHaveLength(1))
+    fireEvent.click(screen.getByText("stop"));
+    await waitFor(() => expect(calls()).toHaveLength(1));
 
-    fireEvent.click(screen.getByText('ask-again'))
+    fireEvent.click(screen.getByText("ask-again"));
     // Keyed on timerKey alone, the browser kept showing the clock that had
     // already gone and refused to stop the new one.
-    await waitFor(() => expect(screen.getByText('gen:5')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('stop'))
-    await waitFor(() => expect(calls()).toHaveLength(2))
-  })
+    await waitFor(() => expect(screen.getByText("gen:5")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("stop"));
+    await waitFor(() => expect(calls()).toHaveLength(2));
+  });
 
-  it('does not discard a new clock as stale because the old one outranked it', async () => {
-    const ticket = makeTicket()
-    const question = buildQuestion(ticket.id)
+  it("does not discard a new clock as stale because the old one outranked it", async () => {
+    const ticket = makeTicket();
+    const question = buildQuestion(ticket.id);
     const old = {
-      timerKey: 'CODING:1',
+      timerKey: "CODING:1",
       generation: 1,
       windowMs: 300_000,
       armedAt: TEST.timestamp,
@@ -353,424 +489,751 @@ describe('AIQuestionProvider', () => {
       resetCount: 0,
       revision: 6,
       serverNow: TEST.timestamp,
-    }
-    stubAggregate({ questions: [question], timers: { [ticket.id]: old } })
+    };
+    stubAggregate({ questions: [question], timers: { [ticket.id]: old } });
 
     function Timer({ ticketId }: { ticketId: string }) {
-      const { getTimer, ingestSseEvent } = useAIQuestions()
+      const { getTimer, ingestSseEvent } = useAIQuestions();
       return (
         <>
-          <div>key:{getTimer(ticketId)?.timerKey ?? 'none'}</div>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_updated',
-            ticketId,
-            timer: { ...old, timerKey: 'VERIFYING:1', generation: 9, revision: 1 },
-            requests: [],
-          })}>advance</button>
+          <div>key:{getTimer(ticketId)?.timerKey ?? "none"}</div>
+          <button
+            onClick={() =>
+              ingestSseEvent({
+                type: "opencode_question_updated",
+                ticketId,
+                timer: {
+                  ...old,
+                  timerKey: "VERIFYING:1",
+                  generation: 9,
+                  revision: 1,
+                },
+                requests: [],
+              })
+            }
+          >
+            advance
+          </button>
         </>
-      )
+      );
     }
 
-    renderProvider([ticket], <Timer ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('key:CODING:1')).toBeInTheDocument())
+    renderProvider([ticket], <Timer ticketId={ticket.id} />);
+    await waitFor(() =>
+      expect(screen.getByText("key:CODING:1")).toBeInTheDocument(),
+    );
 
-    fireEvent.click(screen.getByText('advance'))
+    fireEvent.click(screen.getByText("advance"));
     // Revisions are per clock. Comparing them across clocks threw away the new
     // countdown and left the browser showing one that had already gone.
-    await waitFor(() => expect(screen.getByText('key:VERIFYING:1')).toBeInTheDocument())
-  })
+    await waitFor(() =>
+      expect(screen.getByText("key:VERIFYING:1")).toBeInTheDocument(),
+    );
+  });
 
-  it('drops a request the step no longer lists', async () => {
+  it("drops a request the step no longer lists", async () => {
     // `opencode_question_updated` carries the step's whole pending set, so it is
     // also how this client learns a request went away. Only upserting left a
     // request that was dropped without an explicit `resolved` event answerable
     // until the 30-second poll noticed.
-    const ticket = makeTicket({ status: 'CODING' })
+    const ticket = makeTicket({ status: "CODING" });
     stubAggregate({
-      questions: [buildQuestion(ticket.id), buildQuestion(ticket.id, { sessionId: 'session-2', requestId: 'question-2' })],
+      questions: [
+        buildQuestion(ticket.id),
+        buildQuestion(ticket.id, {
+          sessionId: "session-2",
+          requestId: "question-2",
+        }),
+      ],
       timers: {},
-    })
+    });
 
     function Pruner({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, ingestSseEvent } = useAIQuestions()
+      const { getRequestCount, ingestSseEvent } = useAIQuestions();
       return (
         <>
           <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_updated',
-            ticketId,
-            requests: [{ sessionId: 'session-1234567890', requestId: 'question-1', questions: [{ header: 'H', question: 'Q?', options: [] }] }],
-          })}>update</button>
-          <button onClick={() => ingestSseEvent({ type: 'opencode_question_updated', ticketId })}>timer-only</button>
+          <button
+            onClick={() =>
+              ingestSseEvent({
+                type: "opencode_question_updated",
+                ticketId,
+                requests: [
+                  {
+                    sessionId: "session-1234567890",
+                    requestId: "question-1",
+                    questions: [{ header: "H", question: "Q?", options: [] }],
+                  },
+                ],
+              })
+            }
+          >
+            update
+          </button>
+          <button
+            onClick={() =>
+              ingestSseEvent({ type: "opencode_question_updated", ticketId })
+            }
+          >
+            timer-only
+          </button>
         </>
-      )
+      );
     }
 
-    renderProvider([ticket], <Pruner ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
+    renderProvider([ticket], <Pruner ticketId={ticket.id} />);
+    await waitFor(() =>
+      expect(screen.getByText("requests:2")).toBeInTheDocument(),
+    );
 
-    fireEvent.click(screen.getByText('update'))
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+    fireEvent.click(screen.getByText("update"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
 
     // An update with no `requests` array is not a statement about the set.
-    fireEvent.click(screen.getByText('timer-only'))
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
-  })
+    fireEvent.click(screen.getByText("timer-only"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
+  });
 
-  it('does not resurrect a resolved request from a stale snapshot', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    let releaseStale!: (body: unknown) => void
-    let aggregateCalls = 0
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url === '/api/opencode/questions') {
-        aggregateCalls += 1
-        if (aggregateCalls === 1) {
-          return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
-        }
-      }
-      if (url.endsWith('/opencode/questions')) {
-        return new Promise<Response>((resolve) => {
-          releaseStale = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
-        })
-      }
-      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
-    }))
+  it("does not resurrect a resolved request from a stale snapshot", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    const stale = stubStaleSnapshot(ticket.id);
 
-    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} showNew />)
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} showNew />);
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
 
-    fireEvent.click(screen.getByText('refresh'))
-    await waitFor(() => expect(releaseStale).toBeDefined())
+    fireEvent.click(screen.getByText("refresh"));
+    await waitFor(() => expect(stale.pending()).toBe(true));
 
-    fireEvent.click(screen.getByText('resolve'))
-    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+    fireEvent.click(screen.getByText("resolve"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:0")).toBeInTheDocument(),
+    );
 
-    await act(async () => releaseStale({ questions: [buildQuestion(ticket.id)], timer: null }))
-    expect(screen.getByText('requests:0')).toBeInTheDocument()
+    await act(() =>
+      stale.release({ questions: [buildQuestion(ticket.id)], timer: null }),
+    );
+    expect(screen.getByText("requests:0")).toBeInTheDocument();
 
     // A later legitimate request still arrives normally; the tombstone belongs to one request id.
-    fireEvent.click(screen.getByText('new'))
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
-  })
+    fireEvent.click(screen.getByText("new"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
+  });
 
-  it('keeps a resolved request gone when a later snapshot still contains its old identity', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    let releaseStale!: (body: unknown) => void
-    let aggregateCalls = 0
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url === '/api/opencode/questions') {
-        aggregateCalls += 1
-        if (aggregateCalls === 1) {
-          return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
-        }
-      }
-      if (url.endsWith('/opencode/questions')) {
-        return new Promise<Response>((resolve) => {
-          releaseStale = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
-        })
-      }
-      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
-    }))
+  it("keeps a resolved request gone when a later snapshot still contains its old identity", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    const stale = stubStaleSnapshot(ticket.id);
 
-    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} />);
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
 
     // Resolution happens before this GET starts. The server may still return
     // its resolving identity when the adapter lookup falls back to the window.
-    fireEvent.click(screen.getByText('resolve'))
-    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+    fireEvent.click(screen.getByText("resolve"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:0")).toBeInTheDocument(),
+    );
 
-    fireEvent.click(screen.getByText('refresh'))
-    await waitFor(() => expect(releaseStale).toBeDefined())
-    await act(async () => releaseStale({ questions: [buildQuestion(ticket.id)], timer: null }))
+    fireEvent.click(screen.getByText("refresh"));
+    await waitFor(() => expect(stale.pending()).toBe(true));
+    await act(() =>
+      stale.release({ questions: [buildQuestion(ticket.id)], timer: null }),
+    );
 
-    expect(screen.getByText('requests:0')).toBeInTheDocument()
-  })
+    expect(screen.getByText("requests:0")).toBeInTheDocument();
+  });
 
-  it('still prunes other requests when a snapshot carries a stale resolved identity', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    const first = buildQuestion(ticket.id)
-    const second = buildQuestion(ticket.id, { sessionId: 'session-2', requestId: 'question-2' })
-    let aggregateCalls = 0
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url === '/api/opencode/questions') {
-        aggregateCalls += 1
-        return new Response(JSON.stringify({
-          questions: aggregateCalls === 1 ? [first, second] : [],
-          timers: {},
-        }), { status: 200 })
-      }
-      if (url.endsWith('/opencode/questions')) {
-        return new Response(JSON.stringify({ questions: [first], timer: null }), { status: 200 })
-      }
-      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
-    }))
-
-    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('resolve'))
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('refresh'))
-    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
-  })
-
-  it('fences an in-flight response before retiring a finished ticket tombstone', async () => {
-    const ticket = makeTicket({ status: 'CODING' })
-    let releaseRefresh!: (body: unknown) => void
-    let releaseReactivatedPoll!: (body: unknown) => void
-    let aggregateCalls = 0
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url === '/api/opencode/questions') {
-        aggregateCalls += 1
-        if (aggregateCalls === 1) {
-          return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
+  it("still prunes other requests when a snapshot carries a stale resolved identity", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    const first = buildQuestion(ticket.id);
+    const second = buildQuestion(ticket.id, {
+      sessionId: "session-2",
+      requestId: "question-2",
+    });
+    let aggregateCalls = 0;
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/opencode/questions") {
+          aggregateCalls += 1;
+          return new Response(
+            JSON.stringify({
+              questions: aggregateCalls === 1 ? [first, second] : [],
+              timers: {},
+            }),
+            { status: 200 },
+          );
         }
-        return new Promise<Response>((resolve) => {
-          releaseReactivatedPoll = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
-        })
-      }
-      if (url.endsWith('/opencode/questions')) {
-        return new Promise<Response>((resolve) => {
-          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
-        })
-      }
-      return new Response(JSON.stringify({ questions: [], timer: null }), { status: 200 })
-    }))
+        if (url.endsWith("/opencode/questions")) {
+          return new Response(
+            JSON.stringify({ questions: [first], timer: null }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ questions: [], timer: null }), {
+          status: 200,
+        });
+      }),
+    );
 
-    function Recovery({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => ingestSseEvent({
-            type: 'opencode_question_resolved',
-            ticketId,
-            sessionId: 'session-1234567890',
-            requestId: 'question-1',
-          })}>resolve</button>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-        </>
-      )
-    }
+    renderProvider([ticket], <SnapshotRecovery ticketId={ticket.id} />);
+    await waitFor(() =>
+      expect(screen.getByText("requests:2")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("resolve"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("refresh"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:0")).toBeInTheDocument(),
+    );
+  });
 
-    const { rerender } = renderProvider([ticket], <Recovery ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+  it("fences an in-flight response before retiring a finished ticket tombstone", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    let releaseRefresh!: (body: unknown) => void;
+    let releaseReactivatedPoll!: (body: unknown) => void;
+    let aggregateCalls = 0;
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/opencode/questions") {
+          aggregateCalls += 1;
+          if (aggregateCalls === 1) {
+            return new Response(
+              JSON.stringify({
+                questions: [buildQuestion(ticket.id)],
+                timers: {},
+              }),
+              { status: 200 },
+            );
+          }
+          return new Promise<Response>((resolve) => {
+            releaseReactivatedPoll = (body) =>
+              resolve(new Response(JSON.stringify(body), { status: 200 }));
+          });
+        }
+        if (url.endsWith("/opencode/questions")) {
+          return new Promise<Response>((resolve) => {
+            releaseRefresh = (body) =>
+              resolve(new Response(JSON.stringify(body), { status: 200 }));
+          });
+        }
+        return new Response(JSON.stringify({ questions: [], timer: null }), {
+          status: 200,
+        });
+      }),
+    );
 
-    fireEvent.click(screen.getByText('resolve'))
-    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('refresh'))
-    await waitFor(() => expect(releaseRefresh).toBeDefined())
+    const { rerender } = renderProvider(
+      [ticket],
+      <SnapshotRecovery ticketId={ticket.id} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByText("resolve"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:0")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("refresh"));
+    await waitFor(() => expect(releaseRefresh).toBeDefined());
 
     // Remove and re-add the ticket before the old response lands. Clearing the
     // tombstone is safe only if that response is fenced to the old lifetime.
     rerender(
       <UIProvider>
-        <AIQuestionProvider tickets={[]}><Recovery ticketId={ticket.id} /></AIQuestionProvider>
+        <AIQuestionProvider tickets={[]}>
+          <SnapshotRecovery ticketId={ticket.id} />
+        </AIQuestionProvider>
       </UIProvider>,
-    )
-    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+    );
+    await waitFor(() =>
+      expect(screen.getByText("requests:0")).toBeInTheDocument(),
+    );
     rerender(
       <UIProvider>
-        <AIQuestionProvider tickets={[ticket]}><Recovery ticketId={ticket.id} /></AIQuestionProvider>
+        <AIQuestionProvider tickets={[ticket]}>
+          <SnapshotRecovery ticketId={ticket.id} />
+        </AIQuestionProvider>
       </UIProvider>,
-    )
-    await waitFor(() => expect(releaseReactivatedPoll).toBeDefined())
+    );
+    await waitFor(() => expect(releaseReactivatedPoll).toBeDefined());
 
-    await act(async () => releaseRefresh({ questions: [buildQuestion(ticket.id)], timer: null }))
-    expect(screen.getByText('requests:0')).toBeInTheDocument()
+    await act(async () =>
+      releaseRefresh({ questions: [buildQuestion(ticket.id)], timer: null }),
+    );
+    expect(screen.getByText("requests:0")).toBeInTheDocument();
 
-    await act(async () => releaseReactivatedPoll({ questions: [], timers: {} }))
-    expect(screen.getByText('requests:0')).toBeInTheDocument()
-  })
+    await act(async () =>
+      releaseReactivatedPoll({ questions: [], timers: {} }),
+    );
+    expect(screen.getByText("requests:0")).toBeInTheDocument();
+  });
 
-  it('does not restart question recovery when ticket polling only replaces ticket objects', async () => {
-    vi.useFakeTimers()
+  it("does not restart question recovery when ticket polling only replaces ticket objects", async () => {
+    vi.useFakeTimers();
     try {
-      const ticket = makeTicket({ status: 'CODING' })
-      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 }))
-      vi.stubGlobal('EventSource', MockEventSource)
-      vi.stubGlobal('fetch', fetchMock)
+      const ticket = makeTicket({ status: "CODING" });
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ questions: [], timers: {} }), {
+            status: 200,
+          }),
+      );
+      vi.stubGlobal("EventSource", MockEventSource);
+      vi.stubGlobal("fetch", fetchMock);
 
-      const { rerender } = renderProvider([ticket], <Counts ticketId={ticket.id} />)
+      const { rerender } = renderProvider(
+        [ticket],
+        <Counts ticketId={ticket.id} />,
+      );
       await act(async () => {
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-      expect(fetchMock).toHaveBeenCalledTimes(1)
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
 
       rerender(
         <UIProvider>
-          <AIQuestionProvider tickets={[{ ...ticket }]}> <Counts ticketId={ticket.id} /></AIQuestionProvider>
+          <AIQuestionProvider tickets={[{ ...ticket }]}>
+            {" "}
+            <Counts ticketId={ticket.id} />
+          </AIQuestionProvider>
         </UIProvider>,
-      )
-      await act(async () => { await vi.advanceTimersByTimeAsync(QUESTION_RECOVERY_INTERVAL_MS / 3) })
-      expect(fetchMock).toHaveBeenCalledTimes(1)
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(QUESTION_RECOVERY_INTERVAL_MS / 3);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(QUESTION_RECOVERY_INTERVAL_MS * 2 / 3) })
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          (QUESTION_RECOVERY_INTERVAL_MS * 2) / 3,
+        );
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
-      vi.useRealTimers()
+      vi.useRealTimers();
     }
-  })
+  });
 
-  it('lets go of a ticket that has finished', async () => {
+  it("lets go of a ticket that has finished", async () => {
     // Requests were retained for the life of the tab, so a cancelled ticket kept
     // an answer-and-skip affordance for a step nothing is waiting on.
-    const ticket = makeTicket({ status: 'CODING' })
-    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} })
+    const ticket = makeTicket({ status: "CODING" });
+    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} });
 
-    const { rerender } = renderProvider([ticket], <Counts ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument())
+    const { rerender } = renderProvider(
+      [ticket],
+      <Counts ticketId={ticket.id} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("pending:1 requests:1")).toBeInTheDocument(),
+    );
 
     rerender(
       <UIProvider>
-        <AIQuestionProvider tickets={[{ ...ticket, status: 'CANCELED' }]}>
+        <AIQuestionProvider tickets={[{ ...ticket, status: "CANCELED" }]}>
           <Counts ticketId={ticket.id} />
         </AIQuestionProvider>
       </UIProvider>,
-    )
+    );
 
-    await waitFor(() => expect(screen.getByText('pending:0 requests:0')).toBeInTheDocument())
-  })
+    await waitFor(() =>
+      expect(screen.getByText("pending:0 requests:0")).toBeInTheDocument(),
+    );
+  });
 
-  it('reports an answer failure with its status instead of [object Object]', async () => {
+  it("reports an answer failure with its status instead of [object Object]", async () => {
     // The question routes answer a validation failure with `details` set to a Zod
     // field map. This provider had its own parser, which stringified that object
     // straight into the panel and dropped the status with it.
-    const ticket = makeTicket({ status: 'CODING' })
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/reply')) {
+    const ticket = makeTicket({ status: "CODING" });
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/reply")) {
+          return new Response(
+            JSON.stringify({
+              error: "Invalid question reply payload",
+              details: { formErrors: [], fieldErrors: {} },
+            }),
+            { status: 400, headers: { "Content-Type": "application/json" } },
+          );
+        }
         return new Response(
-          JSON.stringify({ error: 'Invalid question reply payload', details: { formErrors: [], fieldErrors: {} } }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } },
-        )
-      }
-      return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
-    }))
+          JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }),
+          { status: 200 },
+        );
+      }),
+    );
 
     function Answerer({ ticketId }: { ticketId: string }) {
-      const { answerRequest, getTicketRequests } = useAIQuestions()
-      const request = getTicketRequests(ticketId)[0]
+      const { answerRequest, getTicketRequests } = useAIQuestions();
+      const request = getTicketRequests(ticketId)[0];
       return (
         <>
-          <div>error:{request?.error ?? 'none'}</div>
-          <button onClick={() => answerRequest(ticketId, 'question-1', [['Small']])}>answer</button>
+          <div>error:{request?.error ?? "none"}</div>
+          <button
+            onClick={() => answerRequest(ticketId, "question-1", [["Small"]])}
+          >
+            answer
+          </button>
         </>
-      )
+      );
     }
 
-    renderProvider([ticket], <Answerer ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('error:none')).toBeInTheDocument())
+    renderProvider([ticket], <Answerer ticketId={ticket.id} />);
+    await waitFor(() =>
+      expect(screen.getByText("error:none")).toBeInTheDocument(),
+    );
 
-    fireEvent.click(screen.getByText('answer'))
+    fireEvent.click(screen.getByText("answer"));
 
-    await waitFor(() => expect(
-      screen.getByText('error:Could not send that answer (HTTP 400: Invalid question reply payload)'),
-    ).toBeInTheDocument())
-  })
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "error:Could not send that answer (HTTP 400: Invalid question reply payload)",
+        ),
+      ).toBeInTheDocument(),
+    );
+  });
 
-  it('does not let a slow per-ticket refresh undo a newer live update', async () => {
+  it("bulk-skips requests in the same session and keeps a failed rejection retryable", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    const questions = [
+      buildQuestion(ticket.id),
+      buildQuestion(ticket.id, { requestId: "question-2" }),
+    ];
+    const rejectPath = (requestId: string) =>
+      `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions/${requestId}/reject`;
+    const pendingRejections = new Map<string, (response: Response) => void>();
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/reject")) {
+        return new Promise<Response>((resolve) =>
+          pendingRejections.set(url, resolve),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ questions, timers: {} }), {
+          status: 200,
+        }),
+      );
+    });
+    const resolveRejection = (requestId: string, response: Response) => {
+      const resolve = pendingRejections.get(rejectPath(requestId));
+      if (!resolve) throw new Error(`No pending rejection for ${requestId}`);
+      resolve(response);
+    };
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderProvider(
+      [ticket],
+      <>
+        <Counts ticketId={ticket.id} />
+        <PendingQuestionsPanel ticketId={ticket.id} />
+      </>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("pending:2 requests:2")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip all" }));
+    fireEvent.change(screen.getByLabelText(/skip reason/i), {
+      target: { value: "  Not my decision.  " },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Skip all 2 questions" }),
+    );
+
+    const rejectionCalls = () =>
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/reject"),
+      );
+    expect(
+      rejectionCalls().map(([input, init]) => ({
+        path: String(input),
+        body: JSON.parse(String(init?.body)),
+      })),
+    ).toEqual([
+      { path: rejectPath("question-1"), body: { reason: "Not my decision." } },
+      { path: rejectPath("question-2"), body: { reason: "Not my decision." } },
+    ]);
+    expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Skip all 2 questions" }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText(/skip reason/i)).toBeDisabled();
+
+    await act(() =>
+      resolveRejection("question-1", new Response("{}", { status: 200 })),
+    );
+    expect(screen.getByText("pending:1 requests:1")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Skip all 1 question" }),
+    ).toBeDisabled();
+
+    await act(() =>
+      resolveRejection(
+        "question-2",
+        new Response(JSON.stringify({ error: "OpenCode unavailable" }), {
+          status: 500,
+        }),
+      ),
+    );
+    expect(
+      await screen.findByText(
+        /Could not skip that question \(HTTP 500: OpenCode unavailable\)/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("pending:1 requests:1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Skip all 1 question" }),
+    ).toBeEnabled();
+    expect(screen.getByLabelText(/skip reason/i)).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Skip all 1 question" }),
+    );
+    expect(rejectionCalls()).toHaveLength(3);
+    expect(rejectionCalls()[2]).toEqual([
+      rejectPath("question-2"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ reason: "Not my decision." }),
+      }),
+    ]);
+    await act(() =>
+      resolveRejection("question-2", new Response("{}", { status: 200 })),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("pending:0 requests:0")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("region", { name: "AI questions" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("deduplicates rapid skips and replies per request and permits retry after failure", async () => {
+    const ticket = makeTicket({ status: "CODING" });
+    const questions = [
+      buildQuestion(ticket.id),
+      buildQuestion(ticket.id, { requestId: "question-2" }),
+    ];
+    const rejectPath = (requestId: string) =>
+      `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions/${requestId}/reject`;
+    let resolveRejection: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/question-1/reject")) {
+        return new Promise<Response>((resolve) => {
+          resolveRejection = resolve;
+        });
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ questions, timers: {} }), {
+          status: 200,
+        }),
+      );
+    });
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal("fetch", fetchMock);
+
+    function RapidSubmissions() {
+      const { skipRequest, answerRequest } = useAIQuestions();
+      return (
+        <button
+          onClick={() => {
+            skipRequest(ticket.id, "question-1", null);
+            skipRequest(ticket.id, "question-1", null);
+            answerRequest(ticket.id, "question-1", [["Small"]]);
+            skipRequest(ticket.id, "question-2", null);
+          }}
+        >
+          skip twice
+        </button>
+      );
+    }
+
+    renderProvider(
+      [ticket],
+      <>
+        <Counts ticketId={ticket.id} />
+        <RapidSubmissions />
+      </>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("pending:2 requests:2")).toBeInTheDocument(),
+    );
+    const mutationPaths = () =>
+      fetchMock.mock.calls
+        .map(([input]) => String(input))
+        .filter((url) => url.endsWith("/reject") || url.endsWith("/reply"));
+
+    fireEvent.click(screen.getByRole("button", { name: "skip twice" }));
+    expect(mutationPaths()).toEqual([
+      rejectPath("question-1"),
+      rejectPath("question-2"),
+    ]);
+
+    await act(() => {
+      if (!resolveRejection) throw new Error("No pending rejection");
+      resolveRejection(
+        new Response(JSON.stringify({ error: "OpenCode unavailable" }), {
+          status: 500,
+        }),
+      );
+    });
+    expect(screen.getByText("pending:1 requests:1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "skip twice" }));
+    expect(mutationPaths()).toEqual([
+      rejectPath("question-1"),
+      rejectPath("question-2"),
+      rejectPath("question-1"),
+    ]);
+    await act(() => {
+      if (!resolveRejection) throw new Error("No pending rejection");
+      resolveRejection(new Response("{}", { status: 200 }));
+    });
+    await waitFor(() =>
+      expect(screen.getByText("pending:0 requests:0")).toBeInTheDocument(),
+    );
+  });
+
+  it("does not let a slow per-ticket refresh undo a newer live update", async () => {
     // Round 1 ordered the poll against a newer refresh but not the reverse, and
     // not against SSE at all. A snapshot prunes, so an older one applying last
     // deletes a question that has just arrived.
-    const ticket = makeTicket({ status: 'CODING' })
-    let releaseRefresh!: (body: unknown) => void
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/opencode/questions')) {
-        // The per-ticket refresh: held open until the SSE event has landed.
-        return new Promise<Response>((resolve) => {
-          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
-        })
-      }
-      return new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 })
-    }))
+    const ticket = makeTicket({ status: "CODING" });
+    let releaseRefresh!: (body: unknown) => void;
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/opencode/questions")) {
+          // The per-ticket refresh: held open until the SSE event has landed.
+          return new Promise<Response>((resolve) => {
+            releaseRefresh = (body) =>
+              resolve(new Response(JSON.stringify(body), { status: 200 }));
+          });
+        }
+        return new Response(JSON.stringify({ questions: [], timers: {} }), {
+          status: 200,
+        });
+      }),
+    );
 
-    function Refresher({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-          <button onClick={() => ingestSseEvent(buildQuestion(ticketId))}>live</button>
-        </>
-      )
-    }
+    renderProvider(
+      [ticket],
+      <SnapshotRecovery
+        ticketId={ticket.id}
+        liveQuestion={buildQuestion(ticket.id)}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("requests:0")).toBeInTheDocument(),
+    );
 
-    renderProvider([ticket], <Refresher ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
-
-    fireEvent.click(screen.getByText('refresh'))
-    await waitFor(() => expect(releaseRefresh).toBeDefined())
+    fireEvent.click(screen.getByText("refresh"));
+    await waitFor(() => expect(releaseRefresh).toBeDefined());
 
     // The question arrives live while the refresh is still in flight.
-    fireEvent.click(screen.getByText('live'))
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+    fireEvent.click(screen.getByText("live"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
 
     // The refresh read the server before that, so its empty view is stale.
-    await act(async () => releaseRefresh({ questions: [], timer: null }))
+    await act(async () => releaseRefresh({ questions: [], timer: null }));
 
-    expect(screen.getByText('requests:1')).toBeInTheDocument()
-  })
+    expect(screen.getByText("requests:1")).toBeInTheDocument();
+  });
 
-  it('keeps a superseded snapshot\'s other questions instead of dropping it whole', async () => {
+  it("keeps a superseded snapshot's other questions instead of dropping it whole", async () => {
     // A live `opencode_question` carries one request, not the step's whole set.
     // Rejecting the in-flight snapshot outright — the first fix for the ordering
     // problem — therefore lost every *other* question that snapshot had learned
     // about until the next poll. What the event invalidates is the snapshot's
     // right to prune, not its contents.
-    const ticket = makeTicket({ status: 'CODING' })
-    let releaseRefresh!: (body: unknown) => void
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).endsWith('/opencode/questions')) {
-        return new Promise<Response>((resolve) => {
-          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
-        })
-      }
-      return new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 })
-    }))
+    const ticket = makeTicket({ status: "CODING" });
+    let releaseRefresh!: (body: unknown) => void;
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/opencode/questions")) {
+          return new Promise<Response>((resolve) => {
+            releaseRefresh = (body) =>
+              resolve(new Response(JSON.stringify(body), { status: 200 }));
+          });
+        }
+        return new Response(JSON.stringify({ questions: [], timers: {} }), {
+          status: 200,
+        });
+      }),
+    );
 
-    function Refresher({ ticketId }: { ticketId: string }) {
-      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
-      return (
-        <>
-          <div>requests:{getRequestCount(ticketId)}</div>
-          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
-          <button onClick={() => ingestSseEvent(buildQuestion(ticketId, {
-            sessionId: 'session-live', requestId: 'question-live',
-          }))}>live</button>
-        </>
-      )
-    }
+    renderProvider(
+      [ticket],
+      <SnapshotRecovery
+        ticketId={ticket.id}
+        liveQuestion={buildQuestion(ticket.id, {
+          sessionId: "session-live",
+          requestId: "question-live",
+        })}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("requests:0")).toBeInTheDocument(),
+    );
 
-    renderProvider([ticket], <Refresher ticketId={ticket.id} />)
-    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+    fireEvent.click(screen.getByText("refresh"));
+    await waitFor(() => expect(releaseRefresh).toBeDefined());
 
-    fireEvent.click(screen.getByText('refresh'))
-    await waitFor(() => expect(releaseRefresh).toBeDefined())
-
-    fireEvent.click(screen.getByText('live'))
-    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+    fireEvent.click(screen.getByText("live"));
+    await waitFor(() =>
+      expect(screen.getByText("requests:1")).toBeInTheDocument(),
+    );
 
     // The snapshot knows about a different question the live event never
     // mentioned. Its upserts still count; only its prune is refused.
-    await act(async () => releaseRefresh({
-      questions: [buildQuestion(ticket.id, { sessionId: 'session-snap', requestId: 'question-snap' })],
-      timer: null,
-    }))
+    await act(async () =>
+      releaseRefresh({
+        questions: [
+          buildQuestion(ticket.id, {
+            sessionId: "session-snap",
+            requestId: "question-snap",
+          }),
+        ],
+        timer: null,
+      }),
+    );
 
-    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
-  })
-})
+    await waitFor(() =>
+      expect(screen.getByText("requests:2")).toBeInTheDocument(),
+    );
+  });
+});

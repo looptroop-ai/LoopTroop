@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import {
   OpenCodePromptReceiptUnavailableError,
   type OpenCodePromptRequest,
@@ -114,9 +114,16 @@ function publicEventsAround(raw: unknown): unknown[] {
   ];
 }
 
-function hangingEventStream(signal?: AbortSignal | null): Response {
+function hangingEventStream(
+  signal?: AbortSignal | null,
+  initialEvents: unknown[] = [],
+): Response {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      for (const event of initialEvents)
+        controller.enqueue(
+          new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),
+        );
       signal?.addEventListener("abort", () => controller.error(signal.reason), {
         once: true,
       });
@@ -125,6 +132,88 @@ function hangingEventStream(signal?: AbortSignal | null): Response {
   return new Response(stream, {
     headers: { "content-type": "text/event-stream; charset=utf-8" },
   });
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function recoveringSubscription(
+  recoveries: number,
+  failedOperation: "none" | "permission" | "log",
+) {
+  const caller = new AbortController();
+  const signals: AbortSignal[] = [];
+  const connectionCount = 1 + recoveries * (failedOperation === "none" ? 1 : 2);
+  let initialLog = true;
+  let retryingReplay = false;
+  const { transport } = createTransport((request, init) => {
+    if (request.url.pathname === "/api/event") {
+      assert(init.signal);
+      signals.push(init.signal);
+      const connected = [{ type: "server.connected" }];
+      return signals.length === connectionCount
+        ? hangingEventStream(init.signal, connected)
+        : eventStream(connected);
+    }
+    if (request.url.pathname.endsWith("/permission")) {
+      if (failedOperation === "permission" && !retryingReplay) {
+        retryingReplay = true;
+        throw new Error("permissions temporarily unavailable");
+      }
+      return jsonResponse({ data: [] });
+    }
+    if (request.url.pathname.endsWith("/log")) {
+      if (initialLog) {
+        initialLog = false;
+        return initialSessionLog(0);
+      }
+      if (failedOperation === "log" && !retryingReplay) {
+        retryingReplay = true;
+        throw new Error("replay temporarily unavailable");
+      }
+      retryingReplay = false;
+      const cursor = Number(request.url.searchParams.get("after")) + 1;
+      return eventStream([
+        {
+          type: "session.renamed",
+          data: { sessionID: "session-1", title: `Title ${cursor}` },
+          durable: { aggregateID: "session-1", seq: cursor },
+        },
+        { type: "log.synced", aggregateID: "session-1", seq: cursor },
+      ]);
+    }
+    throw new Error(`Unexpected ${request.method} ${request.url}`);
+  });
+  const followEvents = vi.spyOn(
+    transport as unknown as {
+      followEvents(...args: unknown[]): AsyncGenerator<unknown>;
+    },
+    "followEvents",
+  );
+  const subscription = await transport.subscribeToEvents(
+    "session-1",
+    "/workspace",
+    caller.signal,
+  );
+  const ownedConnections = followEvents.mock.calls[0]?.[6];
+  assert(ownedConnections instanceof Set);
+  const events = subscription.events;
+  const createIterator = events[Symbol.asyncIterator];
+  return {
+    caller,
+    signals,
+    subscription,
+    iterator: createIterator.call(events),
+    ownedConnections: ownedConnections as Set<{
+      iterator: AsyncIterator<unknown>;
+    }>,
+    followEvents,
+  };
 }
 
 function promptRequest(
@@ -1063,6 +1152,80 @@ describe("OpenCode v2 fetch transport", () => {
     }
     await iterator.return?.();
     expect(connections).toBe(5);
+  });
+
+  it.each(["none", "permission", "log"] as const)(
+    "bounds retained connection ownership across advancing replay (failed operation: %s)",
+    async (failedOperation) => {
+      const fixture = await recoveringSubscription(5, failedOperation);
+      const reason = new Error("caller cancelled the recovered stream");
+      try {
+        for (let cursor = 1; cursor <= 5; cursor++) {
+          expect((await fixture.iterator.next()).value).toEqual({ cursor });
+          expect(fixture.ownedConnections.size).toBe(1);
+          expect(
+            fixture.signals.slice(0, -1).every((signal) => signal.aborted),
+          ).toBe(true);
+          expect(fixture.signals.at(-1)?.aborted).toBe(false);
+        }
+        expect(fixture.signals).toHaveLength(
+          failedOperation === "none" ? 6 : 11,
+        );
+        const pending = fixture.iterator.next();
+        const cancelled = expect(pending).rejects.toBe(reason);
+        fixture.caller.abort(reason);
+        await cancelled;
+        expect(fixture.signals.at(-1)?.aborted).toBe(true);
+        expect(fixture.ownedConnections.size).toBe(0);
+      } finally {
+        fixture.caller.abort(reason);
+        await fixture.subscription.close?.();
+        fixture.followEvents.mockRestore();
+      }
+    },
+  );
+
+  it("retains an in-flight connection until cancellation and concurrent close finish cleanup", async () => {
+    const fixture = await recoveringSubscription(0, "none");
+    const connection = [...fixture.ownedConnections][0];
+    assert(connection);
+    const originalReturn = connection.iterator.return;
+    assert(originalReturn);
+    const cleanupStarted = deferred();
+    const finishCleanup = deferred();
+    const returnSpy = vi
+      .spyOn(connection.iterator, "return")
+      .mockImplementation(async (value) => {
+        cleanupStarted.resolve();
+        await finishCleanup.promise;
+        return originalReturn.call(connection.iterator, value);
+      });
+    const reason = new Error("caller cancelled during cleanup");
+    const pending = fixture.iterator.next();
+    const cancelled = expect(pending).rejects.toBe(reason);
+    fixture.caller.abort(reason);
+    try {
+      await cleanupStarted.promise;
+      expect(fixture.ownedConnections.has(connection)).toBe(true);
+      let concurrentCloseFinished = false;
+      const concurrentClose = fixture.subscription.close?.().then(() => {
+        concurrentCloseFinished = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(concurrentCloseFinished).toBe(false);
+      expect(fixture.ownedConnections.has(connection)).toBe(true);
+      expect(returnSpy).toHaveBeenCalledTimes(1);
+      finishCleanup.resolve();
+      await Promise.all([cancelled, concurrentClose]);
+      expect(fixture.ownedConnections.size).toBe(0);
+      expect(fixture.signals[0]?.aborted).toBe(true);
+    } finally {
+      finishCleanup.resolve();
+      await fixture.subscription.close?.();
+      await cancelled;
+      returnSpy.mockRestore();
+      fixture.followEvents.mockRestore();
+    }
   });
 
   it("keeps mapping state intact when an incomplete replay must be retried", async () => {

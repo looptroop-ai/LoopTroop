@@ -229,7 +229,12 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           ),
         );
       }
-      await Promise.all([...ownedConnections].map((owned) => owned.close()));
+      await Promise.all(
+        [...ownedConnections].map(async (owned) => {
+          await owned.close();
+          ownedConnections.delete(owned);
+        }),
+      );
     };
     let backlog: OpenCodeTransportEventEnvelope[] = [];
     let mappingState = createV2EventMappingState();
@@ -824,7 +829,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     const events = parseSse(response.body);
     const createIterator = events[Symbol.asyncIterator];
     const iterator = createIterator.call(events);
-    let closed = false;
+    let closePromise: Promise<void> | undefined;
     return {
       iterator,
       next: async (timeoutMs, timeoutMessage) => {
@@ -848,19 +853,20 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           clearTimeout(timer);
         }
       },
-      close: async () => {
-        if (closed) return;
-        closed = true;
-        if (!controller.signal.aborted)
-          controller.abort(
-            new DOMException("OpenCode v2 event stream closed", "AbortError"),
-          );
-        signal?.removeEventListener("abort", abortFromCaller);
-        try {
-          await iterator.return?.(undefined);
-        } catch {
-          // Closing a fetch stream can reject its pending reader after abort.
-        }
+      close: () => {
+        closePromise ??= Promise.resolve().then(async () => {
+          if (!controller.signal.aborted)
+            controller.abort(
+              new DOMException("OpenCode v2 event stream closed", "AbortError"),
+            );
+          signal?.removeEventListener("abort", abortFromCaller);
+          try {
+            await iterator.return?.(undefined);
+          } catch {
+            // Closing a fetch stream can reject its pending reader after abort.
+          }
+        });
+        return closePromise;
       },
     };
   }
@@ -1114,6 +1120,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
                 }
               }
               await connection.close();
+              ownedConnections.delete(connection);
               connection = reconnected;
               state = replayState;
               coverageGap = replayGap;
@@ -1132,6 +1139,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               break;
             } catch (retryError) {
               await reconnected?.close();
+              if (reconnected) ownedConnections.delete(reconnected);
               if (signal?.aborted) throw signal.reason;
               reconnectError = retryError;
               if (reconnects < EVENT_RECONNECT_ATTEMPTS) {

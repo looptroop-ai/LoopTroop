@@ -57,6 +57,7 @@ Thumbs.db
 
 
 # Agent/tool local state
+.opencode/
 .agent/
 .agents/
 .antigravitycli/

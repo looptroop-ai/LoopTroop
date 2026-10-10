@@ -1,4 +1,12 @@
-import type { HealthStatus, Message, OpenCodeQuestionAnswer, OpenCodeQuestionRequest, OpenCodeSessionCreateOptions, Session } from './types'
+import { setTimeout as delay } from "node:timers/promises";
+import type {
+  HealthStatus,
+  Message,
+  OpenCodeQuestionAnswer,
+  OpenCodeQuestionRequest,
+  OpenCodeSessionCreateOptions,
+  Session,
+} from "./types";
 import type {
   OpenCodeEventSubscription,
   OpenCodePromptRequest,
@@ -7,8 +15,11 @@ import type {
   OpenCodeTransport,
   OpenCodeTransportEventEnvelope,
   PromptDispatch,
-} from './transport'
-import { OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS, OpenCodePromptReceiptUnavailableError } from './transport'
+} from "./transport";
+import {
+  OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS,
+  OpenCodePromptReceiptUnavailableError,
+} from "./transport";
 import {
   createV2EventMappingState,
   isV2QuestionForm,
@@ -19,70 +30,86 @@ import {
   mapV2Question,
   mapV2QuestionAnswer,
   mapV2Session,
-} from './v2Mapping'
-import { MESSAGE_LIST_LIMIT, SDK_OPERATION_TIMEOUT_MS, SESSION_LIST_LIMIT } from '../lib/constants'
+  V2_DURABLE_EVENT_TYPES,
+} from "./v2Mapping";
+import {
+  MESSAGE_LIST_LIMIT,
+  SDK_OPERATION_TIMEOUT_MS,
+  SESSION_LIST_LIMIT,
+} from "../lib/constants";
 
-type RecordValue = Record<string, unknown>
+type RecordValue = Record<string, unknown>;
 type FetchOptions = {
-  headers?: Record<string, string>
-  fetch?: typeof globalThis.fetch
-}
+  headers?: Record<string, string>;
+  fetch?: typeof globalThis.fetch;
+};
 
-const API_OPERATION_TIMEOUT_MS = SDK_OPERATION_TIMEOUT_MS
-const SESSION_CREATE_TIMEOUT_MS = 180_000
-const EVENT_CONNECT_TIMEOUT_MS = 5_000
-const EVENT_RECONNECT_ATTEMPTS = 3
-const IDLE_WAIT_TIMEOUT_MS = 60_000
-const LIST_PAGE_SIZE = 100
-const MESSAGE_PAGE_SIZE = 100
+const API_OPERATION_TIMEOUT_MS = SDK_OPERATION_TIMEOUT_MS;
+const SESSION_CREATE_TIMEOUT_MS = 180_000;
+const EVENT_CONNECT_TIMEOUT_MS = 5_000;
+const EVENT_RECONNECT_ATTEMPTS = 3;
+const IDLE_WAIT_TIMEOUT_MS = 60_000;
+const LIST_PAGE_SIZE = 100;
+const MESSAGE_PAGE_SIZE = 100;
 
 export class V2OpenCodeHttpError extends Error {
   constructor(
     readonly status: number,
     readonly body: unknown,
   ) {
-    super(errorMessage(status, body))
-    this.name = 'V2OpenCodeHttpError'
+    super(errorMessage(status, body));
+    this.name = "V2OpenCodeHttpError";
   }
 }
 
 interface SseConnection {
-  iterator: AsyncIterator<unknown>
-  next(timeoutMs?: number, timeoutMessage?: string): Promise<IteratorResult<unknown>>
-  close(): Promise<void>
+  iterator: AsyncIterator<unknown>;
+  next(
+    timeoutMs?: number,
+    timeoutMessage?: string,
+  ): Promise<IteratorResult<unknown>>;
+  close(): Promise<void>;
 }
 
 interface SessionLogScan {
-  cursor: number
-  coverageComplete: boolean
-  hasWatermark: boolean
-  hasUnmappedEvents: boolean
+  cursor: number;
+  coverageComplete: boolean;
+  hasWatermark: boolean;
+  hasUnmappedEvents: boolean;
 }
 
 export class V2OpenCodeTransport implements OpenCodeTransport {
-  readonly protocol = 'v2' as const
-  private readonly baseUrl: URL
-  private readonly headers: Headers
-  private readonly fetcher: typeof globalThis.fetch
+  readonly protocol = "v2" as const;
+  private readonly baseUrl: URL;
+  private readonly headers: Headers;
+  private readonly fetcher: typeof globalThis.fetch;
 
   constructor(baseUrl: string, options: FetchOptions = {}) {
-    this.baseUrl = new URL(baseUrl)
-    if (!this.baseUrl.pathname.endsWith('/')) this.baseUrl.pathname += '/'
-    this.headers = new Headers(options.headers)
-    this.fetcher = options.fetch ?? globalThis.fetch
+    this.baseUrl = new URL(baseUrl);
+    if (!this.baseUrl.pathname.endsWith("/")) this.baseUrl.pathname += "/";
+    this.headers = new Headers(options.headers);
+    this.fetcher = options.fetch ?? globalThis.fetch;
   }
 
-  async createSession(projectPath: string, options?: OpenCodeSessionCreateOptions, signal?: AbortSignal): Promise<Session> {
-    const body = await this.request('/api/session', {
-      method: 'POST',
+  async createSession(
+    projectPath: string,
+    options?: OpenCodeSessionCreateOptions,
+    signal?: AbortSignal,
+  ): Promise<Session> {
+    const body = await this.request("/api/session", {
+      method: "POST",
       signal,
       timeoutMs: SESSION_CREATE_TIMEOUT_MS,
       body: {
         location: { directory: projectPath },
-        ...(options?.permission ? { permissions: mapV2PermissionRules(options.permission) } : {}),
+        // Avoid asynchronous auto-title usage leaving a private sequence after the turn ends.
+        title: "LoopTroop",
+        ...(options?.permission
+          ? { permissions: mapV2PermissionRules(options.permission) }
+          : {}),
       },
-    })
-    return mapV2Session(dataOf(body))
+    });
+    return mapV2Session(dataOf(body));
   }
 
   async updateSession(
@@ -91,72 +118,93 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     options: OpenCodeSessionUpdateOptions,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (options.permission === undefined) return
+    if (options.permission === undefined) return;
     await this.request(`/api/session/${encodeURIComponent(sessionId)}`, {
-      method: 'PATCH',
+      method: "PATCH",
       signal,
       expectedStatus: 204,
       body: { permissions: mapV2PermissionRules(options.permission) },
-    })
+    });
   }
 
-  async getSession(sessionId: string, signal?: AbortSignal): Promise<Session | null> {
+  async getSession(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<Session | null> {
     try {
-      const body = await this.request(`/api/session/${encodeURIComponent(sessionId)}`, { signal })
-      return mapV2Session(dataOf(body))
+      const body = await this.request(
+        `/api/session/${encodeURIComponent(sessionId)}`,
+        { signal },
+      );
+      return mapV2Session(dataOf(body));
     } catch (error) {
-      if (isSessionNotFound(error)) return null
-      throw error
+      if (isSessionNotFound(error)) return null;
+      throw error;
     }
   }
 
   async listSessions(signal?: AbortSignal): Promise<Session[]> {
-    const sessions: Session[] = []
-    const seenCursors = new Set<string>()
-    let cursor: string | undefined
+    const sessions: Session[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
 
     while (sessions.length < SESSION_LIST_LIMIT) {
       const query = new URLSearchParams({
-        limit: String(Math.min(LIST_PAGE_SIZE, SESSION_LIST_LIMIT - sessions.length)),
-        ...(!cursor ? { order: 'desc' } : {}),
-      })
-      if (cursor) query.set('cursor', cursor)
-      const page = asRecord(await this.request(`/api/session?${query}`, { signal }))
+        limit: String(
+          Math.min(LIST_PAGE_SIZE, SESSION_LIST_LIMIT - sessions.length),
+        ),
+        ...(!cursor ? { order: "desc" } : {}),
+      });
+      if (cursor) query.set("cursor", cursor);
+      const page = asRecord(
+        await this.request(`/api/session?${query}`, { signal }),
+      );
       for (const session of arrayValue(page?.data)) {
-        if (sessions.length >= SESSION_LIST_LIMIT) break
-        sessions.push(mapV2Session(session))
+        if (sessions.length >= SESSION_LIST_LIMIT) break;
+        sessions.push(mapV2Session(session));
       }
-      const next = stringValue(asRecord(page?.cursor)?.next)
-      if (!next || seenCursors.has(next)) break
-      seenCursors.add(next)
-      cursor = next
+      const next = stringValue(asRecord(page?.cursor)?.next);
+      if (!next || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
     }
-    return sessions
+    return sessions;
   }
 
-  async getSessionMessages(sessionId: string, _directory?: string, signal?: AbortSignal): Promise<Message[]> {
-    const messages: Message[] = []
-    const seenCursors = new Set<string>()
-    let cursor: string | undefined
+  async getSessionMessages(
+    sessionId: string,
+    _directory?: string,
+    signal?: AbortSignal,
+  ): Promise<Message[]> {
+    const messages: Message[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
 
     while (messages.length < MESSAGE_LIST_LIMIT) {
       const query = new URLSearchParams({
-        limit: String(Math.min(MESSAGE_PAGE_SIZE, MESSAGE_LIST_LIMIT - messages.length)),
-        ...(!cursor ? { order: 'desc' } : {}),
-      })
-      if (cursor) query.set('cursor', cursor)
-      const page = asRecord(await this.request(`/api/session/${encodeURIComponent(sessionId)}/message?${query}`, { signal }))
+        limit: String(
+          Math.min(MESSAGE_PAGE_SIZE, MESSAGE_LIST_LIMIT - messages.length),
+        ),
+        ...(!cursor ? { order: "desc" } : {}),
+      });
+      if (cursor) query.set("cursor", cursor);
+      const page = asRecord(
+        await this.request(
+          `/api/session/${encodeURIComponent(sessionId)}/message?${query}`,
+          { signal },
+        ),
+      );
       for (const item of arrayValue(page?.data)) {
-        if (messages.length >= MESSAGE_LIST_LIMIT) break
-        const message = mapV2Message(item, sessionId)
-        if (message) messages.push(message)
+        if (messages.length >= MESSAGE_LIST_LIMIT) break;
+        const message = mapV2Message(item, sessionId);
+        if (message) messages.push(message);
       }
-      const next = stringValue(asRecord(page?.cursor)?.next)
-      if (!next || seenCursors.has(next)) break
-      seenCursors.add(next)
-      cursor = next
+      const next = stringValue(asRecord(page?.cursor)?.next);
+      if (!next || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
     }
-    return messages.reverse()
+    return messages.reverse();
   }
 
   async subscribeToEvents(
@@ -166,222 +214,336 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     _stepFinishSafetyMs?: number,
     afterCursor?: number,
   ): Promise<OpenCodeEventSubscription> {
-    const cleanupController = new AbortController()
+    const cleanupController = new AbortController();
     const streamSignal = signal
       ? AbortSignal.any([signal, cleanupController.signal])
-      : cleanupController.signal
-    const connection = await this.openEventStream(streamSignal)
-    const ownedConnections = new Set<SseConnection>([connection])
+      : cleanupController.signal;
+    const connection = await this.openEventStream(streamSignal);
+    const ownedConnections = new Set<SseConnection>([connection]);
     const closeConnections = async () => {
       if (!cleanupController.signal.aborted) {
-        cleanupController.abort(new DOMException('OpenCode v2 event subscription closed', 'AbortError'))
+        cleanupController.abort(
+          new DOMException(
+            "OpenCode v2 event subscription closed",
+            "AbortError",
+          ),
+        );
       }
-      await Promise.all([...ownedConnections].map(owned => owned.close()))
-    }
-    let backlog: OpenCodeTransportEventEnvelope[] = []
-    let mappingState = createV2EventMappingState()
-    let scan: SessionLogScan
+      await Promise.all(
+        [...ownedConnections].map(async (owned) => {
+          await owned.close();
+          ownedConnections.delete(owned);
+        }),
+      );
+    };
+    let backlog: OpenCodeTransportEventEnvelope[] = [];
+    let mappingState = createV2EventMappingState();
+    let scan: SessionLogScan;
     try {
       scan = await this.scanSessionLog(
         sessionId,
         afterCursor,
         streamSignal,
-        afterCursor === undefined ? undefined : event => backlog.push(event),
+        afterCursor === undefined ? undefined : (event) => backlog.push(event),
         mappingState,
-      )
+      );
     } catch (error) {
-      await closeConnections()
-      throw error
+      await closeConnections();
+      throw error;
     }
-    const cursor = scan.cursor
-    let coverageComplete = scan.coverageComplete && scan.hasWatermark && !scan.hasUnmappedEvents
-    if (afterCursor !== undefined && !coverageComplete && !scan.hasUnmappedEvents && scan.hasWatermark) {
-      // With persist=false the log supplies a watermark but no payloads. The
-      // event stream was opened first, so it can certify that range only when
-      // every session sequence from the requested cursor through that
-      // watermark is observed live before the subscription is returned.
-      const liveEvents: OpenCodeTransportEventEnvelope[] = []
-      const liveState = createV2EventMappingState()
-      let liveCursor = afterCursor
-      let streamGap = false
-      const deadline = Date.now() + OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS
+    let cursor = scan.cursor;
+    let coverageComplete =
+      scan.coverageComplete && scan.hasWatermark && !scan.hasUnmappedEvents;
+    if (
+      afterCursor !== undefined &&
+      !coverageComplete &&
+      !scan.hasUnmappedEvents &&
+      scan.hasWatermark
+    ) {
+      // With persist=false the log supplies a watermark but no payloads.
+      // The public stream omits internal durable events such as title usage.
+      // A contiguous first event anchors the connection; later gaps can be
+      // private events. Replay must account for every sequence after a disconnect.
+      const liveEvents: OpenCodeTransportEventEnvelope[] = [];
+      const liveState = createV2EventMappingState();
+      let liveCursor = afterCursor;
+      const liveSequences = new Set<number>();
+      let streamGap = false;
+      const deadline = Date.now() + OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS;
       try {
         while (liveCursor < cursor) {
-          const remaining = deadline - Date.now()
-          if (remaining <= 0) throw new DOMException('OpenCode v2 live event coverage did not reach log.synced', 'TimeoutError')
-          const result = await connection.next(remaining, 'OpenCode v2 live event coverage did not reach log.synced')
-          if (result.done) throw new Error('OpenCode v2 event stream ended before live coverage reached log.synced')
-          const raw = asRecord(result.value)
-          if (!raw || raw.type === 'server.connected') continue
+          const remaining = deadline - Date.now();
+          if (remaining <= 0)
+            throw new DOMException(
+              "OpenCode v2 live event coverage did not reach log.synced",
+              "TimeoutError",
+            );
+          const result = await connection.next(
+            remaining,
+            "OpenCode v2 live event coverage did not reach log.synced",
+          );
+          if (result.done)
+            throw new Error(
+              "OpenCode v2 event stream ended before live coverage reached log.synced",
+            );
+          const raw = asRecord(result.value);
+          if (!raw || typeof raw.type !== "string")
+            throw new Error(
+              "OpenCode v2 event stream returned an invalid event",
+            );
+          if (raw.type === "server.connected") continue;
 
-          const durable = asRecord(raw.durable)
-          const aggregateID = stringValue(durable?.aggregateID)
-          const sequence = numberValue(durable?.seq)
-          const data = asRecord(raw.data)
-          const rawSessionID = stringValue(data?.sessionID)
-            ?? stringValue(asRecord(data?.form)?.sessionID)
-          if (aggregateID === sessionId && sequence !== undefined && Number.isSafeInteger(sequence)) {
-            if (sequence <= liveCursor) continue
-            if (sequence !== liveCursor + 1) {
-              streamGap = true
-              break
+          const durable = asRecord(raw.durable);
+          const aggregateID = stringValue(durable?.aggregateID);
+          const sequence = numberValue(durable?.seq);
+          const data = asRecord(raw.data);
+          const formSessionID = stringValue(asRecord(data?.form)?.sessionID);
+          const rawSessionID = stringValue(data?.sessionID) ?? formSessionID;
+          if (
+            rawSessionID !== sessionId &&
+            formSessionID !== sessionId &&
+            aggregateID !== sessionId &&
+            (rawSessionID || formSessionID || aggregateID)
+          )
+            continue;
+          if (
+            (formSessionID !== undefined && rawSessionID !== formSessionID) ||
+            ((raw.durable !== undefined ||
+              V2_DURABLE_EVENT_TYPES.has(raw.type)) &&
+              (!aggregateID ||
+                sequence === undefined ||
+                !Number.isSafeInteger(sequence) ||
+                sequence < 0 ||
+                (rawSessionID !== undefined && rawSessionID !== aggregateID)))
+          ) {
+            streamGap = true;
+            break;
+          }
+          if (
+            aggregateID === sessionId &&
+            sequence !== undefined &&
+            Number.isSafeInteger(sequence)
+          ) {
+            if (sequence <= afterCursor || liveSequences.has(sequence))
+              continue;
+            if (
+              sequence <= liveCursor ||
+              (liveSequences.size === 0 && sequence !== afterCursor + 1)
+            ) {
+              streamGap = true;
+              break;
             }
-            const mapped = mapV2Event(raw, sessionId, liveState)
+            const mapped = mapV2Event(raw, sessionId, liveState);
             if (!mapped) {
-              streamGap = true
-              break
+              streamGap = true;
+              break;
             }
-            liveEvents.push(mapped)
-            liveCursor = sequence
+            liveEvents.push(
+              sequence === liveCursor + 1
+                ? mapped
+                : { ...mapped, observedAfter: liveCursor },
+            );
+            liveSequences.add(sequence);
+            liveCursor = sequence;
           } else if (rawSessionID === sessionId) {
-            const mapped = mapV2Event(raw, sessionId, liveState)
-            if (mapped) liveEvents.push(mapped)
+            const mapped = mapV2Event(raw, sessionId, liveState);
+            if (mapped) liveEvents.push(mapped);
           }
         }
-        coverageComplete = !streamGap && liveCursor === cursor
+        coverageComplete = !streamGap && liveCursor >= cursor;
       } catch {
         if (signal?.aborted) {
-          await closeConnections()
-          throw signal.reason
+          await closeConnections();
+          throw signal.reason;
         }
-        coverageComplete = false
+        coverageComplete = false;
       }
       if (coverageComplete) {
         // The ordered live range supersedes any partial persisted replay. It
         // is the only evidence used for this range, avoiding duplicate stateful
         // mapping of text/tool frames.
-        backlog = liveEvents
-        mappingState = liveState
+        backlog = liveEvents;
+        mappingState = liveState;
+        // OpenCode commits durable events before publishing them, including any overshoot.
+        cursor = liveCursor;
       } else if (streamGap) {
-        backlog = [...liveEvents, { cursor: liveCursor + 1, coverageGap: true }]
+        backlog = [...liveEvents, { coverageGap: true }];
       }
     }
     const generator = this.followEvents(
       connection,
       sessionId,
       cursor,
+      afterCursor ?? cursor,
       backlog,
       streamSignal,
       ownedConnections,
       closeConnections,
       mappingState,
-      afterCursor === undefined ? !scan.hasWatermark : !coverageComplete || !scan.hasWatermark,
-    )
+      afterCursor === undefined
+        ? !scan.hasWatermark
+        : !coverageComplete || !scan.hasWatermark,
+    );
     return {
       ...(scan.hasWatermark ? { cursor } : {}),
       initialEvents: backlog,
-      coverageComplete: afterCursor === undefined ? scan.hasWatermark : coverageComplete,
+      coverageComplete:
+        afterCursor === undefined ? scan.hasWatermark : coverageComplete,
       events: closeOnIteratorReturn(generator, closeConnections),
       close: closeConnections,
-    }
+    };
   }
 
-  async waitForIdle(sessionId: string, _directory?: string, signal?: AbortSignal): Promise<void> {
-    await this.request(`/api/experimental/session/${encodeURIComponent(sessionId)}/wait`, {
-      method: 'POST',
-      signal,
-      timeoutMs: signal ? null : IDLE_WAIT_TIMEOUT_MS,
-      expectedStatus: 204,
-    })
+  async waitForIdle(
+    sessionId: string,
+    _directory?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.request(
+      `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`,
+      {
+        method: "POST",
+        signal,
+        timeoutMs: signal ? null : IDLE_WAIT_TIMEOUT_MS,
+        expectedStatus: 204,
+      },
+    );
   }
 
-  async readSessionLog(sessionId: string, after?: number, signal?: AbortSignal): Promise<OpenCodeSessionLog> {
-    const events: OpenCodeTransportEventEnvelope[] = []
+  async readSessionLog(
+    sessionId: string,
+    after?: number,
+    signal?: AbortSignal,
+  ): Promise<OpenCodeSessionLog> {
+    const events: OpenCodeTransportEventEnvelope[] = [];
     const scan = await this.scanSessionLog(
       sessionId,
       after,
       signal,
-      event => events.push(event),
+      (event) => events.push(event),
       createV2EventMappingState(),
-    )
+    );
     return {
       events,
-      ...(scan.hasWatermark ? { cursor: scan.cursor } : after !== undefined ? { cursor: after } : {}),
+      ...(scan.hasWatermark ? { cursor: scan.cursor } : {}),
       coverageComplete: scan.coverageComplete && scan.hasWatermark,
       ...(scan.hasUnmappedEvents ? { hasUnmappedEvents: true } : {}),
-    }
+    };
   }
 
-  async listPendingInboxes(sessionId: string, _directory?: string, signal?: AbortSignal): Promise<readonly string[]> {
-    const response = dataOf(await this.request(`/api/session/${encodeURIComponent(sessionId)}/inbox`, { signal }))
-    if (!Array.isArray(response)) throw new Error('OpenCode v2 returned an invalid pending inbox list')
-    return response.map(item => {
-      const inboxID = stringValue(asRecord(item)?.id)
-      if (!inboxID) throw new Error('OpenCode v2 returned a pending inbox without an id')
-      return inboxID
-    })
+  async listPendingInboxes(
+    sessionId: string,
+    _directory?: string,
+    signal?: AbortSignal,
+  ): Promise<readonly string[]> {
+    const response = dataOf(
+      await this.request(
+        `/api/session/${encodeURIComponent(sessionId)}/inbox`,
+        { signal },
+      ),
+    );
+    if (!Array.isArray(response))
+      throw new Error("OpenCode v2 returned an invalid pending inbox list");
+    return response.map((item) => {
+      const inboxID = stringValue(asRecord(item)?.id);
+      if (!inboxID)
+        throw new Error("OpenCode v2 returned a pending inbox without an id");
+      return inboxID;
+    });
   }
 
-  async dispatchPrompt(request: OpenCodePromptRequest, signal?: AbortSignal): Promise<PromptDispatch> {
+  async dispatchPrompt(
+    request: OpenCodePromptRequest,
+    signal?: AbortSignal,
+  ): Promise<PromptDispatch> {
     if (request.tools && Object.keys(request.tools).length > 0) {
-      throw new Error('OpenCode v2 does not support per-prompt tool overrides')
+      throw new Error("OpenCode v2 does not support per-prompt tool overrides");
     }
 
-    const prompt = mapV2PromptParts(request.parts, request.system)
+    const prompt = mapV2PromptParts(request.parts, request.system);
     if (request.variant && !request.model) {
-      throw new Error('OpenCode v2 requires a model selection when setting a model variant')
+      throw new Error(
+        "OpenCode v2 requires a model selection when setting a model variant",
+      );
     }
     if (request.model) {
-      await this.request(`/api/session/${encodeURIComponent(request.sessionId)}/model`, {
-        method: 'POST',
-        signal,
-        expectedStatus: 204,
-        body: {
-          model: {
-            id: request.model.modelID,
-            providerID: request.model.providerID,
-            ...(request.variant ? { variant: request.variant } : {}),
+      await this.request(
+        `/api/session/${encodeURIComponent(request.sessionId)}/model`,
+        {
+          method: "POST",
+          signal,
+          expectedStatus: 204,
+          body: {
+            model: {
+              id: request.model.modelID,
+              providerID: request.model.providerID,
+              ...(request.variant ? { variant: request.variant } : {}),
+            },
           },
         },
-      })
+      );
     }
     if (request.agent) {
-      await this.request(`/api/session/${encodeURIComponent(request.sessionId)}/agent`, {
-        method: 'POST',
-        signal,
-        expectedStatus: 204,
-        body: { agent: request.agent },
-      })
+      await this.request(
+        `/api/session/${encodeURIComponent(request.sessionId)}/agent`,
+        {
+          method: "POST",
+          signal,
+          expectedStatus: 204,
+          body: { agent: request.agent },
+        },
+      );
     }
 
-    const instructionsPath = `/api/experimental/session/${encodeURIComponent(request.sessionId)}/instructions/entries/looptroop`
+    const instructionsPath = `/api/experimental/session/${encodeURIComponent(request.sessionId)}/instructions/entries/looptroop`;
     if (prompt.instructions) {
       await this.request(instructionsPath, {
-        method: 'PUT',
+        method: "PUT",
         signal,
         expectedStatus: 204,
         body: { value: prompt.instructions },
-      })
+      });
     } else {
       await this.request(instructionsPath, {
-        method: 'DELETE',
+        method: "DELETE",
         signal,
         expectedStatus: 204,
-      })
+      });
     }
 
-    let body: unknown
+    let body: unknown;
     try {
-      body = await this.request(`/api/session/${encodeURIComponent(request.sessionId)}/prompt`, {
-        method: 'POST',
-        signal,
-        body: {
-          text: prompt.text,
-          ...(prompt.files.length > 0 ? { files: prompt.files } : {}),
-          resume: request.noReply !== true,
+      body = await this.request(
+        `/api/session/${encodeURIComponent(request.sessionId)}/prompt`,
+        {
+          method: "POST",
+          signal,
+          body: {
+            text: prompt.text,
+            ...(prompt.files.length > 0 ? { files: prompt.files } : {}),
+            resume: request.noReply !== true,
+          },
         },
-      })
+      );
     } catch (error) {
       // Explicit client rejections prove the prompt was not accepted and must
       // retain their status for the existing provider retry/billing rules.
       // A server error or a lost/aborted response can occur after enqueue.
-      if (error instanceof V2OpenCodeHttpError && error.status >= 400 && error.status < 500) throw error
-      throw new OpenCodePromptReceiptUnavailableError(request.sessionId, { cause: error })
+      if (
+        error instanceof V2OpenCodeHttpError &&
+        error.status >= 400 &&
+        error.status < 500
+      )
+        throw error;
+      throw new OpenCodePromptReceiptUnavailableError(request.sessionId, {
+        cause: error,
+      });
     }
-    const accepted = asRecord(dataOf(body))
-    const inboxID = stringValue(accepted?.id)
-    if (!inboxID) throw new OpenCodePromptReceiptUnavailableError(request.sessionId)
-    return { kind: 'accepted', receipt: { inboxID } }
+    const accepted = asRecord(dataOf(body));
+    const inboxID = stringValue(accepted?.id);
+    if (!inboxID)
+      throw new OpenCodePromptReceiptUnavailableError(request.sessionId);
+    return { kind: "accepted", receipt: { inboxID } };
   }
 
   async listPendingQuestions(
@@ -390,22 +552,32 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     directory?: string,
     signal?: AbortSignal,
   ): Promise<OpenCodeQuestionRequest[]> {
-    let forms: unknown[]
+    let forms: unknown[];
     if (sessionId) {
-      forms = arrayValue(dataOf(await this.request(`/api/session/${encodeURIComponent(sessionId)}/form`, { signal })))
+      forms = arrayValue(
+        dataOf(
+          await this.request(
+            `/api/session/${encodeURIComponent(sessionId)}/form`,
+            { signal },
+          ),
+        ),
+      );
     } else {
-      const location = directory ?? projectPath
-      const query = new URLSearchParams()
-      if (location) query.set('location[directory]', location)
-      const suffix = query.size > 0 ? `?${query}` : ''
-      const response = await this.request(`/api/form${suffix}`, { signal })
-      const payload = asRecord(response)
-      forms = Array.isArray(response) ? response : arrayValue(payload?.data)
+      const location = directory ?? projectPath;
+      const query = new URLSearchParams();
+      if (location) query.set("location[directory]", location);
+      const suffix = query.size > 0 ? `?${query}` : "";
+      const response = await this.request(`/api/form${suffix}`, { signal });
+      const payload = asRecord(response);
+      forms = Array.isArray(response) ? response : arrayValue(payload?.data);
     }
 
     return forms
-      .map(form => mapV2Question(form))
-      .filter((form): form is OpenCodeQuestionRequest => Boolean(form) && (!sessionId || form?.sessionID === sessionId))
+      .map((form) => mapV2Question(form))
+      .filter(
+        (form): form is OpenCodeQuestionRequest =>
+          Boolean(form) && (!sessionId || form?.sessionID === sessionId),
+      );
   }
 
   async replyQuestion(
@@ -415,222 +587,308 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     _directory: string,
     signal?: AbortSignal,
   ): Promise<void> {
-    const form = await this.getQuestionForm(sessionId, requestId, signal)
-    const answer = mapV2QuestionAnswer(form, answers)
-    await this.request(`/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(requestId)}/reply`, {
-      method: 'POST',
-      signal,
-      expectedStatus: 204,
-      body: { answer },
-    })
+    const form = await this.getQuestionForm(sessionId, requestId, signal);
+    const answer = mapV2QuestionAnswer(form, answers);
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(requestId)}/reply`,
+      {
+        method: "POST",
+        signal,
+        expectedStatus: 204,
+        body: { answer },
+      },
+    );
   }
 
-  async rejectQuestion(sessionId: string, requestId: string, _directory: string, signal?: AbortSignal): Promise<void> {
-    await this.getQuestionForm(sessionId, requestId, signal)
-    await this.request(`/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(requestId)}`, {
-      method: 'DELETE',
-      signal,
-      expectedStatus: 204,
-    })
+  async rejectQuestion(
+    sessionId: string,
+    requestId: string,
+    _directory: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.getQuestionForm(sessionId, requestId, signal);
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(requestId)}`,
+      {
+        method: "DELETE",
+        signal,
+        expectedStatus: 204,
+      },
+    );
   }
 
   async replyPermission(
     sessionId: string,
     permissionId: string,
-    reply: 'always' | 'reject',
+    reply: "always" | "reject",
     _directory?: string,
     signal?: AbortSignal,
   ): Promise<void> {
-    await this.request(`/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(permissionId)}/reply`, {
-      method: 'POST',
-      signal,
-      expectedStatus: 204,
-      body: { decision: reply },
-    })
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(permissionId)}/reply`,
+      {
+        method: "POST",
+        signal,
+        expectedStatus: 204,
+        body: { decision: reply },
+      },
+    );
   }
 
-  async interruptSession(sessionId: string, directory?: string): Promise<boolean> {
-    const signal = AbortSignal.timeout(IDLE_WAIT_TIMEOUT_MS)
+  async interruptSession(
+    sessionId: string,
+    directory?: string,
+  ): Promise<boolean> {
+    const signal = AbortSignal.timeout(IDLE_WAIT_TIMEOUT_MS);
     try {
-      await this.request(`/api/session/${encodeURIComponent(sessionId)}/interrupt?resume=false`, {
-        method: 'POST',
-        signal,
-      })
+      await this.request(
+        `/api/session/${encodeURIComponent(sessionId)}/interrupt?resume=false`,
+        {
+          method: "POST",
+          signal,
+        },
+      );
     } catch (error) {
-      if (isSessionNotFound(error)) return true
-      throw error
+      if (isSessionNotFound(error)) return true;
+      throw error;
     }
-    await this.waitForIdle(sessionId, directory, signal)
-    return true
+    await this.waitForIdle(sessionId, directory, signal);
+    return true;
   }
 
   async checkHealth(signal?: AbortSignal): Promise<HealthStatus> {
-    let version: string | undefined
+    let version: string | undefined;
     try {
-      const payload = asRecord(dataOf(await this.request('/api/info', { signal })))
-      version = stringValue(payload?.version)
+      const payload = asRecord(
+        dataOf(await this.request("/api/info", { signal })),
+      );
+      version = stringValue(payload?.version);
     } catch (error) {
-      if (signal?.aborted) throw signal.reason
-      const authentication = error instanceof V2OpenCodeHttpError && (error.status === 401 || error.status === 403)
+      if (signal?.aborted) throw signal.reason;
+      const authentication =
+        error instanceof V2OpenCodeHttpError &&
+        (error.status === 401 || error.status === 403);
       return {
         available: false,
-        protocol: 'v2',
-        failureKind: authentication ? 'authentication' : 'network',
+        protocol: "v2",
+        failureKind: authentication ? "authentication" : "network",
         error: error instanceof Error ? error.message : String(error),
-        ...(authentication ? { credentialsSent: this.headers.has('authorization') } : {}),
-      }
+        ...(authentication
+          ? { credentialsSent: this.headers.has("authorization") }
+          : {}),
+      };
     }
 
-    return { available: true, protocol: 'v2', ...(version ? { version } : {}) }
+    return { available: true, protocol: "v2", ...(version ? { version } : {}) };
   }
 
-  private async getQuestionForm(sessionId: string, requestId: string, signal?: AbortSignal): Promise<unknown> {
+  private async getQuestionForm(
+    sessionId: string,
+    requestId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const response = await this.request(
       `/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(requestId)}`,
       { signal },
-    )
-    const form = dataOf(response)
-    if (!isV2QuestionForm(form)) throw new Error(`OpenCode v2 form ${requestId} is not a question`)
-    const record = asRecord(form)
-    if (record?.sessionID !== sessionId) throw new Error(`OpenCode v2 form ${requestId} belongs to another session`)
-    return form
+    );
+    const form = dataOf(response);
+    if (!isV2QuestionForm(form))
+      throw new Error(`OpenCode v2 form ${requestId} is not a question`);
+    const record = asRecord(form);
+    if (record?.sessionID !== sessionId)
+      throw new Error(
+        `OpenCode v2 form ${requestId} belongs to another session`,
+      );
+    return form;
   }
 
   private async request(
     path: string,
     options: {
-      method?: string
-      query?: URLSearchParams
-      body?: unknown
-      signal?: AbortSignal
-      expectedStatus?: number
-      timeoutMs?: number | null
+      method?: string;
+      query?: URLSearchParams;
+      body?: unknown;
+      signal?: AbortSignal;
+      expectedStatus?: number;
+      timeoutMs?: number | null;
     } = {},
   ): Promise<unknown> {
-    const url = this.makeUrl(path, options.query)
-    const headers = new Headers(this.headers)
-    headers.set('accept', 'application/json')
-    const timeout = options.timeoutMs === null
-      ? undefined
-      : createTimeoutSignal(options.signal, options.timeoutMs ?? API_OPERATION_TIMEOUT_MS, 'OpenCode v2 request timed out')
+    const url = this.makeUrl(path, options.query);
+    const headers = new Headers(this.headers);
+    headers.set("accept", "application/json");
+    const timeout =
+      options.timeoutMs === null
+        ? undefined
+        : createTimeoutSignal(
+            options.signal,
+            options.timeoutMs ?? API_OPERATION_TIMEOUT_MS,
+            "OpenCode v2 request timed out",
+          );
     const init: RequestInit = {
-      method: options.method ?? 'GET',
+      method: options.method ?? "GET",
       headers,
       signal: timeout?.signal ?? options.signal,
-      redirect: 'manual',
-    }
+      redirect: "manual",
+    };
     if (options.body !== undefined) {
-      headers.set('content-type', 'application/json')
-      init.body = JSON.stringify(options.body)
+      headers.set("content-type", "application/json");
+      init.body = JSON.stringify(options.body);
     }
 
     try {
-      const response = await this.fetcher(url, init)
-      const expectedStatus = options.expectedStatus ?? 200
+      const response = await this.fetcher(url, init);
+      const expectedStatus = options.expectedStatus ?? 200;
       if (response.status !== expectedStatus) {
-        throw new V2OpenCodeHttpError(response.status, await responseBody(response))
+        throw new V2OpenCodeHttpError(
+          response.status,
+          await responseBody(response),
+        );
       }
       if (expectedStatus === 204) {
-        await response.body?.cancel().catch(() => undefined)
-        return undefined
+        await response.body?.cancel().catch(() => undefined);
+        return undefined;
       }
-      return await responseBody(response)
+      return await responseBody(response);
     } finally {
-      timeout?.dispose()
+      timeout?.dispose();
     }
   }
 
-  private async openSse(path: string, query: URLSearchParams | undefined, signal?: AbortSignal): Promise<SseConnection> {
-    const url = this.makeUrl(path, query)
-    const headers = new Headers(this.headers)
-    headers.set('accept', 'text/event-stream')
-    const controller = new AbortController()
-    const abortFromCaller = () => controller.abort(signal?.reason)
-    if (signal?.aborted) throw signal.reason
-    signal?.addEventListener('abort', abortFromCaller, { once: true })
+  private async openSse(
+    path: string,
+    query: URLSearchParams | undefined,
+    signal?: AbortSignal,
+  ): Promise<SseConnection> {
+    const url = this.makeUrl(path, query);
+    const headers = new Headers(this.headers);
+    headers.set("accept", "text/event-stream");
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(signal?.reason);
+    if (signal?.aborted) throw signal.reason;
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
 
-    const connectTimeout = createTimeoutSignal(signal, EVENT_CONNECT_TIMEOUT_MS, 'OpenCode v2 event stream connection timed out')
-    const fetchSignal = AbortSignal.any([controller.signal, connectTimeout.signal])
+    const connectTimeout = createTimeoutSignal(
+      signal,
+      EVENT_CONNECT_TIMEOUT_MS,
+      "OpenCode v2 event stream connection timed out",
+    );
+    const fetchSignal = AbortSignal.any([
+      controller.signal,
+      connectTimeout.signal,
+    ]);
 
-    let response: Response
+    let response: Response;
     try {
-      response = await this.fetcher(url, { method: 'GET', headers, signal: fetchSignal, redirect: 'manual' })
+      response = await this.fetcher(url, {
+        method: "GET",
+        headers,
+        signal: fetchSignal,
+        redirect: "manual",
+      });
     } catch (error) {
-      connectTimeout.dispose()
-      signal?.removeEventListener('abort', abortFromCaller)
-      if (signal?.aborted) throw signal.reason
-      if (connectTimeout.timedOut()) throw connectTimeout.signal.reason
-      throw error
+      connectTimeout.dispose();
+      signal?.removeEventListener("abort", abortFromCaller);
+      if (signal?.aborted) throw signal.reason;
+      if (connectTimeout.timedOut()) throw connectTimeout.signal.reason;
+      throw error;
     }
-    connectTimeout.dispose()
+    connectTimeout.dispose();
 
     if (signal?.aborted || connectTimeout.timedOut()) {
-      await response.body?.cancel().catch(() => undefined)
-      signal?.removeEventListener('abort', abortFromCaller)
-      throw signal?.aborted ? signal.reason : connectTimeout.signal.reason
+      await response.body?.cancel().catch(() => undefined);
+      signal?.removeEventListener("abort", abortFromCaller);
+      throw signal?.aborted ? signal.reason : connectTimeout.signal.reason;
     }
 
     if (!response.ok) {
-      signal?.removeEventListener('abort', abortFromCaller)
-      throw new V2OpenCodeHttpError(response.status, await responseBody(response))
+      signal?.removeEventListener("abort", abortFromCaller);
+      throw new V2OpenCodeHttpError(
+        response.status,
+        await responseBody(response),
+      );
     }
-    if (!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) {
-      signal?.removeEventListener('abort', abortFromCaller)
-      await response.body?.cancel().catch(() => undefined)
-      throw new Error(`OpenCode v2 returned ${response.headers.get('content-type') ?? 'no content type'} for an event stream`)
+    if (
+      !response.headers
+        .get("content-type")
+        ?.toLowerCase()
+        .startsWith("text/event-stream")
+    ) {
+      signal?.removeEventListener("abort", abortFromCaller);
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(
+        `OpenCode v2 returned ${response.headers.get("content-type") ?? "no content type"} for an event stream`,
+      );
     }
     if (!response.body) {
-      signal?.removeEventListener('abort', abortFromCaller)
-      throw new Error('OpenCode v2 returned an event stream without a response body')
+      signal?.removeEventListener("abort", abortFromCaller);
+      throw new Error(
+        "OpenCode v2 returned an event stream without a response body",
+      );
     }
 
-    const iterator = parseSse(response.body)[Symbol.asyncIterator]()
-    let closed = false
+    const events = parseSse(response.body);
+    const createIterator = events[Symbol.asyncIterator];
+    const iterator = createIterator.call(events);
+    let closePromise: Promise<void> | undefined;
     return {
       iterator,
       next: async (timeoutMs, timeoutMessage) => {
-        if (!timeoutMs) return await iterator.next()
-        let timedOut = false
+        if (!timeoutMs) return await iterator.next();
+        let timedOut = false;
         const timer = setTimeout(() => {
-          timedOut = true
-          controller.abort(new DOMException(timeoutMessage ?? 'OpenCode v2 event stream timed out', 'TimeoutError'))
-        }, timeoutMs)
+          timedOut = true;
+          controller.abort(
+            new DOMException(
+              timeoutMessage ?? "OpenCode v2 event stream timed out",
+              "TimeoutError",
+            ),
+          );
+        }, timeoutMs);
         try {
-          return await iterator.next()
+          return await iterator.next();
         } catch (error) {
-          if (timedOut) throw controller.signal.reason
-          throw error
+          if (timedOut) throw controller.signal.reason;
+          throw error;
         } finally {
-          clearTimeout(timer)
+          clearTimeout(timer);
         }
       },
-      close: async () => {
-        if (closed) return
-        closed = true
-        if (!controller.signal.aborted) controller.abort(new DOMException('OpenCode v2 event stream closed', 'AbortError'))
-        signal?.removeEventListener('abort', abortFromCaller)
-        try {
-          await iterator.return?.(undefined)
-        } catch {
-          // Closing a fetch stream can reject its pending reader after abort.
-        }
+      close: () => {
+        closePromise ??= Promise.resolve().then(async () => {
+          if (!controller.signal.aborted)
+            controller.abort(
+              new DOMException("OpenCode v2 event stream closed", "AbortError"),
+            );
+          signal?.removeEventListener("abort", abortFromCaller);
+          try {
+            await iterator.return?.(undefined);
+          } catch {
+            // Closing a fetch stream can reject its pending reader after abort.
+          }
+        });
+        return closePromise;
       },
-    }
+    };
   }
 
   private async openEventStream(signal?: AbortSignal): Promise<SseConnection> {
-    if (signal?.aborted) throw signal.reason
-    const connection = await this.openSse('/api/event', undefined, signal)
+    if (signal?.aborted) throw signal.reason;
+    const connection = await this.openSse("/api/event", undefined, signal);
     try {
-      const first = await connection.next(EVENT_CONNECT_TIMEOUT_MS, 'OpenCode v2 event stream did not send server.connected')
-      if (signal?.aborted) throw signal.reason
-      if (first.done || asRecord(first.value)?.type !== 'server.connected') {
-        throw new Error('OpenCode v2 event stream did not start with server.connected')
+      const first = await connection.next(
+        EVENT_CONNECT_TIMEOUT_MS,
+        "OpenCode v2 event stream did not send server.connected",
+      );
+      if (signal?.aborted) throw signal.reason;
+      if (first.done || asRecord(first.value)?.type !== "server.connected") {
+        throw new Error(
+          "OpenCode v2 event stream did not start with server.connected",
+        );
       }
-      return connection
+      return connection;
     } catch (error) {
-      await connection.close()
-      throw error
+      await connection.close();
+      throw error;
     }
   }
 
@@ -639,72 +897,88 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     after: number | undefined,
     signal: AbortSignal | undefined,
     onEvent?: (event: OpenCodeTransportEventEnvelope) => void,
-    mappingState: ReturnType<typeof createV2EventMappingState> = createV2EventMappingState(),
+    mappingState: ReturnType<
+      typeof createV2EventMappingState
+    > = createV2EventMappingState(),
   ): Promise<SessionLogScan> {
-    const query = new URLSearchParams({ follow: 'false' })
-    if (after !== undefined) query.set('after', String(after))
-    const deadline = createTimeoutSignal(signal, OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS, 'OpenCode v2 session log did not reach log.synced')
-    let connection: SseConnection | undefined
-    let maxSequence = after ?? -1
-    let lastCoveredSequence = after ?? -1
-    let coverageComplete = true
-    let hasUnmappedEvents = false
-    const seen = new Set<number>()
+    const query = new URLSearchParams({ follow: "false" });
+    if (after !== undefined) query.set("after", String(after));
+    const deadline = createTimeoutSignal(
+      signal,
+      OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS,
+      "OpenCode v2 session log did not reach log.synced",
+    );
+    let connection: SseConnection | undefined;
+    let maxSequence = after ?? -1;
+    let lastCoveredSequence = after ?? -1;
+    let coverageComplete = true;
+    let hasUnmappedEvents = false;
+    const seen = new Set<number>();
     try {
       connection = await this.openSse(
         `/api/experimental/session/${encodeURIComponent(sessionId)}/log`,
         query,
         deadline.signal,
-      )
+      );
       while (true) {
-        const result = await connection.next()
+        const result = await connection.next();
         if (result.done) {
-          if (deadline.signal.aborted) throw deadline.signal.reason
-          throw new Error('OpenCode v2 session log ended before log.synced')
+          if (deadline.signal.aborted) throw deadline.signal.reason;
+          throw new Error("OpenCode v2 session log ended before log.synced");
         }
-        const event = asRecord(result.value)
-        if (!event || typeof event.type !== 'string') continue
+        const event = asRecord(result.value);
+        if (!event || typeof event.type !== "string") continue;
 
-        if (event.type === 'log.synced') {
-          const aggregateID = stringValue(event.aggregateID)
+        if (event.type === "log.synced") {
+          const aggregateID = stringValue(event.aggregateID);
           if (aggregateID !== undefined && aggregateID !== sessionId) {
-            throw new Error('OpenCode v2 session log watermark belongs to another session')
+            throw new Error(
+              "OpenCode v2 session log watermark belongs to another session",
+            );
           }
-          const watermark = numberValue(event.seq)
-          const hasWatermark = watermark !== undefined && Number.isSafeInteger(watermark)
+          const watermark = numberValue(event.seq);
+          const hasWatermark =
+            watermark !== undefined && Number.isSafeInteger(watermark);
+          if (hasWatermark && watermark < maxSequence) {
+            throw new Error(
+              "OpenCode v2 session log watermark precedes the requested or observed cursor",
+            );
+          }
           if (!hasWatermark || lastCoveredSequence !== watermark) {
-            coverageComplete = false
+            coverageComplete = false;
           }
           return {
             cursor: Math.max(maxSequence, watermark ?? -1),
             coverageComplete,
             hasWatermark,
             hasUnmappedEvents,
-          }
+          };
         }
 
-        const durable = asRecord(event.durable)
-        const aggregateID = stringValue(durable?.aggregateID)
-        const sequence = numberValue(durable?.seq)
+        const durable = asRecord(event.durable);
+        const aggregateID = stringValue(durable?.aggregateID);
+        const sequence = numberValue(durable?.seq);
         if (aggregateID !== sessionId || sequence === undefined) {
-          throw new Error('OpenCode v2 session log returned an event without its session cursor')
+          throw new Error(
+            "OpenCode v2 session log returned an event without its session cursor",
+          );
         }
-        maxSequence = Math.max(maxSequence, sequence)
-        if (after !== undefined && sequence <= after) continue
-        if (seen.has(sequence)) continue
-        seen.add(sequence)
-        if (sequence !== lastCoveredSequence + 1) coverageComplete = false
-        if (sequence > lastCoveredSequence) lastCoveredSequence = sequence
-        const mapped = mapV2Event(event, sessionId, mappingState, true)
-        if (mapped) onEvent?.(mapped)
+        maxSequence = Math.max(maxSequence, sequence);
+        if (after !== undefined && sequence <= after) continue;
+        if (seen.has(sequence)) continue;
+        seen.add(sequence);
+        if (sequence !== lastCoveredSequence + 1) coverageComplete = false;
+        if (sequence > lastCoveredSequence) lastCoveredSequence = sequence;
+        const mapped = mapV2Event(event, sessionId, mappingState, true);
+        if (mapped) onEvent?.(mapped);
         else {
-          coverageComplete = false
-          hasUnmappedEvents = true
+          coverageComplete = false;
+          hasUnmappedEvents = true;
         }
       }
     } finally {
-      deadline.dispose()
-      await connection?.close()
+      deadline.dispose();
+      await connection?.close();
     }
   }
 
@@ -712,6 +986,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     initialConnection: SseConnection,
     sessionId: string,
     initialCursor: number,
+    baselineCursor: number,
     backlog: OpenCodeTransportEventEnvelope[],
     signal: AbortSignal | undefined,
     ownedConnections: Set<SseConnection>,
@@ -719,108 +994,176 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     state: ReturnType<typeof createV2EventMappingState>,
     initialCoverageGap: boolean,
   ): AsyncGenerator<OpenCodeTransportEventEnvelope> {
-    let connection = initialConnection
-    let cursor = initialCursor
-    let coveredThrough = initialCursor
-    let coverageGap = initialCoverageGap
-    let reconnects = 0
-    const seen = new Set<number>(backlog.flatMap(event => event.cursor === undefined ? [] : [event.cursor]))
+    let connection = initialConnection;
+    let cursor = initialCursor;
+    let coverageGap = initialCoverageGap;
+    let reconnects = 0;
+    const seen = new Set<number>(
+      backlog.flatMap((event) =>
+        event.cursor === undefined ? [] : [event.cursor],
+      ),
+    );
 
     try {
-      for (const event of backlog) yield coverageGap ? { ...event, coverageGap: true } : event
+      for (const event of backlog)
+        yield coverageGap ? { ...event, coverageGap: true } : event;
       while (true) {
-        if (signal?.aborted) throw signal.reason
+        if (signal?.aborted) throw signal.reason;
         try {
-          const result = await connection.next()
-          if (result.done) throw new Error('OpenCode v2 event stream closed')
-          const raw = asRecord(result.value)
-          if (!raw || raw.type === 'server.connected') continue
-          const sequence = numberValue(asRecord(raw.durable)?.seq)
-          if (sequence !== undefined && sequence <= coveredThrough) continue
-          if (sequence !== undefined && seen.has(sequence)) continue
-          const rawSessionId = stringValue(asRecord(raw.data)?.sessionID)
-            ?? stringValue(asRecord(asRecord(raw.data)?.form)?.sessionID)
-          const aggregateId = stringValue(asRecord(raw.durable)?.aggregateID)
-          const belongsToSession = rawSessionId === sessionId || aggregateId === sessionId
-          if (sequence !== undefined && belongsToSession) {
-            if (sequence !== cursor + 1) coverageGap = true
-            seen.add(sequence)
-            cursor = Math.max(cursor, sequence)
+          const result = await connection.next();
+          if (result.done) throw new Error("OpenCode v2 event stream closed");
+          const raw = asRecord(result.value);
+          if (!raw || typeof raw.type !== "string")
+            throw new Error(
+              "OpenCode v2 event stream returned an invalid event",
+            );
+          if (raw.type === "server.connected") continue;
+          const formSessionId = stringValue(
+            asRecord(asRecord(raw.data)?.form)?.sessionID,
+          );
+          const rawSessionId =
+            stringValue(asRecord(raw.data)?.sessionID) ?? formSessionId;
+          const aggregateId = stringValue(asRecord(raw.durable)?.aggregateID);
+          const sequence = numberValue(asRecord(raw.durable)?.seq);
+          if (
+            rawSessionId !== sessionId &&
+            formSessionId !== sessionId &&
+            aggregateId !== sessionId &&
+            (rawSessionId || formSessionId || aggregateId)
+          )
+            continue;
+          if (
+            (formSessionId !== undefined && rawSessionId !== formSessionId) ||
+            ((raw.durable !== undefined ||
+              V2_DURABLE_EVENT_TYPES.has(raw.type)) &&
+              (!aggregateId ||
+                sequence === undefined ||
+                !Number.isSafeInteger(sequence) ||
+                sequence < 0 ||
+                (rawSessionId !== undefined && rawSessionId !== aggregateId)))
+          ) {
+            coverageGap = true;
+            continue;
+          }
+          if (rawSessionId !== sessionId && aggregateId !== sessionId) continue;
+          if (sequence !== undefined && sequence <= baselineCursor) continue;
+          if (sequence !== undefined && seen.has(sequence)) continue;
+          const observedAfter = cursor;
+          if (sequence !== undefined) {
+            if (sequence <= cursor) coverageGap = true;
+            seen.add(sequence);
+            cursor = Math.max(cursor, sequence);
           }
 
-          const mapped = mapV2Event(raw, sessionId, state)
+          const mapped = mapV2Event(raw, sessionId, state);
           if (!mapped) {
-            if (sequence !== undefined && belongsToSession) coverageGap = true
-            continue
+            if (sequence !== undefined) coverageGap = true;
+            continue;
           }
-          yield coverageGap ? { ...mapped, coverageGap: true } : mapped
+          if (!coverageGap) reconnects = 0;
+          yield coverageGap
+            ? { ...mapped, coverageGap: true }
+            : sequence !== undefined && sequence > observedAfter + 1
+              ? { ...mapped, observedAfter }
+              : mapped;
         } catch (error) {
-          if (signal?.aborted) throw signal.reason
-          reconnects++
-          if (reconnects > EVENT_RECONNECT_ATTEMPTS) {
-            throw new Error('OpenCode v2 event stream could not reconnect; the accepted prompt was not resubmitted', { cause: error })
-          }
-
-          const reconnected = await this.openEventStream(signal)
-          ownedConnections.add(reconnected)
-          const fetchPendingPermissions = !coverageGap
-          const pendingPermissionsResponse = fetchPendingPermissions
-            ? await this.request(`/api/session/${encodeURIComponent(sessionId)}/permission`, { signal })
-            : undefined
-          const replayEvents: OpenCodeTransportEventEnvelope[] = []
-          let replay: SessionLogScan
-          try {
-            replay = await this.scanSessionLog(
-              sessionId,
-              cursor,
-              signal,
-              event => replayEvents.push(event),
-              state,
-            )
-          } catch (replayError) {
-            await reconnected.close()
-            throw replayError
-          }
-          if (!replay.coverageComplete) coverageGap = true
-          await connection.close()
-          connection = reconnected
-          const pendingPermissions: OpenCodeTransportEventEnvelope[] = []
-          if (replay.coverageComplete && !coverageGap && fetchPendingPermissions) {
-            const response = dataOf(pendingPermissionsResponse)
-            if (!Array.isArray(response)) throw new Error('OpenCode v2 returned an invalid pending permission list')
-            for (const request of response) {
-              const event = mapV2Event({ type: 'permission.asked', data: request }, sessionId, state)
-              if (!event?.event || event.event.type !== 'permission') {
-                throw new Error('OpenCode v2 returned an invalid pending permission request')
+          if (signal?.aborted) throw signal.reason;
+          let reconnectError = error;
+          while (true) {
+            if (++reconnects > EVENT_RECONNECT_ATTEMPTS) {
+              throw new Error(
+                "OpenCode v2 event stream could not reconnect; the accepted prompt was not resubmitted",
+                { cause: reconnectError },
+              );
+            }
+            let reconnected: SseConnection | undefined;
+            try {
+              reconnected = await this.openEventStream(signal);
+              ownedConnections.add(reconnected);
+              const fetchPendingPermissions = !coverageGap;
+              const pendingPermissionsResponse = fetchPendingPermissions
+                ? await this.request(
+                    `/api/session/${encodeURIComponent(sessionId)}/permission`,
+                    { signal },
+                  )
+                : undefined;
+              const replayEvents: OpenCodeTransportEventEnvelope[] = [];
+              // Failed replay must not consume text/tool state before a retry.
+              const replayState = structuredClone(state);
+              const replay = await this.scanSessionLog(
+                sessionId,
+                cursor,
+                signal,
+                (event) => replayEvents.push(event),
+                replayState,
+              );
+              const replayGap = coverageGap || !replay.coverageComplete;
+              const pendingPermissions: OpenCodeTransportEventEnvelope[] = [];
+              if (!replayGap && fetchPendingPermissions) {
+                const response = dataOf(pendingPermissionsResponse);
+                if (!Array.isArray(response))
+                  throw new Error(
+                    "OpenCode v2 returned an invalid pending permission list",
+                  );
+                for (const request of response) {
+                  const event = mapV2Event(
+                    { type: "permission.asked", data: request },
+                    sessionId,
+                    replayState,
+                  );
+                  if (!event?.event || event.event.type !== "permission") {
+                    throw new Error(
+                      "OpenCode v2 returned an invalid pending permission request",
+                    );
+                  }
+                  pendingPermissions.push(event);
+                }
               }
-              pendingPermissions.push(event)
+              await connection.close();
+              ownedConnections.delete(connection);
+              connection = reconnected;
+              state = replayState;
+              coverageGap = replayGap;
+              if (!replayGap && replay.cursor > cursor) reconnects = 0;
+              for (const event of replayEvents) {
+                const sequence = event.cursor;
+                if (sequence !== undefined && seen.has(sequence)) continue;
+                if (sequence !== undefined) {
+                  seen.add(sequence);
+                  cursor = Math.max(cursor, sequence);
+                }
+                yield coverageGap ? { ...event, coverageGap: true } : event;
+              }
+              for (const permission of pendingPermissions) yield permission;
+              cursor = Math.max(cursor, replay.cursor);
+              break;
+            } catch (retryError) {
+              await reconnected?.close();
+              if (reconnected) ownedConnections.delete(reconnected);
+              if (signal?.aborted) throw signal.reason;
+              reconnectError = retryError;
+              if (reconnects < EVENT_RECONNECT_ATTEMPTS) {
+                try {
+                  await delay(250, undefined, { signal });
+                } catch (delayError) {
+                  throw signal?.aborted ? signal.reason : delayError;
+                }
+              }
             }
           }
-          for (const event of replayEvents) {
-            const sequence = event.cursor
-            if (sequence !== undefined && seen.has(sequence)) continue
-            if (sequence !== undefined) {
-              seen.add(sequence)
-              cursor = Math.max(cursor, sequence)
-            }
-            yield coverageGap ? { ...event, coverageGap: true } : event
-          }
-          for (const permission of pendingPermissions) yield permission
-          cursor = Math.max(cursor, replay.cursor)
-          coveredThrough = Math.max(coveredThrough, replay.cursor)
         }
       }
     } finally {
-      await closeConnections()
+      await closeConnections();
     }
   }
 
   private makeUrl(path: string, query?: URLSearchParams): URL {
-    const url = new URL(path.replace(/^\//, ''), this.baseUrl)
+    const url = new URL(path.replace(/^\//, ""), this.baseUrl);
     if (query) {
-      for (const [key, value] of query) url.searchParams.append(key, value)
+      for (const [key, value] of query) url.searchParams.append(key, value);
     }
-    return url
+    return url;
   }
 }
 
@@ -832,130 +1175,150 @@ function closeOnIteratorReturn<T>(
     [Symbol.asyncIterator]() {
       return {
         [Symbol.asyncIterator]() {
-          return this
+          return this;
         },
         next(value?: unknown) {
-          return source.next(value)
+          return source.next(value);
         },
         async return(value?: unknown) {
-          await close()
-          return await source.return(value as void)
+          await close();
+          return await source.return(value as void);
         },
         async throw(error?: unknown) {
-          await close()
-          return await source.throw(error)
+          await close();
+          return await source.throw(error);
         },
-      }
+      };
     },
-  }
+  };
 }
 
-async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerator<unknown> {
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
+async function* parseSse(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
   try {
     while (true) {
-      const chunk = await reader.read()
-      buffer += decoder.decode(chunk.value, { stream: !chunk.done })
-      if (buffer.length > 16 * 1024 * 1024) throw new Error('OpenCode v2 sent an event larger than 16 MiB')
-      const endsWithCarriageReturn = !chunk.done && buffer.endsWith('\r')
-      if (endsWithCarriageReturn) buffer = buffer.slice(0, -1)
-      buffer = buffer.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
-      if (endsWithCarriageReturn) buffer += '\r'
-      if (chunk.done && buffer) buffer += '\n\n'
+      const chunk = await reader.read();
+      buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+      if (buffer.length > 16 * 1024 * 1024)
+        throw new Error("OpenCode v2 sent an event larger than 16 MiB");
+      const endsWithCarriageReturn = !chunk.done && buffer.endsWith("\r");
+      if (endsWithCarriageReturn) buffer = buffer.slice(0, -1);
+      buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+      if (endsWithCarriageReturn) buffer += "\r";
+      if (chunk.done && buffer) buffer += "\n\n";
 
-      let boundary = buffer.indexOf('\n\n')
+      let boundary = buffer.indexOf("\n\n");
       while (boundary >= 0) {
-        const block = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        const data = block.split('\n')
-          .filter(line => line.startsWith('data:'))
-          .map(line => line.slice(5).replace(/^ /, ''))
-          .join('\n')
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = block
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).replace(/^ /, ""))
+          .join("\n");
         if (data) {
           try {
-            yield JSON.parse(data) as unknown
+            yield JSON.parse(data) as unknown;
           } catch (error) {
-            throw new Error('OpenCode v2 sent malformed JSON in an event stream', { cause: error })
+            throw new Error(
+              "OpenCode v2 sent malformed JSON in an event stream",
+              { cause: error },
+            );
           }
         }
-        boundary = buffer.indexOf('\n\n')
+        boundary = buffer.indexOf("\n\n");
       }
-      if (chunk.done) return
+      if (chunk.done) return;
     }
   } finally {
     try {
-      await reader.cancel()
+      await reader.cancel();
     } catch {
       // The caller may already have aborted the fetch body.
     }
-    reader.releaseLock()
+    reader.releaseLock();
   }
 }
 
-function createTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number, message: string) {
-  const timeout = new AbortController()
-  const timer = setTimeout(() => timeout.abort(new DOMException(message, 'TimeoutError')), timeoutMs)
+function createTimeoutSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  message: string,
+) {
+  const timeout = new AbortController();
+  const timer = setTimeout(
+    () => timeout.abort(new DOMException(message, "TimeoutError")),
+    timeoutMs,
+  );
   return {
     signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
     timedOut: () => timeout.signal.aborted,
     dispose: () => clearTimeout(timer),
-  }
+  };
 }
 
 async function responseBody(response: Response): Promise<unknown> {
-  const text = await response.text()
-  if (!text) return undefined
+  const text = await response.text();
+  if (!text) return undefined;
   try {
-    return JSON.parse(text) as unknown
+    return JSON.parse(text) as unknown;
   } catch {
-    return text
+    return text;
   }
 }
 
 function dataOf(value: unknown): unknown {
-  const record = asRecord(value)
-  return record && Object.hasOwn(record, 'data') ? record.data : value
+  const record = asRecord(value);
+  return record && Object.hasOwn(record, "data") ? record.data : value;
 }
 
 function isSessionNotFound(error: unknown): error is V2OpenCodeHttpError {
-  return error instanceof V2OpenCodeHttpError
-    && error.status === 404
-    && asRecord(error.body)?._tag === 'SessionNotFoundError'
+  return (
+    error instanceof V2OpenCodeHttpError &&
+    error.status === 404 &&
+    asRecord(error.body)?._tag === "SessionNotFoundError"
+  );
 }
 
 function errorMessage(status: number, body: unknown): string {
-  const message = findMessage(body)
-  return message ? `OpenCode v2 request failed (HTTP ${status}): ${message}` : `OpenCode v2 request failed (HTTP ${status})`
+  const message = findMessage(body);
+  return message
+    ? `OpenCode v2 request failed (HTTP ${status}): ${message}`
+    : `OpenCode v2 request failed (HTTP ${status})`;
 }
 
 function findMessage(value: unknown, depth = 0): string | undefined {
-  if (depth > 4) return undefined
-  const record = asRecord(value)
-  if (!record) return typeof value === 'string' ? value : undefined
-  if (typeof record.message === 'string') return record.message
+  if (depth > 4) return undefined;
+  const record = asRecord(value);
+  if (!record) return typeof value === "string" ? value : undefined;
+  if (typeof record.message === "string") return record.message;
   for (const child of Object.values(record)) {
-    const message = findMessage(child, depth + 1)
-    if (message) return message
+    const message = findMessage(child, depth + 1);
+    if (message) return message;
   }
-  return undefined
+  return undefined;
 }
 
 function asRecord(value: unknown): RecordValue | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as RecordValue
-    : null
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as RecordValue)
+    : null;
 }
 
 function arrayValue(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : []
+  return Array.isArray(value) ? value : [];
 }
 
 function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
+  return typeof value === "string" ? value : undefined;
 }
 
 function numberValue(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }

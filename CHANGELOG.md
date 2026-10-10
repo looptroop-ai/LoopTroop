@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Development dependency updates fix command injection and denial-of-service vulnerabilities.
 - AI question settings share Advanced rows across Configuration, Project, and New Ticket, with a nested wait that preserves edits and prevents invalid saves or starts.
 - LoopTroop prefers configured and home OpenCode installations over PATH and reports which executable it selected.
 - OpenCode v2 model discovery waits for providers; Configuration keeps model lists live, refreshes slow discovery, shows model counts, and collapses providers in the results.
@@ -27,6 +28,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - OpenCode resolution searches `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` first, then the first absolute directory from `OPENCODE_INSTALL_DIR` or `OPENCODE_DIR`, then `~/.opencode/bin`, then Windows system directories and ordinary `PATH`. Canonical PATH aliases keep their invocation spelling within that order. These directory settings come from LoopTroop's environment; project PATH additions cannot override them. Missing executables fall through to the next directory, while a trust refusal stops resolution. Use the operator override to choose another installation deliberately.
 - `looptroop doctor` keeps marking a missing `gh` with `✗`, but adds that LoopTroop starts without it and that a ticket needs it before coding starts, when its pre-flight check runs. Its last line names the checks that stop LoopTroop from running, for example `LoopTroop cannot run until this is fixed: opencode.`, instead of pointing at every `✗` above it.
 - When OpenCode's default address (`127.0.0.1:4096`) is held by a server LoopTroop cannot use, because it rejects LoopTroop's password or is not OpenCode, LoopTroop leaves that server alone and starts its own OpenCode on the next free port. OpenCode v2 makes up a new password for every `opencode serve` started by hand, and other tools built on OpenCode take 4096 too, so a server left running there used to stop LoopTroop from starting at all. A server that answers with a 5xx error still counts as an OpenCode that is starting up: LoopTroop waits for it, then judges it by what it answers once it is up. An address you set with `LOOPTROOP_OPENCODE_BASE_URL` or `opencodeBaseUrl` is never moved, and the move never takes LoopTroop's own web port. When LoopTroop's own address is the one OpenCode would use, as with `looptroop start --port 4096`, the default address moves too and `doctor` names the port it would take; an address you set on that port and host stops the start, even when a server already answers there, with a message that names both settings. `looptroop start`, `looptroop open`, `looptroop status`, `looptroop doctor` and the daemon log say where OpenCode went and why. Before the first start, `doctor` reports a held default port as a warning that names the port a start would take, and as a failure when no port is free.
+
+### Security
+- Updated development dependencies to patched releases of `shell-quote`, `brace-expansion` and `source-map-js`. Their fixes prevent command injection when quoting tokens after shell comments and denial of service when expanding nested braces or reading malformed indexed source maps.
+
+### Removed
+- Local OpenCode configuration and plugins in `.opencode/` are now ignored by Git. The repository no longer includes the listener-limit plugin.
 
 ### Fixed
 - Aligned AI-question controls to the right and added contextual `?` help links for both options. Wait controls are disabled when effective AI questions are **Off**, including when **Inherit** resolves to **Off**. Turning questions off shows the last valid duration and preserves the chosen mode and unfinished input. Inactive wait errors do not block saving. Turning questions back on restores the input and its validation.

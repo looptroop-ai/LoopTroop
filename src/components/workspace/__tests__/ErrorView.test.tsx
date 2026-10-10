@@ -86,9 +86,116 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    expect(screen.getByRole('heading', { name: expectedTitle })).toBeInTheDocument()
-    expect(screen.getByText(/^Recommended:/)).toBeInTheDocument()
+    const errorMessage = screen.getByText('Low-level failure detail')
+    const explanation = screen.getByRole('heading', { name: expectedTitle })
+    expect(errorMessage).toBeVisible()
+    expect(errorMessage.closest('details')).toBeNull()
+    expect(errorMessage.compareDocumentPosition(explanation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByText('Technical details')).toBeInTheDocument()
+  })
+
+  it.each(['SCANNING_RELEVANT_FILES', 'DRAFTING_PRD', 'INTEGRATING', 'UNKNOWN_PHASE'])('leads with the actual %s error without generic boilerplate', (blockedFromStatus) => {
+    const ticket = makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: blockedFromStatus,
+      errorMessage: 'The workflow request could not reach OpenCode.',
+      availableActions: ['retry', 'cancel'],
+    })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    const errorMessage = screen.getByText('The workflow request could not reach OpenCode.')
+    const details = screen.getByText('Technical details').closest('details')
+    expect(errorMessage).toBeVisible()
+    expect(errorMessage.closest('details')).toBeNull()
+    expect(details).toHaveAttribute('open')
+    expect(errorMessage.compareDocumentPosition(details!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText(/Blocked: Error|Active error|Blocked from|Workflow step failed|Recommended:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/use an available recovery action|current workflow step could not finish safely/i)).not.toBeInTheDocument()
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    expect(retry).toBeVisible()
+    expect(retry.compareDocumentPosition(details!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Technical details'))
+    expect(details).not.toHaveAttribute('open')
+    expect(errorMessage).toBeVisible()
+    expect(retry).toBeVisible()
+  })
+
+  it('keeps a useful fallback visible when no error message was captured', () => {
+    const ticket = makeTicket({ status: 'BLOCKED_ERROR', previousStatus: 'SCANNING_RELEVANT_FILES' })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByText(/An error occurred but no details were captured/)).toBeVisible()
+  })
+
+  it('shows the reported event-history failure before its expanded diagnostics and recovery controls', () => {
+    const message = 'Relevant files scan failed: Failed to prompt OpenCode session: OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.'
+    const ticket = makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'SCANNING_RELEVANT_FILES',
+      availableActions: ['retry', 'cancel'],
+      activeErrorOccurrenceId: 'scan-gap',
+      errorOccurrences: [{
+        id: 'scan-gap',
+        occurrenceNumber: 1,
+        blockedFromStatus: 'SCANNING_RELEVANT_FILES',
+        errorMessage: message,
+        errorCodes: ['RELEVANT_FILES_SCAN_FAILED'],
+        diagnostics: {
+          kind: 'transport',
+          source: 'opencode',
+          summary: message,
+          modelId: 'provider/model',
+          sessionId: 'ses-scan-gap',
+        },
+        occurredAt: '2026-01-01T00:00:00.000Z',
+        resolvedAt: null,
+        resolutionStatus: null,
+        resumedToStatus: null,
+      }],
+    })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByRole('heading', { name: 'Scanning Relevant Files' })).toBeVisible()
+    expect(screen.getAllByText(message)).toHaveLength(1)
+    expect(screen.getByText(message)).toBeVisible()
+    expect(screen.getByText('Transport')).toBeVisible()
+    expect(screen.getByText('Opencode')).toBeVisible()
+    expect(screen.getByText('provider/model')).toBeVisible()
+    expect(screen.getByText('ses-scan-gap')).toBeVisible()
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    expect(screen.getByText(message).compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(retry.compareDocumentPosition(screen.getByText('Model:')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps the selected historical failure visible with its resolution and no recovery controls', () => {
+    const activeTicket = makeLiveCodingErrorTicket()
+    const occurrence = {
+      ...activeTicket.errorOccurrences![0]!,
+      id: 'resolved-coding-error',
+      errorMessage: 'An earlier coding attempt timed out.',
+      errorCodes: [BEAD_ITERATION_TIMEOUT],
+      resolvedAt: '2026-01-01T00:01:00.000Z',
+      resolutionStatus: 'RETRIED' as const,
+      resumedToStatus: 'CODING',
+    }
+    const ticket = makeTicket({
+      ...activeTicket,
+      errorOccurrences: [occurrence, activeTicket.errorOccurrences![0]!],
+    })
+
+    renderWithProviders(<ErrorView ticket={ticket} occurrence={occurrence} readOnly />)
+
+    expect(screen.getByText('An earlier coding attempt timed out.')).toBeVisible()
+    expect(screen.getByText(/^Retried to Implementing/)).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Implementation attempt timed out' })).toBeVisible()
+    expect(screen.getByText(/Resolved /)).toBeVisible()
+    expect(screen.queryByText('Implementation failed.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Retry the bead with an extra note/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('uses the failed workflow phase for workspace setup errors without guessing from logs', () => {
@@ -330,7 +437,8 @@ describe('ErrorView', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit setup plan...' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Retry with extra note...' })).not.toBeInTheDocument()
-    expect(screen.getByText(/use an available recovery action/i)).toBeInTheDocument()
+    expect(screen.queryByText(/use an available recovery action/i)).not.toBeInTheDocument()
+    expect(screen.getByText('Setup approval could not continue.')).toBeVisible()
   })
 
   it.each([true, false])('offers setup-plan editing only when advertised (%s)', (canEditPlan) => {
@@ -510,7 +618,7 @@ describe('ErrorView', () => {
     expect(within(dialog).getByRole('button', { name: 'Add note and retry' })).toBeDisabled()
   })
 
-  it('shows real bead counters on coding error occurrence labels', () => {
+  it('shows the failed phase and real bead counters once', () => {
     const ticket = makeTicket({
       status: 'BLOCKED_ERROR',
       previousStatus: 'CODING',
@@ -536,8 +644,9 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    expect(screen.getByText('Error 1: Implementing (Bead 2/5)')).toBeInTheDocument()
-    expect(screen.getByText('Blocked from Implementing (Bead 2/5)')).toBeInTheDocument()
+    expect(screen.getAllByText('Implementing (Bead 2/5)')).toHaveLength(1)
+    expect(screen.getByText('Implementing (Bead 2/5)')).toBeVisible()
+    expect(screen.queryByText(/Error 1:|Blocked from/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Bead \?\/\?/)).not.toBeInTheDocument()
   })
 
@@ -725,8 +834,14 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    expect(screen.getByText('Underlying error')).toBeInTheDocument()
-    expect(screen.getByText(/invalid_request_error: Your authentication token has been invalidated/)).toBeInTheDocument()
+    const primaryError = screen.getByText('Relevant files scan failed validation after 1 structured retry attempt(s).')
+    const providerCause = screen.getByText(/invalid_request_error: Your authentication token has been invalidated/)
+    expect(primaryError).toBeVisible()
+    expect(providerCause).toBeVisible()
+    expect(providerCause.closest('details')).toBeNull()
+    expect(primaryError.compareDocumentPosition(providerCause) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText('Technical details').closest('details')).toHaveAttribute('open')
+    expect(screen.getByText('HTTP:')).toBeVisible()
     expect(screen.getByText('HTTP:')).toBeInTheDocument()
     expect(screen.getByText('401')).toBeInTheDocument()
     expect(screen.getByText('Provider:')).toBeInTheDocument()
@@ -769,7 +884,7 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    expect(screen.getByText('Underlying error')).toBeInTheDocument()
+    expect(screen.getByText(/The model stopped because OpenCode reported finish reason/)).toBeVisible()
     expect(screen.getByText('Model Output Truncated')).toBeInTheDocument()
     expect(screen.getByText('Finish reason:')).toBeInTheDocument()
     expect(screen.getByText('length')).toBeInTheDocument()
@@ -805,8 +920,8 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />)
 
-    expect(screen.getByText('Underlying error')).toBeInTheDocument()
     expect(screen.getAllByText(duplicateMessage)).toHaveLength(1)
+    expect(screen.getByText(duplicateMessage)).toBeVisible()
     expect(screen.getByText('Kind:')).toBeInTheDocument()
     expect(screen.getByText('Runtime')).toBeInTheDocument()
   })
@@ -832,9 +947,9 @@ describe('ErrorView', () => {
 
     renderWithProviders(<ErrorView ticket={ticket} occurrence={occurrence} readOnly />)
 
-    const blockedLabel = screen.getByText(/Blocked from /)
-    expect(blockedLabel).toHaveAttribute('title')
-    expect(blockedLabel.getAttribute('title')).not.toContain('.123')
+    const occurredAt = screen.getByText('Error 1').parentElement!.querySelector('[title]')
+    expect(occurredAt).toHaveAttribute('title')
+    expect(occurredAt!.getAttribute('title')).not.toContain('.123')
 
     const resolvedLabel = screen.getByText(/Resolved /)
     expect(resolvedLabel).not.toHaveTextContent('.456')

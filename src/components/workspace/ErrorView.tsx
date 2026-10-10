@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, CirclePlay, Clock3, FilePenLine, Info, MessageSquarePlus, RotateCcw } from 'lucide-react'
+import { AlertTriangle, CirclePlay, Clock3, FilePenLine, MessageSquarePlus, RotateCcw } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,7 +18,6 @@ import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import type { Ticket } from '@/hooks/useTickets'
 import { formatTimestamp, formatTimestampString } from './logFormat'
 import {
-  formatErrorOccurrenceLabel,
   formatErrorOccurrenceStatus,
   getActiveErrorOccurrence,
   getTicketErrorOccurrences,
@@ -148,14 +147,14 @@ function normalizeErrorText(value: string): string {
 interface BlockedErrorExplanation {
   title: string
   description: string
-  recommendation: string
+  recommendation: string | null
 }
 
 function explainBlockedError(
   blockedFromStatus: string | undefined,
   errorCodes: string[],
   availableActions: WorkflowAction[],
-): BlockedErrorExplanation {
+): BlockedErrorExplanation | null {
   const codes = new Set(errorCodes)
   const canRetry = availableActions.includes('retry')
   const canRetryWithNote = blockedFromStatus === 'CODING' && canRetry
@@ -163,7 +162,7 @@ function explainBlockedError(
     ? 'Retry with an extra note that clarifies the approach or the remaining problem.'
     : canRetry
       ? 'Retry the failed workflow step after reviewing the technical details.'
-      : 'Review the technical details and use an available recovery action.'
+      : null
 
   if (codes.has(BEAD_FINALIZATION_FAILED)) {
     return {
@@ -229,15 +228,11 @@ function explainBlockedError(
         ? 'Edit the setup plan when it is incorrect, or retry after fixing the environment.'
         : canRetry
           ? 'Retry the workspace setup after fixing the reported environment problem.'
-          : 'Review the technical details and use an available recovery action.',
+          : null,
     }
   }
 
-  return {
-    title: 'Workflow step failed',
-    description: 'LoopTroop stopped because the current workflow step could not finish safely.',
-    recommendation: 'Review the technical details, then use an available recovery action.',
-  }
+  return null
 }
 
 export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewProps) {
@@ -411,60 +406,136 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
           isLiveError ? 'border-rose-500/30 dark:border-rose-500/40' : 'border-amber-500/30 dark:border-amber-500/40'
         )}>
           <CardHeader className="py-3">
-            <CardTitle className={cn('text-sm font-mono font-semibold flex items-center gap-2', isLiveError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')}>
-              <AlertTriangle className={`h-4 w-4 ${isLiveError ? 'animate-wobble-throb' : ''}`} />
-              {isLiveError ? 'Blocked: Error' : 'Error Review'}
-            </CardTitle>
+            <div className="flex flex-wrap items-center gap-2">
+              <CardTitle role="heading" aria-level={2} className={cn('text-sm font-mono font-semibold flex items-center gap-2', isLiveError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')}>
+                <AlertTriangle aria-hidden="true" className={`h-4 w-4 shrink-0 ${isLiveError ? 'animate-wobble-throb' : ''}`} />
+                {getStatusUserLabel(visibleOccurrence?.blockedFromStatus ?? ticket.previousStatus ?? 'BLOCKED_ERROR', statusLabelOptions)}
+              </CardTitle>
+              {!isLiveError && visibleOccurrence && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {visibleOccurrence.resolvedAt || visibleOccurrence.resolutionStatus
+                    ? formatErrorOccurrenceStatus(visibleOccurrence, statusLabelOptions)
+                    : 'Read-only'}
+                </Badge>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-3 pb-3">
-            <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                {visibleOccurrence ? (
-                  <>
-                    <Badge variant={isLiveError ? 'destructive' : 'secondary'} className="text-[10px]">
-                      {formatErrorOccurrenceStatus(visibleOccurrence, statusLabelOptions)}
-                    </Badge>
-                    <Badge variant="outline" className="text-[10px]">
-                      {formatErrorOccurrenceLabel(visibleOccurrence, visibleOccurrence.occurrenceNumber, statusLabelOptions)}
-                    </Badge>
-                  </>
-                ) : (
-                  <Badge variant="destructive" className="text-[10px]">Active</Badge>
+            <div className="rounded-md border border-border bg-muted/40 p-3 space-y-3">
+              <div className="space-y-2">
+                <p className="text-sm font-medium leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">{primaryErrorMessage}</p>
+                {hasDiagnosticSummary && (
+                  <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">{diagnosticSummary}</p>
                 )}
               </div>
-              <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span
-                                                className="flex items-center gap-1"
-                                                title={visibleOccurrence?.occurredAt ? formatTimestampString(visibleOccurrence.occurredAt, { includeMilliseconds: false }) : undefined}
-                                              >
-                                                <Clock3 className="h-3.5 w-3.5" />
-                                                {visibleOccurrence ? `Blocked from ${getStatusUserLabel(visibleOccurrence.blockedFromStatus, statusLabelOptions)}` : 'Blocked error'}
-                                              </span>
-                                </TooltipTrigger>
-                                <TooltipContent className="max-w-xs text-center text-balance">{visibleOccurrence?.occurredAt
-                                                  ? formatTimestampString(visibleOccurrence.occurredAt, { includeMilliseconds: false })
-                                                  : undefined}</TooltipContent>
-                              </Tooltip>
-                {visibleOccurrence?.resolvedAt && (
-                  <span className="flex items-center gap-1">
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    Resolved {formatTimestamp(visibleOccurrence.resolvedAt, { includeMilliseconds: false })}
-                  </span>
-                )}
-              </div>
-              <div className="space-y-1">
-                <h3 className="text-sm font-semibold text-foreground">{errorExplanation.title}</h3>
-                <p className="text-xs text-muted-foreground">{errorExplanation.description}</p>
-                <p className="text-xs text-foreground">
-                  <span className="font-medium">Recommended:</span> {errorExplanation.recommendation}
-                </p>
-              </div>
-              <details className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]">
+              {errorExplanation && (
+                <div className="space-y-1">
+                  <h3 className="text-xs font-semibold text-foreground">{errorExplanation.title}</h3>
+                  <p className="text-xs text-muted-foreground">{errorExplanation.description}</p>
+                  {isLiveError && errorExplanation.recommendation && (
+                    <p className="text-xs text-foreground">{errorExplanation.recommendation}</p>
+                  )}
+                </div>
+              )}
+              {isLiveError && (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-2 justify-end">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setCancelDialogOpen(true)}
+                      disabled={isPending}
+                      className="h-7 text-xs font-mono font-semibold rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/30 hover:bg-rose-500/20 active:scale-[0.98] transition-all"
+                    >
+                      Cancel…
+                    </Button>
+                    {canContinue && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleAction('continue')}
+                            disabled={isPending}
+                            className="h-7 text-xs font-mono font-semibold rounded-lg border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 active:scale-[0.98] transition-all"
+                          >
+                            <CirclePlay className="mr-1 h-3.5 w-3.5" />
+                            Continue
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs text-center text-balance">
+                          Sends only "continue please" to the preserved session. It does not restart the original prompt.
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                    {canEditExecutionSetupPlan && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setEditSetupPlanDialogOpen(true)}
+                        disabled={isPending}
+                        className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
+                      >
+                        <FilePenLine className="mr-1 h-3.5 w-3.5" />
+                        Edit setup plan...
+                      </Button>
+                    )}
+                    {canRetryWithNote && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setRetryNoteError(null)
+                          setRetryNoteDialogOpen(true)
+                        }}
+                        disabled={isPending}
+                        className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
+                      >
+                        <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />
+                        Retry with extra note...
+                      </Button>
+                    )}
+                    {canRetry && (
+                      <Button
+                        size="sm"
+                        onClick={() => handleAction('retry')}
+                        disabled={isPending}
+                        className="h-7 text-xs font-mono font-semibold rounded-lg bg-brand-500 text-brand-50 hover:bg-brand-600 active:scale-[0.98] shadow-xs transition-all"
+                      >
+                        {retryActionLabel}
+                      </Button>
+                    )}
+                  </div>
+                  {actionError && (
+                    <p role="alert" className="text-right text-[11px] leading-snug text-destructive">
+                      {actionError}
+                    </p>
+                  )}
+                  {canContinue && (
+                    <p className="text-right text-[11px] leading-snug text-muted-foreground">
+                      Continue keeps the current OpenCode session and sends only "continue please" after the temporary interruption clears.
+                    </p>
+                  )}
+                </div>
+              )}
+              <details open className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]">
                 <summary className="cursor-pointer font-medium text-foreground">Technical details</summary>
                 <div className="mt-2 space-y-2">
-                  <p className="font-mono text-muted-foreground">{primaryErrorMessage}</p>
+                  {visibleOccurrence && (
+                    <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
+                      <span>Error {visibleOccurrence.occurrenceNumber}</span>
+                      <span className="flex items-center gap-1" title={formatTimestampString(visibleOccurrence.occurredAt, { includeMilliseconds: false })}>
+                        <Clock3 aria-hidden="true" className="h-3.5 w-3.5" />
+                        {formatTimestamp(visibleOccurrence.occurredAt, { includeMilliseconds: false })}
+                      </span>
+                      {visibleOccurrence.resolvedAt && (
+                        <span className="flex items-center gap-1">
+                          <RotateCcw aria-hidden="true" className="h-3.5 w-3.5" />
+                          Resolved {formatTimestamp(visibleOccurrence.resolvedAt, { includeMilliseconds: false })}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {displayErrorCodes.length > 0 && (
                     <div className="flex flex-col items-start gap-1">
                       {displayErrorCodes.map((code, index) => code.includes('\n') || code.length > 120 ? (
@@ -483,13 +554,6 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                   )}
                   {diagnostics && (
                     <div className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground space-y-1.5">
-                      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-foreground">
-                        <Info className="h-3.5 w-3.5" />
-                        Underlying error
-                      </div>
-                      {hasDiagnosticSummary && (
-                        <p className="font-mono whitespace-pre-wrap text-muted-foreground/90">{diagnosticSummary}</p>
-                      )}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
                         {diagnosticRows.map((row) => (
                           <div key={`${row.label}:${row.value}`} className="min-w-0">
@@ -502,7 +566,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                   )}
                 </div>
               </details>
-              {(failedBead || pausedCodingBead || ticket.runtime.activeBeadIteration) && (
+              {(failedBead || pausedCodingBead) && (
                 <div className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground space-y-1">
                   {failedBead && (
                     <div>
@@ -526,9 +590,6 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                       </div>
                     </>
                   )}
-                  <div>
-                    Retryable: {ticket.availableActions.includes('retry') ? 'yes' : 'no'}
-                  </div>
                   {failedBeadNoteGroups.length > 0 && (
                     <div className="space-y-1">
                       {failedBeadNoteGroups.map((group) => (
@@ -551,87 +612,6 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                 </div>
               )}
             </div>
-            {isLiveError && (
-              <div className="space-y-2">
-                <div className="flex flex-wrap gap-2 justify-end">
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => setCancelDialogOpen(true)}
-                    disabled={isPending}
-                    className="h-7 text-xs font-mono font-semibold rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/30 hover:bg-rose-500/20 active:scale-[0.98] transition-all"
-                  >
-                    Cancel…
-                  </Button>
-                  {canContinue && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleAction('continue')}
-                          disabled={isPending}
-                          className="h-7 text-xs font-mono font-semibold rounded-lg border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 active:scale-[0.98] transition-all"
-                        >
-                          <CirclePlay className="mr-1 h-3.5 w-3.5" />
-                          Continue
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-center text-balance">
-                        Sends only "continue please" to the preserved session. It does not restart the original prompt.
-                      </TooltipContent>
-                    </Tooltip>
-                  )}
-                  {canEditExecutionSetupPlan && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setEditSetupPlanDialogOpen(true)}
-                      disabled={isPending}
-                      className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
-                    >
-                      <FilePenLine className="mr-1 h-3.5 w-3.5" />
-                      Edit setup plan...
-                    </Button>
-                  )}
-                  {canRetryWithNote && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setRetryNoteError(null)
-                        setRetryNoteDialogOpen(true)
-                      }}
-                      disabled={isPending}
-                      className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
-                    >
-                      <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />
-                      Retry with extra note...
-                    </Button>
-                  )}
-                  {canRetry && (
-                    <Button
-                      size="sm"
-                      onClick={() => handleAction('retry')}
-                      disabled={isPending}
-                      className="h-7 text-xs font-mono font-semibold rounded-lg bg-brand-500 text-brand-50 hover:bg-brand-600 active:scale-[0.98] shadow-xs transition-all"
-                    >
-                      {retryActionLabel}
-                    </Button>
-                  )}
-                </div>
-                {actionError && (
-                  <p role="alert" className="text-right text-[11px] leading-snug text-destructive">
-                    {actionError}
-                  </p>
-                )}
-                {canContinue && (
-                  <p className="text-right text-[11px] leading-snug text-muted-foreground">
-                    Continue keeps the current OpenCode session and sends only "continue please" after the temporary interruption clears.
-                  </p>
-                )}
-              </div>
-            )}
           </CardContent>
         </Card>
       </div>

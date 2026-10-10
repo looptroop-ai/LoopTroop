@@ -356,8 +356,8 @@ describe('OpenCode v2 fetch transport', () => {
 
   it.each([
     {
-      reason: 'a non-contiguous sequence',
-      raw: { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 6 } },
+      reason: 'a malformed durable event',
+      raw: { type: 'session.inbox.enqueued', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
     },
     {
       reason: 'an unmapped event',
@@ -749,6 +749,120 @@ describe('OpenCode v2 fetch transport', () => {
       done: false,
       value: { cursor: 2, coverageGap: true, event: { type: 'execution_terminal', outcome: 'succeeded' } },
     })
+    await iterator.return?.(undefined)
+  })
+
+  it('certifies public live coverage beyond a hidden watermark and keeps subsequent cursors ordered', async () => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([
+        { type: 'server.connected' },
+        { type: 'session.created', data: { sessionID: 'other' }, durable: { aggregateID: 'other', seq: 100 } },
+        { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 5 } },
+        { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 7 } },
+        { type: 'session.execution.started', data: { sessionID: 'other' }, durable: { aggregateID: 'other', seq: 8 } },
+        { type: 'session.execution.started', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 8 } },
+      ])
+      if (request.url.pathname.endsWith('/log')) return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 6 }])
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 4)
+    expect(subscription).toMatchObject({
+      cursor: 7,
+      coverageComplete: true,
+      initialEvents: [{ cursor: 5 }, { cursor: 7, observedAfter: 5 }],
+    })
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 5 } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 7, observedAfter: 5 } })
+    const next = await iterator.next()
+    expect(next.value).toEqual({ cursor: 8, event: { type: 'execution_started', sessionId: 'session-1' } })
+    await iterator.return?.(undefined)
+  })
+
+  it('rejects an unseen backwards sequence on a public stream', async () => {
+    const { transport } = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream([
+        { type: 'server.connected' },
+        { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 3 } },
+        { type: 'session.inbox.enqueued', data: { sessionID: 'session-1', inboxID: 'late-inbox' }, durable: { aggregateID: 'session-1', seq: 2 } },
+      ])
+      if (request.url.pathname.endsWith('/log')) return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 0 }])
+      throw new Error(`Unexpected ${request.method} ${request.url}`)
+    })
+
+    const subscription = await transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 3, observedAfter: 0 } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 2, coverageGap: true } })
+    await iterator.return?.(undefined)
+  })
+
+  it.each([
+    { reason: 'a fractional sequence', raw: { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 2.5 } } },
+    { reason: 'a negative sequence', raw: { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: -2 } } },
+    { reason: 'an unsafe integer sequence', raw: { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: Number.MAX_SAFE_INTEGER + 1 } } },
+    { reason: 'missing durable routing', raw: { type: 'session.inbox.enqueued' } },
+    { reason: 'an unknown event without an aggregate', raw: { type: 'session.future.event', durable: { seq: 2 } } },
+    { reason: 'a null durable envelope', raw: { type: 'session.future.event', durable: null } },
+    { reason: 'conflicting session routing', raw: { type: 'session.inbox.enqueued', data: { sessionID: 'other', inboxID: 'inbox-1' }, durable: { aggregateID: 'session-1', seq: 2 } } },
+  ])('does not certify public coverage across $reason', async ({ raw }) => {
+    const publicEvents = [
+      { type: 'server.connected' },
+      { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
+      raw,
+      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 3 } },
+    ]
+    const initial = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
+      return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 3 }])
+    })
+    const uncertified = await initial.transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 0)
+    expect(uncertified.coverageComplete).toBe(false)
+    await uncertified.close!()
+
+    const following = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
+      return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 0 }])
+    })
+
+    const subscription = await following.transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 1 } })
+    const next = await iterator.next()
+    expect(next.value).toMatchObject({ cursor: 3, coverageGap: true })
+    expect(next.value).not.toHaveProperty('observedAfter')
+    await iterator.return?.(undefined)
+  })
+
+  it.each([null, {}, { type: 23 }])('requires complete replay after an invalid public event frame: %j', async (invalid) => {
+    const publicEvents = [
+      { type: 'server.connected' },
+      { type: 'session.created', data: { sessionID: 'session-1' }, durable: { aggregateID: 'session-1', seq: 1 } },
+      invalid,
+      { type: 'session.renamed', data: { sessionID: 'session-1', title: 'New title' }, durable: { aggregateID: 'session-1', seq: 3 } },
+    ]
+    const initial = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
+      return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 3 }])
+    })
+    const uncertified = await initial.transport.subscribeToEvents('session-1', '/workspace', undefined, undefined, 0)
+    expect(uncertified.coverageComplete).toBe(false)
+    await uncertified.close!()
+
+    const following = createTransport(request => {
+      if (request.url.pathname === '/api/event') return eventStream(publicEvents)
+      if (request.url.pathname.endsWith('/permission')) return jsonResponse({ data: [] })
+      if (request.url.searchParams.get('after') === '1') return eventStream([
+        publicEvents[3],
+        { type: 'log.synced', aggregateID: 'session-1', seq: 3 },
+      ])
+      return eventStream([{ type: 'log.synced', aggregateID: 'session-1', seq: 0 }])
+    })
+    const subscription = await following.transport.subscribeToEvents('session-1', '/workspace')
+    const iterator = subscription.events[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 1 } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { cursor: 3, coverageGap: true } })
     await iterator.return?.(undefined)
   })
 

@@ -19,6 +19,7 @@ import {
   mapV2Question,
   mapV2QuestionAnswer,
   mapV2Session,
+  V2_DURABLE_EVENT_TYPES,
 } from './v2Mapping'
 import { MESSAGE_LIST_LIMIT, SDK_OPERATION_TIMEOUT_MS, SESSION_LIST_LIMIT } from '../lib/constants'
 
@@ -193,16 +194,17 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       await closeConnections()
       throw error
     }
-    const cursor = scan.cursor
+    let cursor = scan.cursor
     let coverageComplete = scan.coverageComplete && scan.hasWatermark && !scan.hasUnmappedEvents
     if (afterCursor !== undefined && !coverageComplete && !scan.hasUnmappedEvents && scan.hasWatermark) {
-      // With persist=false the log supplies a watermark but no payloads. The
-      // event stream was opened first, so it can certify that range only when
-      // every session sequence from the requested cursor through that
-      // watermark is observed live before the subscription is returned.
+      // With persist=false the log supplies a watermark but no payloads.
+      // The public stream omits internal durable events such as title usage.
+      // It certifies the range while continuously connected; replay must still
+      // account for every durable sequence after a disconnect.
       const liveEvents: OpenCodeTransportEventEnvelope[] = []
       const liveState = createV2EventMappingState()
       let liveCursor = afterCursor
+      const liveSequences = new Set<number>()
       let streamGap = false
       const deadline = Date.now() + OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS
       try {
@@ -212,7 +214,8 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           const result = await connection.next(remaining, 'OpenCode v2 live event coverage did not reach log.synced')
           if (result.done) throw new Error('OpenCode v2 event stream ended before live coverage reached log.synced')
           const raw = asRecord(result.value)
-          if (!raw || raw.type === 'server.connected') continue
+          if (!raw || typeof raw.type !== 'string') throw new Error('OpenCode v2 event stream returned an invalid event')
+          if (raw.type === 'server.connected') continue
 
           const durable = asRecord(raw.durable)
           const aggregateID = stringValue(durable?.aggregateID)
@@ -220,9 +223,15 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           const data = asRecord(raw.data)
           const rawSessionID = stringValue(data?.sessionID)
             ?? stringValue(asRecord(data?.form)?.sessionID)
+          if ((raw.durable !== undefined || V2_DURABLE_EVENT_TYPES.has(raw.type))
+            && (!aggregateID || sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 0
+              || (rawSessionID !== undefined && rawSessionID !== aggregateID))) {
+            streamGap = true
+            break
+          }
           if (aggregateID === sessionId && sequence !== undefined && Number.isSafeInteger(sequence)) {
-            if (sequence <= liveCursor) continue
-            if (sequence !== liveCursor + 1) {
+            if (sequence <= afterCursor || liveSequences.has(sequence)) continue
+            if (sequence <= liveCursor) {
               streamGap = true
               break
             }
@@ -231,14 +240,15 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               streamGap = true
               break
             }
-            liveEvents.push(mapped)
+            liveEvents.push(sequence === liveCursor + 1 ? mapped : { ...mapped, observedAfter: liveCursor })
+            liveSequences.add(sequence)
             liveCursor = sequence
           } else if (rawSessionID === sessionId) {
             const mapped = mapV2Event(raw, sessionId, liveState)
             if (mapped) liveEvents.push(mapped)
           }
         }
-        coverageComplete = !streamGap && liveCursor === cursor
+        coverageComplete = !streamGap && liveCursor >= cursor
       } catch {
         if (signal?.aborted) {
           await closeConnections()
@@ -252,6 +262,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         // mapping of text/tool frames.
         backlog = liveEvents
         mappingState = liveState
+        cursor = liveCursor
       } else if (streamGap) {
         backlog = [...liveEvents, { cursor: liveCursor + 1, coverageGap: true }]
       }
@@ -734,26 +745,38 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           const result = await connection.next()
           if (result.done) throw new Error('OpenCode v2 event stream closed')
           const raw = asRecord(result.value)
-          if (!raw || raw.type === 'server.connected') continue
-          const sequence = numberValue(asRecord(raw.durable)?.seq)
-          if (sequence !== undefined && sequence <= coveredThrough) continue
-          if (sequence !== undefined && seen.has(sequence)) continue
+          if (!raw || typeof raw.type !== 'string') throw new Error('OpenCode v2 event stream returned an invalid event')
+          if (raw.type === 'server.connected') continue
           const rawSessionId = stringValue(asRecord(raw.data)?.sessionID)
             ?? stringValue(asRecord(asRecord(raw.data)?.form)?.sessionID)
           const aggregateId = stringValue(asRecord(raw.durable)?.aggregateID)
-          const belongsToSession = rawSessionId === sessionId || aggregateId === sessionId
-          if (sequence !== undefined && belongsToSession) {
-            if (sequence !== cursor + 1) coverageGap = true
+          const sequence = numberValue(asRecord(raw.durable)?.seq)
+          if ((raw.durable !== undefined || V2_DURABLE_EVENT_TYPES.has(raw.type))
+            && (!aggregateId || sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 0
+              || (rawSessionId !== undefined && rawSessionId !== aggregateId))) {
+            coverageGap = true
+            continue
+          }
+          if (rawSessionId !== sessionId && aggregateId !== sessionId) continue
+          if (sequence !== undefined && sequence <= coveredThrough) continue
+          if (sequence !== undefined && seen.has(sequence)) continue
+          const observedAfter = cursor
+          if (sequence !== undefined) {
+            if (sequence <= cursor) coverageGap = true
             seen.add(sequence)
             cursor = Math.max(cursor, sequence)
           }
 
           const mapped = mapV2Event(raw, sessionId, state)
           if (!mapped) {
-            if (sequence !== undefined && belongsToSession) coverageGap = true
+            if (sequence !== undefined) coverageGap = true
             continue
           }
-          yield coverageGap ? { ...mapped, coverageGap: true } : mapped
+          yield coverageGap
+            ? { ...mapped, coverageGap: true }
+            : sequence !== undefined && sequence > observedAfter + 1
+              ? { ...mapped, observedAfter }
+              : mapped
         } catch (error) {
           if (signal?.aborted) throw signal.reason
           reconnects++

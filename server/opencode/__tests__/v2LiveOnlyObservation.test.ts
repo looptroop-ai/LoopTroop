@@ -5,7 +5,7 @@ import { V2OpenCodeTransport } from '../v2Transport'
 const encoder = new TextEncoder()
 const startCursor = 73
 
-type LiveEvent = { type: string; seq: number; data: Record<string, unknown> }
+type LiveEvent = { type: string; seq?: number; data: Record<string, unknown> }
 
 interface LiveOnlyServerOptions {
   historicalEvents?: LiveEvent[]
@@ -73,11 +73,11 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
   const waitStarted = deferred()
 
   const emit = (event: LiveEvent) => {
-    currentWatermark = Math.max(currentWatermark, event.seq)
+    if (event.seq !== undefined) currentWatermark = Math.max(currentWatermark, event.seq)
     eventController?.enqueue(encodeEvent({
       type: event.type,
       data: event.data,
-      durable: { aggregateID: 'session-1', seq: event.seq },
+      ...(event.seq !== undefined ? { durable: { aggregateID: 'session-1', seq: event.seq } } : {}),
     }))
   }
 
@@ -126,7 +126,7 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
         }), { headers: { 'content-type': 'text/event-stream' } })
       }
       const events: unknown[] = (options.historicalEvents ?? [])
-        .filter(event => after === null || event.seq > Number(after))
+        .filter(event => after === null || (event.seq !== undefined && event.seq > Number(after)))
         .map(event => ({
           type: event.type,
           data: event.data,
@@ -202,6 +202,64 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
 const promptParts = [{ type: 'text' as const, content: 'prompt' }]
 
 describe('OpenCode v2 live-only event coverage', () => {
+  it('attributes a scan across internal title-usage sequences omitted from the public stream', async () => {
+    const server = createLiveOnlyServer({
+      onPrompt(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 2, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        // Title usage consumes +4 internally; only the ephemeral totals and title reach clients.
+        emit({ type: 'session.usage.updated', data: { sessionID: 'session-1', cost: 0, tokens: { input: 1298, output: 14 } } })
+        emit({ type: 'session.renamed', seq: startCursor + 5, data: { sessionID: 'session-1', title: 'Planning the scan' } })
+        emit({ type: 'session.step.started', seq: startCursor + 6, data: { sessionID: 'session-1', assistantMessageID: 'assistant-own' } })
+        emit({ type: 'session.step.ended', seq: startCursor + 7, data: { sessionID: 'session-1', assistantMessageID: 'assistant-own', finish: 'stop' } })
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 8, data: { sessionID: 'session-1' } })
+      },
+    })
+
+    await expect(server.adapter.promptSession('session-1', promptParts)).resolves.toBe('live answer')
+    expect(server.promptPostCount).toBe(1)
+    expect(server.logPayloadCount).toBe(0)
+  })
+
+  it('keeps preflight coverage across hidden usage while an earlier prompt drains', async () => {
+    const server = createLiveOnlyServer({
+      onConnect(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1', inboxID: 'inbox-old' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 2, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-old' } })
+        emit({ type: 'session.renamed', seq: startCursor + 5, data: { sessionID: 'session-1', title: 'Previous turn' } })
+      },
+      onWait(emit) {
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 6, data: { sessionID: 'session-1' } })
+      },
+      onPrompt(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 7, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.started', seq: startCursor + 8, data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 9, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 10, data: { sessionID: 'session-1' } })
+      },
+    })
+
+    await expect(server.adapter.promptSession('session-1', promptParts)).resolves.toBe('live answer')
+    expect(server.promptPostCount).toBe(1)
+    expect(server.logPayloadCount).toBe(0)
+  })
+
+  it('rejects a durable lifecycle event without its envelope instead of treating it as hidden accounting', async () => {
+    const server = createLiveOnlyServer({
+      onPrompt(emit) {
+        emit({ type: 'session.inbox.enqueued', seq: startCursor + 1, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.started', data: { sessionID: 'session-1' } })
+        emit({ type: 'session.inbox.delivered', seq: startCursor + 3, data: { sessionID: 'session-1', inboxID: 'inbox-own' } })
+        emit({ type: 'session.execution.succeeded', seq: startCursor + 4, data: { sessionID: 'session-1' } })
+      },
+    })
+
+    await expect(server.adapter.promptSession('session-1', promptParts)).rejects.toThrow('durable sequence gap')
+    expect(server.promptPostCount).toBe(1)
+  })
+
   it('uses contiguous live events through a positive watermark when a reused session has empty replay', async () => {
     const server = createLiveOnlyServer({
       onConnect(emit) {
@@ -278,13 +336,14 @@ describe('OpenCode v2 live-only event coverage', () => {
     expect(server.promptPostCount).toBe(1)
   })
 
-  it('refuses a missing sequence after a nonempty reserved historical boundary', async () => {
+  it('refuses unmapped public activity after a nonempty reserved historical boundary', async () => {
     const server = createLiveOnlyServer({
       historicalEvents: [
         { type: 'session.inbox.enqueued', seq: 1, data: { sessionID: 'session-1', inboxID: 'inbox-old-1' } },
         { type: 'session.inbox.enqueued', seq: 3, data: { sessionID: 'session-1', inboxID: 'inbox-old-2' } },
       ],
       onConnect(emit) {
+        emit({ type: 'session.unrecognized', seq: startCursor + 1, data: { sessionID: 'session-1' } })
         emit({ type: 'session.inbox.enqueued', seq: startCursor + 2, data: { sessionID: 'session-1', inboxID: 'inbox-gap' } })
       },
     })

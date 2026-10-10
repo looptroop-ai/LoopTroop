@@ -317,7 +317,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         if (envelope.coverageGap) preflightCoverageGap = true
         if (typeof envelope.cursor === 'number') {
           if (preflightCursor !== undefined && envelope.cursor > preflightCursor) {
-            if (envelope.cursor !== preflightCursor + 1) {
+            if (envelope.cursor !== preflightCursor + 1 && envelope.observedAfter !== preflightCursor) {
               preflightCoverageGap = true
               forwarded = { ...envelope, coverageGap: true }
             }
@@ -706,7 +706,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
         if (transport.protocol === 'v2' && typeof envelope.cursor === 'number') {
           if (lastCursor !== undefined && envelope.cursor <= lastCursor) return
-          if (lastCursor !== undefined && envelope.cursor !== lastCursor + 1) {
+          if (lastCursor !== undefined && envelope.cursor !== lastCursor + 1 && envelope.observedAfter !== lastCursor) {
             lifecycle.failure = 'OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.'
             finishLifecycle({ kind: 'conflict', error: lifecycle.failure })
             return

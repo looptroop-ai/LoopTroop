@@ -56,7 +56,9 @@ export interface OpenCodeTransportEventEnvelope {
   /** Absent when a known durable event only advances the session cursor. */
   event?: OpenCodeTransportEvent
   cursor?: number
-  /** A prior durable sequence gap means this and later events cannot certify attribution. */
+  /** Previous cursor on an uninterrupted public stream, which omits internal durable events. */
+  observedAfter?: number
+  /** Missing replay or an unmapped durable event makes this and later events unsafe. */
   coverageGap?: true
 }
 

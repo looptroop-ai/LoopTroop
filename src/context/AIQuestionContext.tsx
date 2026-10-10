@@ -177,6 +177,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const [requests, setRequests] = useState<Record<string, AiQuestionRequest>>({})
   const [timers, setTimers] = useState<Record<string, AiQuestionTimerState>>({})
   const [dismissedTickets, setDismissedTickets] = useState<Set<string>>(new Set())
+  const submittingRequestsRef = useRef(new Set<string>())
   /**
    * How far this browser's clock is ahead of the server's.
    *
@@ -687,6 +688,10 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       candidate.ticketId === ticketId && candidate.requestId === requestId
     ))
     if (!request) return
+    const key = requestKey(request.sessionId, requestId)
+    if (submittingRequestsRef.current.has(key)) return
+    // React batches state updates, so claim the request before posting.
+    submittingRequestsRef.current.add(key)
     setSubmitting(request.sessionId, requestId, true)
     void fetch(path, {
       method: 'POST',
@@ -701,6 +706,8 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       void queryClient.invalidateQueries({ queryKey: ['tickets'] })
     }).catch((error: unknown) => {
       setSubmitting(request.sessionId, requestId, false, getErrorMessage(error))
+    }).finally(() => {
+      submittingRequestsRef.current.delete(key)
     })
   }, [removeRequest, requests, setSubmitting])
 

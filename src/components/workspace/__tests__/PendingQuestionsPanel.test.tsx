@@ -60,12 +60,16 @@ function makeTimer(overrides: Partial<AiQuestionTimerState> = {}): AiQuestionTim
 
 function renderPanel(overrides: Parameters<typeof createAiQuestionContextStub>[0] = {}) {
   const value = createAiQuestionContextStub(overrides)
-  render(
+  const view = render(
     <AIQuestionContext.Provider value={value}>
       <PendingQuestionsPanel ticketId={TICKET_ID} />
     </AIQuestionContext.Provider>,
   )
-  return value
+  return { update: () => view.rerender(
+    <AIQuestionContext.Provider value={value}>
+      <PendingQuestionsPanel ticketId={TICKET_ID} />
+    </AIQuestionContext.Provider>,
+  ) }
 }
 
 describe('PendingQuestionsPanel', () => {
@@ -134,9 +138,9 @@ describe('PendingQuestionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
     expect(stopTimer).toHaveBeenCalledWith(TICKET_ID)
     expect(skipRequest).not.toHaveBeenCalled()
-    expect(screen.getByText(/all 3 pending questions across every model tab/i)).toBeInTheDocument()
+    expect(screen.getByText(/all 3 pending questions in 2 requests/i)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: '  Use your judgment.  ' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 3 questions' }))
 
     expect(skipRequest).toHaveBeenCalledTimes(2)
     expect(skipRequest).toHaveBeenNthCalledWith(1, TICKET_ID, 'req_a', 'Use your judgment.')
@@ -156,7 +160,7 @@ describe('PendingQuestionsPanel', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 2 questions' }))
 
     expect(skipRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_a', null)
   })
@@ -185,6 +189,230 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByRole('button', { name: 'Skip all' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Skip' })).toBeEnabled()
     expect(screen.getByRole('textbox')).toBeEnabled()
+  })
+
+  it('clears a request-specific skip draft when its request resolves elsewhere', () => {
+    let requests = [makeRequest(), makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })]
+    const skipRequest = vi.fn()
+    const view = renderPanel({ getTicketRequests: () => requests, skipRequest })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: 'Only for request A' } })
+
+    requests = requests.slice(1)
+    view.update()
+
+    expect(screen.queryByLabelText(/skip reason/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(screen.getByLabelText(/skip reason/i)).toHaveValue('')
+    fireEvent.click(screen.getByRole('button', { name: 'Skip this question' }))
+    expect(skipRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_b', null)
+  })
+
+  it('starts a later batch without the previous bulk confirmation or reason', () => {
+    let requests = [makeRequest(), makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })]
+    const view = renderPanel({ getTicketRequests: () => requests })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: 'For this batch only' } })
+
+    requests = []
+    view.update()
+    expect(screen.queryByRole('region', { name: 'AI questions' })).not.toBeInTheDocument()
+    requests = [makeRequest({ sessionId: 'ses_c', requestId: 'req_c' })]
+    view.update()
+
+    expect(screen.queryByLabelText(/skip reason/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+  })
+
+  it('keeps the bulk reason while checking another model tab', () => {
+    const skipRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest(), makeRequest({
+        sessionId: 'ses_b', requestId: 'req_b', modelId: 'openai/gpt-5',
+      })],
+      skipRequest,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: 'Shared reason' } })
+    fireEvent.click(screen.getByRole('tab', { name: /gpt-5/i }))
+
+    expect(screen.getByLabelText(/skip reason/i)).toHaveValue('Shared reason')
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 2 questions' }))
+    expect(skipRequest).toHaveBeenCalledTimes(2)
+    expect(skipRequest).toHaveBeenNthCalledWith(1, TICKET_ID, 'req_a', 'Shared reason')
+    expect(skipRequest).toHaveBeenNthCalledWith(2, TICKET_ID, 'req_b', 'Shared reason')
+  })
+
+  it('includes questions that arrive before bulk confirmation and clears the completed draft', () => {
+    const first = makeRequest()
+    const second = makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })
+    const later = makeRequest({ sessionId: 'ses_c', requestId: 'req_c' })
+    let requests = [first, second]
+    const skipRequest = vi.fn()
+    const view = renderPanel({ getTicketRequests: () => requests, skipRequest })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: '   ' } })
+
+    requests = [first, second, later]
+    view.update()
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 3 questions' }))
+    expect(skipRequest.mock.calls).toEqual([
+      [TICKET_ID, 'req_a', null], [TICKET_ID, 'req_b', null], [TICKET_ID, 'req_c', null],
+    ])
+
+    requests = [{ ...later, error: 'Later request failed' }]
+    view.update()
+    expect(screen.getByRole('button', { name: 'Skip all 1 question' })).toBeEnabled()
+    expect(screen.getByLabelText(/skip reason/i)).toHaveValue('   ')
+
+    // A new request after confirmation must not inherit the finished draft.
+    requests = [makeRequest({ sessionId: 'ses_d', requestId: 'req_d' })]
+    view.update()
+    expect(screen.queryByLabelText(/skip reason/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+  })
+
+  it('shows every bulk failure and keeps the shared reason for retry across tabs', () => {
+    const first = makeRequest()
+    const second = makeRequest({ sessionId: 'ses_b', requestId: 'req_b', modelId: 'openai/gpt-5' })
+    const third = makeRequest({ sessionId: 'ses_c', requestId: 'req_c', modelId: 'google/gemini-2' })
+    let requests = [first, second, third]
+    const skipRequest = vi.fn()
+    const view = renderPanel({ getTicketRequests: () => requests, skipRequest })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: 'Shared reason' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 3 questions' }))
+
+    requests = [{ ...second, error: 'Second failed' }, { ...third, error: 'Third failed' }]
+    view.update()
+    const failures = screen.getByRole('alert')
+    expect(failures).toHaveTextContent('2 requests failed to skip')
+    expect(failures).toHaveTextContent('gpt-5: Second failed')
+    expect(failures).toHaveTextContent('gemini-2: Third failed')
+    fireEvent.click(screen.getByRole('tab', { name: /gemini-2/i }))
+    expect(screen.getByLabelText(/skip reason/i)).toHaveValue('Shared reason')
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 2 questions' }))
+    expect(skipRequest.mock.calls.slice(3)).toEqual([
+      [TICKET_ID, 'req_b', 'Shared reason'], [TICKET_ID, 'req_c', 'Shared reason'],
+    ])
+  })
+
+  it('disables bulk confirmation and shortcuts for a submission that starts on another tab', () => {
+    const first = makeRequest()
+    const second = makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })
+    let requests = [first, second]
+    const skipRequest = vi.fn()
+    const view = renderPanel({ getTicketRequests: () => requests, skipRequest })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    requests = [first, { ...second, submitting: true }]
+    view.update()
+
+    expect(screen.getByRole('button', { name: 'Skip all 2 questions' })).toBeDisabled()
+    expect(screen.getByLabelText(/skip reason/i)).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    fireEvent.keyDown(screen.getByLabelText(/skip reason/i), { key: 'Enter', ctrlKey: true })
+    expect(skipRequest).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeEnabled()
+  })
+
+  it('names the selected batch when confirming ordinary Skip and warns bulk council skips about quorum', () => {
+    const skipRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({ phase: 'DRAFTING_PRD', questions: [
+        { header: 'One', question: 'First?', options: [] },
+        { header: 'Two', question: 'Second?', options: [] },
+      ] }), makeRequest({ sessionId: 'ses_b', requestId: 'req_b', phase: 'DRAFTING_PRD' })],
+      skipRequest,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip this request (2 questions)' }))
+    expect(skipRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_a', null)
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    expect(screen.getByText(/below quorum and block the ticket/)).toBeInTheDocument()
+  })
+
+  it('clears a cancelled reason before opening a different skip scope', () => {
+    renderPanel({
+      getTicketRequests: () => [makeRequest(), makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: 'Bulk reason' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(screen.getByRole('button', { name: 'Skip' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+    expect(screen.getByLabelText(/skip reason/i)).toHaveValue('')
+  })
+
+  it('submits answers and confirms skips from their textareas with Ctrl or Cmd+Enter', () => {
+    const answerRequest = vi.fn()
+    const skipRequest = vi.fn()
+    renderPanel({ getTicketRequests: () => [makeRequest()], answerRequest, skipRequest })
+    const answer = screen.getByRole('textbox')
+    fireEvent.keyDown(answer, { key: 'Enter', ctrlKey: true })
+    expect(answerRequest).not.toHaveBeenCalled()
+    fireEvent.change(answer, { target: { value: 'Use the default' } })
+    fireEvent.keyDown(answer, { key: 'Enter' })
+    expect(answerRequest).not.toHaveBeenCalled()
+    fireEvent.keyDown(answer, { key: 'Enter', ctrlKey: true })
+    expect(answerRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_a', [['Use the default']])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(answer).toBeDisabled()
+    const reason = screen.getByLabelText(/skip reason/i)
+    fireEvent.change(reason, { target: { value: 'Let the model decide' } })
+    fireEvent.keyDown(reason, { key: 'Enter', metaKey: true })
+    expect(skipRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_a', 'Let the model decide')
+  })
+
+  it('clears a skip confirmation when collapsing and removes unmounted ARIA references', () => {
+    renderPanel({
+      getTicketRequests: () => [makeRequest(), makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })],
+    })
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs[0]).toHaveAttribute('aria-controls', 'question-panel-req_a')
+    expect(tabs[1]).not.toHaveAttribute('aria-controls')
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
+    fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: 'Old reason' } })
+    const toggle = screen.getByRole('button', { name: 'AI questions' })
+    fireEvent.click(toggle)
+    expect(toggle).not.toHaveAttribute('aria-controls')
+    fireEvent.click(toggle)
+    expect(screen.queryByLabelText(/skip reason/i)).not.toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-controls', 'pending-questions-body')
+  })
+
+  it('does not let a double-click on Skip all confirm the rejection', () => {
+    const skipRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest(), makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })],
+      skipRequest,
+    })
+    const trigger = screen.getByRole('button', { name: 'Skip all' })
+    fireEvent.click(trigger, { detail: 1 })
+    fireEvent.click(trigger, { detail: 2 })
+    expect(skipRequest).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Skip all 2 questions' })).not.toBe(trigger)
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 2 questions' }), { detail: 1 })
+    expect(skipRequest).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends the selected model batch while leaving other model requests alone', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({ questions: [
+        { header: 'One', question: 'First?', options: [{ label: 'Yes' }] },
+        { header: 'Two', question: 'Second?', options: [{ label: 'No' }] },
+      ] }), makeRequest({ sessionId: 'ses_b', requestId: 'req_b' })],
+      answerRequest,
+    })
+    fireEvent.click(screen.getByLabelText('Yes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByLabelText('No'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }))
+    expect(answerRequest).toHaveBeenCalledExactlyOnceWith(TICKET_ID, 'req_a', [['Yes'], ['No']])
   })
 
   it('reloads pending questions when the panel mounts after a reconnect', () => {
@@ -545,15 +773,15 @@ describe('PendingQuestionsPanel', () => {
       answerRequest,
     })
 
-    expect(screen.getByRole('button', { name: 'Send all answers' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send answers' })).toBeDisabled()
     fireEvent.click(screen.getByLabelText('Yes'))
     // OpenCode takes every answer in one payload, so a half-filled batch is not
     // sendable — the other question would arrive empty.
-    expect(screen.getByRole('button', { name: 'Send all answers' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send answers' })).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
     fireEvent.click(screen.getByLabelText('No'))
-    expect(screen.getByRole('button', { name: 'Send all answers' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Send answers' })).toBeEnabled()
   })
 
   it('moves backward between batch questions and can back out of skipping', () => {

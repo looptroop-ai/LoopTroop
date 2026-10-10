@@ -688,13 +688,18 @@ describe('AIQuestionProvider', () => {
     ]
     const rejectPath = (requestId: string) => `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions/${requestId}/reject`
     const pendingRejections = new Map<string, (response: Response) => void>()
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/reject')) {
         return new Promise<Response>((resolve) => pendingRejections.set(url, resolve))
       }
-      return new Response(JSON.stringify({ questions, timers: {} }), { status: 200 })
+      return Promise.resolve(new Response(JSON.stringify({ questions, timers: {} }), { status: 200 }))
     })
+    const resolveRejection = (requestId: string, response: Response) => {
+      const resolve = pendingRejections.get(rejectPath(requestId))
+      if (!resolve) throw new Error(`No pending rejection for ${requestId}`)
+      resolve(response)
+    }
     vi.stubGlobal('EventSource', MockEventSource)
     vi.stubGlobal('fetch', fetchMock)
 
@@ -706,39 +711,87 @@ describe('AIQuestionProvider', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
     fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: '  Not my decision.  ' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 2 questions' }))
 
     const rejectionCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/reject'))
     expect(rejectionCalls().map(([input, init]) => ({ path: String(input), body: JSON.parse(String(init?.body)) }))).toEqual([
       { path: rejectPath('question-1'), body: { reason: 'Not my decision.' } },
       { path: rejectPath('question-2'), body: { reason: 'Not my decision.' } },
     ])
-    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Skip all questions' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Skip all 2 questions' })).toBeDisabled()
     expect(screen.getByLabelText(/skip reason/i)).toBeDisabled()
 
-    await act(async () => pendingRejections.get(rejectPath('question-1'))!(new Response('{}', { status: 200 })))
+    await act(() => resolveRejection('question-1', new Response('{}', { status: 200 })))
     expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Skip all questions' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Skip all 1 question' })).toBeDisabled()
 
-    await act(async () => pendingRejections.get(rejectPath('question-2'))!(new Response(
+    await act(() => resolveRejection('question-2', new Response(
       JSON.stringify({ error: 'OpenCode unavailable' }), { status: 500 },
     )))
-    expect(await screen.findByText('Could not skip that question (HTTP 500: OpenCode unavailable)')).toBeInTheDocument()
+    expect(await screen.findByText(/Could not skip that question \(HTTP 500: OpenCode unavailable\)/)).toBeInTheDocument()
     expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Skip all questions' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Skip all 1 question' })).toBeEnabled()
     expect(screen.getByLabelText(/skip reason/i)).toBeEnabled()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all 1 question' }))
     expect(rejectionCalls()).toHaveLength(3)
     expect(rejectionCalls()[2]).toEqual([
       rejectPath('question-2'),
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'Not my decision.' }) }),
     ])
-    await act(async () => pendingRejections.get(rejectPath('question-2'))!(new Response('{}', { status: 200 })))
+    await act(() => resolveRejection('question-2', new Response('{}', { status: 200 })))
     await waitFor(() => expect(screen.getByText('pending:0 requests:0')).toBeInTheDocument())
     expect(screen.queryByRole('region', { name: 'AI questions' })).not.toBeInTheDocument()
+  })
+
+  it('deduplicates rapid skips and replies per request and permits retry after failure', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    const questions = [buildQuestion(ticket.id), buildQuestion(ticket.id, { requestId: 'question-2' })]
+    const rejectPath = (requestId: string) => `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions/${requestId}/reject`
+    let resolveRejection: ((response: Response) => void) | undefined
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/question-1/reject')) {
+        return new Promise<Response>((resolve) => { resolveRejection = resolve })
+      }
+      return Promise.resolve(new Response(JSON.stringify({ questions, timers: {} }), { status: 200 }))
+    })
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', fetchMock)
+
+    function RapidSubmissions() {
+      const { skipRequest, answerRequest } = useAIQuestions()
+      return <button onClick={() => {
+        skipRequest(ticket.id, 'question-1', null)
+        skipRequest(ticket.id, 'question-1', null)
+        answerRequest(ticket.id, 'question-1', [['Small']])
+        skipRequest(ticket.id, 'question-2', null)
+      }}>skip twice</button>
+    }
+
+    renderProvider([ticket], <><Counts ticketId={ticket.id} /><RapidSubmissions /></>)
+    await waitFor(() => expect(screen.getByText('pending:2 requests:2')).toBeInTheDocument())
+    const mutationPaths = () => fetchMock.mock.calls.map(([input]) => String(input))
+      .filter((url) => url.endsWith('/reject') || url.endsWith('/reply'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'skip twice' }))
+    expect(mutationPaths()).toEqual([rejectPath('question-1'), rejectPath('question-2')])
+
+    await act(() => {
+      if (!resolveRejection) throw new Error('No pending rejection')
+      resolveRejection(new Response(JSON.stringify({ error: 'OpenCode unavailable' }), { status: 500 }))
+    })
+    expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'skip twice' }))
+    expect(mutationPaths()).toEqual([rejectPath('question-1'), rejectPath('question-2'), rejectPath('question-1')])
+    await act(() => {
+      if (!resolveRejection) throw new Error('No pending rejection')
+      resolveRejection(new Response('{}', { status: 200 }))
+    })
+    await waitFor(() => expect(screen.getByText('pending:0 requests:0')).toBeInTheDocument())
   })
 
   it('does not let a slow per-ticket refresh undo a newer live update', async () => {

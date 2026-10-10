@@ -1,39 +1,46 @@
-import type { OpenCodeAdapter } from '../../opencode/adapter'
-import type { PromptPart, StreamEvent } from '../../opencode/types'
-import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
-import { buildConversationalPrompt, PROM4, PROM4_FINAL_INTERVIEW_SCHEMA } from '../../prompts/index'
+import type { OpenCodeAdapter } from "../../opencode/adapter";
+import type { PromptPart, StreamEvent } from "../../opencode/types";
+import {
+  buildMinimalContext,
+  type TicketState,
+} from "../../opencode/contextBuilder";
+import {
+  buildConversationalPrompt,
+  PROM4,
+  PROM4_FINAL_INTERVIEW_SCHEMA,
+} from "../../prompts/index";
 import {
   runOpenCodePrompt,
   runOpenCodeSessionPrompt,
   type OpenCodePromptDispatchEvent,
-} from '../../workflow/runOpenCodePrompt'
-import { throwIfAborted } from '../../council/types'
-import { throwIfCancelled } from '../../lib/abort'
-import type { OpenCodeResponseMeta } from '../../opencode/assistantMessageAnalysis'
+} from "../../workflow/runOpenCodePrompt";
+import { throwIfAborted } from "../../council/types";
+import { throwIfCancelled } from "../../lib/abort";
+import type { OpenCodeResponseMeta } from "../../opencode/assistantMessageAnalysis";
 import {
   buildStructuredRetryPrompt,
   buildStructuredOutputMetadata,
   normalizeInterviewTurnOutput,
   type InterviewTurnOutput,
   type StructuredOutputMetadata,
-} from '../../structuredOutput'
-import { calculateFollowUpLimit } from './followUpBudget'
+} from "../../structuredOutput";
+import { calculateFollowUpLimit } from "./followUpBudget";
 import {
   COUNCIL_RESPONSE_TIMEOUT_MS,
   MAX_MULTIPLE_CHOICE_OPTIONS,
   MAX_SINGLE_CHOICE_OPTIONS,
-} from '../../lib/constants'
-import type { InterviewSessionSnapshot } from '@shared/interviewSession'
-import { buildInterviewQuestionViews } from './sessionState'
-import { SessionManager } from '../../opencode/sessionManager'
-import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
-import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
+} from "../../lib/constants";
+import type { InterviewSessionSnapshot } from "@shared/interviewSession";
+import { buildInterviewQuestionViews } from "./sessionState";
+import { SessionManager } from "../../opencode/sessionManager";
+import { getStructuredRetryDecision } from "../../lib/structuredOutputRetry";
+import { normalizeStructuredRetryCount } from "../../lib/structuredRetryPolicy";
 import {
   attachOpenCodeBlockedErrorDiagnostics,
   buildOpenCodeBlockedErrorDiagnostics,
-} from '../../opencode/blockedErrorDiagnostics'
+} from "../../opencode/blockedErrorDiagnostics";
 
-export { calculateFollowUpLimit } from './followUpBudget'
+export { calculateFollowUpLimit } from "./followUpBudget";
 
 async function stopInterviewSession(
   adapter: OpenCodeAdapter,
@@ -44,49 +51,52 @@ async function stopInterviewSession(
   const stopped = sessionManager
     ? await sessionManager.abortAndAbandonSession(sessionId)
     : await adapter.abortSession(sessionId).catch((error) => {
-        console.warn(`[interview] Failed to abort OpenCode session ${sessionId}:`, error)
-        return false
-      })
+        console.warn(
+          `[interview] Failed to abort OpenCode session ${sessionId}:`,
+          error,
+        );
+        return false;
+      });
   if (!stopped) {
-    throwIfAborted(signal)
-    throw new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
+    throwIfAborted(signal);
+    throw new Error(`Could not confirm abort of OpenCode session ${sessionId}`);
   }
 }
 
 export interface BatchQuestion {
-  id: string
-  question: string
-  phase?: string
-  priority?: string
-  rationale?: string
-  answerType?: 'free_text' | 'single_choice' | 'multiple_choice'
-  options?: Array<{ id: string; label: string }>
+  id: string;
+  question: string;
+  phase?: string;
+  priority?: string;
+  rationale?: string;
+  answerType?: "free_text" | "single_choice" | "multiple_choice";
+  options?: Array<{ id: string; label: string }>;
 }
 
 export interface BatchResponse {
-  questions: BatchQuestion[]
-  progress: { current: number; total: number }
-  isComplete: boolean
-  isFinalFreeForm: boolean
-  aiCommentary: string
-  finalYaml?: string
-  batchNumber: number
-  sessionId?: string
-  structuredOutput?: StructuredOutputMetadata
+  questions: BatchQuestion[];
+  progress: { current: number; total: number };
+  isComplete: boolean;
+  isFinalFreeForm: boolean;
+  aiCommentary: string;
+  finalYaml?: string;
+  batchNumber: number;
+  sessionId?: string;
+  structuredOutput?: StructuredOutputMetadata;
 }
 
 const PROM4_SCHEMA_REMINDER = [
-  'Return exactly one structured tag block and nothing else.',
-  'If the interview should continue, return exactly one <INTERVIEW_BATCH>...</INTERVIEW_BATCH> block.',
-  'Inside <INTERVIEW_BATCH>, return YAML with: batch_number, progress.current, progress.total, is_final_free_form, ai_commentary, questions[].',
-  'Each question item must include: id, question, phase, priority, rationale.',
+  "Return exactly one structured tag block and nothing else.",
+  "If the interview should continue, return exactly one <INTERVIEW_BATCH>...</INTERVIEW_BATCH> block.",
+  "Inside <INTERVIEW_BATCH>, return YAML with: batch_number, progress.current, progress.total, is_final_free_form, ai_commentary, questions[].",
+  "Each question item must include: id, question, phase, priority, rationale.",
   `Each question item MUST include: answer_type (yes_no|single_choice|multiple_choice|free_text). Prefer structured types (yes_no, single_choice, multiple_choice) — use free_text only for genuinely open-ended questions. For single_choice, provide 2-${MAX_SINGLE_CHOICE_OPTIONS} options. For multiple_choice, provide 2-${MAX_MULTIPLE_CHOICE_OPTIONS} options. For yes_no, omit options. Options are objects with id and label fields.`,
-  'If the interview is complete, return exactly one <INTERVIEW_COMPLETE>...</INTERVIEW_COMPLETE> block.',
-  'Inside <INTERVIEW_COMPLETE>, return YAML with these exact top-level keys: schema_version, ticket_id, artifact, status, generated_by, questions, follow_up_rounds, summary, approval.',
-  'Each `questions` item must include: id, phase, prompt, source, follow_up_round, answer_type, options, answer.',
-  'Each `answer` item must include: skipped, selected_option_ids, free_text, answered_by, answered_at.',
+  "If the interview is complete, return exactly one <INTERVIEW_COMPLETE>...</INTERVIEW_COMPLETE> block.",
+  "Inside <INTERVIEW_COMPLETE>, return YAML with these exact top-level keys: schema_version, ticket_id, artifact, status, generated_by, questions, follow_up_rounds, summary, approval.",
+  "Each `questions` item must include: id, phase, prompt, source, follow_up_round, answer_type, options, answer.",
+  "Each `answer` item must include: skipped, selected_option_ids, free_text, answered_by, answered_at.",
   PROM4_FINAL_INTERVIEW_SCHEMA,
-].join('\n')
+].join("\n");
 
 function withInterviewErrorDiagnostics(
   error: unknown,
@@ -94,62 +104,81 @@ function withInterviewErrorDiagnostics(
   sessionId?: string,
   responseMeta?: OpenCodeResponseMeta,
 ): unknown {
-  if (!(error instanceof Error)) return error
-  const responseDiagnostics = buildOpenCodeBlockedErrorDiagnostics({ responseMeta, modelId, sessionId })
-  return attachOpenCodeBlockedErrorDiagnostics(error, responseDiagnostics.diagnostics
-    ? responseDiagnostics
-    : buildOpenCodeBlockedErrorDiagnostics({ error, modelId, sessionId }))
+  if (!(error instanceof Error)) return error;
+  const responseDiagnostics = buildOpenCodeBlockedErrorDiagnostics({
+    responseMeta,
+    modelId,
+    sessionId,
+  });
+  return attachOpenCodeBlockedErrorDiagnostics(
+    error,
+    responseDiagnostics.diagnostics
+      ? responseDiagnostics
+      : buildOpenCodeBlockedErrorDiagnostics({ error, modelId, sessionId }),
+  );
 }
 
-function formatResumeQuestionLine(question: ReturnType<typeof buildInterviewQuestionViews>[number]): string {
-  const status = question.status === 'answered'
-    ? 'answered'
-    : question.status === 'skipped'
-      ? 'skipped'
-      : 'pending'
-  const detail = question.status === 'answered'
-    ? question.answer?.trim() || '[empty answer]'
-    : question.status === 'skipped'
-      ? '[SKIPPED]'
-      : question.question
-  return `- ${question.id} (${status}) [${question.phase}]: ${detail}`
+function formatResumeQuestionLine(
+  question: ReturnType<typeof buildInterviewQuestionViews>[number],
+): string {
+  const status =
+    question.status === "answered"
+      ? "answered"
+      : question.status === "skipped"
+        ? "skipped"
+        : "pending";
+  const detail =
+    question.status === "answered"
+      ? question.answer?.trim() || "[empty answer]"
+      : question.status === "skipped"
+        ? "[SKIPPED]"
+        : question.question;
+  return `- ${question.id} (${status}) [${question.phase}]: ${detail}`;
 }
 
 function buildInterviewResumePrompt(
   ticketState: TicketState,
   snapshot: InterviewSessionSnapshot,
 ): PromptPart[] {
-  const contextParts = buildMinimalContext('interview_qa', ticketState)
-  const prompt = buildConversationalPrompt(PROM4, contextParts)
-  const questionViews = buildInterviewQuestionViews(snapshot)
+  const contextParts = buildMinimalContext("interview_qa", ticketState);
+  const prompt = buildConversationalPrompt(PROM4, contextParts);
+  const questionViews = buildInterviewQuestionViews(snapshot);
   const answeredQuestions = questionViews
-    .filter((question) => question.status === 'answered' || question.status === 'skipped')
-    .map((question) => formatResumeQuestionLine(question))
+    .filter(
+      (question) =>
+        question.status === "answered" || question.status === "skipped",
+    )
+    .map((question) => formatResumeQuestionLine(question));
   const pendingQuestions = questionViews
-    .filter((question) => question.status === 'pending' || question.status === 'current')
-    .map((question) => formatResumeQuestionLine(question))
+    .filter(
+      (question) =>
+        question.status === "pending" || question.status === "current",
+    )
+    .map((question) => formatResumeQuestionLine(question));
 
-  return [{
-    type: 'text',
-    content: [
-      prompt,
-      '',
-      '## Resume Existing Interview Session',
-      'The previous session failed to return a usable structured response.',
-      'Continue the interview from this normalized state and return only the next structured artifact.',
-      `max_initial_questions: ${snapshot.maxInitialQuestions}`,
-      `max_follow_ups: ${snapshot.maxFollowUps}`,
-      '',
-      'Answered or skipped questions:',
-      answeredQuestions.length > 0 ? answeredQuestions.join('\n') : '[none]',
-      '',
-      'Pending questions:',
-      pendingQuestions.length > 0 ? pendingQuestions.join('\n') : '[none]',
-      '',
-      'Do not re-ask answered or skipped questions unless a new follow-up is genuinely required.',
-      'Return only the next <INTERVIEW_BATCH> or the final <INTERVIEW_COMPLETE> artifact.',
-    ].join('\n'),
-  }]
+  return [
+    {
+      type: "text",
+      content: [
+        prompt,
+        "",
+        "## Resume Existing Interview Session",
+        "The previous session failed to return a usable structured response.",
+        "Continue the interview from this normalized state and return only the next structured artifact.",
+        `max_initial_questions: ${snapshot.maxInitialQuestions}`,
+        `max_follow_ups: ${snapshot.maxFollowUps}`,
+        "",
+        "Answered or skipped questions:",
+        answeredQuestions.length > 0 ? answeredQuestions.join("\n") : "[none]",
+        "",
+        "Pending questions:",
+        pendingQuestions.length > 0 ? pendingQuestions.join("\n") : "[none]",
+        "",
+        "Do not re-ask answered or skipped questions unless a new follow-up is genuinely required.",
+        "Return only the next <INTERVIEW_BATCH> or the final <INTERVIEW_COMPLETE> artifact.",
+      ].join("\n"),
+    },
+  ];
 }
 
 /**
@@ -166,37 +195,43 @@ export async function startInterviewSession(
   maxQuestions: number,
   followUpBudgetPercent: number,
   signal?: AbortSignal,
-  onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void,
-  onPromptDispatched?: (entry: { sessionId: string; event: OpenCodePromptDispatchEvent }) => void,
+  onOpenCodeStreamEvent?: (entry: {
+    sessionId: string;
+    event: StreamEvent;
+  }) => void,
+  onPromptDispatched?: (entry: {
+    sessionId: string;
+    event: OpenCodePromptDispatchEvent;
+  }) => void,
   ticketId?: string,
   timeoutMs: number = COUNCIL_RESPONSE_TIMEOUT_MS,
   structuredRetryCount?: number,
   resumeSnapshot?: InterviewSessionSnapshot,
 ): Promise<{ sessionId: string; firstBatch: BatchResponse }> {
-  const contextParts = buildMinimalContext('interview_qa', ticketState)
-  const prompt = buildConversationalPrompt(PROM4, contextParts)
+  const contextParts = buildMinimalContext("interview_qa", ticketState);
+  const prompt = buildConversationalPrompt(PROM4, contextParts);
 
   const fullPrompt = [
     prompt,
-    '',
+    "",
     `## Configuration`,
     `max_initial_questions: ${maxQuestions}`,
     `coverage_follow_up_budget_percent: ${followUpBudgetPercent}`,
     `max_follow_ups: ${calculateFollowUpLimit(maxQuestions, followUpBudgetPercent)}`,
-    '',
+    "",
     `## Compiled Questions (from council)`,
     compiledQuestions,
-    '',
+    "",
     `Begin the interview now. Treat the compiled questions above as your working interview checklist and present the first batch of questions.`,
-  ].join('\n')
+  ].join("\n");
   const promptParts: PromptPart[] = resumeSnapshot
     ? buildInterviewResumePrompt(ticketState, resumeSnapshot)
-    : [{ type: 'text', content: fullPrompt }]
+    : [{ type: "text", content: fullPrompt }];
 
-  let sessionId = ''
-  const sessionManager = ticketId ? new SessionManager(adapter) : null
-  throwIfAborted(signal)
-  let result: Awaited<ReturnType<typeof runOpenCodePrompt>>
+  let sessionId = "";
+  const sessionManager = ticketId ? new SessionManager(adapter) : null;
+  throwIfAborted(signal);
+  let result: Awaited<ReturnType<typeof runOpenCodePrompt>>;
   try {
     result = await runOpenCodePrompt({
       adapter,
@@ -204,47 +239,52 @@ export async function startInterviewSession(
       parts: promptParts,
       signal,
       timeoutMs,
-      timeoutKind: 'ai_response',
+      timeoutKind: "ai_response",
       model: winnerId,
       toolPolicy: PROM4.toolPolicy,
       ...(ticketId
         ? {
             sessionOwnership: {
               ticketId,
-              phase: 'WAITING_INTERVIEW_ANSWERS',
+              phase: "WAITING_INTERVIEW_ANSWERS",
               memberId: winnerId,
               keepActive: true,
             },
           }
         : {}),
       onSessionCreated: (session) => {
-        sessionId = session.id
+        sessionId = session.id;
       },
       onStreamEvent: (event) => {
         onOpenCodeStreamEvent?.({
           sessionId,
           event,
-        })
+        });
       },
       onPromptDispatched: (event) => {
         onPromptDispatched?.({
           sessionId: event.session.id,
           event,
-        })
+        });
       },
-    })
+    });
   } catch (error) {
-    let failure = error
+    let failure = error;
     try {
-      if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+      if (sessionId)
+        await stopInterviewSession(adapter, sessionManager, sessionId, signal);
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = cleanupError;
     }
-    throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, winnerId, sessionId || undefined)
+    throwIfCancelled(failure, signal);
+    throw withInterviewErrorDiagnostics(
+      failure,
+      winnerId,
+      sessionId || undefined,
+    );
   }
 
-  throwIfAborted(signal)
+  throwIfAborted(signal);
   try {
     const firstBatch = await parseBatchResponseWithRetry({
       adapter,
@@ -259,55 +299,69 @@ export async function startInterviewSession(
       ticketId,
       structuredRetryCount,
       restartSession: async (currentSessionId) => {
-        await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+        await stopInterviewSession(
+          adapter,
+          sessionManager,
+          currentSessionId,
+          signal,
+        );
         const restarted = await runOpenCodePrompt({
           adapter,
           projectPath,
           parts: promptParts,
           signal,
           timeoutMs,
-          timeoutKind: 'ai_response',
+          timeoutKind: "ai_response",
           model: winnerId,
           toolPolicy: PROM4.toolPolicy,
           ...(ticketId
             ? {
                 sessionOwnership: {
                   ticketId,
-                  phase: 'WAITING_INTERVIEW_ANSWERS',
+                  phase: "WAITING_INTERVIEW_ANSWERS",
                   memberId: winnerId,
                   keepActive: true,
                 },
               }
             : {}),
           onSessionCreated: (session) => {
-            sessionId = session.id
+            sessionId = session.id;
           },
           onStreamEvent: (event) => {
             onOpenCodeStreamEvent?.({
               sessionId,
               event,
-            })
+            });
           },
           onPromptDispatched: (event) => {
             onPromptDispatched?.({
               sessionId: event.session.id,
               event,
-            })
+            });
           },
-        })
-        return { sessionId: restarted.session.id, response: restarted.response, responseMeta: restarted.responseMeta }
+        });
+        return {
+          sessionId: restarted.session.id,
+          response: restarted.response,
+          responseMeta: restarted.responseMeta,
+        };
       },
-    })
-    return { sessionId: firstBatch.sessionId ?? result.session.id, firstBatch }
+    });
+    return { sessionId: firstBatch.sessionId ?? result.session.id, firstBatch };
   } catch (error) {
-    let failure = error
+    let failure = error;
     try {
-      if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+      if (sessionId)
+        await stopInterviewSession(adapter, sessionManager, sessionId, signal);
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = cleanupError;
     }
-    throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, winnerId, sessionId || undefined)
+    throwIfCancelled(failure, signal);
+    throw withInterviewErrorDiagnostics(
+      failure,
+      winnerId,
+      sessionId || undefined,
+    );
   }
 }
 
@@ -321,69 +375,80 @@ export async function submitBatchToSession(
   batchAnswers: Record<string, string>,
   signal?: AbortSignal,
   model?: string,
-  onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void,
-  onPromptDispatched?: (entry: { sessionId: string; event: OpenCodePromptDispatchEvent }) => void,
+  onOpenCodeStreamEvent?: (entry: {
+    sessionId: string;
+    event: StreamEvent;
+  }) => void,
+  onPromptDispatched?: (entry: {
+    sessionId: string;
+    event: OpenCodePromptDispatchEvent;
+  }) => void,
   ticketId?: string,
   timeoutMs: number = COUNCIL_RESPONSE_TIMEOUT_MS,
   restartOptions?: {
-    projectPath: string
-    ticketState: TicketState
-    snapshot: InterviewSessionSnapshot
+    projectPath: string;
+    ticketState: TicketState;
+    snapshot: InterviewSessionSnapshot;
   },
   structuredRetryCount?: number,
 ): Promise<BatchResponse> {
   const answerLines = Object.entries(batchAnswers).map(([id, answer]) => {
-    const text = answer.trim() || '[SKIPPED]'
-    return `${id}: ${text}`
-  })
+    const text = answer.trim() || "[SKIPPED]";
+    return `${id}: ${text}`;
+  });
 
   const message = [
     `Here are my answers:`,
-    '',
+    "",
     ...answerLines,
-    '',
+    "",
     `Please continue with the next batch of questions, or finalize the interview if complete.`,
-  ].join('\n')
+  ].join("\n");
 
-  throwIfAborted(signal)
-  const sessionManager = ticketId ? new SessionManager(adapter) : null
-  let currentSessionId = sessionId
-  let result: Awaited<ReturnType<typeof runOpenCodeSessionPrompt>>
+  throwIfAborted(signal);
+  const sessionManager = ticketId ? new SessionManager(adapter) : null;
+  let currentSessionId = sessionId;
+  let result: Awaited<ReturnType<typeof runOpenCodeSessionPrompt>>;
   try {
     result = await runOpenCodeSessionPrompt({
       adapter,
       session: { id: currentSessionId },
-      parts: [{ type: 'text', content: message }] as PromptPart[],
+      parts: [{ type: "text", content: message }] as PromptPart[],
       signal,
       timeoutMs,
-      timeoutKind: 'ai_response',
+      timeoutKind: "ai_response",
       model,
       toolPolicy: PROM4.toolPolicy,
       onStreamEvent: (event) => {
         onOpenCodeStreamEvent?.({
           sessionId: currentSessionId,
           event,
-        })
+        });
       },
       onPromptDispatched: (event) => {
         onPromptDispatched?.({
           sessionId: event.session.id,
           event,
-        })
+        });
       },
-    })
+    });
   } catch (error) {
-    let failure = error
+    let failure = error;
     try {
-      await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+      await stopInterviewSession(
+        adapter,
+        sessionManager,
+        currentSessionId,
+        signal,
+      );
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = cleanupError;
     }
-    throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, model, currentSessionId)
+    throwIfCancelled(failure, signal);
+    throw withInterviewErrorDiagnostics(failure, model, currentSessionId);
   }
 
-  throwIfAborted(signal)
+  throwIfAborted(signal);
   try {
     return await parseBatchResponseWithRetry({
       adapter,
@@ -398,74 +463,91 @@ export async function submitBatchToSession(
       ticketId,
       structuredRetryCount,
       restartSession: restartOptions
-      ? async (sessionIdToRestart) => {
-          await stopInterviewSession(adapter, sessionManager, sessionIdToRestart, signal)
-          const restarted = await runOpenCodePrompt({
-            adapter,
-            projectPath: restartOptions.projectPath,
-            parts: buildInterviewResumePrompt(restartOptions.ticketState, restartOptions.snapshot),
-            signal,
-            timeoutMs,
-            timeoutKind: 'ai_response',
-            model,
-            toolPolicy: PROM4.toolPolicy,
-            ...(ticketId
-              ? {
-                  sessionOwnership: {
-                    ticketId,
-                    phase: 'WAITING_INTERVIEW_ANSWERS',
-                    memberId: model,
-                    keepActive: true,
-                  },
-                }
-              : {}),
-            onSessionCreated: (session) => {
-              // A replacement can publish its ownership row and then fail
-              // before runOpenCodePrompt resolves. Keep cleanup pointed at the
-              // replacement rather than the session it just stopped.
-              currentSessionId = session.id
-            },
-            onStreamEvent: (event) => {
-              onOpenCodeStreamEvent?.({
-                sessionId: event.sessionId,
-                event,
-              })
-            },
-            onPromptDispatched: (event) => {
-              onPromptDispatched?.({
-                sessionId: event.session.id,
-                event,
-              })
-            },
-          })
-          currentSessionId = restarted.session.id
-          return { sessionId: restarted.session.id, response: restarted.response, responseMeta: restarted.responseMeta }
-        }
-      : undefined,
-    })
+        ? async (sessionIdToRestart) => {
+            await stopInterviewSession(
+              adapter,
+              sessionManager,
+              sessionIdToRestart,
+              signal,
+            );
+            const restarted = await runOpenCodePrompt({
+              adapter,
+              projectPath: restartOptions.projectPath,
+              parts: buildInterviewResumePrompt(
+                restartOptions.ticketState,
+                restartOptions.snapshot,
+              ),
+              signal,
+              timeoutMs,
+              timeoutKind: "ai_response",
+              model,
+              toolPolicy: PROM4.toolPolicy,
+              ...(ticketId
+                ? {
+                    sessionOwnership: {
+                      ticketId,
+                      phase: "WAITING_INTERVIEW_ANSWERS",
+                      memberId: model,
+                      keepActive: true,
+                    },
+                  }
+                : {}),
+              onSessionCreated: (session) => {
+                // A replacement can publish its ownership row and then fail
+                // before runOpenCodePrompt resolves. Keep cleanup pointed at the
+                // replacement rather than the session it just stopped.
+                currentSessionId = session.id;
+              },
+              onStreamEvent: (event) => {
+                onOpenCodeStreamEvent?.({
+                  sessionId: event.sessionId,
+                  event,
+                });
+              },
+              onPromptDispatched: (event) => {
+                onPromptDispatched?.({
+                  sessionId: event.session.id,
+                  event,
+                });
+              },
+            });
+            currentSessionId = restarted.session.id;
+            return {
+              sessionId: restarted.session.id,
+              response: restarted.response,
+              responseMeta: restarted.responseMeta,
+            };
+          }
+        : undefined,
+    });
   } catch (error) {
-    let failure = error
+    let failure = error;
     try {
-      await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+      await stopInterviewSession(
+        adapter,
+        sessionManager,
+        currentSessionId,
+        signal,
+      );
     } catch (cleanupError) {
-      failure = cleanupError
+      failure = cleanupError;
     }
-    throwIfCancelled(failure, signal)
-    throw withInterviewErrorDiagnostics(failure, model, currentSessionId)
+    throwIfCancelled(failure, signal);
+    throw withInterviewErrorDiagnostics(failure, model, currentSessionId);
   }
 }
 
 function toBatchResponse(output: InterviewTurnOutput): BatchResponse {
-  if (output.kind === 'complete') {
+  if (output.kind === "complete") {
     return {
       questions: [],
       progress: { current: 0, total: 0 },
       isComplete: true,
       isFinalFreeForm: false,
-      aiCommentary: 'Interview complete.',
+      aiCommentary: "Interview complete.",
       finalYaml: output.finalYaml.trim(),
       batchNumber: -1,
-    }
+    };
   }
 
   return {
@@ -476,82 +558,100 @@ function toBatchResponse(output: InterviewTurnOutput): BatchResponse {
       priority: question.priority,
       rationale: question.rationale,
       ...(question.answerType ? { answerType: question.answerType } : {}),
-      ...(question.options && question.options.length > 0 ? { options: question.options } : {}),
+      ...(question.options && question.options.length > 0
+        ? { options: question.options }
+        : {}),
     })),
     progress: output.batch.progress,
     isComplete: false,
     isFinalFreeForm: output.batch.isFinalFreeForm,
     aiCommentary: output.batch.aiCommentary,
     batchNumber: output.batch.batchNumber,
-  }
+  };
 }
 
 async function parseBatchResponseWithRetry(input: {
-  adapter: OpenCodeAdapter
-  sessionId: string
-  response: string
-  responseMeta?: OpenCodeResponseMeta
-  signal?: AbortSignal
-  timeoutMs?: number
-  model?: string
-  onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void
-  onPromptDispatched?: (entry: { sessionId: string; event: OpenCodePromptDispatchEvent }) => void
-  ticketId?: string
-  structuredRetryCount?: number
-  restartSession?: (currentSessionId: string) => Promise<{ sessionId: string; response: string; responseMeta?: OpenCodeResponseMeta }>
+  adapter: OpenCodeAdapter;
+  sessionId: string;
+  response: string;
+  responseMeta?: OpenCodeResponseMeta;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  model?: string;
+  onOpenCodeStreamEvent?: (entry: {
+    sessionId: string;
+    event: StreamEvent;
+  }) => void;
+  onPromptDispatched?: (entry: {
+    sessionId: string;
+    event: OpenCodePromptDispatchEvent;
+  }) => void;
+  ticketId?: string;
+  structuredRetryCount?: number;
+  restartSession?: (currentSessionId: string) => Promise<{
+    sessionId: string;
+    response: string;
+    responseMeta?: OpenCodeResponseMeta;
+  }>;
 }): Promise<BatchResponse> {
-  const structuredRetryCount = normalizeStructuredRetryCount(input.structuredRetryCount)
-  let response = input.response
-  let responseMeta = input.responseMeta
-  let sessionId = input.sessionId
-  let lastError = 'Unknown PROM4 validation error'
+  const structuredRetryCount = normalizeStructuredRetryCount(
+    input.structuredRetryCount,
+  );
+  let response = input.response;
+  let responseMeta = input.responseMeta;
+  let sessionId = input.sessionId;
+  let lastError = "Unknown PROM4 validation error";
 
   for (let attempt = 0; attempt <= structuredRetryCount; attempt += 1) {
-    const normalized = normalizeInterviewTurnOutput(response)
+    const normalized = normalizeInterviewTurnOutput(response);
     if (normalized.ok) {
       return {
         ...toBatchResponse(normalized.value),
         ...(sessionId !== input.sessionId ? { sessionId } : {}),
         ...(normalized.repairWarnings.length > 0 || attempt > 0
-          ? { structuredOutput: buildStructuredOutputMetadata({
-              repairApplied: normalized.repairApplied,
-              repairWarnings: normalized.repairWarnings,
-              autoRetryCount: attempt,
-              ...(attempt > 0 ? { validationError: lastError } : {}),
-            }) }
+          ? {
+              structuredOutput: buildStructuredOutputMetadata({
+                repairApplied: normalized.repairApplied,
+                repairWarnings: normalized.repairWarnings,
+                autoRetryCount: attempt,
+                ...(attempt > 0 ? { validationError: lastError } : {}),
+              }),
+            }
           : {}),
-      }
+      };
     }
 
-    lastError = normalized.error
+    lastError = normalized.error;
     if (attempt >= structuredRetryCount) {
-      break
+      break;
     }
 
-    const retryDecision = getStructuredRetryDecision(response, responseMeta)
+    const retryDecision = getStructuredRetryDecision(response, responseMeta);
     if (!retryDecision.reuseSession) {
       if (!input.restartSession) {
         throw withInterviewErrorDiagnostics(
-          new Error(`PROM4 output failed validation without a recoverable session: ${normalized.error}`),
+          new Error(
+            `PROM4 output failed validation without a recoverable session: ${normalized.error}`,
+          ),
           input.model,
           sessionId,
           responseMeta,
-        )
+        );
       }
 
-      const restarted = await input.restartSession(sessionId)
-      throwIfAborted(input.signal)
-      sessionId = restarted.sessionId
-      response = restarted.response
-      responseMeta = restarted.responseMeta
-      continue
+      const restarted = await input.restartSession(sessionId);
+      throwIfAborted(input.signal);
+      sessionId = restarted.sessionId;
+      response = restarted.response;
+      responseMeta = restarted.responseMeta;
+      continue;
     }
 
     const retryParts = buildStructuredRetryPrompt([], {
       validationError: normalized.error,
       rawResponse: response,
       schemaReminder: PROM4_SCHEMA_REMINDER,
-    })
+    });
 
     try {
       const retryResult = await runOpenCodeSessionPrompt({
@@ -560,35 +660,37 @@ async function parseBatchResponseWithRetry(input: {
         parts: retryParts,
         signal: input.signal,
         timeoutMs: input.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS,
-        timeoutKind: 'ai_response',
+        timeoutKind: "ai_response",
         model: input.model,
         toolPolicy: PROM4.toolPolicy,
         onStreamEvent: (event) => {
           input.onOpenCodeStreamEvent?.({
             sessionId,
             event,
-          })
+          });
         },
         onPromptDispatched: (event) => {
           input.onPromptDispatched?.({
             sessionId: event.session.id,
             event,
-          })
+          });
         },
-      })
-      throwIfAborted(input.signal)
-      response = retryResult.response
-      responseMeta = retryResult.responseMeta
+      });
+      throwIfAborted(input.signal);
+      response = retryResult.response;
+      responseMeta = retryResult.responseMeta;
     } catch (error) {
-      throwIfCancelled(error, input.signal)
-      throw error
+      throwIfCancelled(error, input.signal);
+      throw error;
     }
   }
 
   throw withInterviewErrorDiagnostics(
-    new Error(`PROM4 output failed validation after ${structuredRetryCount} structured retry attempt(s): ${lastError}`),
+    new Error(
+      `PROM4 output failed validation after ${structuredRetryCount} structured retry attempt(s): ${lastError}`,
+    ),
     input.model,
     sessionId,
     responseMeta,
-  )
+  );
 }

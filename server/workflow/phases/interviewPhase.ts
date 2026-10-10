@@ -1,18 +1,37 @@
-import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
-import type { TicketContext, TicketEvent } from '../../machines/types'
-import type { DraftResult, MemberOutcome, Vote, VotePresentationOrder } from '../../council/types'
-import { CancelledError, throwIfAborted, VOTING_RUBRIC_INTERVIEW } from '../../council/types'
-import { conductVoting, selectWinner } from '../../council/voter'
-import { refineDraft } from '../../council/refiner'
-import { requireWinnerDraft } from '../../council/draftUtils'
-import { checkMemberResponseQuorum, checkQuorum } from '../../council/quorum'
-import { deliberateInterview } from '../../phases/interview/deliberate'
-import { startInterviewSession, submitBatchToSession, type BatchResponse } from '../../phases/interview/qa'
+import {
+  OpenCodeUnavailableError,
+  TicketWorkspaceNotInitializedError,
+} from "../../lib/workflowErrors";
+import type { TicketContext, TicketEvent } from "../../machines/types";
+import type {
+  DraftResult,
+  MemberOutcome,
+  Vote,
+  VotePresentationOrder,
+} from "../../council/types";
+import {
+  CancelledError,
+  throwIfAborted,
+  VOTING_RUBRIC_INTERVIEW,
+} from "../../council/types";
+import { conductVoting, selectWinner } from "../../council/voter";
+import { refineDraft } from "../../council/refiner";
+import { requireWinnerDraft } from "../../council/draftUtils";
+import { checkMemberResponseQuorum, checkQuorum } from "../../council/quorum";
+import { deliberateInterview } from "../../phases/interview/deliberate";
+import {
+  startInterviewSession,
+  submitBatchToSession,
+  type BatchResponse,
+} from "../../phases/interview/qa";
 import {
   listOpenCodeSessionsForTicket,
   reactivateOpenCodeSessionForContinuation,
-} from '../../opencode/sessionManager'
-import { buildCompiledInterviewArtifact, requireCompiledInterviewArtifact } from '../../phases/interview/compiled'
+} from "../../opencode/sessionManager";
+import {
+  buildCompiledInterviewArtifact,
+  requireCompiledInterviewArtifact,
+} from "../../phases/interview/compiled";
 import {
   buildCanonicalInterviewYaml,
   buildInterviewQuestionViews,
@@ -28,46 +47,72 @@ import {
   recordBatchAnswers,
   recordPreparedBatch,
   serializeInterviewSessionSnapshot,
-} from '../../phases/interview/sessionState'
-import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
-import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
-import { randomUUID } from 'node:crypto'
-import { and, eq, exists, gt, lte } from 'drizzle-orm'
-import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
-import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
-import { isMockOpenCodeMode } from '../../opencode/factory'
-import { credentialsWereSent, openCodeAuthAdvice } from '../../opencode/connection'
-import { safeAtomicWriteWithin } from '../../io/atomicWrite'
-import { readFileNoFollowSync } from '../../io/readFile'
-import { resolveContainedPath } from '../../lib/containedPath'
-import { broadcaster } from '../../sse/broadcaster'
-import { resolve } from 'path'
-import * as jsYaml from 'js-yaml'
-import { normalizeInterviewQuestionsOutput, normalizeInterviewRefinementOutput } from '../../structuredOutput'
-import type { InterviewQuestionChange } from '@shared/interviewQuestions'
-import type { InterviewSessionSnapshot } from '@shared/interviewSession'
-import { cloneSnapshot, nowIso } from '../../phases/interview/interviewUtils'
+} from "../../phases/interview/sessionState";
+import {
+  buildMinimalContext,
+  type TicketState,
+} from "../../opencode/contextBuilder";
+import { buildPromptFromTemplate, PROM2, PROM3 } from "../../prompts/index";
+import { randomUUID } from "node:crypto";
+import { and, eq, exists, gt, lte } from "drizzle-orm";
+import { interviewBatchClaims, phaseArtifacts } from "../../db/schema";
+import {
+  getLatestPhaseArtifact,
+  getTicketByRef,
+  getTicketContext,
+  getTicketPaths,
+  insertPhaseArtifact,
+  upsertLatestPhaseArtifact,
+  countPhaseArtifacts,
+  readTicketFile,
+  removeTicketFile,
+  writeTicketFile,
+} from "../../storage/tickets";
+import { compareAndSetLatestPhaseArtifact } from "../../storage/ticketArtifacts";
+import { isMockOpenCodeMode } from "../../opencode/factory";
+import {
+  credentialsWereSent,
+  openCodeAuthAdvice,
+} from "../../opencode/connection";
+import { safeAtomicWriteWithin } from "../../io/atomicWrite";
+import { readFileNoFollowSync } from "../../io/readFile";
+import { resolveContainedPath } from "../../lib/containedPath";
+import { broadcaster } from "../../sse/broadcaster";
+import { resolve } from "path";
+import * as jsYaml from "js-yaml";
+import {
+  normalizeInterviewQuestionsOutput,
+  normalizeInterviewRefinementOutput,
+} from "../../structuredOutput";
+import type { InterviewQuestionChange } from "@shared/interviewQuestions";
+import type { InterviewSessionSnapshot } from "@shared/interviewSession";
+import { cloneSnapshot, nowIso } from "../../phases/interview/interviewUtils";
 import {
   buildInterviewUiRefinementDiffArtifact,
   buildInterviewUiRefinementDiffArtifactFromChanges,
-} from '@shared/refinementDiffArtifacts'
-import { calculateFollowUpLimit } from '../../phases/interview/followUpBudget'
+} from "@shared/refinementDiffArtifacts";
+import { calculateFollowUpLimit } from "../../phases/interview/followUpBudget";
 import {
   deleteSkipReceiptsForAction,
   deriveSkipActionId,
   formatSkipReceiptLogLines,
   listSkipEvents,
   writeSkipReceipts,
-} from '../skipReceipts'
-import { raceWithCancel, throwIfCancelled } from '../../lib/abort'
-import { PROFILE_DEFAULTS } from '../../db/defaults'
-import { persistUiRefinementDiffArtifact } from '../refinementDiffArtifacts'
-import { persistUiArtifactCompanionArtifact } from '../artifactCompanions'
-import { withStructuredRetryDiagnosticAttempt } from '@shared/structuredRetryDiagnostics'
-import { getErrorMessage } from '@shared/typeGuards'
+} from "../skipReceipts";
+import { raceWithCancel, throwIfCancelled } from "../../lib/abort";
+import { PROFILE_DEFAULTS } from "../../db/defaults";
+import { persistUiRefinementDiffArtifact } from "../refinementDiffArtifacts";
+import { persistUiArtifactCompanionArtifact } from "../artifactCompanions";
+import { withStructuredRetryDiagnosticAttempt } from "@shared/structuredRetryDiagnostics";
+import { getErrorMessage } from "@shared/typeGuards";
 
-import { adapter, interviewQASessions, phaseIntermediate, SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE, getOrCreateAbortSignal } from './state'
+import {
+  adapter,
+  interviewQASessions,
+  phaseIntermediate,
+  SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE,
+  getOrCreateAbortSignal,
+} from "./state";
 import {
   emitPhaseLog,
   emitModelSystemLog,
@@ -94,10 +139,10 @@ import {
   buildCouncilQuorumErrorWithDiagnostics,
   buildStructuredMetadata,
   mapCouncilStageToStatus,
-} from './helpers'
-import type { OpenCodeStreamState } from './types'
+} from "./helpers";
+import type { OpenCodeStreamState } from "./types";
 
-const INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT = 'interview_batch_in_flight'
+const INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT = "interview_batch_in_flight";
 
 function logInterviewBatchRepairs(
   ticketId: string,
@@ -106,137 +151,212 @@ function logInterviewBatchRepairs(
   sessionId: string,
   batch: BatchResponse,
 ) {
-  if (!batch.structuredOutput?.repairWarnings.length) return
+  if (!batch.structuredOutput?.repairWarnings.length) return;
   emitModelSystemLog(
     ticketId,
     externalId,
-    'WAITING_INTERVIEW_ANSWERS',
-    'info',
-    `Interview output normalization repairs:\n${batch.structuredOutput.repairWarnings.join('\n')}`,
+    "WAITING_INTERVIEW_ANSWERS",
+    "info",
+    `Interview output normalization repairs:\n${batch.structuredOutput.repairWarnings.join("\n")}`,
     modelId,
     { sessionId, structuredOutput: batch.structuredOutput },
-  )
+  );
 }
 
 interface InterruptedInterviewBatch {
-  originalSnapshot: InterviewSessionSnapshot
-  answeredSnapshotFingerprint: string
+  originalSnapshot: InterviewSessionSnapshot;
+  answeredSnapshotFingerprint: string;
 }
 
-export function readInterviewQASessionArtifact(ticketId: string): { sessionId: string; winnerId: string } | null {
-  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_QA_SESSION_ARTIFACT)
-  if (!artifact) return null
+export function readInterviewQASessionArtifact(
+  ticketId: string,
+): { sessionId: string; winnerId: string } | null {
+  const artifact = getLatestPhaseArtifact(
+    ticketId,
+    INTERVIEW_QA_SESSION_ARTIFACT,
+  );
+  if (!artifact) return null;
 
   try {
-    const parsed = JSON.parse(artifact.content) as { sessionId?: unknown; winnerId?: unknown }
-    if (typeof parsed.sessionId !== 'string' || typeof parsed.winnerId !== 'string') {
-      return null
+    const parsed = JSON.parse(artifact.content) as {
+      sessionId?: unknown;
+      winnerId?: unknown;
+    };
+    if (
+      typeof parsed.sessionId !== "string" ||
+      typeof parsed.winnerId !== "string"
+    ) {
+      return null;
     }
-    return { sessionId: parsed.sessionId, winnerId: parsed.winnerId }
+    return { sessionId: parsed.sessionId, winnerId: parsed.winnerId };
   } catch {
-    return null
+    return null;
   }
 }
 
-export function readInterviewSessionSnapshotArtifact(ticketId: string): InterviewSessionSnapshot | null {
-  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
-  return parseInterviewSessionSnapshot(artifact?.content)
+export function readInterviewSessionSnapshotArtifact(
+  ticketId: string,
+): InterviewSessionSnapshot | null {
+  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT);
+  return parseInterviewSessionSnapshot(artifact?.content);
 }
 
-export function writeInterviewSessionSnapshotArtifact(ticketId: string, snapshot: InterviewSessionSnapshot) {
+export function writeInterviewSessionSnapshotArtifact(
+  ticketId: string,
+  snapshot: InterviewSessionSnapshot,
+) {
   upsertLatestPhaseArtifact(
     ticketId,
     INTERVIEW_SESSION_ARTIFACT,
-    'WAITING_INTERVIEW_ANSWERS',
+    "WAITING_INTERVIEW_ANSWERS",
     serializeInterviewSessionSnapshot(snapshot),
-  )
+  );
 }
 
-export function persistInterviewSession(ticketId: string, snapshot: InterviewSessionSnapshot) {
-  writeInterviewSessionSnapshotArtifact(ticketId, snapshot)
+export function persistInterviewSession(
+  ticketId: string,
+  snapshot: InterviewSessionSnapshot,
+) {
+  writeInterviewSessionSnapshotArtifact(ticketId, snapshot);
 }
 
-function writeInterruptedInterviewBatch(ticketId: string, record: InterruptedInterviewBatch): void {
+function writeInterruptedInterviewBatch(
+  ticketId: string,
+  record: InterruptedInterviewBatch,
+): void {
   upsertLatestPhaseArtifact(
     ticketId,
     INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT,
-    'WAITING_INTERVIEW_ANSWERS',
+    "WAITING_INTERVIEW_ANSWERS",
     JSON.stringify(record),
-  )
+  );
 }
 
-function readInterruptedInterviewBatch(ticketId: string): InterruptedInterviewBatch | null {
-  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')
-  if (!artifact) return null
+function readInterruptedInterviewBatch(
+  ticketId: string,
+): InterruptedInterviewBatch | null {
+  const artifact = getLatestPhaseArtifact(
+    ticketId,
+    INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT,
+    "WAITING_INTERVIEW_ANSWERS",
+  );
+  if (!artifact) return null;
   try {
-    const parsed: unknown = JSON.parse(artifact.content)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    const record = parsed as Partial<InterruptedInterviewBatch>
-    if (typeof record.answeredSnapshotFingerprint !== 'string' || !record.originalSnapshot) return null
-    const originalSnapshot = parseInterviewSessionSnapshot(JSON.stringify(record.originalSnapshot))
-    return originalSnapshot ? { originalSnapshot, answeredSnapshotFingerprint: record.answeredSnapshotFingerprint } : null
+    const parsed: unknown = JSON.parse(artifact.content);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return null;
+    const record = parsed as Partial<InterruptedInterviewBatch>;
+    if (
+      typeof record.answeredSnapshotFingerprint !== "string" ||
+      !record.originalSnapshot
+    )
+      return null;
+    const originalSnapshot = parseInterviewSessionSnapshot(
+      JSON.stringify(record.originalSnapshot),
+    );
+    return originalSnapshot
+      ? {
+          originalSnapshot,
+          answeredSnapshotFingerprint: record.answeredSnapshotFingerprint,
+        }
+      : null;
   } catch {
-    return null
+    return null;
   }
 }
 
 function clearInterruptedInterviewBatch(ticketId: string): void {
-  const context = getTicketContext(ticketId)
-  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')
-  if (!context || !artifact) return
-  context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, artifact.id)).run()
+  const context = getTicketContext(ticketId);
+  const artifact = getLatestPhaseArtifact(
+    ticketId,
+    INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT,
+    "WAITING_INTERVIEW_ANSWERS",
+  );
+  if (!context || !artifact) return;
+  context.projectDb
+    .delete(phaseArtifacts)
+    .where(eq(phaseArtifacts.id, artifact.id))
+    .run();
 }
 
 export function loadCanonicalInterview(ticketDir: string): string | undefined {
   try {
-    return readFileNoFollowSync(resolveContainedPath(ticketDir, 'interview.yaml', { allowMissing: true }))
+    return readFileNoFollowSync(
+      resolveContainedPath(ticketDir, "interview.yaml", { allowMissing: true }),
+    );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-    throw error
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
 }
 
-export function writeCanonicalInterview(ticketId: string, ticketDir: string, snapshot: InterviewSessionSnapshot) {
-  const interviewPath = resolve(ticketDir, 'interview.yaml')
-  safeAtomicWriteWithin(ticketDir, 'interview.yaml', buildCanonicalInterviewYaml(ticketId, snapshot))
-  return interviewPath
+export function writeCanonicalInterview(
+  ticketId: string,
+  ticketDir: string,
+  snapshot: InterviewSessionSnapshot,
+) {
+  const interviewPath = resolve(ticketDir, "interview.yaml");
+  safeAtomicWriteWithin(
+    ticketDir,
+    "interview.yaml",
+    buildCanonicalInterviewYaml(ticketId, snapshot),
+  );
+  return interviewPath;
 }
 
-export function buildInterviewAnswerSummary(snapshot: InterviewSessionSnapshot | null): string {
-  if (!snapshot) return ''
-  const views = buildInterviewQuestionViews(snapshot)
+export function buildInterviewAnswerSummary(
+  snapshot: InterviewSessionSnapshot | null,
+): string {
+  if (!snapshot) return "";
+  const views = buildInterviewQuestionViews(snapshot);
   const answered = views
-    .filter((question) => question.status === 'answered' || question.status === 'skipped')
-    .map((question) => [
-      `${question.id}: ${question.question}`,
-      question.status === 'skipped'
-        ? 'Answer: [SKIPPED]'
-        : `Answer: ${question.answer ?? ''}`,
-    ].join('\n'))
-  return answered.join('\n\n')
+    .filter(
+      (question) =>
+        question.status === "answered" || question.status === "skipped",
+    )
+    .map((question) =>
+      [
+        `${question.id}: ${question.question}`,
+        question.status === "skipped"
+          ? "Answer: [SKIPPED]"
+          : `Answer: ${question.answer ?? ""}`,
+      ].join("\n"),
+    );
+  return answered.join("\n\n");
 }
 
 export function buildFormattedBatchAnswers(
-  questions: Array<{ id: string; answerType?: string; options?: Array<{ id: string; label: string }> }>,
+  questions: Array<{
+    id: string;
+    answerType?: string;
+    options?: Array<{ id: string; label: string }>;
+  }>,
   batchAnswers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
 ): Record<string, string> {
-  const result: Record<string, string> = {}
+  const result: Record<string, string> = {};
   for (const question of questions) {
-    const freeText = batchAnswers[question.id] ?? ''
-    const selectedIds = selectedOptions[question.id] ?? []
-    const isChoiceQ = question.answerType === 'single_choice' || question.answerType === 'multiple_choice'
+    const freeText = batchAnswers[question.id] ?? "";
+    const selectedIds = selectedOptions[question.id] ?? [];
+    const isChoiceQ =
+      question.answerType === "single_choice" ||
+      question.answerType === "multiple_choice";
     if (isChoiceQ && selectedIds.length > 0) {
-      const labelMap = new Map((question.options ?? []).map((opt) => [opt.id, opt.label]))
-      const selectedLabels = selectedIds.map((id) => labelMap.get(id) ?? id).map((label) => `"${label}"`).join(', ')
+      const labelMap = new Map(
+        (question.options ?? []).map((opt) => [opt.id, opt.label]),
+      );
+      const selectedLabels = selectedIds
+        .map((id) => labelMap.get(id) ?? id)
+        .map((label) => `"${label}"`)
+        .join(", ");
       result[question.id] = freeText.trim()
         ? `Selected: ${selectedLabels}. Notes: ${freeText}`
-        : `Selected: ${selectedLabels}`
+        : `Selected: ${selectedLabels}`;
     } else {
-      result[question.id] = freeText
+      result[question.id] = freeText;
     }
   }
-  return result
+  return result;
 }
 
 /**
@@ -247,55 +367,65 @@ export function buildFormattedBatchAnswers(
  * was never submitted is not a decision.
  */
 function recordInterviewSkipReceipts(input: {
-  ticketId: string
-  externalId: string
-  ticketStatusBefore: string
-  surface: 'interview_question' | 'interview_all'
-  snapshot: InterviewSessionSnapshot
-  questionIds: string[]
+  ticketId: string;
+  externalId: string;
+  ticketStatusBefore: string;
+  surface: "interview_question" | "interview_all";
+  snapshot: InterviewSessionSnapshot;
+  questionIds: string[];
   /** Passed in: `recordBatchAnswers` clears `currentBatch` as it commits. */
-  batchNumber: number | null
-  bulkReason?: string | null
-  onRecorded?: (actionId: string) => void
+  batchNumber: number | null;
+  bulkReason?: string | null;
+  onRecorded?: (actionId: string) => void;
 }): string | null {
   const skipped = input.questionIds
-    .map((questionId) => ({ questionId, answer: input.snapshot.answers[questionId] }))
-    .filter((entry) => entry.answer?.skipped === true)
-  if (skipped.length === 0) return null
+    .map((questionId) => ({
+      questionId,
+      answer: input.snapshot.answers[questionId],
+    }))
+    .filter((entry) => entry.answer?.skipped === true);
+  if (skipped.length === 0) return null;
 
   const items = skipped.map((entry) => ({
     itemId: entry.questionId,
     reason: entry.answer?.skipReason ?? null,
-  }))
+  }));
   const actionId = deriveSkipActionId(input.surface, [
     input.ticketId,
     input.batchNumber,
     ...items.flatMap((item) => [item.itemId, item.reason]),
     input.bulkReason ?? null,
-  ])
+  ]);
 
   const receipts = writeSkipReceipts({
     ticketId: input.ticketId,
     surface: input.surface,
-    itemType: 'interview_question',
-    phase: 'WAITING_INTERVIEW_ANSWERS',
+    itemType: "interview_question",
+    phase: "WAITING_INTERVIEW_ANSWERS",
     ticketStatusBefore: input.ticketStatusBefore,
     actionId,
     items,
     // Only the bulk action gets a summary row. Skipping three questions inside a
     // batch you then submit is three decisions, not a fourth one about the batch.
-    summary: input.surface === 'interview_all'
-      ? { itemType: 'interview_batch', reason: input.bulkReason ?? null }
-      : null,
-  })
+    summary:
+      input.surface === "interview_all"
+        ? { itemType: "interview_batch", reason: input.bulkReason ?? null }
+        : null,
+  });
 
   // Tell the caller before emitting the human-readable log lines. If a log
   // sink fails, the durable receipt still needs to be part of its rollback.
-  input.onRecorded?.(actionId)
+  input.onRecorded?.(actionId);
   for (const line of formatSkipReceiptLogLines(receipts)) {
-    emitPhaseLog(input.ticketId, input.externalId, 'WAITING_INTERVIEW_ANSWERS', 'info', line)
+    emitPhaseLog(
+      input.ticketId,
+      input.externalId,
+      "WAITING_INTERVIEW_ANSWERS",
+      "info",
+      line,
+    );
   }
-  return actionId
+  return actionId;
 }
 
 /**
@@ -311,7 +441,7 @@ function recordInterviewSkipReceipts(input: {
  * remove. Per call, there is nothing to collide with.
  */
 export interface InterviewBatchSkipReceipt {
-  actionId?: string
+  actionId?: string;
   /**
    * `updatedAt` of the last session this call persisted.
    *
@@ -319,9 +449,9 @@ export interface InterviewBatchSkipReceipt {
    * snapshot that predates somebody else's write is how a stuck task undoes a
    * completed skip-all, and a revert cannot be taken back.
    */
-  persistedUpdatedAt?: string
+  persistedUpdatedAt?: string;
   /** Exact normalized snapshot written before the model call. */
-  persistedSnapshotFingerprint?: string
+  persistedSnapshotFingerprint?: string;
 }
 
 /**
@@ -331,47 +461,49 @@ export interface InterviewBatchSkipReceipt {
  * batch timeout, and every path releases explicitly. This is what stops a
  * daemon that died mid-batch from wedging the ticket forever.
  */
-const DEFAULT_BATCH_CLAIM_TTL_MS = 60 * 60 * 1000
-const INTERVIEW_STOP_PENDING_PREFIX = 'interview-stop-pending:'
-const INTERVIEW_STOP_PENDING_EXPIRY = '9999-12-31T23:59:59.999Z'
-const PROCESS_BOOT_ID = randomUUID()
+const DEFAULT_BATCH_CLAIM_TTL_MS = 60 * 60 * 1000;
+const INTERVIEW_STOP_PENDING_PREFIX = "interview-stop-pending:";
+const INTERVIEW_STOP_PENDING_EXPIRY = "9999-12-31T23:59:59.999Z";
+const PROCESS_BOOT_ID = randomUUID();
 
-export type InterviewBatchStopKind = 'answer' | 'skip'
+export type InterviewBatchStopKind = "answer" | "skip";
 
 function buildPendingStopToken(kind: InterviewBatchStopKind): string {
-  return `${INTERVIEW_STOP_PENDING_PREFIX}${kind}:${randomUUID()}`
+  return `${INTERVIEW_STOP_PENDING_PREFIX}${kind}:${randomUUID()}`;
 }
 
 function parsePendingStopKind(token: string): InterviewBatchStopKind | null {
-  if (!token.startsWith(INTERVIEW_STOP_PENDING_PREFIX)) return null
-  const kind = token.slice(INTERVIEW_STOP_PENDING_PREFIX.length).split(':', 1)[0]
-  return kind === 'answer' || kind === 'skip' ? kind : null
+  if (!token.startsWith(INTERVIEW_STOP_PENDING_PREFIX)) return null;
+  const kind = token
+    .slice(INTERVIEW_STOP_PENDING_PREFIX.length)
+    .split(":", 1)[0];
+  return kind === "answer" || kind === "skip" ? kind : null;
 }
 
 // Claim timestamps are persisted as ISO text. Keep the validity comparison
 // independent of Date#toISOString so a fixed-clock test can still distinguish
 // a live lease from an expired one.
 function isoFromEpoch(milliseconds: number): string {
-  const date = new Date(milliseconds)
-  const pad = (value: number, width = 2) => String(value).padStart(width, '0')
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${pad(date.getUTCMilliseconds(), 3)}Z`
+  const date = new Date(milliseconds);
+  const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${pad(date.getUTCMilliseconds(), 3)}Z`;
 }
 
 function isClaimOwnerProvablyDead(token: string): boolean {
-  const parts = token.split(':')
-  const ownerPid = Number(parts[0])
-  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return false
+  const parts = token.split(":");
+  const ownerPid = Number(parts[0]);
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return false;
   if (ownerPid === process.pid) {
     // PID reuse is possible after a daemon restart. New claims carry this
     // process boot id; legacy two-part claims remain protected because they
     // provide no evidence either way.
-    return parts.length >= 3 && parts[1] !== PROCESS_BOOT_ID
+    return parts.length >= 3 && parts[1] !== PROCESS_BOOT_ID;
   }
   try {
-    process.kill(ownerPid, 0)
-    return false
+    process.kill(ownerPid, 0);
+    return false;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH'
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
 }
 
@@ -398,13 +530,16 @@ function isClaimOwnerProvablyDead(token: string): boolean {
  *
  * Returns the acquisition's token, or null when someone else holds it.
  */
-export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS): string | null {
-  const context = getTicketContext(ticketId)
-  if (!context) return null
+export function claimInterviewBatch(
+  ticketId: string,
+  ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS,
+): string | null {
+  const context = getTicketContext(ticketId);
+  if (!context) return null;
 
-  const token = `${process.pid}:${PROCESS_BOOT_ID}:${randomUUID()}`
-  const now = Date.now()
-  const nowIso = new Date(now).toISOString()
+  const token = `${process.pid}:${PROCESS_BOOT_ID}:${randomUUID()}`;
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
   const claim = {
     ticketId: context.localTicketId,
     token,
@@ -414,7 +549,7 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
     // to assert without waiting on the wall clock. A negative TTL is nonsense
     // and lands on the same instant rather than in the past.
     expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
-  }
+  };
 
   return context.projectDb.transaction((tx): string | null => {
     // A foreign process id that no longer exists proves that the daemon which
@@ -424,11 +559,16 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
       .select({ token: interviewBatchClaims.token })
       .from(interviewBatchClaims)
       .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
-      .get()
+      .get();
     if (existing && isClaimOwnerProvablyDead(existing.token)) {
       tx.delete(interviewBatchClaims)
-        .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, existing.token)))
-        .run()
+        .where(
+          and(
+            eq(interviewBatchClaims.ticketId, context.localTicketId),
+            eq(interviewBatchClaims.token, existing.token),
+          ),
+        )
+        .run();
     }
 
     // **The write is the guard.** Deciding from a `SELECT` first and writing
@@ -462,15 +602,15 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
         // conditions have to be exact complements, not merely opposite.
         where: lte(interviewBatchClaims.expiresAt, nowIso),
       })
-      .run()
+      .run();
 
     const held = tx
       .select({ token: interviewBatchClaims.token })
       .from(interviewBatchClaims)
       .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
-      .get()
-    return held?.token === token ? token : null
-  })
+      .get();
+    return held?.token === token ? token : null;
+  });
 }
 
 /**
@@ -491,34 +631,38 @@ export function renewInterviewBatchClaim(
   claimToken: string,
   ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS,
 ): boolean {
-  if (parsePendingStopKind(claimToken)) return false
-  const context = getTicketContext(ticketId)
-  if (!context) return false
-  const now = Date.now()
+  if (parsePendingStopKind(claimToken)) return false;
+  const context = getTicketContext(ticketId);
+  if (!context) return false;
+  const now = Date.now();
   const updated = context.projectDb
     .update(interviewBatchClaims)
     .set({
       claimedAt: new Date(now).toISOString(),
       expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
     })
-    .where(and(
-      eq(interviewBatchClaims.ticketId, context.localTicketId),
-      eq(interviewBatchClaims.token, claimToken),
-    ))
-    .run()
-  return updated.changes > 0
+    .where(
+      and(
+        eq(interviewBatchClaims.ticketId, context.localTicketId),
+        eq(interviewBatchClaims.token, claimToken),
+      ),
+    )
+    .run();
+  return updated.changes > 0;
 }
 
 /** The pending stop marker is a durable retry hand-off, not an expiring lease. */
-export function getPendingInterviewBatchStop(ticketId: string): InterviewBatchStopKind | null {
-  const context = getTicketContext(ticketId)
-  if (!context) return null
+export function getPendingInterviewBatchStop(
+  ticketId: string,
+): InterviewBatchStopKind | null {
+  const context = getTicketContext(ticketId);
+  if (!context) return null;
   const existing = context.projectDb
     .select({ token: interviewBatchClaims.token })
     .from(interviewBatchClaims)
     .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
-    .get()
-  return existing ? parsePendingStopKind(existing.token) : null
+    .get();
+  return existing ? parsePendingStopKind(existing.token) : null;
 }
 
 /**
@@ -531,14 +675,16 @@ export function getPendingInterviewBatchStopToken(
   ticketId: string,
   kind: InterviewBatchStopKind,
 ): string | null {
-  const context = getTicketContext(ticketId)
-  if (!context) return null
+  const context = getTicketContext(ticketId);
+  if (!context) return null;
   const existing = context.projectDb
     .select({ token: interviewBatchClaims.token })
     .from(interviewBatchClaims)
     .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
-    .get()
-  return existing && parsePendingStopKind(existing.token) === kind ? existing.token : null
+    .get();
+  return existing && parsePendingStopKind(existing.token) === kind
+    ? existing.token
+    : null;
 }
 
 /**
@@ -551,21 +697,24 @@ export function markInterviewBatchStopPending(
   claimToken: string,
   kind: InterviewBatchStopKind,
 ): boolean {
-  const context = getTicketContext(ticketId)
-  if (!context) return false
-  const pendingToken = buildPendingStopToken(kind)
-  const updated = context.projectDb.update(interviewBatchClaims)
+  const context = getTicketContext(ticketId);
+  if (!context) return false;
+  const pendingToken = buildPendingStopToken(kind);
+  const updated = context.projectDb
+    .update(interviewBatchClaims)
     .set({
       token: pendingToken,
       claimedAt: new Date().toISOString(),
       expiresAt: INTERVIEW_STOP_PENDING_EXPIRY,
     })
-    .where(and(
-      eq(interviewBatchClaims.ticketId, context.localTicketId),
-      eq(interviewBatchClaims.token, claimToken),
-    ))
-    .run()
-  return updated.changes > 0
+    .where(
+      and(
+        eq(interviewBatchClaims.ticketId, context.localTicketId),
+        eq(interviewBatchClaims.token, claimToken),
+      ),
+    )
+    .run();
+  return updated.changes > 0;
 }
 
 /**
@@ -578,24 +727,27 @@ export function claimInterviewBatchAfterConfirmedStop(
   pendingToken: string,
   ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS,
 ): string | null {
-  const context = getTicketContext(ticketId)
-  if (!context) return null
-  if (parsePendingStopKind(pendingToken) !== kind) return null
-  const now = Date.now()
-  const nowIso = new Date(now).toISOString()
-  const token = `${process.pid}:${PROCESS_BOOT_ID}:${randomUUID()}`
-  const retried = context.projectDb.update(interviewBatchClaims)
+  const context = getTicketContext(ticketId);
+  if (!context) return null;
+  if (parsePendingStopKind(pendingToken) !== kind) return null;
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const token = `${process.pid}:${PROCESS_BOOT_ID}:${randomUUID()}`;
+  const retried = context.projectDb
+    .update(interviewBatchClaims)
     .set({
       token,
       claimedAt: nowIso,
       expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
     })
-    .where(and(
-      eq(interviewBatchClaims.ticketId, context.localTicketId),
-      eq(interviewBatchClaims.token, pendingToken),
-    ))
-    .run()
-  return retried.changes > 0 ? token : null
+    .where(
+      and(
+        eq(interviewBatchClaims.ticketId, context.localTicketId),
+        eq(interviewBatchClaims.token, pendingToken),
+      ),
+    )
+    .run();
+  return retried.changes > 0 ? token : null;
 }
 
 /**
@@ -616,48 +768,64 @@ export function releaseInterviewBatch(ticketId: string, token?: string): void {
   // may throw — and the claim's expiry already covers a release that never
   // happens, which is the same reason a crashed daemon does not wedge a ticket.
   try {
-    const context = getTicketContext(ticketId)
-    if (!context) return
+    const context = getTicketContext(ticketId);
+    if (!context) return;
     context.projectDb
       .delete(interviewBatchClaims)
-      .where(token
-        ? and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, token))
-        : eq(interviewBatchClaims.ticketId, context.localTicketId))
-      .run()
+      .where(
+        token
+          ? and(
+              eq(interviewBatchClaims.ticketId, context.localTicketId),
+              eq(interviewBatchClaims.token, token),
+            )
+          : eq(interviewBatchClaims.ticketId, context.localTicketId),
+      )
+      .run();
   } catch (error) {
-    console.warn(`[interview] Could not release the answer-batch claim for ${ticketId}; it expires on its own.`, error)
+    console.warn(
+      `[interview] Could not release the answer-batch claim for ${ticketId}; it expires on its own.`,
+      error,
+    );
   }
 }
 
 /** True when a live claim exists for this ticket. */
 export function hasInFlightInterviewBatch(ticketId: string): boolean {
-  const context = getTicketContext(ticketId)
-  if (!context) return false
+  const context = getTicketContext(ticketId);
+  if (!context) return false;
   const existing = context.projectDb
     .select()
     .from(interviewBatchClaims)
     .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
-    .get()
-  return Boolean(existing && !isClaimOwnerProvablyDead(existing.token) && Date.parse(existing.expiresAt) > Date.now())
+    .get();
+  return Boolean(
+    existing &&
+    !isClaimOwnerProvablyDead(existing.token) &&
+    Date.parse(existing.expiresAt) > Date.now(),
+  );
 }
 
-export function snapshotFingerprint(snapshot: InterviewSessionSnapshot): string {
+export function snapshotFingerprint(
+  snapshot: InterviewSessionSnapshot,
+): string {
   const canonicalize = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(canonicalize)
-    if (!value || typeof value !== 'object') return value
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!value || typeof value !== "object") return value;
     return Object.fromEntries(
       Object.entries(value)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([key, child]) => [key, canonicalize(child)]),
-    )
-  }
-  return JSON.stringify(canonicalize(snapshot))
+    );
+  };
+  return JSON.stringify(canonicalize(snapshot));
 }
 
 export class InterviewBatchChangedError extends Error {
   constructor() {
-    super('Interview batch changed or its claim expired before processing completed')
-    this.name = 'InterviewBatchChangedError'
+    super(
+      "Interview batch changed or its claim expired before processing completed",
+    );
+    this.name = "InterviewBatchChangedError";
   }
 }
 
@@ -670,34 +838,41 @@ function persistInterviewSessionIfCurrent(
   const current = getLatestPhaseArtifact(
     ticketId,
     INTERVIEW_SESSION_ARTIFACT,
-    'WAITING_INTERVIEW_ANSWERS',
-  )
-  const currentSnapshot = parseInterviewSessionSnapshot(current?.content)
-  if (!current || !currentSnapshot || snapshotFingerprint(currentSnapshot) !== expectedFingerprint) {
-    return false
+    "WAITING_INTERVIEW_ANSWERS",
+  );
+  const currentSnapshot = parseInterviewSessionSnapshot(current?.content);
+  if (
+    !current ||
+    !currentSnapshot ||
+    snapshotFingerprint(currentSnapshot) !== expectedFingerprint
+  ) {
+    return false;
   }
 
-  const nextContent = serializeInterviewSessionSnapshot(snapshot)
-  const context = getTicketContext(ticketId)
-  if (!context) return false
+  const nextContent = serializeInterviewSessionSnapshot(snapshot);
+  const context = getTicketContext(ticketId);
+  if (!context) return false;
   const claimGuard = exists(
-    context.projectDb.select({ ticketId: interviewBatchClaims.ticketId })
+    context.projectDb
+      .select({ ticketId: interviewBatchClaims.ticketId })
       .from(interviewBatchClaims)
-      .where(and(
-        eq(interviewBatchClaims.ticketId, context.localTicketId),
-        eq(interviewBatchClaims.token, claimToken),
-        gt(interviewBatchClaims.expiresAt, isoFromEpoch(Date.now())),
-      )),
-  )
+      .where(
+        and(
+          eq(interviewBatchClaims.ticketId, context.localTicketId),
+          eq(interviewBatchClaims.token, claimToken),
+          gt(interviewBatchClaims.expiresAt, isoFromEpoch(Date.now())),
+        ),
+      ),
+  );
   return compareAndSetLatestPhaseArtifact(
     ticketId,
     INTERVIEW_SESSION_ARTIFACT,
-    'WAITING_INTERVIEW_ANSWERS',
+    "WAITING_INTERVIEW_ANSWERS",
     current.content,
     nextContent,
     undefined,
     claimGuard,
-  )
+  );
 }
 
 /**
@@ -706,32 +881,40 @@ function persistInterviewSessionIfCurrent(
  * exactly the intermediate one it names; a later result or edit clears it.
  */
 export function restoreInterruptedInterviewBatch(ticketId: string): boolean {
-  const marker = readInterruptedInterviewBatch(ticketId)
-  if (!marker) return false
-  const current = readInterviewSessionSnapshotArtifact(ticketId)
+  const marker = readInterruptedInterviewBatch(ticketId);
+  if (!marker) return false;
+  const current = readInterviewSessionSnapshotArtifact(ticketId);
   if (!current) {
-    clearInterruptedInterviewBatch(ticketId)
-    return false
+    clearInterruptedInterviewBatch(ticketId);
+    return false;
   }
   if (current.currentBatch) {
-    clearInterruptedInterviewBatch(ticketId)
-    return false
+    clearInterruptedInterviewBatch(ticketId);
+    return false;
   }
-  const currentFingerprint = snapshotFingerprint(current)
+  const currentFingerprint = snapshotFingerprint(current);
   if (currentFingerprint !== marker.answeredSnapshotFingerprint) {
-    clearInterruptedInterviewBatch(ticketId)
-    return false
+    clearInterruptedInterviewBatch(ticketId);
+    return false;
   }
 
-  const claimToken = claimInterviewBatch(ticketId)
-  if (!claimToken) return false
+  const claimToken = claimInterviewBatch(ticketId);
+  if (!claimToken) return false;
   try {
-    const restored = cloneSnapshot(marker.originalSnapshot)
-    if (!persistInterviewSessionIfCurrent(ticketId, currentFingerprint, restored, claimToken)) return false
-    clearInterruptedInterviewBatch(ticketId)
-    return true
+    const restored = cloneSnapshot(marker.originalSnapshot);
+    if (
+      !persistInterviewSessionIfCurrent(
+        ticketId,
+        currentFingerprint,
+        restored,
+        claimToken,
+      )
+    )
+      return false;
+    clearInterruptedInterviewBatch(ticketId);
+    return true;
   } finally {
-    releaseInterviewBatch(ticketId, claimToken)
+    releaseInterviewBatch(ticketId, claimToken);
   }
 }
 
@@ -739,22 +922,39 @@ function canReattachInterviewBatch(
   current: InterviewSessionSnapshot,
   original: InterviewSessionSnapshot,
 ): boolean {
-  if (!original.currentBatch || current.currentBatch || current.completedAt) return false
-  if (JSON.stringify(current.questions) !== JSON.stringify(original.questions)) return false
-  if (JSON.stringify(current.batchHistory.slice(0, -1)) !== JSON.stringify(original.batchHistory)) return false
-  const lastHistoryEntry = current.batchHistory.at(-1)
-  if (!lastHistoryEntry || lastHistoryEntry.batchNumber !== original.currentBatch.batchNumber
-    || lastHistoryEntry.source !== original.currentBatch.source
-    || lastHistoryEntry.isFinalFreeForm !== original.currentBatch.isFinalFreeForm
-    || JSON.stringify(lastHistoryEntry.questionIds) !== JSON.stringify(original.currentBatch.questions.map((question) => question.id))) {
-    return false
+  if (!original.currentBatch || current.currentBatch || current.completedAt)
+    return false;
+  if (JSON.stringify(current.questions) !== JSON.stringify(original.questions))
+    return false;
+  if (
+    JSON.stringify(current.batchHistory.slice(0, -1)) !==
+    JSON.stringify(original.batchHistory)
+  )
+    return false;
+  const lastHistoryEntry = current.batchHistory.at(-1);
+  if (
+    !lastHistoryEntry ||
+    lastHistoryEntry.batchNumber !== original.currentBatch.batchNumber ||
+    lastHistoryEntry.source !== original.currentBatch.source ||
+    lastHistoryEntry.isFinalFreeForm !==
+      original.currentBatch.isFinalFreeForm ||
+    JSON.stringify(lastHistoryEntry.questionIds) !==
+      JSON.stringify(
+        original.currentBatch.questions.map((question) => question.id),
+      )
+  ) {
+    return false;
   }
   const expectedAnswerIds = new Set([
     ...Object.keys(original.answers),
     ...original.currentBatch.questions.map((question) => question.id),
-  ])
-  return Object.keys(current.answers).length === expectedAnswerIds.size
-    && Object.keys(current.answers).every((questionId) => expectedAnswerIds.has(questionId))
+  ]);
+  return (
+    Object.keys(current.answers).length === expectedAnswerIds.size &&
+    Object.keys(current.answers).every((questionId) =>
+      expectedAnswerIds.has(questionId),
+    )
+  );
 }
 
 export function restoreInterviewBatchAfterFailure(
@@ -763,63 +963,84 @@ export function restoreInterviewBatchAfterFailure(
   receipt: InterviewBatchSkipReceipt,
   claimToken: string,
 ): boolean {
-  const current = readInterviewSessionSnapshotArtifact(ticketId)
-  if (!current) return false
-  const isSamePersistedSnapshot = Boolean(receipt.persistedSnapshotFingerprint && snapshotFingerprint(current) === receipt.persistedSnapshotFingerprint)
+  const current = readInterviewSessionSnapshotArtifact(ticketId);
+  if (!current) return false;
+  const isSamePersistedSnapshot = Boolean(
+    receipt.persistedSnapshotFingerprint &&
+    snapshotFingerprint(current) === receipt.persistedSnapshotFingerprint,
+  );
   if (isSamePersistedSnapshot && receipt.persistedSnapshotFingerprint) {
-    const restoredWithCas = persistInterviewSessionIfCurrent(ticketId, receipt.persistedSnapshotFingerprint, original, claimToken)
-    if (!restoredWithCas) return false
-    if (receipt.actionId) deleteSkipReceiptsForAction(ticketId, receipt.actionId)
-    clearInterruptedInterviewBatch(ticketId)
-    return true
+    const restoredWithCas = persistInterviewSessionIfCurrent(
+      ticketId,
+      receipt.persistedSnapshotFingerprint,
+      original,
+      claimToken,
+    );
+    if (!restoredWithCas) return false;
+    if (receipt.actionId)
+      deleteSkipReceiptsForAction(ticketId, receipt.actionId);
+    clearInterruptedInterviewBatch(ticketId);
+    return true;
   }
-
 
   // An edit may legitimately change only an answer while the model is away.
   // Reattach the old batch onto that newer snapshot so the edit survives and
   // the operator can submit again.
-  if (!canReattachInterviewBatch(current, original)) return false
-  const restored = cloneSnapshot(current)
+  if (!canReattachInterviewBatch(current, original)) return false;
+  const restored = cloneSnapshot(current);
   // `recordBatchAnswers` already appended this batch before the worker went
   // away. Reattaching it must not leave a second history entry when the retry
   // submits it again.
-  restored.batchHistory = current.batchHistory.slice(0, -1)
-  restored.currentBatch = cloneSnapshot(original).currentBatch
-  restored.updatedAt = nowIso()
-  if (!persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(current), restored, claimToken)) return false
-  if (receipt.actionId) deleteSkipReceiptsForAction(ticketId, receipt.actionId)
-  clearInterruptedInterviewBatch(ticketId)
-  return true
+  restored.batchHistory = current.batchHistory.slice(0, -1);
+  restored.currentBatch = cloneSnapshot(original).currentBatch;
+  restored.updatedAt = nowIso();
+  if (
+    !persistInterviewSessionIfCurrent(
+      ticketId,
+      snapshotFingerprint(current),
+      restored,
+      claimToken,
+    )
+  )
+    return false;
+  if (receipt.actionId) deleteSkipReceiptsForAction(ticketId, receipt.actionId);
+  clearInterruptedInterviewBatch(ticketId);
+  return true;
 }
 
 export function skipAllInterviewQuestionsToApproval(
   ticketId: string,
   batchAnswers: Record<string, string>,
   options: {
-    selectedOptions?: Record<string, string[]>
-    skipReasons?: Record<string, string>
-    bulkReason?: string | null
-    claimToken?: string
-    expectedSnapshotFingerprint?: string
+    selectedOptions?: Record<string, string[]>;
+    skipReasons?: Record<string, string>;
+    bulkReason?: string | null;
+    claimToken?: string;
+    expectedSnapshotFingerprint?: string;
   } = {},
 ): { snapshot: InterviewSessionSnapshot; canonicalInterview: string } {
-  const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
+  const snapshot = readInterviewSessionSnapshotArtifact(ticketId);
   if (!snapshot) {
-    throw new Error('No normalized interview session snapshot found for this ticket')
+    throw new Error(
+      "No normalized interview session snapshot found for this ticket",
+    );
   }
   if (options.claimToken && !options.expectedSnapshotFingerprint) {
-    throw new InterviewBatchChangedError()
+    throw new InterviewBatchChangedError();
   }
 
-  const ticket = getTicketByRef(ticketId)
-  const externalId = ticket?.externalId ?? ticketId
-  const coverageFollowUpBudgetPercent = ticket?.lockedCoverageFollowUpBudgetPercent
-    ?? PROFILE_DEFAULTS.coverageFollowUpBudgetPercent
-  const maxCoveragePasses = ticket?.lockedMaxCoveragePasses
-    ?? PROFILE_DEFAULTS.maxCoveragePasses
-  const paths = getTicketPaths(ticketId)
+  const ticket = getTicketByRef(ticketId);
+  const externalId = ticket?.externalId ?? ticketId;
+  const coverageFollowUpBudgetPercent =
+    ticket?.lockedCoverageFollowUpBudgetPercent ??
+    PROFILE_DEFAULTS.coverageFollowUpBudgetPercent;
+  const maxCoveragePasses =
+    ticket?.lockedMaxCoveragePasses ?? PROFILE_DEFAULTS.maxCoveragePasses;
+  const paths = getTicketPaths(ticketId);
   if (!paths) {
-    throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+    throw new TicketWorkspaceNotInitializedError(
+      `Ticket workspace not initialized: missing ticket paths for ${externalId}`,
+    );
   }
 
   // Exactly the questions *this* action skips. Passing every finalized question
@@ -830,65 +1051,88 @@ export function skipAllInterviewQuestionsToApproval(
     snapshot,
     batchAnswers,
     options.selectedOptions ?? {},
-  )
-  const finalizedSnapshot = completeInterviewBySkippingRemaining(snapshot, batchAnswers, {
-    selectedOptions: options.selectedOptions,
-    skipReasons: options.skipReasons,
-    bulkReason: options.bulkReason,
-  })
-  const canonicalInterview = buildCanonicalInterviewYaml(externalId, finalizedSnapshot)
-  const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
+  );
+  const finalizedSnapshot = completeInterviewBySkippingRemaining(
+    snapshot,
+    batchAnswers,
+    {
+      selectedOptions: options.selectedOptions,
+      skipReasons: options.skipReasons,
+      bulkReason: options.bulkReason,
+    },
+  );
+  const canonicalInterview = buildCanonicalInterviewYaml(
+    externalId,
+    finalizedSnapshot,
+  );
+  const interviewPath = resolve(paths.ticketDir, "interview.yaml");
 
   // Skip All spans several durable stores. Keep the exact pre-action values so
   // a failure after the snapshot CAS can put the ticket back into a retryable
   // state instead of leaving a completed session with half its artifacts.
-  const canonicalBefore = readTicketFile(ticketId, 'interview.yaml')
+  const canonicalBefore = readTicketFile(ticketId, "interview.yaml");
   const coverageArtifactDefinitions = [
     {
-      artifactType: 'ui_artifact_companion:interview_coverage_input',
-      mirrorPath: 'ui/artifact-companions/interview_coverage_input.json',
+      artifactType: "ui_artifact_companion:interview_coverage_input",
+      mirrorPath: "ui/artifact-companions/interview_coverage_input.json",
     },
     {
-      artifactType: 'interview_coverage',
+      artifactType: "interview_coverage",
       mirrorPath: null,
     },
     {
-      artifactType: 'ui_artifact_companion:interview_coverage',
-      mirrorPath: 'ui/artifact-companions/interview_coverage.json',
+      artifactType: "ui_artifact_companion:interview_coverage",
+      mirrorPath: "ui/artifact-companions/interview_coverage.json",
     },
-  ] as const
+  ] as const;
   const coverageArtifactsBefore = new Map(
-    coverageArtifactDefinitions.map(({ artifactType }) => [
-      artifactType,
-      getLatestPhaseArtifact(ticketId, artifactType, 'VERIFYING_INTERVIEW_COVERAGE'),
-    ] as const),
-  )
+    coverageArtifactDefinitions.map(
+      ({ artifactType }) =>
+        [
+          artifactType,
+          getLatestPhaseArtifact(
+            ticketId,
+            artifactType,
+            "VERIFYING_INTERVIEW_COVERAGE",
+          ),
+        ] as const,
+    ),
+  );
   const coverageMirrorsBefore = new Map(
     coverageArtifactDefinitions
-      .filter((definition): definition is typeof coverageArtifactDefinitions[number] & { mirrorPath: string } => (
-        definition.mirrorPath !== null
-      ))
-      .map(({ mirrorPath }) => [mirrorPath, readTicketFile(ticketId, mirrorPath)] as const),
-  )
-  const skipActionIdsBefore = new Set(listSkipEvents(ticketId).map((event) => event.actionId))
-  let recordedSkipActionId: string | null = null
+      .filter(
+        (
+          definition,
+        ): definition is (typeof coverageArtifactDefinitions)[number] & {
+          mirrorPath: string;
+        } => definition.mirrorPath !== null,
+      )
+      .map(
+        ({ mirrorPath }) =>
+          [mirrorPath, readTicketFile(ticketId, mirrorPath)] as const,
+      ),
+  );
+  const skipActionIdsBefore = new Set(
+    listSkipEvents(ticketId).map((event) => event.actionId),
+  );
+  let recordedSkipActionId: string | null = null;
 
   const rollbackSkipAll = (originalError: unknown): never => {
-    const rollbackErrors: string[] = []
-    let snapshotRestored = false
+    const rollbackErrors: string[] = [];
+    let snapshotRestored = false;
     try {
       const restored = options.claimToken
         ? persistInterviewSessionIfCurrent(
-          ticketId,
-          snapshotFingerprint(finalizedSnapshot),
-          snapshot,
-          options.claimToken,
-        )
-        : (persistInterviewSession(ticketId, snapshot), true)
-      if (!restored) throw new InterviewBatchChangedError()
-      snapshotRestored = true
+            ticketId,
+            snapshotFingerprint(finalizedSnapshot),
+            snapshot,
+            options.claimToken,
+          )
+        : (persistInterviewSession(ticketId, snapshot), true);
+      if (!restored) throw new InterviewBatchChangedError();
+      snapshotRestored = true;
     } catch (error) {
-      rollbackErrors.push(`session snapshot: ${getErrorMessage(error)}`)
+      rollbackErrors.push(`session snapshot: ${getErrorMessage(error)}`);
     }
 
     // If ownership changed while the action was failing, do not overwrite the
@@ -896,63 +1140,82 @@ export function skipAllInterviewQuestionsToApproval(
     if (snapshotRestored) {
       const attempt = (label: string, action: () => void) => {
         try {
-          action()
+          action();
         } catch (error) {
-          rollbackErrors.push(`${label}: ${getErrorMessage(error)}`)
+          rollbackErrors.push(`${label}: ${getErrorMessage(error)}`);
         }
+      };
+
+      if (
+        recordedSkipActionId &&
+        !skipActionIdsBefore.has(recordedSkipActionId)
+      ) {
+        attempt("skip receipts", () => {
+          deleteSkipReceiptsForAction(ticketId, recordedSkipActionId!);
+        });
       }
 
-      if (recordedSkipActionId && !skipActionIdsBefore.has(recordedSkipActionId)) {
-        attempt('skip receipts', () => {
-          deleteSkipReceiptsForAction(ticketId, recordedSkipActionId!)
-        })
-      }
-
-      attempt('coverage artifacts', () => {
-        const context = getTicketContext(ticketId)
-        if (!context) throw new Error(`Ticket not found: ${ticketId}`)
+      attempt("coverage artifacts", () => {
+        const context = getTicketContext(ticketId);
+        if (!context) throw new Error(`Ticket not found: ${ticketId}`);
         for (const { artifactType } of coverageArtifactDefinitions) {
-          const before = coverageArtifactsBefore.get(artifactType)
-          const current = getLatestPhaseArtifact(ticketId, artifactType, 'VERIFYING_INTERVIEW_COVERAGE')
+          const before = coverageArtifactsBefore.get(artifactType);
+          const current = getLatestPhaseArtifact(
+            ticketId,
+            artifactType,
+            "VERIFYING_INTERVIEW_COVERAGE",
+          );
           if (!before) {
             if (current) {
-              context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, current.id)).run()
+              context.projectDb
+                .delete(phaseArtifacts)
+                .where(eq(phaseArtifacts.id, current.id))
+                .run();
             }
-            continue
+            continue;
           }
           if (!current || current.id !== before.id) {
-            if (current) context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, current.id)).run()
-            context.projectDb.insert(phaseArtifacts).values({ ...before }).run()
-            continue
+            if (current)
+              context.projectDb
+                .delete(phaseArtifacts)
+                .where(eq(phaseArtifacts.id, current.id))
+                .run();
+            context.projectDb
+              .insert(phaseArtifacts)
+              .values({ ...before })
+              .run();
+            continue;
           }
-          context.projectDb.update(phaseArtifacts)
+          context.projectDb
+            .update(phaseArtifacts)
             .set({ content: before.content, updatedAt: before.updatedAt })
             .where(eq(phaseArtifacts.id, before.id))
-            .run()
+            .run();
         }
-      })
+      });
 
-      attempt('canonical interview', () => {
-        if (canonicalBefore === null) removeTicketFile(ticketId, 'interview.yaml')
-        else writeTicketFile(ticketId, 'interview.yaml', canonicalBefore)
-      })
+      attempt("canonical interview", () => {
+        if (canonicalBefore === null)
+          removeTicketFile(ticketId, "interview.yaml");
+        else writeTicketFile(ticketId, "interview.yaml", canonicalBefore);
+      });
 
       for (const [mirrorPath, content] of coverageMirrorsBefore) {
         attempt(`coverage mirror ${mirrorPath}`, () => {
-          if (content === null) removeTicketFile(ticketId, mirrorPath)
-          else writeTicketFile(ticketId, mirrorPath, content)
-        })
+          if (content === null) removeTicketFile(ticketId, mirrorPath);
+          else writeTicketFile(ticketId, mirrorPath, content);
+        });
       }
     }
 
     if (rollbackErrors.length > 0) {
       throw new Error(
-        `Skip All interview finalization failed and rollback was incomplete; retry may be required. `
-        + `${rollbackErrors.join('; ')} Original error: ${getErrorMessage(originalError)}`,
-      )
+        `Skip All interview finalization failed and rollback was incomplete; retry may be required. ` +
+          `${rollbackErrors.join("; ")} Original error: ${getErrorMessage(originalError)}`,
+      );
     }
-    throw originalError
-  }
+    throw originalError;
+  };
 
   if (options.claimToken) {
     const persisted = persistInterviewSessionIfCurrent(
@@ -960,141 +1223,172 @@ export function skipAllInterviewQuestionsToApproval(
       options.expectedSnapshotFingerprint!,
       finalizedSnapshot,
       options.claimToken,
-    )
-    if (!persisted) throw new InterviewBatchChangedError()
+    );
+    if (!persisted) throw new InterviewBatchChangedError();
   } else {
-    persistInterviewSession(ticketId, finalizedSnapshot)
+    persistInterviewSession(ticketId, finalizedSnapshot);
   }
-  let coverageRunNumber = 1
-  let followUpBudgetTotal = 0
-  let followUpBudgetUsed = 0
+  let coverageRunNumber = 1;
+  let followUpBudgetTotal = 0;
+  let followUpBudgetUsed = 0;
   try {
-    writeTicketFile(ticketId, 'interview.yaml', canonicalInterview)
+    writeTicketFile(ticketId, "interview.yaml", canonicalInterview);
     recordInterviewSkipReceipts({
       ticketId,
       externalId,
-      ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
-      surface: 'interview_all',
+      ticketStatusBefore: ticket?.status ?? "WAITING_INTERVIEW_ANSWERS",
+      surface: "interview_all",
       snapshot: finalizedSnapshot,
       questionIds: [...skippedByThisAction],
       batchNumber: snapshot.currentBatch?.batchNumber ?? null,
       bulkReason: options.bulkReason ?? null,
       onRecorded: (actionId) => {
-        recordedSkipActionId = actionId
+        recordedSkipActionId = actionId;
       },
-    })
+    });
 
-    const userAnswers = buildInterviewAnswerSummary(finalizedSnapshot)
-    coverageRunNumber = Math.max(1, countPhaseArtifacts(ticketId, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE') || 1)
-    followUpBudgetTotal = calculateFollowUpLimit(finalizedSnapshot.maxInitialQuestions, coverageFollowUpBudgetPercent)
-    followUpBudgetUsed = countCoverageFollowUpQuestions(finalizedSnapshot)
-    persistUiArtifactCompanionArtifact(ticketId, 'VERIFYING_INTERVIEW_COVERAGE', 'interview_coverage_input', {
-      interview: canonicalInterview,
-      userAnswers,
-    })
+    const userAnswers = buildInterviewAnswerSummary(finalizedSnapshot);
+    coverageRunNumber = Math.max(
+      1,
+      countPhaseArtifacts(
+        ticketId,
+        "interview_coverage",
+        "VERIFYING_INTERVIEW_COVERAGE",
+      ) || 1,
+    );
+    followUpBudgetTotal = calculateFollowUpLimit(
+      finalizedSnapshot.maxInitialQuestions,
+      coverageFollowUpBudgetPercent,
+    );
+    followUpBudgetUsed = countCoverageFollowUpQuestions(finalizedSnapshot);
+    persistUiArtifactCompanionArtifact(
+      ticketId,
+      "VERIFYING_INTERVIEW_COVERAGE",
+      "interview_coverage_input",
+      {
+        interview: canonicalInterview,
+        userAnswers,
+      },
+    );
     upsertLatestPhaseArtifact(
       ticketId,
-      'interview_coverage',
-      'VERIFYING_INTERVIEW_COVERAGE',
+      "interview_coverage",
+      "VERIFYING_INTERVIEW_COVERAGE",
       JSON.stringify({
         winnerId: finalizedSnapshot.winnerId,
         hasGaps: false,
         coverageRunNumber,
         maxCoveragePasses,
         limitReached: false,
-        terminationReason: 'clean',
+        terminationReason: "clean",
       }),
-    )
-    persistUiArtifactCompanionArtifact(ticketId, 'VERIFYING_INTERVIEW_COVERAGE', 'interview_coverage', {
-      response: SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE,
-      normalizedContent: [
-        'status: clean',
-        'gaps: []',
-        'follow_up_questions: []',
-      ].join('\n'),
-      parsed: {
-        status: 'clean',
-        gaps: [],
-        followUpQuestions: [],
+    );
+    persistUiArtifactCompanionArtifact(
+      ticketId,
+      "VERIFYING_INTERVIEW_COVERAGE",
+      "interview_coverage",
+      {
+        response: SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE,
+        normalizedContent: [
+          "status: clean",
+          "gaps: []",
+          "follow_up_questions: []",
+        ].join("\n"),
+        parsed: {
+          status: "clean",
+          gaps: [],
+          followUpQuestions: [],
+        },
+        followUpBudgetPercent: coverageFollowUpBudgetPercent,
+        followUpBudgetTotal,
+        followUpBudgetUsed,
+        followUpBudgetRemaining: Math.max(
+          0,
+          followUpBudgetTotal - followUpBudgetUsed,
+        ),
+        structuredOutput: {
+          repairApplied: false,
+          repairWarnings: [],
+          autoRetryCount: 0,
+        },
       },
-      followUpBudgetPercent: coverageFollowUpBudgetPercent,
-      followUpBudgetTotal,
-      followUpBudgetUsed,
-      followUpBudgetRemaining: Math.max(0, followUpBudgetTotal - followUpBudgetUsed),
-      structuredOutput: {
-        repairApplied: false,
-        repairWarnings: [],
-        autoRetryCount: 0,
-      },
-    })
+    );
 
     emitPhaseLog(
       ticketId,
       externalId,
-      'WAITING_INTERVIEW_ANSWERS',
-      'info',
-      'User skipped all remaining interview questions. Preserving existing answers and finalizing the normalized interview state.',
-    )
+      "WAITING_INTERVIEW_ANSWERS",
+      "info",
+      "User skipped all remaining interview questions. Preserving existing answers and finalizing the normalized interview state.",
+    );
     emitPhaseLog(
       ticketId,
       externalId,
-      'VERIFYING_INTERVIEW_COVERAGE',
-      'info',
+      "VERIFYING_INTERVIEW_COVERAGE",
+      "info",
       `${SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE} Canonical interview.yaml refreshed at ${interviewPath}.`,
-    )
+    );
   } catch (error) {
-    rollbackSkipAll(error)
+    rollbackSkipAll(error);
   }
-  interviewQASessions.delete(ticketId)
+  interviewQASessions.delete(ticketId);
 
   return {
     snapshot: finalizedSnapshot,
     canonicalInterview,
-  }
+  };
 }
 
 export function buildCoverageFollowUpCommentary(response: string): string {
   const firstMeaningfulLine = response
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
-    .find((line) => line.length > 0)
+    .find((line) => line.length > 0);
   return firstMeaningfulLine
     ? `Coverage follow-up needed: ${firstMeaningfulLine}`
-    : 'Coverage follow-up questions generated to close remaining gaps.'
+    : "Coverage follow-up questions generated to close remaining gaps.";
 }
 
-export async function restoreInterviewQASession(ticketId: string, signal?: AbortSignal) {
-  throwIfAborted(signal, ticketId)
-  const cached = interviewQASessions.get(ticketId)
-  const persisted = cached ?? readInterviewQASessionArtifact(ticketId)
-  if (!persisted) return null
+export async function restoreInterviewQASession(
+  ticketId: string,
+  signal?: AbortSignal,
+) {
+  throwIfAborted(signal, ticketId);
+  const cached = interviewQASessions.get(ticketId);
+  const persisted = cached ?? readInterviewQASessionArtifact(ticketId);
+  if (!persisted) return null;
 
   // A failed PROM4 turn is deliberately abandoned after its remote stop is
   // confirmed. Before reusing that session, prove the remote still exists and
   // reacquire an active ownership row. Otherwise a retry would prompt an
   // abandoned row that cancellation no longer visits.
-  const ownership = listOpenCodeSessionsForTicket(ticketId, ['active', 'abandoned'])
-    .find((row) => row.sessionId === persisted.sessionId)
-  if (ownership?.state === 'abandoned') {
-    const remote = await adapter.getSession(persisted.sessionId, signal)
-    throwIfAborted(signal, ticketId)
-    if (!remote || !reactivateOpenCodeSessionForContinuation(
-      ticketId,
-      'WAITING_INTERVIEW_ANSWERS',
-      persisted.sessionId,
-    )) {
-      interviewQASessions.delete(ticketId)
-      return null
+  const ownership = listOpenCodeSessionsForTicket(ticketId, [
+    "active",
+    "abandoned",
+  ]).find((row) => row.sessionId === persisted.sessionId);
+  if (ownership?.state === "abandoned") {
+    const remote = await adapter.getSession(persisted.sessionId, signal);
+    throwIfAborted(signal, ticketId);
+    if (
+      !remote ||
+      !reactivateOpenCodeSessionForContinuation(
+        ticketId,
+        "WAITING_INTERVIEW_ANSWERS",
+        persisted.sessionId,
+      )
+    ) {
+      interviewQASessions.delete(ticketId);
+      return null;
     }
   }
 
-  throwIfAborted(signal, ticketId)
+  throwIfAborted(signal, ticketId);
   // After server restart the in-memory map is empty. Reload from DB and trust
   // the persisted session ID — adapter.listSessions() silently returns [] on
   // transient errors, causing valid sessions to be abandoned. The actual
   // OpenCode prompt call will surface a real error if the session is gone.
-  interviewQASessions.set(ticketId, persisted)
-  return persisted
+  interviewQASessions.set(ticketId, persisted);
+  return persisted;
 }
 
 export function buildInterviewVotePrompt(
@@ -1103,22 +1397,30 @@ export function buildInterviewVotePrompt(
   rubric: Array<{ category: string; weight: number; description: string }>,
 ) {
   const voteContext = [
-    ...buildMinimalContext('interview_vote', {
+    ...buildMinimalContext("interview_vote", {
       ...ticketState,
       drafts: anonymizedDrafts,
     }),
     {
-      type: 'text' as const,
-      source: 'vote_rubric',
+      type: "text" as const,
+      source: "vote_rubric",
       content: [
-        'Detailed scoring rubric:',
-        ...rubric.map(item => `- ${item.category} (${item.weight}pts): ${item.description}`),
-        '',
-        'Use the exact PROM2 `draft_scores` YAML schema. Keep the exact draft labels, include only rubric integer fields plus `total_score`, and do not add prose or extra keys.',
-      ].join('\n'),
+        "Detailed scoring rubric:",
+        ...rubric.map(
+          (item) =>
+            `- ${item.category} (${item.weight}pts): ${item.description}`,
+        ),
+        "",
+        "Use the exact PROM2 `draft_scores` YAML schema. Keep the exact draft labels, include only rubric integer fields plus `total_score`, and do not add prose or extra keys.",
+      ].join("\n"),
     },
-  ]
-  return [{ type: 'text' as const, content: buildPromptFromTemplate(PROM2, voteContext) }]
+  ];
+  return [
+    {
+      type: "text" as const,
+      content: buildPromptFromTemplate(PROM2, voteContext),
+    },
+  ];
 }
 
 export function buildInterviewRefinePrompt(
@@ -1126,17 +1428,24 @@ export function buildInterviewRefinePrompt(
   winnerDraft: DraftResult,
   losingDrafts: DraftResult[],
 ) {
-  const refineContext = buildMinimalContext('interview_refine', {
+  const refineContext = buildMinimalContext("interview_refine", {
     ...ticketState,
     drafts: [
-      ['## Winning Draft', winnerDraft.content].join('\n'),
-      ...losingDrafts.map((draft, index) => [
-        `## Alternative Draft ${index + 1} (model: ${draft.memberId})`,
-        draft.content,
-      ].join('\n')),
+      ["## Winning Draft", winnerDraft.content].join("\n"),
+      ...losingDrafts.map((draft, index) =>
+        [
+          `## Alternative Draft ${index + 1} (model: ${draft.memberId})`,
+          draft.content,
+        ].join("\n"),
+      ),
     ],
-  })
-  return [{ type: 'text' as const, content: buildPromptFromTemplate(PROM3, refineContext) }]
+  });
+  return [
+    {
+      type: "text" as const,
+      content: buildPromptFromTemplate(PROM3, refineContext),
+    },
+  ];
 }
 
 export async function handleInterviewDeliberate(
@@ -1145,62 +1454,73 @@ export async function handleInterviewDeliberate(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  const phase = 'COUNCIL_DELIBERATING' as const
-  const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context)
+  const phase = "COUNCIL_DELIBERATING" as const;
+  const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context);
 
   emitPhaseLog(
     ticketId,
     context.externalId,
     phase,
-    'info',
+    "info",
     `Ticket workspace ready for council drafting at ${worktreePath}.`,
-  )
+  );
 
   // Step 1: Health-check OpenCode before doing any work
-  throwIfAborted(signal, ticketId)
+  throwIfAborted(signal, ticketId);
   try {
-    const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
-    throwIfAborted(signal, ticketId)
+    const health = await raceWithCancel(
+      adapter.checkHealth(signal),
+      signal,
+      ticketId,
+    );
+    throwIfAborted(signal, ticketId);
     if (!health.available) {
       // A server that refuses LoopTroop is running; restarting does not change
       // the password it is sent. The advice alone: the error opens with the
       // same sentence, so appending it said everything twice.
-      const msg = health.failureKind === 'authentication'
-        ? openCodeAuthAdvice(credentialsWereSent(health))
-        : `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${health.error ?? 'connection refused'})`
-      emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
-      throw new OpenCodeUnavailableError(msg)
+      const msg =
+        health.failureKind === "authentication"
+          ? openCodeAuthAdvice(credentialsWereSent(health))
+          : `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${health.error ?? "connection refused"})`;
+      emitPhaseLog(ticketId, context.externalId, phase, "error", msg);
+      throw new OpenCodeUnavailableError(msg);
     }
     emitPhaseLog(
       ticketId,
       context.externalId,
       phase,
-      'info',
-      `OpenCode health check passed${health.version ? ` (version=${health.version})` : ''}.`,
-    )
+      "info",
+      `OpenCode health check passed${health.version ? ` (version=${health.version})` : ""}.`,
+    );
   } catch (err) {
-    throwIfCancelled(err, signal, ticketId)
+    throwIfCancelled(err, signal, ticketId);
     // Re-throw if we already formatted the message
-    if (err instanceof OpenCodeUnavailableError) throw err
-    const msg = `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${getErrorMessage(err)})`
-    emitPhaseLog(ticketId, context.externalId, phase, 'error', msg)
-    throw new OpenCodeUnavailableError(msg)
+    if (err instanceof OpenCodeUnavailableError) throw err;
+    const msg = `OpenCode server is not running. Restart LoopTroop (\`looptroop restart\`) so it starts OpenCode again. (${getErrorMessage(err)})`;
+    emitPhaseLog(ticketId, context.externalId, phase, "error", msg);
+    throw new OpenCodeUnavailableError(msg);
   }
 
   // Step 2: Resolve council members from locked config (frozen at ticket start)
-  const council = resolveCouncilMembers(context)
-  const members = council.members
+  const council = resolveCouncilMembers(context);
+  const members = council.members;
   emitPhaseLog(
     ticketId,
     context.externalId,
     phase,
-    'info',
+    "info",
     formatCouncilResolutionLog(context, council),
-  )
+  );
 
-  const ticketDescription = ticket?.description ?? ''
-  emitPhaseLog(ticketId, context.externalId, phase, 'info', `Loaded relevant files artifact (${relevantFiles?.length ?? 0} chars).`)
-  const draftSettings = resolveInterviewDraftSettings(context)
+  const ticketDescription = ticket?.description ?? "";
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    phase,
+    "info",
+    `Loaded relevant files artifact (${relevantFiles?.length ?? 0} chars).`,
+  );
+  const draftSettings = resolveInterviewDraftSettings(context);
 
   // Build context via buildMinimalContext with full ticket state
   const ticketState: TicketState = {
@@ -1208,24 +1528,36 @@ export async function handleInterviewDeliberate(
     title: context.title,
     description: ticketDescription,
     relevantFiles,
-  }
-  const ticketContext = buildMinimalContext('interview_draft', ticketState)
+  };
+  const ticketContext = buildMinimalContext("interview_draft", ticketState);
 
-  emitPhaseLog(ticketId, context.externalId, phase, 'info', `Interview council drafting started. Context: ${ticketContext.length} parts, description=${ticketDescription.length > 0 ? 'present' : 'missing'}, relevantFiles=${relevantFiles ? 'loaded' : 'missing'}.`)
   emitPhaseLog(
     ticketId,
     context.externalId,
     phase,
-    'info',
+    "info",
+    `Interview council drafting started. Context: ${ticketContext.length} parts, description=${ticketDescription.length > 0 ? "present" : "missing"}, relevantFiles=${relevantFiles ? "loaded" : "missing"}.`,
+  );
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    phase,
+    "info",
     `Interview draft settings: max_initial_questions=${draftSettings.maxInitialQuestions}, ai_response_timeout=${draftSettings.draftTimeoutMs}ms, min_council_quorum=${draftSettings.minQuorum}.`,
-  )
-  emitPhaseLog(ticketId, context.externalId, phase, 'info', `Dispatching interview draft requests to ${members.length} council members.`)
+  );
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    phase,
+    "info",
+    `Dispatching interview draft requests to ${members.length} council members.`,
+  );
 
-  if (signal.aborted) throw new CancelledError(ticketId)
-  const startedAt = Date.now()
-  const streamStates = new Map<string, OpenCodeStreamState>()
-  const liveDrafts = createPendingDrafts(members)
-  upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', liveDrafts)
+  if (signal.aborted) throw new CancelledError(ticketId);
+  const startedAt = Date.now();
+  const streamStates = new Map<string, OpenCodeStreamState>();
+  const liveDrafts = createPendingDrafts(members);
+  upsertCouncilDraftArtifact(ticketId, phase, "interview_drafts", liveDrafts);
   const result = await deliberateInterview(
     adapter,
     members,
@@ -1233,14 +1565,16 @@ export async function handleInterviewDeliberate(
     worktreePath,
     {
       ...draftSettings,
-      maxStructuredRetries: resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
+      maxStructuredRetries:
+        resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
       ticketId,
     },
     signal,
     (entry) => {
-      const targetStatus = mapCouncilStageToStatus('interview', entry.stage)
-      const streamState = streamStates.get(entry.sessionId) ?? createOpenCodeStreamState()
-      streamStates.set(entry.sessionId, streamState)
+      const targetStatus = mapCouncilStageToStatus("interview", entry.stage);
+      const streamState =
+        streamStates.get(entry.sessionId) ?? createOpenCodeStreamState();
+      streamStates.set(entry.sessionId, streamState);
       emitOpenCodeSessionLogs(
         ticketId,
         context.externalId,
@@ -1251,12 +1585,13 @@ export async function handleInterviewDeliberate(
         entry.response,
         entry.messages,
         streamState,
-      )
+      );
     },
     (entry) => {
-      const targetStatus = mapCouncilStageToStatus('interview', entry.stage)
-      const streamState = streamStates.get(entry.sessionId) ?? createOpenCodeStreamState()
-      streamStates.set(entry.sessionId, streamState)
+      const targetStatus = mapCouncilStageToStatus("interview", entry.stage);
+      const streamState =
+        streamStates.get(entry.sessionId) ?? createOpenCodeStreamState();
+      streamStates.set(entry.sessionId, streamState);
       emitOpenCodeStreamEvent(
         ticketId,
         context.externalId,
@@ -1265,23 +1600,31 @@ export async function handleInterviewDeliberate(
         entry.sessionId,
         entry.event,
         streamState,
-      )
+      );
     },
     (entry) => {
-      const targetStatus = mapCouncilStageToStatus('interview', entry.stage)
+      const targetStatus = mapCouncilStageToStatus("interview", entry.stage);
       emitOpenCodePromptLog(
         ticketId,
         context.externalId,
         targetStatus,
         entry.memberId,
         entry.event,
-      )
+      );
     },
     (entry) => {
-      emitDraftProgressInfoLog(ticketId, context.externalId, phase, 'Interview', entry)
-      if (entry.status !== 'finished' || !entry.outcome) return
-      const draftIndex = liveDrafts.findIndex(draft => draft.memberId === entry.memberId)
-      if (draftIndex < 0) return
+      emitDraftProgressInfoLog(
+        ticketId,
+        context.externalId,
+        phase,
+        "Interview",
+        entry,
+      );
+      if (entry.status !== "finished" || !entry.outcome) return;
+      const draftIndex = liveDrafts.findIndex(
+        (draft) => draft.memberId === entry.memberId,
+      );
+      if (draftIndex < 0) return;
       liveDrafts[draftIndex] = {
         ...liveDrafts[draftIndex]!,
         content: entry.content ?? liveDrafts[draftIndex]!.content,
@@ -1290,51 +1633,65 @@ export async function handleInterviewDeliberate(
         error: entry.error,
         questionCount: entry.questionCount,
         structuredOutput: entry.structuredOutput,
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
+        ...(typeof entry.rawResponse === "string"
+          ? { rawResponse: entry.rawResponse }
+          : {}),
+        ...(typeof entry.normalizedResponse === "string"
+          ? { normalizedResponse: entry.normalizedResponse }
+          : {}),
         ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
         ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
-      }
+      };
       if (entry.structuredOutput?.repairWarnings.length) {
         emitPhaseLog(
           ticketId,
           context.externalId,
           phase,
-          'info',
-          `${entry.memberId} Interview draft normalization applied repairs: ${entry.structuredOutput.repairWarnings.join(' ')}`,
-          { source: 'system', modelId: entry.memberId },
-        )
+          "info",
+          `${entry.memberId} Interview draft normalization applied repairs: ${entry.structuredOutput.repairWarnings.join(" ")}`,
+          { source: "system", modelId: entry.memberId },
+        );
       }
-      if (entry.structuredOutput?.validationError && entry.structuredOutput.autoRetryCount > 0) {
+      if (
+        entry.structuredOutput?.validationError &&
+        entry.structuredOutput.autoRetryCount > 0
+      ) {
         emitPhaseLog(
           ticketId,
           context.externalId,
           phase,
-          'info',
+          "info",
           `${entry.memberId} Interview draft required ${entry.structuredOutput.autoRetryCount} structured retry attempt(s): ${entry.structuredOutput.validationError}`,
-          { source: 'system', modelId: entry.memberId },
-        )
+          { source: "system", modelId: entry.memberId },
+        );
       }
-      upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', liveDrafts)
+      upsertCouncilDraftArtifact(
+        ticketId,
+        phase,
+        "interview_drafts",
+        liveDrafts,
+      );
     },
-  )
+  );
 
-  const draftSummary = summarizeDraftOutcomes(result.drafts)
+  const draftSummary = summarizeDraftOutcomes(result.drafts);
   emitPhaseLog(
     ticketId,
     context.externalId,
     phase,
-    'info',
+    "info",
     formatDraftRoundSummary(
-      'Interview draft round',
+      "Interview draft round",
       Date.now() - startedAt,
       draftSettings.draftTimeoutMs,
       Boolean(result.deadlineReached),
       draftSummary,
     ),
-  )
-  const quorum = checkQuorum(result.drafts, draftSettings.minQuorum)
-  const nextStatus = quorum.passed ? 'COUNCIL_VOTING_INTERVIEW' : 'BLOCKED_ERROR'
+  );
+  const quorum = checkQuorum(result.drafts, draftSettings.minQuorum);
+  const nextStatus = quorum.passed
+    ? "COUNCIL_VOTING_INTERVIEW"
+    : "BLOCKED_ERROR";
   emitCouncilDecisionLogs(
     ticketId,
     context.externalId,
@@ -1344,22 +1701,29 @@ export async function handleInterviewDeliberate(
     result.memberOutcomes,
     quorum,
     nextStatus,
-  )
+  );
 
-  upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', result.drafts, result.memberOutcomes, true)
+  upsertCouncilDraftArtifact(
+    ticketId,
+    phase,
+    "interview_drafts",
+    result.drafts,
+    result.memberOutcomes,
+    true,
+  );
   emitPhaseLog(
     ticketId,
     context.externalId,
     phase,
-    'info',
+    "info",
     `Saved interview draft artifact with ${Object.keys(result.memberOutcomes).length} member outcomes.`,
-  )
+  );
 
   if (!quorum.passed) {
     throw buildCouncilQuorumErrorWithDiagnostics(
       `Council quorum not met for interview_draft: ${quorum.message}`,
       result.drafts,
-    )
+    );
   }
 
   // Store intermediate data for vote/refine steps
@@ -1369,10 +1733,10 @@ export async function handleInterviewDeliberate(
     worktreePath,
     phase: result.phase,
     ticketState,
-  })
+  });
 
   // DraftPhaseResult → Record<string, unknown>: structurally compatible but lacks index signature
-  sendEvent({ type: 'QUESTIONS_READY', result: { ...result } })
+  sendEvent({ type: "QUESTIONS_READY", result: { ...result } });
 }
 
 export async function handleInterviewVote(
@@ -1381,35 +1745,67 @@ export async function handleInterviewVote(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  const intermediate = phaseIntermediate.get(`${ticketId}:interview`)
+  const intermediate = phaseIntermediate.get(`${ticketId}:interview`);
   if (!intermediate) {
-    throw new Error('No interview drafts found: cannot vote')
+    throw new Error("No interview drafts found: cannot vote");
   }
 
-  const { members } = resolveCouncilMembers(context)
-  const councilSettings = resolveCouncilRuntimeSettings(context)
-  const interviewTicketState = intermediate.ticketState ?? (() => {
-    const { ticket, relevantFiles } = loadTicketDirContext(context)
-    return {
-      ticketId: context.externalId,
-      title: context.title,
-      description: ticket?.description ?? '',
-      relevantFiles,
-    } satisfies TicketState
-  })()
-  const streamStates = new Map<string, OpenCodeStreamState>()
-  const liveVotes: Vote[] = []
-  const liveVoterOutcomes = members.reduce<Record<string, MemberOutcome>>((acc, member) => {
-    acc[member.modelId] = 'pending'
-    return acc
-  }, {})
-  const liveVoterDetails = new Map<string, { voterId: string; error?: string; rawResponse?: string; normalizedResponse?: string; structuredOutput?: NonNullable<typeof intermediate.drafts[number]['structuredOutput']>; rawAttempts?: NonNullable<typeof intermediate.drafts[number]['rawAttempts']> }>()
+  const { members } = resolveCouncilMembers(context);
+  const councilSettings = resolveCouncilRuntimeSettings(context);
+  const interviewTicketState =
+    intermediate.ticketState ??
+    (() => {
+      const { ticket, relevantFiles } = loadTicketDirContext(context);
+      return {
+        ticketId: context.externalId,
+        title: context.title,
+        description: ticket?.description ?? "",
+        relevantFiles,
+      } satisfies TicketState;
+    })();
+  const streamStates = new Map<string, OpenCodeStreamState>();
+  const liveVotes: Vote[] = [];
+  const liveVoterOutcomes = members.reduce<Record<string, MemberOutcome>>(
+    (acc, member) => {
+      acc[member.modelId] = "pending";
+      return acc;
+    },
+    {},
+  );
+  const liveVoterDetails = new Map<
+    string,
+    {
+      voterId: string;
+      error?: string;
+      rawResponse?: string;
+      normalizedResponse?: string;
+      structuredOutput?: NonNullable<
+        (typeof intermediate.drafts)[number]["structuredOutput"]
+      >;
+      rawAttempts?: NonNullable<
+        (typeof intermediate.drafts)[number]["rawAttempts"]
+      >;
+    }
+  >();
 
-  emitPhaseLog(ticketId, context.externalId, 'COUNCIL_VOTING_INTERVIEW', 'info',
-    `Interview voting started with ${members.length} council members on ${intermediate.drafts.filter(d => d.outcome === 'completed').length} drafts.`)
-  upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_INTERVIEW', 'interview_votes', intermediate.drafts, [], liveVoterOutcomes, [...liveVoterDetails.values()])
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    "COUNCIL_VOTING_INTERVIEW",
+    "info",
+    `Interview voting started with ${members.length} council members on ${intermediate.drafts.filter((d) => d.outcome === "completed").length} drafts.`,
+  );
+  upsertCouncilVoteArtifact(
+    ticketId,
+    "COUNCIL_VOTING_INTERVIEW",
+    "interview_votes",
+    intermediate.drafts,
+    [],
+    liveVoterOutcomes,
+    [...liveVoterDetails.values()],
+  );
 
-  if (signal.aborted) throw new CancelledError(ticketId)
+  if (signal.aborted) throw new CancelledError(ticketId);
   const voteRun = await conductVoting(
     adapter,
     members,
@@ -1420,86 +1816,108 @@ export async function handleInterviewVote(
     councilSettings.draftTimeoutMs,
     signal,
     (entry) => {
-      const streamState = streamStates.get(entry.sessionId) ?? createOpenCodeStreamState()
-      streamStates.set(entry.sessionId, streamState)
+      const streamState =
+        streamStates.get(entry.sessionId) ?? createOpenCodeStreamState();
+      streamStates.set(entry.sessionId, streamState);
       emitOpenCodeSessionLogs(
         ticketId,
         context.externalId,
-        'COUNCIL_VOTING_INTERVIEW',
+        "COUNCIL_VOTING_INTERVIEW",
         entry.memberId,
         entry.sessionId,
         entry.stage,
         entry.response,
         entry.messages,
         streamState,
-      )
+      );
     },
     (entry) => {
-      const streamState = streamStates.get(entry.sessionId) ?? createOpenCodeStreamState()
-      streamStates.set(entry.sessionId, streamState)
+      const streamState =
+        streamStates.get(entry.sessionId) ?? createOpenCodeStreamState();
+      streamStates.set(entry.sessionId, streamState);
       emitOpenCodeStreamEvent(
         ticketId,
         context.externalId,
-        'COUNCIL_VOTING_INTERVIEW',
+        "COUNCIL_VOTING_INTERVIEW",
         entry.memberId,
         entry.sessionId,
         entry.event,
         streamState,
-      )
+      );
     },
     (entry) => {
       emitOpenCodePromptLog(
         ticketId,
         context.externalId,
-        'COUNCIL_VOTING_INTERVIEW',
+        "COUNCIL_VOTING_INTERVIEW",
         entry.memberId,
         entry.event,
-      )
+      );
     },
     (entry) => {
-      liveVoterOutcomes[entry.memberId] = entry.outcome
-      if (entry.votes.length > 0) liveVotes.push(...entry.votes)
+      liveVoterOutcomes[entry.memberId] = entry.outcome;
+      if (entry.votes.length > 0) liveVotes.push(...entry.votes);
       liveVoterDetails.set(entry.memberId, {
         voterId: entry.memberId,
         ...(entry.error ? { error: entry.error } : {}),
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.structuredOutput ? { structuredOutput: entry.structuredOutput } : {}),
+        ...(typeof entry.rawResponse === "string"
+          ? { rawResponse: entry.rawResponse }
+          : {}),
+        ...(typeof entry.normalizedResponse === "string"
+          ? { normalizedResponse: entry.normalizedResponse }
+          : {}),
+        ...(entry.structuredOutput
+          ? { structuredOutput: entry.structuredOutput }
+          : {}),
         ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-      })
-      upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_INTERVIEW', 'interview_votes', intermediate.drafts, liveVotes, liveVoterOutcomes, [...liveVoterDetails.values()])
+      });
+      upsertCouncilVoteArtifact(
+        ticketId,
+        "COUNCIL_VOTING_INTERVIEW",
+        "interview_votes",
+        intermediate.drafts,
+        liveVotes,
+        liveVoterOutcomes,
+        [...liveVoterDetails.values()],
+      );
     },
-    ({ anonymizedDrafts, rubric }) => buildInterviewVotePrompt(
-      interviewTicketState,
-      anonymizedDrafts.map(draft => draft.content),
-      rubric,
-    ),
+    ({ anonymizedDrafts, rubric }) =>
+      buildInterviewVotePrompt(
+        interviewTicketState,
+        anonymizedDrafts.map((draft) => draft.content),
+        rubric,
+      ),
     {
       ticketId,
-      phase: 'COUNCIL_VOTING_INTERVIEW',
+      phase: "COUNCIL_VOTING_INTERVIEW",
     },
     PROM2.toolPolicy,
     resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
-  )
+  );
 
-  const voteQuorum = checkMemberResponseQuorum(voteRun.memberOutcomes, councilSettings.minQuorum)
-  const nextVoteStatus = voteQuorum.passed ? 'COMPILING_INTERVIEW' : 'BLOCKED_ERROR'
+  const voteQuorum = checkMemberResponseQuorum(
+    voteRun.memberOutcomes,
+    councilSettings.minQuorum,
+  );
+  const nextVoteStatus = voteQuorum.passed
+    ? "COMPILING_INTERVIEW"
+    : "BLOCKED_ERROR";
   emitCouncilDecisionLogs(
     ticketId,
     context.externalId,
-    'COUNCIL_VOTING_INTERVIEW',
+    "COUNCIL_VOTING_INTERVIEW",
     councilSettings.draftTimeoutMs,
     voteRun.deadlineReached,
     voteRun.memberOutcomes,
     voteQuorum,
     nextVoteStatus,
-  )
+  );
 
   if (!voteQuorum.passed) {
     upsertCouncilVoteArtifact(
       ticketId,
-      'COUNCIL_VOTING_INTERVIEW',
-      'interview_votes',
+      "COUNCIL_VOTING_INTERVIEW",
+      "interview_votes",
       intermediate.drafts,
       voteRun.votes,
       voteRun.memberOutcomes,
@@ -1508,28 +1926,30 @@ export async function handleInterviewVote(
       undefined,
       undefined,
       true,
-    )
+    );
     throw buildCouncilQuorumErrorWithDiagnostics(
       `Interview voting quorum not met: ${voteQuorum.message}`,
       voteRun.voterDetails,
-    )
+    );
   }
 
   if (voteRun.votes.length === 0) {
-    throw new Error('Interview voting failed: no valid vote responses received')
+    throw new Error(
+      "Interview voting failed: no valid vote responses received",
+    );
   }
 
-  const { winnerId, totalScore } = selectWinner(voteRun.votes, members)
+  const { winnerId, totalScore } = selectWinner(voteRun.votes, members);
 
   // Store vote results for refine step
-  intermediate.votes = voteRun.votes
-  intermediate.presentationOrders = voteRun.presentationOrders
-  intermediate.winnerId = winnerId
+  intermediate.votes = voteRun.votes;
+  intermediate.presentationOrders = voteRun.presentationOrders;
+  intermediate.winnerId = winnerId;
 
   upsertCouncilVoteArtifact(
     ticketId,
-    'COUNCIL_VOTING_INTERVIEW',
-    'interview_votes',
+    "COUNCIL_VOTING_INTERVIEW",
+    "interview_votes",
     intermediate.drafts,
     voteRun.votes,
     voteRun.memberOutcomes,
@@ -1538,16 +1958,16 @@ export async function handleInterviewVote(
     winnerId,
     totalScore,
     true,
-  )
+  );
   emitPhaseLog(
     ticketId,
     context.externalId,
-    'COUNCIL_VOTING_INTERVIEW',
-    'info',
+    "COUNCIL_VOTING_INTERVIEW",
+    "info",
     `Interview voting selected winner: ${winnerId} (score: ${totalScore}).`,
-    { source: 'system', modelId: winnerId },
-  )
-  sendEvent({ type: 'WINNER_SELECTED', winner: winnerId })
+    { source: "system", modelId: winnerId },
+  );
+  sendEvent({ type: "WINNER_SELECTED", winner: winnerId });
 }
 
 export async function handleInterviewCompile(
@@ -1556,30 +1976,43 @@ export async function handleInterviewCompile(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  const intermediate = phaseIntermediate.get(`${ticketId}:interview`)
+  const intermediate = phaseIntermediate.get(`${ticketId}:interview`);
   if (!intermediate || !intermediate.winnerId) {
-    throw new Error('No interview vote results found: cannot refine')
+    throw new Error("No interview vote results found: cannot refine");
   }
 
-  const winnerDraft = requireWinnerDraft(intermediate.drafts, intermediate.winnerId, 'Interview')
-  const losingDrafts = intermediate.drafts.filter(d => d.memberId !== intermediate.winnerId && d.outcome === 'completed')
-  const councilSettings = resolveCouncilRuntimeSettings(context)
-  const interviewTicketState = intermediate.ticketState ?? (() => {
-    const { ticket, relevantFiles } = loadTicketDirContext(context)
-    return {
-      ticketId: context.externalId,
-      title: context.title,
-      description: ticket?.description ?? '',
-      relevantFiles,
-    } satisfies TicketState
-  })()
-  const streamStates = new Map<string, OpenCodeStreamState>()
+  const winnerDraft = requireWinnerDraft(
+    intermediate.drafts,
+    intermediate.winnerId,
+    "Interview",
+  );
+  const losingDrafts = intermediate.drafts.filter(
+    (d) => d.memberId !== intermediate.winnerId && d.outcome === "completed",
+  );
+  const councilSettings = resolveCouncilRuntimeSettings(context);
+  const interviewTicketState =
+    intermediate.ticketState ??
+    (() => {
+      const { ticket, relevantFiles } = loadTicketDirContext(context);
+      return {
+        ticketId: context.externalId,
+        title: context.title,
+        description: ticket?.description ?? "",
+        relevantFiles,
+      } satisfies TicketState;
+    })();
+  const streamStates = new Map<string, OpenCodeStreamState>();
 
-  emitPhaseLog(ticketId, context.externalId, 'COMPILING_INTERVIEW', 'info',
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    "COMPILING_INTERVIEW",
+    "info",
     `Interview refinement started. Winner: ${intermediate.winnerId}, incorporating ideas from ${losingDrafts.length} alternative drafts.`,
-    { source: 'system', modelId: intermediate.winnerId })
+    { source: "system", modelId: intermediate.winnerId },
+  );
 
-  if (signal.aborted) throw new CancelledError(ticketId)
+  if (signal.aborted) throw new CancelledError(ticketId);
 
   // Refinement cross-validates against the winning draft, so an unparseable
   // winner fails every attempt identically: the retry prompt asks the model to
@@ -1589,15 +2022,22 @@ export async function handleInterviewCompile(
   // the same winner with. Passing the live cap here made the pre-check stricter
   // than the guard it stands in front of, so a winner the refinement would have
   // accepted could be refused as unparseable.
-  const interviewWinnerCheck = normalizeInterviewQuestionsOutput(winnerDraft.content, 0)
+  const interviewWinnerCheck = normalizeInterviewQuestionsOutput(
+    winnerDraft.content,
+    0,
+  );
   if (!interviewWinnerCheck.ok) {
     throw new Error(
       `Winning interview draft from ${winnerDraft.memberId} could not be parsed, so refinement cannot cross-validate against it: ${interviewWinnerCheck.error}`,
-    )
+    );
   }
 
-  let structuredMeta = buildStructuredMetadata({ autoRetryCount: 0, repairApplied: false, repairWarnings: [] })
-  let parsedRefinementChanges: InterviewQuestionChange[] = []
+  let structuredMeta = buildStructuredMetadata({
+    autoRetryCount: 0,
+    repairApplied: false,
+    repairWarnings: [],
+  });
+  let parsedRefinementChanges: InterviewQuestionChange[] = [];
   const refinementRun = await refineDraft(
     adapter,
     winnerDraft,
@@ -1607,160 +2047,196 @@ export async function handleInterviewCompile(
     councilSettings.draftTimeoutMs,
     signal,
     (entry) => {
-      const streamState = streamStates.get(entry.sessionId) ?? createOpenCodeStreamState()
-      streamStates.set(entry.sessionId, streamState)
+      const streamState =
+        streamStates.get(entry.sessionId) ?? createOpenCodeStreamState();
+      streamStates.set(entry.sessionId, streamState);
       emitOpenCodeSessionLogs(
         ticketId,
         context.externalId,
-        'COMPILING_INTERVIEW',
+        "COMPILING_INTERVIEW",
         entry.memberId,
         entry.sessionId,
         entry.stage,
         entry.response,
         entry.messages,
         streamState,
-      )
+      );
     },
     (entry) => {
-      const streamState = streamStates.get(entry.sessionId) ?? createOpenCodeStreamState()
-      streamStates.set(entry.sessionId, streamState)
+      const streamState =
+        streamStates.get(entry.sessionId) ?? createOpenCodeStreamState();
+      streamStates.set(entry.sessionId, streamState);
       emitOpenCodeStreamEvent(
         ticketId,
         context.externalId,
-        'COMPILING_INTERVIEW',
+        "COMPILING_INTERVIEW",
         entry.memberId,
         entry.sessionId,
         entry.event,
         streamState,
-      )
+      );
     },
     (entry) => {
       emitOpenCodePromptLog(
         ticketId,
         context.externalId,
-        'COMPILING_INTERVIEW',
+        "COMPILING_INTERVIEW",
         entry.memberId,
         entry.event,
-      )
+      );
     },
     {
       ticketId,
-      phase: 'COMPILING_INTERVIEW',
+      phase: "COMPILING_INTERVIEW",
     },
-    (activeWinnerDraft, activeLosingDrafts) => buildInterviewRefinePrompt(
-      interviewTicketState,
-      activeWinnerDraft,
-      activeLosingDrafts,
-    ),
+    (activeWinnerDraft, activeLosingDrafts) =>
+      buildInterviewRefinePrompt(
+        interviewTicketState,
+        activeWinnerDraft,
+        activeLosingDrafts,
+      ),
     (content) => {
-      const losingDraftMeta = losingDrafts.map((d) => ({ memberId: d.memberId, content: d.content }))
+      const losingDraftMeta = losingDrafts.map((d) => ({
+        memberId: d.memberId,
+        content: d.content,
+      }));
       const result = normalizeInterviewRefinementOutput(
         content,
         winnerDraft.content,
         resolveInterviewDraftSettings(context).maxInitialQuestions,
         losingDraftMeta,
-      )
+      );
       if (!result.ok) {
-        const retryAttempt = (structuredMeta.autoRetryCount ?? 0) + 1
+        const retryAttempt = (structuredMeta.autoRetryCount ?? 0) + 1;
         structuredMeta = buildStructuredMetadata(structuredMeta, {
           autoRetryCount: retryAttempt,
           validationError: result.error,
           ...(result.retryDiagnostic
-            ? { retryDiagnostics: [withStructuredRetryDiagnosticAttempt(result.retryDiagnostic, retryAttempt)!] }
+            ? {
+                retryDiagnostics: [
+                  withStructuredRetryDiagnosticAttempt(
+                    result.retryDiagnostic,
+                    retryAttempt,
+                  )!,
+                ],
+              }
             : {}),
-        })
-        throw new Error(result.error)
+        });
+        throw new Error(result.error);
       }
       structuredMeta = buildStructuredMetadata(structuredMeta, {
         repairApplied: result.repairApplied,
         repairWarnings: result.repairWarnings,
         autoRetryCount: structuredMeta.autoRetryCount,
-      })
-      parsedRefinementChanges = result.value.changes
-      return { normalizedContent: result.normalizedContent }
+      });
+      parsedRefinementChanges = result.value.changes;
+      return { normalizedContent: result.normalizedContent };
     },
     PROM3.outputFormat,
     undefined,
     PROM3.toolPolicy,
     resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
-  )
-  const refinedContent = refinementRun.content
+  );
+  const refinedContent = refinementRun.content;
 
   // Clean up intermediate data
-  phaseIntermediate.delete(`${ticketId}:interview`)
+  phaseIntermediate.delete(`${ticketId}:interview`);
 
   try {
-    const paths = getTicketPaths(ticketId)
+    const paths = getTicketPaths(ticketId);
     if (!paths) {
-      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
+      throw new TicketWorkspaceNotInitializedError(
+        `Ticket workspace not initialized: missing ticket paths for ${context.externalId}`,
+      );
     }
-    const losingDraftMeta = losingDrafts.map((d) => ({ memberId: d.memberId, content: d.content }))
+    const losingDraftMeta = losingDrafts.map((d) => ({
+      memberId: d.memberId,
+      content: d.content,
+    }));
     const compiledArtifact = buildCompiledInterviewArtifact(
       intermediate.winnerId,
       refinedContent,
       winnerDraft.content,
       resolveInterviewDraftSettings(context).maxInitialQuestions,
       losingDraftMeta,
-    )
-    const uiDiffArtifact = parsedRefinementChanges.length > 0
-      ? buildInterviewUiRefinementDiffArtifactFromChanges({
-          winnerId: intermediate.winnerId,
-          changes: parsedRefinementChanges,
-        })
-      : buildInterviewUiRefinementDiffArtifact({
-          winnerId: intermediate.winnerId,
-          winnerDraftContent: winnerDraft.content,
-          refinedContent: compiledArtifact.refinedContent,
-          losingDrafts: losingDrafts.map((draft) => ({ memberId: draft.memberId, content: draft.content })),
-        })
+    );
+    const uiDiffArtifact =
+      parsedRefinementChanges.length > 0
+        ? buildInterviewUiRefinementDiffArtifactFromChanges({
+            winnerId: intermediate.winnerId,
+            changes: parsedRefinementChanges,
+          })
+        : buildInterviewUiRefinementDiffArtifact({
+            winnerId: intermediate.winnerId,
+            winnerDraftContent: winnerDraft.content,
+            refinedContent: compiledArtifact.refinedContent,
+            losingDrafts: losingDrafts.map((draft) => ({
+              memberId: draft.memberId,
+              content: draft.content,
+            })),
+          });
 
     insertPhaseArtifact(ticketId, {
-      phase: 'COMPILING_INTERVIEW',
-      artifactType: 'interview_compiled',
+      phase: "COMPILING_INTERVIEW",
+      artifactType: "interview_compiled",
       content: JSON.stringify({
         refinedContent: compiledArtifact.refinedContent,
-        ...(refinementRun.rawAttempts.length > 0 ? { rawAttempts: refinementRun.rawAttempts } : {}),
+        ...(refinementRun.rawAttempts.length > 0
+          ? { rawAttempts: refinementRun.rawAttempts }
+          : {}),
       }),
-    })
-    persistUiArtifactCompanionArtifact(ticketId, 'COMPILING_INTERVIEW', 'interview_compiled', {
-      winnerId: compiledArtifact.winnerId,
-      questions: compiledArtifact.questions,
-      questionCount: compiledArtifact.questionCount,
-      structuredOutput: structuredMeta,
-      ...(refinementRun.rawAttempts.length > 0 ? { rawAttempts: refinementRun.rawAttempts } : {}),
-    })
+    });
+    persistUiArtifactCompanionArtifact(
+      ticketId,
+      "COMPILING_INTERVIEW",
+      "interview_compiled",
+      {
+        winnerId: compiledArtifact.winnerId,
+        questions: compiledArtifact.questions,
+        questionCount: compiledArtifact.questionCount,
+        structuredOutput: structuredMeta,
+        ...(refinementRun.rawAttempts.length > 0
+          ? { rawAttempts: refinementRun.rawAttempts }
+          : {}),
+      },
+    );
 
     // Persist winnerId separately so it survives server restarts and is available
     // for VERIFYING_INTERVIEW_COVERAGE and downstream phases (PROM4/PROM5 wiring)
     insertPhaseArtifact(ticketId, {
-      phase: 'COMPILING_INTERVIEW',
-      artifactType: 'interview_winner',
+      phase: "COMPILING_INTERVIEW",
+      artifactType: "interview_winner",
       content: JSON.stringify({ winnerId: intermediate.winnerId }),
-    })
-    persistUiRefinementDiffArtifact(ticketId, 'COMPILING_INTERVIEW', paths.ticketDir, uiDiffArtifact)
+    });
+    persistUiRefinementDiffArtifact(
+      ticketId,
+      "COMPILING_INTERVIEW",
+      paths.ticketDir,
+      uiDiffArtifact,
+    );
 
     emitModelSystemLog(
       ticketId,
       context.externalId,
-      'COMPILING_INTERVIEW',
-      'info',
+      "COMPILING_INTERVIEW",
+      "info",
       `Compiled final interview from winner ${intermediate.winnerId}. Validated ${compiledArtifact.questionCount} normalized questions.`,
       intermediate.winnerId,
-    )
+    );
 
-    sendEvent({ type: 'READY' })
-    broadcaster.broadcast(ticketId, 'needs_input', {
+    sendEvent({ type: "READY" });
+    broadcaster.broadcast(ticketId, "needs_input", {
       ticketId,
-      type: 'interview_questions',
+      type: "interview_questions",
       context: {
         questions: compiledArtifact.refinedContent,
         parsedQuestions: compiledArtifact.questions,
         winnerId: intermediate.winnerId,
       },
-    })
+    });
   } catch (error) {
-    const message = getErrorMessage(error)
-    throw new Error(`PROM3 refinement output failed validation: ${message}`)
+    const message = getErrorMessage(error);
+    throw new Error(`PROM3 refinement output failed validation: ${message}`);
   }
 }
 
@@ -1770,99 +2246,124 @@ export async function handleInterviewQAStart(
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
-  restoreInterruptedInterviewBatch(ticketId)
-  const persistedSnapshot = readInterviewSessionSnapshotArtifact(ticketId)
+  restoreInterruptedInterviewBatch(ticketId);
+  const persistedSnapshot = readInterviewSessionSnapshotArtifact(ticketId);
   if (persistedSnapshot?.currentBatch) {
     emitPhaseLog(
       ticketId,
       context.externalId,
-      'WAITING_INTERVIEW_ANSWERS',
-      'info',
+      "WAITING_INTERVIEW_ANSWERS",
+      "info",
       `Resuming persisted interview batch ${persistedSnapshot.currentBatch.batchNumber}.`,
-    )
-    broadcaster.broadcast(ticketId, 'needs_input', {
+    );
+    broadcaster.broadcast(ticketId, "needs_input", {
       ticketId,
-      type: 'interview_batch',
+      type: "interview_batch",
       batch: persistedSnapshot.currentBatch,
-    })
-    return
+    });
+    return;
   }
 
-  const restoredSession = await restoreInterviewQASession(ticketId, signal)
+  const restoredSession = await restoreInterviewQASession(ticketId, signal);
   if (restoredSession) {
     emitModelSystemLog(
       ticketId,
       context.externalId,
-      'WAITING_INTERVIEW_ANSWERS',
-      'info',
+      "WAITING_INTERVIEW_ANSWERS",
+      "info",
       `Reattached PROM4 session ${restoredSession.sessionId} for ${restoredSession.winnerId}.`,
       restoredSession.winnerId,
-    )
-    return
+    );
+    return;
   }
 
-  const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context)
-  const interviewSettings = resolveInterviewDraftSettings(context)
+  const { worktreePath, ticket, relevantFiles } = loadTicketDirContext(context);
+  const interviewSettings = resolveInterviewDraftSettings(context);
 
   // Resolve winnerId from persisted artifact
-  const winnerArtifact = getLatestPhaseArtifact(ticketId, 'interview_winner')
+  const winnerArtifact = getLatestPhaseArtifact(ticketId, "interview_winner");
 
-  let winnerId = ''
+  let winnerId = "";
   if (winnerArtifact) {
     try {
-      const parsed = JSON.parse(winnerArtifact.content) as { winnerId?: string }
-      winnerId = parsed.winnerId ?? ''
-    } catch { /* ignore */ }
+      const parsed = JSON.parse(winnerArtifact.content) as {
+        winnerId?: string;
+      };
+      winnerId = parsed.winnerId ?? "";
+    } catch {
+      /* ignore */
+    }
   }
   if (!winnerId) {
-    const msg = 'No interview winner found: cannot start PROM4 session'
-    emitPhaseLog(ticketId, context.externalId, 'WAITING_INTERVIEW_ANSWERS', 'error', msg)
-    sendEvent({ type: 'ERROR', message: msg, codes: ['PROM4_NO_WINNER'] })
-    return
+    const msg = "No interview winner found: cannot start PROM4 session";
+    emitPhaseLog(
+      ticketId,
+      context.externalId,
+      "WAITING_INTERVIEW_ANSWERS",
+      "error",
+      msg,
+    );
+    sendEvent({ type: "ERROR", message: msg, codes: ["PROM4_NO_WINNER"] });
+    return;
   }
 
-  const compiledArtifact = getLatestPhaseArtifact(ticketId, 'interview_compiled')
+  const compiledArtifact = getLatestPhaseArtifact(
+    ticketId,
+    "interview_compiled",
+  );
 
-  let compiledInterview: ReturnType<typeof requireCompiledInterviewArtifact>
+  let compiledInterview: ReturnType<typeof requireCompiledInterviewArtifact>;
   try {
-    compiledInterview = requireCompiledInterviewArtifact(compiledArtifact?.content)
+    compiledInterview = requireCompiledInterviewArtifact(
+      compiledArtifact?.content,
+    );
   } catch (error) {
-    const details = getErrorMessage(error)
-    const code = compiledArtifact ? 'PROM4_INVALID_COMPILED_INTERVIEW' : 'PROM4_NO_COMPILED_INTERVIEW'
+    const details = getErrorMessage(error);
+    const code = compiledArtifact
+      ? "PROM4_INVALID_COMPILED_INTERVIEW"
+      : "PROM4_NO_COMPILED_INTERVIEW";
     const msg = compiledArtifact
       ? `Compiled interview artifact invalid; cannot start PROM4 session: ${details}`
-      : 'No validated compiled interview found: cannot start PROM4 session'
-    emitPhaseLog(ticketId, context.externalId, 'WAITING_INTERVIEW_ANSWERS', 'error', msg)
-    sendEvent({ type: 'ERROR', message: msg, codes: [code] })
-    return
+      : "No validated compiled interview found: cannot start PROM4 session";
+    emitPhaseLog(
+      ticketId,
+      context.externalId,
+      "WAITING_INTERVIEW_ANSWERS",
+      "error",
+      msg,
+    );
+    sendEvent({ type: "ERROR", message: msg, codes: [code] });
+    return;
   }
 
   const ticketState: TicketState = {
     ticketId: context.externalId,
     title: context.title,
-    description: ticket?.description ?? '',
+    description: ticket?.description ?? "",
     relevantFiles,
     interview: compiledInterview.refinedContent,
-  }
+  };
 
-  const baseSnapshot = persistedSnapshot ?? createInterviewSessionSnapshot({
-    winnerId,
-    compiledQuestions: compiledInterview.questions,
-    maxInitialQuestions: interviewSettings.maxInitialQuestions,
-    followUpBudgetPercent: interviewSettings.coverageFollowUpBudgetPercent,
-  })
+  const baseSnapshot =
+    persistedSnapshot ??
+    createInterviewSessionSnapshot({
+      winnerId,
+      compiledQuestions: compiledInterview.questions,
+      maxInitialQuestions: interviewSettings.maxInitialQuestions,
+      followUpBudgetPercent: interviewSettings.coverageFollowUpBudgetPercent,
+    });
 
   emitModelSystemLog(
     ticketId,
     context.externalId,
-    'WAITING_INTERVIEW_ANSWERS',
-    'info',
+    "WAITING_INTERVIEW_ANSWERS",
+    "info",
     `Starting PROM4 interview session with winning model: ${winnerId}`,
     winnerId,
-  )
+  );
 
-  if (signal.aborted) throw new CancelledError(ticketId)
-  const streamState = createOpenCodeStreamState()
+  if (signal.aborted) throw new CancelledError(ticketId);
+  const streamState = createOpenCodeStreamState();
 
   const { sessionId, firstBatch } = await startInterviewSession(
     adapter,
@@ -1877,53 +2378,59 @@ export async function handleInterviewQAStart(
       emitOpenCodeStreamEvent(
         ticketId,
         context.externalId,
-        'WAITING_INTERVIEW_ANSWERS',
+        "WAITING_INTERVIEW_ANSWERS",
         winnerId,
         entry.sessionId,
         entry.event,
         streamState,
-      )
+      );
     },
     (entry) => {
       emitOpenCodePromptLog(
         ticketId,
         context.externalId,
-        'WAITING_INTERVIEW_ANSWERS',
+        "WAITING_INTERVIEW_ANSWERS",
         winnerId,
         entry.event,
-      )
+      );
     },
     ticketId,
     interviewSettings.draftTimeoutMs,
     resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
-  )
-  throwIfAborted(signal, ticketId)
+  );
+  throwIfAborted(signal, ticketId);
 
   // Store session info
-  interviewQASessions.set(ticketId, { sessionId, winnerId })
+  interviewQASessions.set(ticketId, { sessionId, winnerId });
   insertPhaseArtifact(ticketId, {
-    phase: 'WAITING_INTERVIEW_ANSWERS',
+    phase: "WAITING_INTERVIEW_ANSWERS",
     artifactType: INTERVIEW_QA_SESSION_ARTIFACT,
     content: JSON.stringify({ sessionId, winnerId }),
-  })
+  });
 
-  const persistedBatch = buildPersistedBatch(firstBatch, 'prom4', baseSnapshot)
-  const updatedSnapshot = recordPreparedBatch(baseSnapshot, persistedBatch)
-  persistInterviewSession(ticketId, updatedSnapshot)
-  logInterviewBatchRepairs(ticketId, context.externalId, winnerId, sessionId, firstBatch)
+  const persistedBatch = buildPersistedBatch(firstBatch, "prom4", baseSnapshot);
+  const updatedSnapshot = recordPreparedBatch(baseSnapshot, persistedBatch);
+  persistInterviewSession(ticketId, updatedSnapshot);
+  logInterviewBatchRepairs(
+    ticketId,
+    context.externalId,
+    winnerId,
+    sessionId,
+    firstBatch,
+  );
 
   emitModelSystemLog(
     ticketId,
     context.externalId,
-    'WAITING_INTERVIEW_ANSWERS',
-    'info',
+    "WAITING_INTERVIEW_ANSWERS",
+    "info",
     `PROM4 session started (session=${sessionId}). First batch: ${persistedBatch.questions.length} questions.`,
     winnerId,
-  )
+  );
   emitAiMilestone(
     ticketId,
     context.externalId,
-    'WAITING_INTERVIEW_ANSWERS',
+    "WAITING_INTERVIEW_ANSWERS",
     `PROM4 session created for ${winnerId} (session=${sessionId}).`,
     `${sessionId}:prom4-created`,
     {
@@ -1931,14 +2438,14 @@ export async function handleInterviewQAStart(
       sessionId,
       source: `model:${winnerId}`,
     },
-  )
+  );
 
   // Broadcast first batch to frontend via SSE
-  broadcaster.broadcast(ticketId, 'needs_input', {
+  broadcaster.broadcast(ticketId, "needs_input", {
     ticketId,
-    type: 'interview_batch',
+    type: "interview_batch",
     batch: persistedBatch,
-  })
+  });
 }
 
 /**
@@ -1954,15 +2461,20 @@ export async function handleInterviewQABatch(
   claimToken?: string,
   onPersisted?: (receipt: InterviewBatchSkipReceipt) => void,
 ): Promise<BatchResponse> {
-  const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
+  const snapshot = readInterviewSessionSnapshotArtifact(ticketId);
   if (!snapshot?.currentBatch) {
-    throw new Error('No active interview batch for this ticket')
+    throw new Error("No active interview batch for this ticket");
   }
 
-  const ticket = getTicketByRef(ticketId)
-  const externalId = ticket?.externalId ?? ticketId
-  const currentBatch = snapshot.currentBatch
-  const answeredSnapshot = recordBatchAnswers(snapshot, batchAnswers, selectedOptions, skipReasons)
+  const ticket = getTicketByRef(ticketId);
+  const externalId = ticket?.externalId ?? ticketId;
+  const currentBatch = snapshot.currentBatch;
+  const answeredSnapshot = recordBatchAnswers(
+    snapshot,
+    batchAnswers,
+    selectedOptions,
+    skipReasons,
+  );
 
   // Record receipts immediately after the matching snapshot commit. Keeping
   // the write behind the CAS means a rejected coverage submission cannot leave
@@ -1971,224 +2483,294 @@ export async function handleInterviewQABatch(
     const actionId = recordInterviewSkipReceipts({
       ticketId,
       externalId,
-      ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
-      surface: 'interview_question',
+      ticketStatusBefore: ticket?.status ?? "WAITING_INTERVIEW_ANSWERS",
+      surface: "interview_question",
       snapshot: answeredSnapshot,
       questionIds: currentBatch.questions.map((question) => question.id),
       batchNumber: currentBatch.batchNumber,
-    })
+    });
     if (skipReceipt) {
-      if (actionId) skipReceipt.actionId = actionId
-      else delete skipReceipt.actionId
+      if (actionId) skipReceipt.actionId = actionId;
+      else delete skipReceipt.actionId;
     }
-    return actionId
-  }
+    return actionId;
+  };
 
   if (isMockOpenCodeMode()) {
-    if (currentBatch.source === 'prom4' && currentBatch.batchNumber === 1) {
+    if (currentBatch.source === "prom4" && currentBatch.batchNumber === 1) {
       const followUpBatch = buildPersistedBatch(
         {
-          questions: buildMockInterviewFollowUpQuestions().map(({ id, question, phase, priority, rationale }) => ({
-            id,
-            question,
-            phase,
-            priority,
-            rationale,
-          })),
+          questions: buildMockInterviewFollowUpQuestions().map(
+            ({ id, question, phase, priority, rationale }) => ({
+              id,
+              question,
+              phase,
+              priority,
+              rationale,
+            }),
+          ),
           progress: { current: 2, total: 2 },
           isComplete: false,
           isFinalFreeForm: false,
-          aiCommentary: 'Mock follow-up batch ready.',
+          aiCommentary: "Mock follow-up batch ready.",
           batchNumber: 2,
         },
-        'prom4',
+        "prom4",
         answeredSnapshot,
-      )
-      const updatedSnapshot = recordPreparedBatch(answeredSnapshot, followUpBatch)
-      persistInterviewSession(ticketId, updatedSnapshot)
-      recordBatchSkipReceipt()
-      return followUpBatch
+      );
+      const updatedSnapshot = recordPreparedBatch(
+        answeredSnapshot,
+        followUpBatch,
+      );
+      persistInterviewSession(ticketId, updatedSnapshot);
+      recordBatchSkipReceipt();
+      return followUpBatch;
     }
 
-    const completedSnapshot = markInterviewSessionComplete(answeredSnapshot)
-    const paths = getTicketPaths(ticketId)
+    const completedSnapshot = markInterviewSessionComplete(answeredSnapshot);
+    const paths = getTicketPaths(ticketId);
     if (paths) {
-      writeCanonicalInterview(ticket?.externalId ?? ticketId, paths.ticketDir, completedSnapshot)
+      writeCanonicalInterview(
+        ticket?.externalId ?? ticketId,
+        paths.ticketDir,
+        completedSnapshot,
+      );
     }
-    persistInterviewSession(ticketId, completedSnapshot)
-    recordBatchSkipReceipt()
+    persistInterviewSession(ticketId, completedSnapshot);
+    recordBatchSkipReceipt();
     return {
       questions: [],
       progress: currentBatch.progress,
       isComplete: true,
       isFinalFreeForm: currentBatch.isFinalFreeForm,
-      aiCommentary: 'Mock interview complete.',
+      aiCommentary: "Mock interview complete.",
       batchNumber: currentBatch.batchNumber,
-    }
+    };
   }
 
-  if (currentBatch.source === 'coverage') {
-    const paths = getTicketPaths(ticketId)
+  if (currentBatch.source === "coverage") {
+    const paths = getTicketPaths(ticketId);
     if (!paths) {
-      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+      throw new TicketWorkspaceNotInitializedError(
+        `Ticket workspace not initialized: missing ticket paths for ${externalId}`,
+      );
     }
-    const completedSnapshot = markInterviewSessionComplete(answeredSnapshot)
-    const expectedFingerprint = snapshotFingerprint(snapshot)
-    if (!claimToken || !persistInterviewSessionIfCurrent(ticketId, expectedFingerprint, completedSnapshot, claimToken)) {
-      throw new Error('Coverage interview batch changed or its claim expired before processing completed')
+    const completedSnapshot = markInterviewSessionComplete(answeredSnapshot);
+    const expectedFingerprint = snapshotFingerprint(snapshot);
+    if (
+      !claimToken ||
+      !persistInterviewSessionIfCurrent(
+        ticketId,
+        expectedFingerprint,
+        completedSnapshot,
+        claimToken,
+      )
+    ) {
+      throw new Error(
+        "Coverage interview batch changed or its claim expired before processing completed",
+      );
     }
-    let batchSkipActionId: string | null = null
+    let batchSkipActionId: string | null = null;
     try {
-      batchSkipActionId = recordBatchSkipReceipt()
-      writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
+      batchSkipActionId = recordBatchSkipReceipt();
+      writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot);
     } catch (error) {
-      persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(completedSnapshot), snapshot, claimToken)
-      if (batchSkipActionId) deleteSkipReceiptsForAction(ticketId, batchSkipActionId)
-      if (skipReceipt) delete skipReceipt.actionId
-      throw error
+      persistInterviewSessionIfCurrent(
+        ticketId,
+        snapshotFingerprint(completedSnapshot),
+        snapshot,
+        claimToken,
+      );
+      if (batchSkipActionId)
+        deleteSkipReceiptsForAction(ticketId, batchSkipActionId);
+      if (skipReceipt) delete skipReceipt.actionId;
+      throw error;
     }
     // Clean up stale PROM4 session for the coverage loop re-entry
-    interviewQASessions.delete(ticketId)
+    interviewQASessions.delete(ticketId);
     emitPhaseLog(
       ticketId,
       externalId,
-      'WAITING_INTERVIEW_ANSWERS',
-      'info',
+      "WAITING_INTERVIEW_ANSWERS",
+      "info",
       `Coverage follow-up batch ${currentBatch.batchNumber} captured. Returning to interview coverage verification.`,
-    )
+    );
     return {
       questions: [],
       progress: currentBatch.progress,
       isComplete: true,
       isFinalFreeForm: false,
-      aiCommentary: 'Coverage follow-up answers captured. Re-running coverage.',
+      aiCommentary: "Coverage follow-up answers captured. Re-running coverage.",
       batchNumber: currentBatch.batchNumber,
-    }
+    };
   }
 
   // Persist intermediate state immediately: answers saved, currentBatch cleared.
   // The asynchronous PROM4 path uses the same claim-and-content CAS as its
   // result and rollback writes, so a worker that lost ownership cannot clear a
   // successor's batch before it reaches its first await.
-  const needsClaimedPersistence = !isMockOpenCodeMode()
-  const hasInterruptedBatchMarker = needsClaimedPersistence
-    && currentBatch.source === 'prom4'
-    && Boolean(claimToken)
+  const needsClaimedPersistence = !isMockOpenCodeMode();
+  const hasInterruptedBatchMarker =
+    needsClaimedPersistence &&
+    currentBatch.source === "prom4" &&
+    Boolean(claimToken);
   if (hasInterruptedBatchMarker) {
     writeInterruptedInterviewBatch(ticketId, {
       originalSnapshot: cloneSnapshot(snapshot),
       answeredSnapshotFingerprint: snapshotFingerprint(answeredSnapshot),
-    })
+    });
   }
-  const persistedWithClaim = needsClaimedPersistence
-    && Boolean(claimToken && persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(snapshot), answeredSnapshot, claimToken))
+  const persistedWithClaim =
+    needsClaimedPersistence &&
+    Boolean(
+      claimToken &&
+      persistInterviewSessionIfCurrent(
+        ticketId,
+        snapshotFingerprint(snapshot),
+        answeredSnapshot,
+        claimToken,
+      ),
+    );
   if (needsClaimedPersistence && !persistedWithClaim) {
-    if (hasInterruptedBatchMarker) clearInterruptedInterviewBatch(ticketId)
+    if (hasInterruptedBatchMarker) clearInterruptedInterviewBatch(ticketId);
     if (skipReceipt?.actionId) {
-      deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
-      delete skipReceipt.actionId
+      deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId);
+      delete skipReceipt.actionId;
     }
-    throw new Error('Interview batch changed or its claim expired before processing started')
+    throw new Error(
+      "Interview batch changed or its claim expired before processing started",
+    );
   }
   if (!needsClaimedPersistence) {
-    persistInterviewSession(ticketId, answeredSnapshot)
+    persistInterviewSession(ticketId, answeredSnapshot);
   }
-  recordBatchSkipReceipt()
-  if (skipReceipt) skipReceipt.persistedUpdatedAt = answeredSnapshot.updatedAt
-  if (skipReceipt) skipReceipt.persistedSnapshotFingerprint = snapshotFingerprint(answeredSnapshot)
-  if (skipReceipt) onPersisted?.(skipReceipt)
+  recordBatchSkipReceipt();
+  if (skipReceipt) skipReceipt.persistedUpdatedAt = answeredSnapshot.updatedAt;
+  if (skipReceipt)
+    skipReceipt.persistedSnapshotFingerprint =
+      snapshotFingerprint(answeredSnapshot);
+  if (skipReceipt) onPersisted?.(skipReceipt);
 
   // Get session info from memory or reload from DB
-  const persistedSessionInfo = readInterviewQASessionArtifact(ticketId)
-  const signal = getOrCreateAbortSignal(ticketId)
-  let sessionInfo = await restoreInterviewQASession(ticketId, signal)
+  const persistedSessionInfo = readInterviewQASessionArtifact(ticketId);
+  const signal = getOrCreateAbortSignal(ticketId);
+  let sessionInfo = await restoreInterviewQASession(ticketId, signal);
   if (!sessionInfo) {
-    if (persistedSessionInfo?.sessionId === 'mock-session') {
-      const paths = getTicketPaths(ticketId)
+    if (persistedSessionInfo?.sessionId === "mock-session") {
+      const paths = getTicketPaths(ticketId);
       if (!paths) {
-        throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+        throw new TicketWorkspaceNotInitializedError(
+          `Ticket workspace not initialized: missing ticket paths for ${externalId}`,
+        );
       }
 
-      const nextMockBatch = buildPersistedMockInterviewBatch(answeredSnapshot)
+      const nextMockBatch = buildPersistedMockInterviewBatch(answeredSnapshot);
       if (!nextMockBatch) {
-        const rawFinalYaml = buildCanonicalInterviewYaml(externalId, answeredSnapshot)
-        const completedSnapshot = markInterviewSessionComplete(answeredSnapshot, rawFinalYaml)
-        writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
-        persistInterviewSession(ticketId, completedSnapshot)
+        const rawFinalYaml = buildCanonicalInterviewYaml(
+          externalId,
+          answeredSnapshot,
+        );
+        const completedSnapshot = markInterviewSessionComplete(
+          answeredSnapshot,
+          rawFinalYaml,
+        );
+        writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot);
+        persistInterviewSession(ticketId, completedSnapshot);
 
         emitPhaseLog(
           ticketId,
           externalId,
-          'WAITING_INTERVIEW_ANSWERS',
-          'info',
-          'Persisted mock interview completed after restart-safe batch replay.',
-        )
+          "WAITING_INTERVIEW_ANSWERS",
+          "info",
+          "Persisted mock interview completed after restart-safe batch replay.",
+        );
 
         return {
           questions: [],
           progress: currentBatch.progress,
           isComplete: true,
           isFinalFreeForm: currentBatch.isFinalFreeForm,
-          aiCommentary: 'Mock interview complete.',
+          aiCommentary: "Mock interview complete.",
           batchNumber: currentBatch.batchNumber,
-        }
+        };
       }
 
-      const persistedNextBatch = buildPersistedBatch(nextMockBatch, 'prom4', answeredSnapshot)
-      const updatedSnapshot = recordPreparedBatch(answeredSnapshot, persistedNextBatch)
-      persistInterviewSession(ticketId, updatedSnapshot)
+      const persistedNextBatch = buildPersistedBatch(
+        nextMockBatch,
+        "prom4",
+        answeredSnapshot,
+      );
+      const updatedSnapshot = recordPreparedBatch(
+        answeredSnapshot,
+        persistedNextBatch,
+      );
+      persistInterviewSession(ticketId, updatedSnapshot);
 
       emitPhaseLog(
         ticketId,
         externalId,
-        'WAITING_INTERVIEW_ANSWERS',
-        'info',
+        "WAITING_INTERVIEW_ANSWERS",
+        "info",
         `Persisted mock interview advanced to batch ${persistedNextBatch.batchNumber}.`,
-      )
+      );
 
-      return persistedNextBatch
+      return persistedNextBatch;
     }
-
   }
 
-  const streamState = createOpenCodeStreamState()
-  const formattedAnswers = buildFormattedBatchAnswers(currentBatch.questions, batchAnswers, selectedOptions)
-  const paths = getTicketPaths(ticketId)
-  let result: BatchResponse | undefined
-  const winnerId = sessionInfo?.winnerId ?? persistedSessionInfo?.winnerId ?? snapshot.winnerId
-  const onStreamEvent = (entry: { sessionId: string; event: Parameters<typeof emitOpenCodeStreamEvent>[5] }) => {
+  const streamState = createOpenCodeStreamState();
+  const formattedAnswers = buildFormattedBatchAnswers(
+    currentBatch.questions,
+    batchAnswers,
+    selectedOptions,
+  );
+  const paths = getTicketPaths(ticketId);
+  let result: BatchResponse | undefined;
+  const winnerId =
+    sessionInfo?.winnerId ??
+    persistedSessionInfo?.winnerId ??
+    snapshot.winnerId;
+  const onStreamEvent = (entry: {
+    sessionId: string;
+    event: Parameters<typeof emitOpenCodeStreamEvent>[5];
+  }) => {
     emitOpenCodeStreamEvent(
       ticketId,
       externalId,
-      'WAITING_INTERVIEW_ANSWERS',
+      "WAITING_INTERVIEW_ANSWERS",
       winnerId,
       entry.sessionId,
       entry.event,
       streamState,
-    )
-  }
-  const onPromptDispatched = (entry: { sessionId: string; event: Parameters<typeof emitOpenCodePromptLog>[4] }) => {
+    );
+  };
+  const onPromptDispatched = (entry: {
+    sessionId: string;
+    event: Parameters<typeof emitOpenCodePromptLog>[4];
+  }) => {
     emitOpenCodePromptLog(
       ticketId,
       externalId,
-      'WAITING_INTERVIEW_ANSWERS',
+      "WAITING_INTERVIEW_ANSWERS",
       winnerId,
       entry.event,
-    )
-  }
+    );
+  };
   if (!sessionInfo) {
     if (!paths) {
-      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+      throw new TicketWorkspaceNotInitializedError(
+        `Ticket workspace not initialized: missing ticket paths for ${externalId}`,
+      );
     }
     const replacement = await startInterviewSession(
       adapter,
       paths.worktreePath,
       winnerId,
-      '',
+      "",
       {
         ticketId: externalId,
-        title: ticket?.title ?? '',
-        description: ticket?.description ?? '',
+        title: ticket?.title ?? "",
+        description: ticket?.description ?? "",
       },
       answeredSnapshot.maxInitialQuestions,
       0,
@@ -2199,28 +2781,28 @@ export async function handleInterviewQABatch(
       resolveAiResponseTimeoutForTicket(ticketId),
       resolveStructuredRetryCountForTicket(ticketId),
       answeredSnapshot,
-    )
-    sessionInfo = { sessionId: replacement.sessionId, winnerId }
-    interviewQASessions.set(ticketId, sessionInfo)
+    );
+    sessionInfo = { sessionId: replacement.sessionId, winnerId };
+    interviewQASessions.set(ticketId, sessionInfo);
     upsertLatestPhaseArtifact(
       ticketId,
       INTERVIEW_QA_SESSION_ARTIFACT,
-      'WAITING_INTERVIEW_ANSWERS',
+      "WAITING_INTERVIEW_ANSWERS",
       JSON.stringify(sessionInfo),
-    )
-    result = replacement.firstBatch
+    );
+    result = replacement.firstBatch;
   }
-  let restartOptions: Parameters<typeof submitBatchToSession>[9] | undefined
+  let restartOptions: Parameters<typeof submitBatchToSession>[9] | undefined;
   if (paths) {
     restartOptions = {
       projectPath: paths.worktreePath,
       ticketState: {
         ticketId: externalId,
-        title: ticket?.title ?? '',
-        description: ticket?.description ?? '',
+        title: ticket?.title ?? "",
+        description: ticket?.description ?? "",
       },
       snapshot: answeredSnapshot,
-    }
+    };
   }
   if (sessionInfo && !result) {
     result = await submitBatchToSession(
@@ -2235,82 +2817,134 @@ export async function handleInterviewQABatch(
       resolveAiResponseTimeoutForTicket(ticketId),
       restartOptions,
       resolveStructuredRetryCountForTicket(ticketId),
-    )
+    );
   }
-  if (!result) throw new Error('Interview session did not return a batch response')
-  if (!sessionInfo) throw new Error('Interview session was not established')
-  throwIfAborted(signal, ticketId)
+  if (!result)
+    throw new Error("Interview session did not return a batch response");
+  if (!sessionInfo) throw new Error("Interview session was not established");
+  throwIfAborted(signal, ticketId);
 
-  const expectedFingerprint = skipReceipt?.persistedSnapshotFingerprint
+  const expectedFingerprint = skipReceipt?.persistedSnapshotFingerprint;
 
-  const restartedSession = result.sessionId && result.sessionId !== sessionInfo.sessionId
-    ? result.sessionId
-    : null
+  const restartedSession =
+    result.sessionId && result.sessionId !== sessionInfo.sessionId
+      ? result.sessionId
+      : null;
   const persistResultSnapshot = (nextSnapshot: InterviewSessionSnapshot) => {
-    if (!expectedFingerprint || !claimToken
-      || !persistInterviewSessionIfCurrent(ticketId, expectedFingerprint, nextSnapshot, claimToken)) {
-      throw new Error('Interview batch changed or its claim expired while the model was processing')
+    if (
+      !expectedFingerprint ||
+      !claimToken ||
+      !persistInterviewSessionIfCurrent(
+        ticketId,
+        expectedFingerprint,
+        nextSnapshot,
+        claimToken,
+      )
+    ) {
+      throw new Error(
+        "Interview batch changed or its claim expired while the model was processing",
+      );
     }
-    clearInterruptedInterviewBatch(ticketId)
+    clearInterruptedInterviewBatch(ticketId);
 
     if (restartedSession) {
-      interviewQASessions.set(ticketId, { sessionId: restartedSession, winnerId: sessionInfo.winnerId })
+      interviewQASessions.set(ticketId, {
+        sessionId: restartedSession,
+        winnerId: sessionInfo.winnerId,
+      });
       upsertLatestPhaseArtifact(
         ticketId,
         INTERVIEW_QA_SESSION_ARTIFACT,
-        'WAITING_INTERVIEW_ANSWERS',
-        JSON.stringify({ sessionId: restartedSession, winnerId: sessionInfo.winnerId }),
-      )
+        "WAITING_INTERVIEW_ANSWERS",
+        JSON.stringify({
+          sessionId: restartedSession,
+          winnerId: sessionInfo.winnerId,
+        }),
+      );
       emitPhaseLog(
         ticketId,
         externalId,
-        'WAITING_INTERVIEW_ANSWERS',
-        'info',
+        "WAITING_INTERVIEW_ANSWERS",
+        "info",
         `PROM4 session restarted after structured-output failure (old=${sessionInfo.sessionId}, new=${restartedSession}).`,
-      )
+      );
     }
-  }
+  };
 
   if (result.isComplete) {
     if (!paths) {
-      throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
+      throw new TicketWorkspaceNotInitializedError(
+        `Ticket workspace not initialized: missing ticket paths for ${externalId}`,
+      );
     }
 
-    const completedSnapshot = markInterviewSessionComplete(answeredSnapshot, result.finalYaml)
-    persistResultSnapshot(completedSnapshot)
+    const completedSnapshot = markInterviewSessionComplete(
+      answeredSnapshot,
+      result.finalYaml,
+    );
+    persistResultSnapshot(completedSnapshot);
     try {
-      writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot)
+      writeCanonicalInterview(externalId, paths.ticketDir, completedSnapshot);
     } catch (error) {
       if (expectedFingerprint && claimToken) {
-        persistInterviewSessionIfCurrent(ticketId, snapshotFingerprint(completedSnapshot), answeredSnapshot, claimToken)
+        persistInterviewSessionIfCurrent(
+          ticketId,
+          snapshotFingerprint(completedSnapshot),
+          answeredSnapshot,
+          claimToken,
+        );
       }
-      throw error
+      throw error;
     }
-    logInterviewBatchRepairs(ticketId, externalId, winnerId, result.sessionId ?? sessionInfo.sessionId, result)
+    logInterviewBatchRepairs(
+      ticketId,
+      externalId,
+      winnerId,
+      result.sessionId ?? sessionInfo.sessionId,
+      result,
+    );
 
     emitPhaseLog(
       ticketId,
       externalId,
-      'WAITING_INTERVIEW_ANSWERS',
-      'info',
+      "WAITING_INTERVIEW_ANSWERS",
+      "info",
       `PROM4 interview complete. Canonical interview.yaml regenerated from normalized session state.`,
-    )
+    );
 
     return {
       ...result,
       batchNumber: currentBatch.batchNumber,
-    }
+    };
   }
 
-  const persistedNextBatch = buildPersistedBatch(result, 'prom4', answeredSnapshot)
-  const updatedSnapshot = recordPreparedBatch(answeredSnapshot, persistedNextBatch)
-  persistResultSnapshot(updatedSnapshot)
-  logInterviewBatchRepairs(ticketId, externalId, winnerId, result.sessionId ?? sessionInfo.sessionId, result)
+  const persistedNextBatch = buildPersistedBatch(
+    result,
+    "prom4",
+    answeredSnapshot,
+  );
+  const updatedSnapshot = recordPreparedBatch(
+    answeredSnapshot,
+    persistedNextBatch,
+  );
+  persistResultSnapshot(updatedSnapshot);
+  logInterviewBatchRepairs(
+    ticketId,
+    externalId,
+    winnerId,
+    result.sessionId ?? sessionInfo.sessionId,
+    result,
+  );
 
-  emitPhaseLog(ticketId, externalId, 'WAITING_INTERVIEW_ANSWERS', 'info',
-    `PROM4 batch ${persistedNextBatch.batchNumber}: ${persistedNextBatch.questions.length} questions. Progress: ${persistedNextBatch.progress.current}/${persistedNextBatch.progress.total}.`)
+  emitPhaseLog(
+    ticketId,
+    externalId,
+    "WAITING_INTERVIEW_ANSWERS",
+    "info",
+    `PROM4 batch ${persistedNextBatch.batchNumber}: ${persistedNextBatch.questions.length} questions. Progress: ${persistedNextBatch.progress.current}/${persistedNextBatch.progress.total}.`,
+  );
 
-  return persistedNextBatch
+  return persistedNextBatch;
 }
 
 /**
@@ -2331,7 +2965,7 @@ export function processInterviewBatchAsync(
   /**
    * The claim this batch was dispatched under. PROM4 result and rollback writes
    * are rejected when it is missing, and the final release is skipped too.
-  */
+   */
   claimToken?: string,
   /** Keep the durable claim while a timeout's remote stop is unverified. */
   mayReleaseClaim: () => boolean = () => true,
@@ -2339,8 +2973,16 @@ export function processInterviewBatchAsync(
 ): Promise<BatchResponse> {
   // This call's own receipt, so the revert below can only ever undo the skips
   // this call wrote.
-  const skipReceipt: InterviewBatchSkipReceipt = {}
-  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons, skipReceipt, claimToken, onPersisted)
+  const skipReceipt: InterviewBatchSkipReceipt = {};
+  return handleInterviewQABatch(
+    ticketId,
+    batchAnswers,
+    selectedOptions,
+    skipReasons,
+    skipReceipt,
+    claimToken,
+    onPersisted,
+  )
     .catch((err) => {
       // Revert to original snapshot so the user can retry the submission —
       // but only while the session is still the one this call left behind.
@@ -2353,230 +2995,285 @@ export function processInterviewBatchAsync(
       // not.
       try {
         const restored = claimToken
-          ? restoreInterviewBatchAfterFailure(ticketId, originalSnapshot, skipReceipt, claimToken)
-          : false
+          ? restoreInterviewBatchAfterFailure(
+              ticketId,
+              originalSnapshot,
+              skipReceipt,
+              claimToken,
+            )
+          : false;
         if (!restored) {
-          console.warn(`[runner] Not reverting the interview session for ${ticketId}: it has moved on since this batch wrote it.`)
+          console.warn(
+            `[runner] Not reverting the interview session for ${ticketId}: it has moved on since this batch wrote it.`,
+          );
         }
       } catch (revertErr) {
-        console.error(`[runner] Failed to revert interview snapshot for ${ticketId}:`, revertErr)
+        console.error(
+          `[runner] Failed to revert interview snapshot for ${ticketId}:`,
+          revertErr,
+        );
       }
-      throw err
+      throw err;
     })
     .finally(() => {
       // With the token, so a task that outlived its own claim cannot delete the
       // one a later submission is holding.
-      if (mayReleaseClaim() && claimToken) releaseInterviewBatch(ticketId, claimToken)
-    })
+      if (mayReleaseClaim() && claimToken)
+        releaseInterviewBatch(ticketId, claimToken);
+    });
 }
 
 export function buildMockInterviewQuestions() {
   return [
     {
-      id: 'goal',
-      phase: 'foundation',
-      question: 'What is the primary outcome this ticket should deliver?',
-      priority: 'critical',
-      rationale: 'Clarifies the core success criteria.',
+      id: "goal",
+      phase: "foundation",
+      question: "What is the primary outcome this ticket should deliver?",
+      priority: "critical",
+      rationale: "Clarifies the core success criteria.",
     },
     {
-      id: 'constraints',
-      phase: 'structure',
-      question: 'What implementation constraints or boundaries should the agent respect?',
-      priority: 'high',
-      rationale: 'Prevents invalid implementation choices.',
+      id: "constraints",
+      phase: "structure",
+      question:
+        "What implementation constraints or boundaries should the agent respect?",
+      priority: "high",
+      rationale: "Prevents invalid implementation choices.",
     },
     {
-      id: 'verification',
-      phase: 'assembly',
-      question: 'How should success be verified once implementation is complete?',
-      priority: 'high',
-      rationale: 'Defines acceptance and testing expectations.',
+      id: "verification",
+      phase: "assembly",
+      question:
+        "How should success be verified once implementation is complete?",
+      priority: "high",
+      rationale: "Defines acceptance and testing expectations.",
     },
-  ]
+  ];
 }
 
 export function buildMockInterviewFollowUpQuestions() {
   return [
     {
-      id: 'tradeoffs',
-      phase: 'assembly',
-      question: 'If scope or complexity has to move, which tradeoffs are acceptable and which are not?',
-      priority: 'medium',
-      rationale: 'Captures prioritization boundaries before implementation starts.',
+      id: "tradeoffs",
+      phase: "assembly",
+      question:
+        "If scope or complexity has to move, which tradeoffs are acceptable and which are not?",
+      priority: "medium",
+      rationale:
+        "Captures prioritization boundaries before implementation starts.",
     },
-  ]
+  ];
 }
 
 export function buildMockInterviewFinalQuestion() {
   return {
-    id: 'final_notes',
-    phase: 'assembly',
-    question: 'What is the most important implementation note or edge case the agent should not miss?',
-    priority: 'high',
-    rationale: 'Captures the last high-signal guidance before implementation begins.',
-  }
+    id: "final_notes",
+    phase: "assembly",
+    question:
+      "What is the most important implementation note or edge case the agent should not miss?",
+    priority: "high",
+    rationale:
+      "Captures the last high-signal guidance before implementation begins.",
+  };
 }
 
 export function buildPersistedMockInterviewBatch(
   snapshot: InterviewSessionSnapshot,
 ): BatchResponse | null {
-  const answeredBatchCount = snapshot.batchHistory.length
+  const answeredBatchCount = snapshot.batchHistory.length;
 
   if (answeredBatchCount === 1) {
     return {
-      questions: buildMockInterviewFollowUpQuestions().map(({ id, question, phase, priority, rationale }) => ({
-        id,
-        question,
-        phase,
-        priority,
-        rationale,
-      })),
+      questions: buildMockInterviewFollowUpQuestions().map(
+        ({ id, question, phase, priority, rationale }) => ({
+          id,
+          question,
+          phase,
+          priority,
+          rationale,
+        }),
+      ),
       progress: { current: 2, total: 3 },
       isComplete: false,
       isFinalFreeForm: false,
-      aiCommentary: 'One follow-up question to pin down acceptable tradeoffs.',
+      aiCommentary: "One follow-up question to pin down acceptable tradeoffs.",
       batchNumber: 2,
-    }
+    };
   }
 
   if (answeredBatchCount === 2) {
-    const finalQuestion = buildMockInterviewFinalQuestion()
+    const finalQuestion = buildMockInterviewFinalQuestion();
     return {
-      questions: [{
-        id: finalQuestion.id,
-        question: finalQuestion.question,
-        phase: finalQuestion.phase,
-        priority: finalQuestion.priority,
-        rationale: finalQuestion.rationale,
-      }],
+      questions: [
+        {
+          id: finalQuestion.id,
+          question: finalQuestion.question,
+          phase: finalQuestion.phase,
+          priority: finalQuestion.priority,
+          rationale: finalQuestion.rationale,
+        },
+      ],
       progress: { current: 3, total: 3 },
       isComplete: false,
       isFinalFreeForm: true,
-      aiCommentary: 'One final question before the interview artifact is finalized.',
+      aiCommentary:
+        "One final question before the interview artifact is finalized.",
       batchNumber: 3,
-    }
+    };
   }
 
-  return null
+  return null;
 }
 
 export function buildMockInterviewCompiledContent() {
-  return jsYaml.dump({
-    questions: buildMockInterviewQuestions().map(({ id, phase, question, priority, rationale }) => ({
-      id,
-      phase,
-      question,
-      priority,
-      rationale,
-    })),
-  }, { lineWidth: 120, noRefs: true }) as string
+  return jsYaml.dump(
+    {
+      questions: buildMockInterviewQuestions().map(
+        ({ id, phase, question, priority, rationale }) => ({
+          id,
+          phase,
+          question,
+          priority,
+          rationale,
+        }),
+      ),
+    },
+    { lineWidth: 120, noRefs: true },
+  ) as string;
 }
 
 export function buildMockInterviewDraftContent(variantIndex: number) {
-  const questions = buildMockInterviewQuestions().map((question) => ({ ...question }))
+  const questions = buildMockInterviewQuestions().map((question) => ({
+    ...question,
+  }));
   if (variantIndex > 0) {
     questions.push({
       id: `tradeoffs-${variantIndex + 1}`,
-      phase: 'assembly',
-      question: 'Which tradeoffs are acceptable if scope, timing, or implementation complexity conflict?',
-      priority: 'medium',
-      rationale: 'Surfaces prioritization decisions before implementation starts.',
-    })
+      phase: "assembly",
+      question:
+        "Which tradeoffs are acceptable if scope, timing, or implementation complexity conflict?",
+      priority: "medium",
+      rationale:
+        "Surfaces prioritization decisions before implementation starts.",
+    });
   }
 
-  return jsYaml.dump({
-    questions: questions.map(({ id, phase, question, priority, rationale }) => ({
-      id,
-      phase,
-      question,
-      priority,
-      rationale,
-    })),
-  }, { lineWidth: 120, noRefs: true }) as string
+  return jsYaml.dump(
+    {
+      questions: questions.map(
+        ({ id, phase, question, priority, rationale }) => ({
+          id,
+          phase,
+          question,
+          priority,
+          rationale,
+        }),
+      ),
+    },
+    { lineWidth: 120, noRefs: true },
+  ) as string;
 }
 
-export function buildMockInterviewDrafts(members: Array<{ modelId: string; name: string }>): DraftResult[] {
+export function buildMockInterviewDrafts(
+  members: Array<{ modelId: string; name: string }>,
+): DraftResult[] {
   return members.map((member, index) => ({
     memberId: member.modelId,
-    content: index === 0 ? buildMockInterviewCompiledContent() : buildMockInterviewDraftContent(index),
-    outcome: 'completed',
+    content:
+      index === 0
+        ? buildMockInterviewCompiledContent()
+        : buildMockInterviewDraftContent(index),
+    outcome: "completed",
     duration: 1,
-    questionCount: index === 0 ? buildMockInterviewQuestions().length : buildMockInterviewQuestions().length + 1,
-  }))
+    questionCount:
+      index === 0
+        ? buildMockInterviewQuestions().length
+        : buildMockInterviewQuestions().length + 1,
+  }));
 }
 
 export function buildMockInterviewVoteResult(
   members: Array<{ modelId: string; name: string }>,
   drafts: DraftResult[],
 ): {
-  votes: Vote[]
-  voterOutcomes: Record<string, MemberOutcome>
-  presentationOrders: Record<string, VotePresentationOrder>
-  winnerId: string
-  totalScore: number
+  votes: Vote[];
+  voterOutcomes: Record<string, MemberOutcome>;
+  presentationOrders: Record<string, VotePresentationOrder>;
+  winnerId: string;
+  totalScore: number;
 } {
-  const winnerId = drafts[0]?.memberId ?? members[0]?.modelId ?? 'mock-model-1'
+  const winnerId = drafts[0]?.memberId ?? members[0]?.modelId ?? "mock-model-1";
   const winnerScorecards = [
     [19, 19, 18, 18, 19],
     [18, 19, 19, 18, 18],
-  ]
+  ];
   const challengerScorecards = [
     [16, 15, 15, 16, 15],
     [15, 16, 15, 15, 16],
-  ]
+  ];
 
-  const votes: Vote[] = []
-  const voterOutcomes = members.reduce<Record<string, MemberOutcome>>((acc, member) => {
-    acc[member.modelId] = 'completed'
-    return acc
-  }, {})
-  const presentationOrders: Record<string, VotePresentationOrder> = {}
+  const votes: Vote[] = [];
+  const voterOutcomes = members.reduce<Record<string, MemberOutcome>>(
+    (acc, member) => {
+      acc[member.modelId] = "completed";
+      return acc;
+    },
+    {},
+  );
+  const presentationOrders: Record<string, VotePresentationOrder> = {};
 
   members.forEach((member, memberIndex) => {
-    const orderedDrafts = memberIndex % 2 === 0 ? drafts : [...drafts].reverse()
+    const orderedDrafts =
+      memberIndex % 2 === 0 ? drafts : [...drafts].reverse();
     presentationOrders[member.modelId] = {
       seed: `mock-seed-interview-${memberIndex + 1}`,
       order: orderedDrafts.map((draft) => draft.memberId),
-    }
+    };
 
     orderedDrafts.forEach((draft) => {
-      const scoreTemplate = draft.memberId === winnerId
-        ? winnerScorecards[memberIndex % winnerScorecards.length]!
-        : challengerScorecards[memberIndex % challengerScorecards.length]!
+      const scoreTemplate =
+        draft.memberId === winnerId
+          ? winnerScorecards[memberIndex % winnerScorecards.length]!
+          : challengerScorecards[memberIndex % challengerScorecards.length]!;
       const scores = VOTING_RUBRIC_INTERVIEW.map((criterion, scoreIndex) => ({
         category: criterion.category,
         score: scoreTemplate[scoreIndex] ?? 15,
-        justification: draft.memberId === winnerId
-          ? `Mock voter ${memberIndex + 1} preferred this draft on ${criterion.category.toLowerCase()}.`
-          : `Mock voter ${memberIndex + 1} found this draft weaker on ${criterion.category.toLowerCase()}.`,
-      }))
-      const totalScore = scores.reduce((sum, score) => sum + score.score, 0)
+        justification:
+          draft.memberId === winnerId
+            ? `Mock voter ${memberIndex + 1} preferred this draft on ${criterion.category.toLowerCase()}.`
+            : `Mock voter ${memberIndex + 1} found this draft weaker on ${criterion.category.toLowerCase()}.`,
+      }));
+      const totalScore = scores.reduce((sum, score) => sum + score.score, 0);
       votes.push({
         voterId: member.modelId,
         draftId: draft.memberId,
         scores,
         totalScore,
-      })
-    })
-  })
+      });
+    });
+  });
 
   const totalScore = votes
     .filter((vote) => vote.draftId === winnerId)
-    .reduce((sum, vote) => sum + vote.totalScore, 0)
+    .reduce((sum, vote) => sum + vote.totalScore, 0);
 
-  return { votes, voterOutcomes, presentationOrders, winnerId, totalScore }
+  return { votes, voterOutcomes, presentationOrders, winnerId, totalScore };
 }
 
-export function readMockInterviewWinnerId(ticketId: string, fallbackWinnerId: string): string {
-  const voteArtifact = getLatestPhaseArtifact(ticketId, 'interview_votes')
-  if (!voteArtifact) return fallbackWinnerId
+export function readMockInterviewWinnerId(
+  ticketId: string,
+  fallbackWinnerId: string,
+): string {
+  const voteArtifact = getLatestPhaseArtifact(ticketId, "interview_votes");
+  if (!voteArtifact) return fallbackWinnerId;
 
   try {
-    const parsed = JSON.parse(voteArtifact.content) as { winnerId?: unknown }
-    return typeof parsed.winnerId === 'string' ? parsed.winnerId : fallbackWinnerId
+    const parsed = JSON.parse(voteArtifact.content) as { winnerId?: unknown };
+    return typeof parsed.winnerId === "string"
+      ? parsed.winnerId
+      : fallbackWinnerId;
   } catch {
-    return fallbackWinnerId
+    return fallbackWinnerId;
   }
 }
 
@@ -2585,15 +3282,34 @@ export async function handleMockCouncilDeliberate(
   context: TicketContext,
   sendEvent: (event: TicketEvent) => void,
 ) {
-  const { members } = resolveCouncilMembers(context)
-  const drafts = buildMockInterviewDrafts(members)
-  const memberOutcomes = drafts.reduce<Record<string, MemberOutcome>>((acc, draft) => {
-    acc[draft.memberId] = draft.outcome
-    return acc
-  }, {})
-  upsertCouncilDraftArtifact(ticketId, 'COUNCIL_DELIBERATING', 'interview_drafts', drafts, memberOutcomes, true)
-  emitPhaseLog(ticketId, context.externalId, 'COUNCIL_DELIBERATING', 'info', 'Mock interview drafting complete.')
-  sendEvent({ type: 'QUESTIONS_READY', result: { winnerId: members[0]?.modelId } })
+  const { members } = resolveCouncilMembers(context);
+  const drafts = buildMockInterviewDrafts(members);
+  const memberOutcomes = drafts.reduce<Record<string, MemberOutcome>>(
+    (acc, draft) => {
+      acc[draft.memberId] = draft.outcome;
+      return acc;
+    },
+    {},
+  );
+  upsertCouncilDraftArtifact(
+    ticketId,
+    "COUNCIL_DELIBERATING",
+    "interview_drafts",
+    drafts,
+    memberOutcomes,
+    true,
+  );
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    "COUNCIL_DELIBERATING",
+    "info",
+    "Mock interview drafting complete.",
+  );
+  sendEvent({
+    type: "QUESTIONS_READY",
+    result: { winnerId: members[0]?.modelId },
+  });
 }
 
 export async function handleMockInterviewVote(
@@ -2601,13 +3317,13 @@ export async function handleMockInterviewVote(
   context: TicketContext,
   sendEvent: (event: TicketEvent) => void,
 ) {
-  const { members } = resolveCouncilMembers(context)
-  const drafts = buildMockInterviewDrafts(members)
-  const voteResult = buildMockInterviewVoteResult(members, drafts)
+  const { members } = resolveCouncilMembers(context);
+  const drafts = buildMockInterviewDrafts(members);
+  const voteResult = buildMockInterviewVoteResult(members, drafts);
   upsertCouncilVoteArtifact(
     ticketId,
-    'COUNCIL_VOTING_INTERVIEW',
-    'interview_votes',
+    "COUNCIL_VOTING_INTERVIEW",
+    "interview_votes",
     drafts,
     voteResult.votes,
     voteResult.voterOutcomes,
@@ -2616,9 +3332,15 @@ export async function handleMockInterviewVote(
     voteResult.winnerId,
     voteResult.totalScore,
     true,
-  )
-  emitPhaseLog(ticketId, context.externalId, 'COUNCIL_VOTING_INTERVIEW', 'info', 'Mock interview winner selected.')
-  sendEvent({ type: 'WINNER_SELECTED', winner: voteResult.winnerId })
+  );
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    "COUNCIL_VOTING_INTERVIEW",
+    "info",
+    "Mock interview winner selected.",
+  );
+  sendEvent({ type: "WINNER_SELECTED", winner: voteResult.winnerId });
 }
 
 export async function handleMockInterviewCompile(
@@ -2626,87 +3348,122 @@ export async function handleMockInterviewCompile(
   context: TicketContext,
   sendEvent: (event: TicketEvent) => void,
 ) {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) throw new TicketWorkspaceNotInitializedError(`Ticket workspace not initialized: missing ticket paths for ${context.externalId}`)
-  const { members } = resolveCouncilMembers(context)
-  const winnerId = readMockInterviewWinnerId(ticketId, members[0]?.modelId ?? 'mock-model-1')
-  const refinedContent = buildMockInterviewCompiledContent()
-  const winnerDraftContent = buildMockInterviewDraftContent(0)
+  const paths = getTicketPaths(ticketId);
+  if (!paths)
+    throw new TicketWorkspaceNotInitializedError(
+      `Ticket workspace not initialized: missing ticket paths for ${context.externalId}`,
+    );
+  const { members } = resolveCouncilMembers(context);
+  const winnerId = readMockInterviewWinnerId(
+    ticketId,
+    members[0]?.modelId ?? "mock-model-1",
+  );
+  const refinedContent = buildMockInterviewCompiledContent();
+  const winnerDraftContent = buildMockInterviewDraftContent(0);
   const compiledArtifact = buildCompiledInterviewArtifact(
     winnerId,
     refinedContent,
     winnerDraftContent,
     buildMockInterviewQuestions().length,
-  )
+  );
   const uiDiffArtifact = buildInterviewUiRefinementDiffArtifact({
     winnerId,
     winnerDraftContent,
     refinedContent: compiledArtifact.refinedContent,
-  })
+  });
   insertPhaseArtifact(ticketId, {
-    phase: 'COMPILING_INTERVIEW',
-    artifactType: 'interview_compiled',
+    phase: "COMPILING_INTERVIEW",
+    artifactType: "interview_compiled",
     content: JSON.stringify({
       refinedContent: compiledArtifact.refinedContent,
     }),
-  })
-  persistUiArtifactCompanionArtifact(ticketId, 'COMPILING_INTERVIEW', 'interview_compiled', {
-    winnerId: compiledArtifact.winnerId,
-    questions: compiledArtifact.questions,
-    questionCount: compiledArtifact.questionCount,
-  })
+  });
+  persistUiArtifactCompanionArtifact(
+    ticketId,
+    "COMPILING_INTERVIEW",
+    "interview_compiled",
+    {
+      winnerId: compiledArtifact.winnerId,
+      questions: compiledArtifact.questions,
+      questionCount: compiledArtifact.questionCount,
+    },
+  );
   insertPhaseArtifact(ticketId, {
-    phase: 'COMPILING_INTERVIEW',
-    artifactType: 'interview_winner',
+    phase: "COMPILING_INTERVIEW",
+    artifactType: "interview_winner",
     content: JSON.stringify({ winnerId }),
-  })
-  persistUiRefinementDiffArtifact(ticketId, 'COMPILING_INTERVIEW', paths.ticketDir, uiDiffArtifact)
-  emitPhaseLog(ticketId, context.externalId, 'COMPILING_INTERVIEW', 'info', 'Mock interview compiled.')
-  sendEvent({ type: 'READY' })
+  });
+  persistUiRefinementDiffArtifact(
+    ticketId,
+    "COMPILING_INTERVIEW",
+    paths.ticketDir,
+    uiDiffArtifact,
+  );
+  emitPhaseLog(
+    ticketId,
+    context.externalId,
+    "COMPILING_INTERVIEW",
+    "info",
+    "Mock interview compiled.",
+  );
+  sendEvent({ type: "READY" });
 }
 
 export async function handleMockInterviewQAStart(
   ticketId: string,
   context: TicketContext,
 ) {
-  const { members } = resolveCouncilMembers(context)
-  const winnerId = readMockInterviewWinnerId(ticketId, members[0]?.modelId ?? 'mock-model-1')
-  const interviewSettings = resolveInterviewDraftSettings(context)
+  const { members } = resolveCouncilMembers(context);
+  const winnerId = readMockInterviewWinnerId(
+    ticketId,
+    members[0]?.modelId ?? "mock-model-1",
+  );
+  const interviewSettings = resolveInterviewDraftSettings(context);
   const batch: BatchResponse = {
-    questions: buildMockInterviewQuestions().map(({ id, question, phase, priority, rationale }) => ({
-      id,
-      question,
-      phase,
-      priority,
-      rationale,
-    })),
+    questions: buildMockInterviewQuestions().map(
+      ({ id, question, phase, priority, rationale }) => ({
+        id,
+        question,
+        phase,
+        priority,
+        rationale,
+      }),
+    ),
     progress: { current: 1, total: 2 },
     isComplete: false,
     isFinalFreeForm: false,
-    aiCommentary: 'Mock interview batch ready.',
+    aiCommentary: "Mock interview batch ready.",
     batchNumber: 1,
-  }
+  };
 
   const snapshot = createInterviewSessionSnapshot({
     winnerId,
-    compiledQuestions: buildMockInterviewQuestions().map(({ id, phase, question }) => ({ id, phase, question })),
+    compiledQuestions: buildMockInterviewQuestions().map(
+      ({ id, phase, question }) => ({ id, phase, question }),
+    ),
     maxInitialQuestions: interviewSettings.maxInitialQuestions,
     followUpBudgetPercent: interviewSettings.coverageFollowUpBudgetPercent,
-  })
-  const persistedBatch = buildPersistedBatch(batch, 'prom4', snapshot)
-  const updatedSnapshot = recordPreparedBatch(snapshot, persistedBatch)
+  });
+  const persistedBatch = buildPersistedBatch(batch, "prom4", snapshot);
+  const updatedSnapshot = recordPreparedBatch(snapshot, persistedBatch);
 
-  interviewQASessions.set(ticketId, { sessionId: 'mock-session', winnerId })
+  interviewQASessions.set(ticketId, { sessionId: "mock-session", winnerId });
   insertPhaseArtifact(ticketId, {
-    phase: 'WAITING_INTERVIEW_ANSWERS',
+    phase: "WAITING_INTERVIEW_ANSWERS",
     artifactType: INTERVIEW_QA_SESSION_ARTIFACT,
-    content: JSON.stringify({ sessionId: 'mock-session', winnerId }),
-  })
-  persistInterviewSession(ticketId, updatedSnapshot)
-  emitPhaseLog(ticketId, context.externalId, 'WAITING_INTERVIEW_ANSWERS', 'info', 'Mock interview questions ready for input.')
-  broadcaster.broadcast(ticketId, 'needs_input', {
+    content: JSON.stringify({ sessionId: "mock-session", winnerId }),
+  });
+  persistInterviewSession(ticketId, updatedSnapshot);
+  emitPhaseLog(
     ticketId,
-    type: 'interview_batch',
+    context.externalId,
+    "WAITING_INTERVIEW_ANSWERS",
+    "info",
+    "Mock interview questions ready for input.",
+  );
+  broadcaster.broadcast(ticketId, "needs_input", {
+    ticketId,
+    type: "interview_batch",
     batch: persistedBatch,
-  })
+  });
 }

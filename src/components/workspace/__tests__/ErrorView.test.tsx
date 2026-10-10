@@ -1557,7 +1557,11 @@ describe("ErrorView", () => {
       if (historical) occurrence.resolvedAt = "2026-01-01T00:01:00.000Z";
 
       renderWithProviders(
-        <ErrorView ticket={ticket} occurrence={occurrence} readOnly={historical} />,
+        <ErrorView
+          ticket={ticket}
+          occurrence={occurrence}
+          readOnly={historical}
+        />,
       );
 
       const details = screen.getByText("Technical details").closest("details");
@@ -1653,7 +1657,7 @@ describe("ErrorView", () => {
     expect(screen.getByText("ses-provider")).toBeVisible();
     const preview = screen.getByText(/Quota exceeded/);
     expect(preview.tagName).toBe("PRE");
-    expect(preview.textContent).toContain('[redacted]');
+    expect(preview.textContent).toContain("[redacted]");
     expect(preview.textContent?.length).toBeLessThanOrEqual(1000);
     expect(document.body.textContent).not.toContain("sk-privatevalue123");
     expect(document.body.textContent).not.toContain("\u001b");

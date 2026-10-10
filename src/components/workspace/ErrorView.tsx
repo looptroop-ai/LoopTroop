@@ -410,9 +410,7 @@ function ErrorTechnicalDetails({
     .filter((code) => code.length > 0);
 
   return (
-    <details
-      className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]"
-    >
+    <details className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]">
       <summary className="cursor-pointer font-medium text-foreground">
         Technical details
       </summary>

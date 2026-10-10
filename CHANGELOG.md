@@ -13,6 +13,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - OpenCode v2 scans and prompts tolerate private bookkeeping events safely and avoid automatic title calls that can block a finished response; OpenCode v1 remains supported.
 - Ticket errors show the actual failure first, with fewer repeated labels and expanded technical details below recovery actions.
+- AI question actions stay visible, with a Skip all option for questions across every model tab.
 - Development dependency updates fix command injection and denial-of-service vulnerabilities.
 - AI question settings share Advanced rows across Configuration, Project, and New Ticket, with a nested wait that preserves edits and prevents invalid saves or starts.
 - LoopTroop prefers configured and home OpenCode installations over PATH and reports which executable it selected.
@@ -23,6 +24,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - LoopTroop starts OpenCode from `~/.opencode/bin` again on Ubuntu, Fedora and other Linux desktops, where the OpenCode installer creates that folder group-writable.
 - When another server already holds OpenCode's default port, LoopTroop starts its own OpenCode on the next free port and tells you where it went.
 - `looptroop doctor` compares your Node with the newest release of your own Node line, says what `gh` is still needed for, and names the checks that actually stop LoopTroop from running.
+
+### Added
+
+- Added **Skip all** when more than one AI question is pending. It skips every request pending when confirmed, across all model tabs, including questions that arrive while you enter the optional reason. The same reason is recorded for each request; each rejection can succeed or fail independently. Bulk confirmation is disabled while any answer or skip is being submitted, and Back remains available.
 
 ### Changed
 
@@ -48,6 +53,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed valid OpenCode v2 prompts failing when private title or compaction events leave gaps in the public stream. A new connection must account for its first event before later private gaps can be accepted. Malformed events clearly belonging to other sessions no longer block the ticket, while missing or conflicting routing still stops unsafe responses. Late events inside an earlier gap and log watermarks behind an observed event are rejected. Reconnects still verify the full missing history, retry transient connection failures, and preserve mapping state across failed replay attempts without submitting the prompt again. Complete, valid replay that proves new progress resets the retry budget; empty reconnects remain bounded.
 - Pre-flight checks, execution setup, bead failures, and final tests keep their actual failure text in the ticket and error history instead of hiding it behind a generic label or diagnostic code. Coding failures put the final stopping reason first, followed by attempts from newest to oldest, so short ticket summaries name the reason the bead stopped.
 - Reused repeated transport and ticket-error test setup while retaining the same scenarios and assertions. Iterator and path expressions keep their existing behavior while giving static analysis clearer inputs.
+- AI question confirmations clear when their requests resolve, when you go Back, or when you collapse the panel. Bulk reasons survive model-tab changes, and every failed rejection is shown for retry. Rapid clicks cannot send duplicate answers or skips, and a double-click on **Skip all** cannot confirm it. Confirmation labels distinguish the selected request from all pending questions; **Send answers** submits only the selected model's batch. Ctrl/Cmd+Enter sends an answer or confirms a skip from its text field. On very short viewports, the whole panel scrolls so its fields remain reachable.
+- AI question panels keep answer and skip buttons beside the waiting count in a fixed header. Only the question content scrolls, and the panel can use up to half the viewport so ordinary questions have room to fit. Long words and URLs wrap within the panel.
 - Artifact compare-and-set tests now run in isolated integration workers, matching their use of real Git worktrees and SQLite databases.
 - Aligned AI-question controls to the right and added contextual `?` help links for both options. Wait controls are disabled when effective AI questions are **Off**, including when **Inherit** resolves to **Off**. Turning questions off shows the last valid duration and preserves the chosen mode and unfinished input. Inactive wait errors do not block saving. Turning questions back on restores the input and its validation.
 - Collapsing **Advanced** preserves unfinished wait input and validation. An invalid active custom wait blocks Configuration and Project saves, ticket creation, and Start; closing an edited form asks before discarding it. Validation and draft save errors remain visible while Advanced is closed. AI question selectors use one Tab stop per group and support arrow keys. Wait values use whole minutes in both the controls and API. The Custom input keeps unfinished edits during background updates and stays synchronized after React interrupts and retries a render.

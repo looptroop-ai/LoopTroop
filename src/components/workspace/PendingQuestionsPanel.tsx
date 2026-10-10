@@ -1,41 +1,58 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, HelpCircle, TimerOff } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
-import { useAIQuestions } from '@/context/useAIQuestions'
-import type { AiQuestionInfo, AiQuestionRequest } from '@/context/aiQuestionContextDef'
-import { formatAiQuestionWindow } from '@shared/aiQuestions'
-import { COUNTDOWN_TICK_MS } from '@/lib/constants'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { ChevronDown, ChevronRight, HelpCircle, TimerOff } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/buttonVariants";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { useAIQuestions } from "@/context/useAIQuestions";
+import type {
+  AiQuestionInfo,
+  AiQuestionRequest,
+} from "@/context/aiQuestionContextDef";
+import {
+  formatAiQuestionWindow,
+  isCouncilQuorumPhase,
+} from "@shared/aiQuestions";
+import { COUNTDOWN_TICK_MS } from "@/lib/constants";
 import {
   getTicketQuestionsCollapsedStorageKey,
   TICKET_STATE_CLEARED_EVENT,
-} from '@/components/ticket/renderedTickets'
-import { SkipReasonField } from './SkipReasonField'
+} from "@/components/ticket/renderedTickets";
+import { SkipReasonField } from "./SkipReasonField";
 
 /** Ticks once a second only while something is counting down. */
 function useCountdown(active: boolean): number {
-  const [tick, setTick] = useState(0)
+  const [tick, setTick] = useState(0);
   useEffect(() => {
-    if (!active) return
-    const interval = setInterval(() => setTick((value) => value + 1), COUNTDOWN_TICK_MS)
-    return () => clearInterval(interval)
-  }, [active])
-  return tick
+    if (!active) return;
+    const interval = setInterval(
+      () => setTick((value) => value + 1),
+      COUNTDOWN_TICK_MS,
+    );
+    return () => clearInterval(interval);
+  }, [active]);
+  return tick;
 }
 
 function formatRemaining(ms: number): string {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000))
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 /** `anthropic/claude-opus-4` reads as `claude-opus-4` in a tab three across. */
 function shortModelName(modelId: string | undefined): string {
-  if (!modelId) return 'OpenCode'
-  const slash = modelId.lastIndexOf('/')
-  return slash === -1 ? modelId : modelId.slice(slash + 1)
+  if (!modelId) return "OpenCode";
+  const slash = modelId.lastIndexOf("/");
+  return slash === -1 ? modelId : modelId.slice(slash + 1);
 }
 
 /**
@@ -45,12 +62,12 @@ function shortModelName(modelId: string | undefined): string {
  * session is unique on its own. The last four characters of the request id are.
  */
 function tabLabel(request: AiQuestionRequest, duplicated: boolean): string {
-  const base = shortModelName(request.modelId)
-  return duplicated ? `${base} · ${request.requestId.slice(-4)}` : base
+  const base = shortModelName(request.modelId);
+  return duplicated ? `${base} · ${request.requestId.slice(-4)}` : base;
 }
 
 function isAnswered(answer: string[] | undefined): boolean {
-  return Array.isArray(answer) && answer.length > 0
+  return Array.isArray(answer) && answer.length > 0;
 }
 
 /**
@@ -64,16 +81,27 @@ function isAnswered(answer: string[] | undefined): boolean {
  */
 function readCollapsed(ticketId: string): boolean {
   try {
-    return window.localStorage.getItem(getTicketQuestionsCollapsedStorageKey(ticketId)) === '1'
+    return (
+      window.localStorage.getItem(
+        getTicketQuestionsCollapsedStorageKey(ticketId),
+      ) === "1"
+    );
   } catch {
-    return false
+    return false;
   }
 }
 
 function writeCollapsed(ticketId: string, collapsed: boolean): void {
   try {
-    if (collapsed) window.localStorage.setItem(getTicketQuestionsCollapsedStorageKey(ticketId), '1')
-    else window.localStorage.removeItem(getTicketQuestionsCollapsedStorageKey(ticketId))
+    if (collapsed)
+      window.localStorage.setItem(
+        getTicketQuestionsCollapsedStorageKey(ticketId),
+        "1",
+      );
+    else
+      window.localStorage.removeItem(
+        getTicketQuestionsCollapsedStorageKey(ticketId),
+      );
   } catch {
     // A preference that cannot be remembered is not worth failing a render for.
   }
@@ -98,45 +126,76 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
     skipRequest,
     stopTimer,
     refreshTicket,
-  } = useAIQuestions()
+  } = useAIQuestions();
 
-  const requests = getTicketRequests(ticketId)
-  const timer = getTimer(ticketId)
-  const [collapsed, setCollapsed] = useState(() => readCollapsed(ticketId))
-  const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
-  const [questionIndex, setQuestionIndex] = useState(0)
-  const [answers, setAnswers] = useState<Record<string, string[]>>({})
-  const [skipping, setSkipping] = useState(false)
-  const [skipReason, setSkipReason] = useState('')
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const requests = getTicketRequests(ticketId);
+  const timer = getTimer(ticketId);
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(ticketId));
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [skipping, setSkipping] = useState<"request" | "all" | null>(null);
+  const [skipTargets, setSkipTargets] = useState<
+    Array<{ ticketId: string; sessionId: string; requestId: string }>
+  >([]);
+  const [skipReason, setSkipReason] = useState("");
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const skipButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreSkipFocusRef = useRef(false);
 
   // Pull once on mount: a question raised while this tab was closed would
   // otherwise wait for the next aggregate poll to appear.
-  useEffect(() => { refreshTicket(ticketId) }, [refreshTicket, ticketId])
+  useEffect(() => {
+    refreshTicket(ticketId);
+  }, [refreshTicket, ticketId]);
 
   useEffect(() => {
     const onTicketStateCleared = (event: Event) => {
-      const detail = (event as CustomEvent<{ ticketId?: unknown }>).detail
-      if (detail?.ticketId === ticketId) setCollapsed(false)
-    }
-    window.addEventListener(TICKET_STATE_CLEARED_EVENT, onTicketStateCleared)
-    return () => window.removeEventListener(TICKET_STATE_CLEARED_EVENT, onTicketStateCleared)
-  }, [ticketId])
+      const detail = (event as CustomEvent<{ ticketId?: unknown }>).detail;
+      if (detail?.ticketId === ticketId) setCollapsed(false);
+    };
+    window.addEventListener(TICKET_STATE_CLEARED_EVENT, onTicketStateCleared);
+    return () =>
+      window.removeEventListener(
+        TICKET_STATE_CLEARED_EVENT,
+        onTicketStateCleared,
+      );
+  }, [ticketId]);
 
   const active = useMemo(
-    () => requests.find((request) => request.requestId === activeRequestId) ?? requests[0] ?? null,
+    () =>
+      requests.find((request) => request.requestId === activeRequestId) ??
+      requests[0] ??
+      null,
     [activeRequestId, requests],
-  )
+  );
+  const trackedSkipRequests = requests.filter((request) =>
+    skipTargets.some(
+      (target) =>
+        target.ticketId === ticketId &&
+        target.sessionId === request.sessionId &&
+        target.requestId === request.requestId,
+    ),
+  );
 
   useEffect(() => {
     if (active && active.requestId !== activeRequestId) {
-      setActiveRequestId(active.requestId)
-      setQuestionIndex(0)
+      setActiveRequestId(active.requestId);
+      setQuestionIndex(0);
     }
-  }, [active, activeRequestId])
+    if (skipping && trackedSkipRequests.length === 0) {
+      setSkipping(null);
+      setSkipTargets([]);
+      setSkipReason("");
+    }
+    if (!skipping && restoreSkipFocusRef.current) {
+      restoreSkipFocusRef.current = false;
+      skipButtonRef.current?.focus();
+    }
+  }, [active, activeRequestId, skipping, trackedSkipRequests.length]);
 
-  const remainingMs = getRemainingMs(ticketId)
-  useCountdown(remainingMs !== null)
+  const remainingMs = getRemainingMs(ticketId);
+  useCountdown(remainingMs !== null);
 
   /**
    * Every way of engaging is the same event.
@@ -145,92 +204,263 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
    * all of them mean a person is dealing with this, so all of them stop the
    * clock. The provider posts once and remembers it did.
    */
-  const engage = useCallback(() => { stopTimer(ticketId) }, [stopTimer, ticketId])
+  const engage = useCallback(() => {
+    stopTimer(ticketId);
+  }, [stopTimer, ticketId]);
 
-  if (requests.length === 0 || !active) return null
+  if (requests.length === 0 || !active) return null;
 
-  const question: AiQuestionInfo | undefined = active.questions[questionIndex]
-  const answeredAll = active.questions.every((_, index) => isAnswered(answers[`${active.requestId}:${index}`]))
-  const modelCounts = new Map<string, number>()
+  const question: AiQuestionInfo | undefined = active.questions[questionIndex];
+  const answeredAll = active.questions.every((_, index) =>
+    isAnswered(answers[`${active.requestId}:${index}`]),
+  );
+  const waitingCount = requests.reduce(
+    (total, request) => total + request.questions.length,
+    0,
+  );
+  const anySubmitting = requests.some((request) => request.submitting);
+  const skipRequests = skipping === "all" ? requests : trackedSkipRequests;
+  const skipCount = skipRequests.reduce(
+    (total, request) => total + request.questions.length,
+    0,
+  );
+  const skipSubmitting = skipRequests.some((request) => request.submitting);
+  const skipErrors = skipRequests.filter((request) => request.error);
+  const skipAffectsQuorum = skipRequests.some((request) =>
+    isCouncilQuorumPhase(request.phase),
+  );
+  const modelCounts = new Map<string, number>();
   for (const request of requests) {
-    const name = shortModelName(request.modelId)
-    modelCounts.set(name, (modelCounts.get(name) ?? 0) + 1)
+    const name = shortModelName(request.modelId);
+    modelCounts.set(name, (modelCounts.get(name) ?? 0) + 1);
   }
 
   const selectRequest = (requestId: string) => {
-    engage()
-    setActiveRequestId(requestId)
-    setQuestionIndex(0)
-    setSkipping(false)
-    // A reason written for one model's question must not follow you to another
-    // model's tab and end up filed against a question it was never about.
-    setSkipReason('')
-  }
+    engage();
+    setActiveRequestId(requestId);
+    setQuestionIndex(0);
+    if (skipping !== "all") {
+      setSkipping(null);
+      setSkipTargets([]);
+      // Request-specific reasons must not follow you to another model's tab.
+      setSkipReason("");
+    }
+  };
 
   const moveQuestion = (delta: number) => {
-    engage()
-    setQuestionIndex((index) => Math.min(active.questions.length - 1, Math.max(0, index + delta)))
-  }
+    engage();
+    setQuestionIndex((index) =>
+      Math.min(active.questions.length - 1, Math.max(0, index + delta)),
+    );
+  };
 
   const setAnswer = (value: string[]) => {
-    engage()
-    setAnswers((current) => ({ ...current, [`${active.requestId}:${questionIndex}`]: value }))
-  }
+    engage();
+    setAnswers((current) => ({
+      ...current,
+      [`${active.requestId}:${questionIndex}`]: value,
+    }));
+  };
 
   const submit = () => {
+    if (active.submitting || !answeredAll) return;
     answerRequest(
       ticketId,
       active.requestId,
-      active.questions.map((_, index) => answers[`${active.requestId}:${index}`] ?? []),
-    )
-  }
+      active.questions.map(
+        (_, index) => answers[`${active.requestId}:${index}`] ?? [],
+      ),
+    );
+  };
+
+  const openSkip = (scope: "request" | "all") => {
+    engage();
+    setSkipTargets(
+      (scope === "all" ? requests : [active]).map((request) => ({
+        ticketId,
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+      })),
+    );
+    setSkipReason("");
+    setSkipping(scope);
+  };
+
+  const confirmSkip = () => {
+    if (!skipping || skipSubmitting || trackedSkipRequests.length === 0) return;
+    setSkipTargets(
+      skipRequests.map((request) => ({
+        ticketId,
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+      })),
+    );
+    const reason = skipReason.trim() || null;
+    for (const request of skipRequests) {
+      skipRequest(ticketId, request.requestId, reason);
+    }
+  };
 
   const onTabKeyDown = (event: React.KeyboardEvent, index: number) => {
-    const last = requests.length - 1
-    const target = event.key === 'ArrowRight'
-      ? (index === last ? 0 : index + 1)
-      : event.key === 'ArrowLeft'
-        ? (index === 0 ? last : index - 1)
-        : event.key === 'Home'
+    const last = requests.length - 1;
+    const target =
+      event.key === "ArrowRight"
+        ? index === last
           ? 0
-          : event.key === 'End'
+          : index + 1
+        : event.key === "ArrowLeft"
+          ? index === 0
             ? last
-            : null
-    if (target === null) return
-    event.preventDefault()
-    const next = requests[target]
+            : index - 1
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : null;
+    if (target === null) return;
+    event.preventDefault();
+    const next = requests[target];
     if (next) {
-      selectRequest(next.requestId)
-      tabRefs.current[target]?.focus()
+      selectRequest(next.requestId);
+      tabRefs.current[target]?.focus();
     }
-  }
+  };
 
   return (
     <section
       className={cn(
-        'shrink-0 border-b border-sky-200 bg-sky-50/70 dark:border-sky-900/60 dark:bg-sky-950/30',
-        !collapsed && 'max-h-[35vh] overflow-y-auto',
+        "flex shrink-0 flex-col border-b border-sky-200 bg-sky-50/70 dark:border-sky-900/60 dark:bg-sky-950/30 [@media(max-height:320px)]:overflow-y-auto",
+        !collapsed && "max-h-[50vh]",
       )}
       aria-label="AI questions"
+      onKeyDown={(event) => {
+        if (
+          event.key !== "Enter" ||
+          (!event.ctrlKey && !event.metaKey) ||
+          event.nativeEvent.isComposing
+        )
+          return;
+        if (!(event.target instanceof HTMLTextAreaElement)) return;
+        event.preventDefault();
+        if (skipping) confirmSkip();
+        else submit();
+      }}
     >
-      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-2">
         <button
           type="button"
           className="flex items-center gap-1.5 text-sm font-medium text-sky-900 dark:text-sky-100"
-          onClick={() => setCollapsed((value) => {
-            writeCollapsed(ticketId, !value)
-            return !value
-          })}
+          onClick={() => {
+            writeCollapsed(ticketId, !collapsed);
+            setCollapsed(!collapsed);
+            if (!collapsed) {
+              setSkipping(null);
+              setSkipTargets([]);
+              setSkipReason("");
+            }
+          }}
           aria-expanded={!collapsed}
-          aria-controls="pending-questions-body"
+          aria-controls={collapsed ? undefined : "pending-questions-body"}
         >
-          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          {collapsed ? (
+            <ChevronRight className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
           <HelpCircle className="h-4 w-4" aria-hidden />
-          {requests.length === 1 ? shortModelName(active.modelId) : 'AI questions'}
+          {requests.length === 1
+            ? shortModelName(active.modelId)
+            : "AI questions"}
         </button>
 
+        {!collapsed && (
+          <div
+            role="group"
+            aria-label="Question actions"
+            className="flex flex-wrap items-center gap-2"
+          >
+            {skipping ? (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    restoreSkipFocusRef.current = true;
+                    setSkipping(null);
+                    setSkipTargets([]);
+                    setSkipReason("");
+                  }}
+                >
+                  Back
+                </Button>
+                {(skipping === "all" || waitingCount > 1) && (
+                  // Keep confirmation out of Skip all's click target.
+                  <span
+                    aria-hidden
+                    className={cn(
+                      buttonVariants({ size: "sm", variant: "outline" }),
+                      "invisible",
+                    )}
+                  >
+                    Skip all
+                  </span>
+                )}
+                <Button
+                  key="confirm-skip"
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={skipSubmitting || trackedSkipRequests.length === 0}
+                  onClick={confirmSkip}
+                  aria-keyshortcuts="Control+Enter Meta+Enter"
+                >
+                  {skipping === "all"
+                    ? `Skip all ${skipCount} ${skipCount === 1 ? "question" : "questions"}`
+                    : skipCount > 1
+                      ? `Skip this request (${skipCount} questions)`
+                      : "Skip this question"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  ref={skipButtonRef}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={active.submitting}
+                  onClick={() => openSkip("request")}
+                >
+                  Skip
+                </Button>
+                {waitingCount > 1 && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={anySubmitting}
+                    onClick={() => openSkip("all")}
+                  >
+                    Skip all
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={active.submitting || !answeredAll}
+                  onClick={submit}
+                  aria-keyshortcuts="Control+Enter Meta+Enter"
+                >
+                  {active.questions.length > 1 ? "Send answers" : "Send answer"}
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+
         <Badge variant="outline" className="text-[11px]">
-          {requests.reduce((total, request) => total + request.questions.length, 0)} waiting
+          {waitingCount} waiting
         </Badge>
 
         {/* Not a live region. A countdown inside one is read out every second —
@@ -240,7 +470,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
         <div className="ml-auto flex items-center gap-2">
           {remainingMs === null ? (
             <span className="text-xs text-sky-900/80 dark:text-sky-200/80">
-              {timer ? 'Waiting for you' : 'No time limit running'}
+              {timer ? "Waiting for you" : "No time limit running"}
             </span>
           ) : (
             <>
@@ -250,7 +480,13 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
               >
                 {formatRemaining(remainingMs)}
               </span>
-              <Button type="button" size="sm" variant="outline" className="gap-1.5" onClick={engage}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={engage}
+              >
                 <TimerOff className="h-3.5 w-3.5" />
                 Stop timer
               </Button>
@@ -260,50 +496,79 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
       </div>
 
       {!collapsed && (
-        <div id="pending-questions-body" className="px-3 pb-3">
+        <div
+          id="pending-questions-body"
+          className="min-h-0 overflow-y-auto px-3 pb-3 [overflow-wrap:anywhere] [@media(max-height:320px)]:shrink-0 [@media(max-height:320px)]:overflow-y-visible"
+        >
           {requests.length > 1 && (
-            <div role="tablist" aria-label="Models asking" className="mb-3 flex flex-wrap gap-1">
+            <div
+              role="tablist"
+              aria-label="Models asking"
+              className="mb-3 flex flex-wrap gap-1"
+            >
               {requests.map((request, index) => {
-                const selected = request.requestId === active.requestId
+                const selected = request.requestId === active.requestId;
                 return (
                   <button
                     key={`${request.sessionId}:${request.requestId}`}
-                    ref={(node) => { tabRefs.current[index] = node }}
+                    ref={(node) => {
+                      tabRefs.current[index] = node;
+                    }}
                     type="button"
                     role="tab"
                     id={`question-tab-${request.requestId}`}
                     aria-selected={selected}
-                    aria-controls={`question-panel-${request.requestId}`}
+                    aria-controls={
+                      selected
+                        ? `question-panel-${request.requestId}`
+                        : undefined
+                    }
                     tabIndex={selected ? 0 : -1}
                     onKeyDown={(event) => onTabKeyDown(event, index)}
                     onClick={() => selectRequest(request.requestId)}
                     className={cn(
-                      'rounded-md border px-2.5 py-1 text-xs transition-colors',
+                      "rounded-md border px-2.5 py-1 text-xs transition-colors",
                       selected
-                        ? 'border-sky-400 bg-sky-100 text-sky-900 dark:border-sky-700 dark:bg-sky-900/50 dark:text-sky-100'
-                        : 'border-border text-muted-foreground hover:bg-muted/60',
+                        ? "border-sky-400 bg-sky-100 text-sky-900 dark:border-sky-700 dark:bg-sky-900/50 dark:text-sky-100"
+                        : "border-border text-muted-foreground hover:bg-muted/60",
                     )}
                   >
-                    {tabLabel(request, (modelCounts.get(shortModelName(request.modelId)) ?? 0) > 1)}
-                    {' · '}
+                    {tabLabel(
+                      request,
+                      (modelCounts.get(shortModelName(request.modelId)) ?? 0) >
+                        1,
+                    )}
+                    {" · "}
                     {request.questions.length}
                   </button>
-                )
+                );
               })}
             </div>
           )}
 
           <div
-            role={requests.length > 1 ? 'tabpanel' : undefined}
+            role={requests.length > 1 ? "tabpanel" : undefined}
             id={`question-panel-${active.requestId}`}
-            aria-labelledby={requests.length > 1 ? `question-tab-${active.requestId}` : undefined}
+            aria-labelledby={
+              requests.length > 1
+                ? `question-tab-${active.requestId}`
+                : undefined
+            }
           >
             {active.questions.length > 1 && (
               <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-                <Button type="button" size="sm" variant="ghost" disabled={questionIndex === 0} onClick={() => moveQuestion(-1)}>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={questionIndex === 0}
+                  onClick={() => moveQuestion(-1)}
+                >
                   Previous
                 </Button>
-                <span>{questionIndex + 1} of {active.questions.length}</span>
+                <span>
+                  {questionIndex + 1} of {active.questions.length}
+                </span>
                 <Button
                   type="button"
                   size="sm"
@@ -319,92 +584,100 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
             {question && (
               <div className="space-y-3">
                 <div>
-                  <h3 className="text-sm font-medium text-foreground">{question.header}</h3>
+                  <h3 className="text-sm font-medium text-foreground">
+                    {question.header}
+                  </h3>
                   {/* Plain text, never markdown and never innerHTML: the model wrote this string. */}
-                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{question.question}</p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">
+                    {question.question}
+                  </p>
                 </div>
 
                 <QuestionAnswerInput
                   key={`${active.requestId}:${questionIndex}`}
                   question={question}
                   value={answers[`${active.requestId}:${questionIndex}`] ?? []}
-                  disabled={active.submitting}
+                  disabled={active.submitting || Boolean(skipping)}
                   onChange={setAnswer}
                   onEngage={engage}
                 />
               </div>
             )}
 
-            {active.error && (
-              <p className="mt-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {active.error && skipping !== "all" && (
+              <p
+                role="alert"
+                className="mt-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
                 {active.error}
               </p>
             )}
-
-            {skipping && (
-              <div className="mt-3 space-y-2">
-                <SkipReasonField
-                  value={skipReason}
-                  onChange={(value) => { engage(); setSkipReason(value) }}
-                  disabled={active.submitting}
-                  label="Skip reason"
-                  help={active.questions.length > 1
-                    ? `Skipping refuses all ${active.questions.length} questions in this request. OpenCode takes one verdict for the batch. The skip is kept in the ticket's skip trail, and the model is not told.`
-                    : "Kept in the ticket's skip trail. The model is not told."}
-                  autoFocus
-                />
-              </div>
-            )}
-
-            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-              {skipping ? (
-                <>
-                  <Button type="button" size="sm" variant="ghost" disabled={active.submitting} onClick={() => setSkipping(false)}>
-                    Back
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={active.submitting}
-                    onClick={() => skipRequest(ticketId, active.requestId, skipReason.trim() || null)}
-                  >
-                    {active.questions.length > 1 ? 'Skip all questions' : 'Skip this question'}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={active.submitting}
-                    onClick={() => { engage(); setSkipping(true) }}
-                  >
-                    Skip
-                  </Button>
-                  <Button type="button" size="sm" disabled={active.submitting || !answeredAll} onClick={submit}>
-                    {active.questions.length > 1 ? 'Send all answers' : 'Send answer'}
-                  </Button>
-                </>
-              )}
-            </div>
-
-            {timer && (
-              // The one live region on the panel. It says what the clock is
-              // doing, not what it currently reads, so it fires on arrival and
-              // on stop rather than once a second.
-              <p className="mt-2 text-[11px] text-muted-foreground" role="status" aria-live="polite">
-                {timer.stoppedAt
-                  ? 'The countdown is stopped. This step waits until you answer or skip.'
-                  : `Unanswered after ${formatAiQuestionWindow(timer.windowMs)}, the question is refused and the run carries on.`}
-              </p>
-            )}
           </div>
+
+          {skipping === "all" && skipErrors.length > 0 && (
+            <div
+              role="alert"
+              className="mt-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              <p>
+                {skipErrors.length}{" "}
+                {skipErrors.length === 1 ? "request failed" : "requests failed"}{" "}
+                to skip. You can retry the remaining questions.
+              </p>
+              {skipErrors.map((request) => (
+                <p key={`${request.sessionId}:${request.requestId}`}>
+                  {tabLabel(
+                    request,
+                    (modelCounts.get(shortModelName(request.modelId)) ?? 0) > 1,
+                  )}
+                  : {request.error}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {skipping && (
+            <div className="mt-3 space-y-2">
+              <SkipReasonField
+                value={skipReason}
+                onChange={(value) => {
+                  engage();
+                  setSkipReason(value);
+                }}
+                disabled={skipSubmitting}
+                label="Skip reason"
+                help={
+                  (skipping === "all"
+                    ? `Skipping refuses all ${skipCount} pending ${skipCount === 1 ? "question" : "questions"} in ${skipRequests.length} ${skipRequests.length === 1 ? "request" : "requests"}. Questions arriving before you confirm are included. The same reason is kept for each request; the models are not told.`
+                    : skipCount > 1
+                      ? `Skipping refuses all ${skipCount} questions in this request. OpenCode takes one verdict for the batch. The skip is kept in the ticket's skip trail, and the model is not told.`
+                      : "Kept in the ticket's skip trail. The model is not told.") +
+                  (skipping === "all" && skipAffectsQuorum
+                    ? " Refusing council members can leave the round below quorum and block the ticket."
+                    : "") +
+                  " Ctrl/Cmd+Enter confirms the skip."
+                }
+                autoFocus
+              />
+            </div>
+          )}
+
+          {timer && (
+            // The live region says what the clock is doing, not each tick.
+            <p
+              className="mt-2 text-[11px] text-muted-foreground"
+              role="status"
+              aria-live="polite"
+            >
+              {timer.stoppedAt
+                ? "The countdown is stopped. This step waits until you answer or skip."
+                : `Unanswered after ${formatAiQuestionWindow(timer.windowMs)}, the question is refused and the run carries on.`}
+            </p>
+          )}
         </div>
       )}
     </section>
-  )
+  );
 }
 
 /**
@@ -428,76 +701,94 @@ function QuestionAnswerInput({
   onChange,
   onEngage,
 }: {
-  question: AiQuestionInfo
-  value: string[]
-  disabled: boolean
-  onChange: (value: string[]) => void
-  onEngage: () => void
+  question: AiQuestionInfo;
+  value: string[];
+  disabled: boolean;
+  onChange: (value: string[]) => void;
+  onEngage: () => void;
 }) {
-  const fieldId = useId()
-  const multiple = question.multiple === true
-  const allowsCustom = question.custom !== false
+  const fieldId = useId();
+  const multiple = question.multiple === true;
+  const allowsCustom = question.custom !== false;
   const optionValues = useMemo(
-    () => new Set(question.options.map((option) => option.value ?? option.label)),
+    () =>
+      new Set(question.options.map((option) => option.value ?? option.label)),
     [question.options],
-  )
-  const [selected, setSelected] = useState(() => value.filter((entry) => optionValues.has(entry)))
+  );
+  const [selected, setSelected] = useState(() =>
+    value.filter((entry) => optionValues.has(entry)),
+  );
   // Seeded once. The component is remounted per question by its `key`, so a
   // draft restored from `value` is picked up on mount and never fought over.
   const [custom, setCustom] = useState(
-    () => value.find((entry) => !optionValues.has(entry)) ?? '',
-  )
+    () => value.find((entry) => !optionValues.has(entry)) ?? "",
+  );
 
   const emit = (nextSelected: string[], nextCustom: string) => {
-    const customAnswer = nextCustom.trim()
-    onChange([...nextSelected, ...(customAnswer ? [customAnswer] : [])])
-  }
+    const customAnswer = nextCustom.trim();
+    onChange([...nextSelected, ...(customAnswer ? [customAnswer] : [])]);
+  };
 
   const toggle = (answerValue: string) => {
     const next = multiple
-      ? (selected.includes(answerValue) ? selected.filter((entry) => entry !== answerValue) : [...selected, answerValue])
-      : (selected.includes(answerValue) ? [] : [answerValue])
-    const nextCustom = multiple ? custom : ''
-    setSelected(next)
-    setCustom(nextCustom)
-    emit(next, nextCustom)
-  }
+      ? selected.includes(answerValue)
+        ? selected.filter((entry) => entry !== answerValue)
+        : [...selected, answerValue]
+      : selected.includes(answerValue)
+        ? []
+        : [answerValue];
+    const nextCustom = multiple ? custom : "";
+    setSelected(next);
+    setCustom(nextCustom);
+    emit(next, nextCustom);
+  };
 
   return (
     <div className="space-y-2">
       {question.options.length > 0 && (
-        <div role={multiple ? 'group' : 'radiogroup'} aria-label="Answer options" className="space-y-1.5">
+        <div
+          role={multiple ? "group" : "radiogroup"}
+          aria-label="Answer options"
+          className="space-y-1.5"
+        >
           {question.options.map((option, index) => {
-            const answerValue = option.value ?? option.label
-            const checked = selected.includes(answerValue)
+            const answerValue = option.value ?? option.label;
+            const checked = selected.includes(answerValue);
             // Keyed by index, not by label: a model can repeat a label in one batch.
-            const inputId = `${fieldId}-option-${index}`
-            const describedBy = option.description ? `${inputId}-description` : undefined
+            const inputId = `${fieldId}-option-${index}`;
+            const describedBy = option.description
+              ? `${inputId}-description`
+              : undefined;
             return (
               <div
                 key={`${index}:${option.label}`}
                 className={cn(
-                  'flex items-start gap-2.5 rounded-md border p-2.5 text-sm transition-colors',
-                  checked ? 'border-primary bg-primary/10' : 'border-border hover:bg-muted/50',
-                  disabled && 'opacity-50',
+                  "flex items-start gap-2.5 rounded-md border p-2.5 text-sm transition-colors",
+                  checked
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:bg-muted/50",
+                  disabled && "opacity-50",
                 )}
               >
                 <input
                   id={inputId}
-                  type={multiple ? 'checkbox' : 'radio'}
+                  type={multiple ? "checkbox" : "radio"}
                   name={`${fieldId}-options`}
                   className="mt-1 accent-primary"
                   checked={checked}
                   disabled={disabled}
                   onFocus={onEngage}
                   onChange={() => toggle(answerValue)}
-                  {...(describedBy ? { 'aria-describedby': describedBy } : {})}
+                  {...(describedBy ? { "aria-describedby": describedBy } : {})}
                 />
                 <span className="min-w-0">
                   {/* The option's own words are its name; the model's gloss on it
                       is a description, so a screen reader announces the choice
                       before the rationale rather than as one run-on phrase. */}
-                  <label htmlFor={inputId} className="block cursor-pointer font-medium text-foreground">
+                  <label
+                    htmlFor={inputId}
+                    className="block cursor-pointer font-medium text-foreground"
+                  >
                     {option.label}
                   </label>
                   {option.description && (
@@ -510,7 +801,7 @@ function QuestionAnswerInput({
                   )}
                 </span>
               </div>
-            )
+            );
           })}
         </div>
       )}
@@ -519,17 +810,20 @@ function QuestionAnswerInput({
         <label className="block space-y-1 text-sm">
           <span className="text-xs font-medium text-muted-foreground">
             {question.options.length > 0
-              ? multiple ? 'Anything to add (optional)' : 'Or enter your answer'
-              : 'Your answer'}
+              ? multiple
+                ? "Anything to add (optional)"
+                : "Or enter your answer"
+              : "Your answer"}
+            {" · Ctrl/Cmd+Enter to send"}
           </span>
           <textarea
             value={custom}
             disabled={disabled}
             onFocus={onEngage}
             onChange={(event) => {
-              setCustom(event.target.value)
-              if (!multiple) setSelected([])
-              emit(multiple ? selected : [], event.target.value)
+              setCustom(event.target.value);
+              if (!multiple) setSelected([]);
+              emit(multiple ? selected : [], event.target.value);
             }}
             rows={2}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
@@ -537,5 +831,5 @@ function QuestionAnswerInput({
         </label>
       )}
     </div>
-  )
+  );
 }

@@ -135,6 +135,26 @@ describe('parser fix interventions', () => {
     expectIntervention(i, { code: 'parser_xml_tags', stage: 'parse', category: 'parser_fix' })
   })
 
+  it('shows the exact interview field and payload line corrected by tag repair', () => {
+    const before = '<ai_commentary>\nKeep <questions> as an example: "quoted".\n</ai_commentary>'
+    const after = 'ai_commentary: "Keep <questions> as an example: \\"quoted\\"."'
+    const warning = `Repaired interview batch field tag at ai_commentary, payload line 8: ${JSON.stringify(before)} -> ${JSON.stringify(after)}.`
+    const i = deriveOne(warning)
+
+    expectIntervention(i, { code: 'parser_interview_batch_field_tags', stage: 'parse', category: 'parser_fix' })
+    expect(i.rule).toEqual({ id: 'parser_interview_batch_field_tags', label: 'Interview Field Tag Repair' })
+    expect(i.exactCorrection).toContain('ai_commentary at payload line 8')
+    expect(i.examples).toEqual([{ scope: 'ai_commentary (payload line 8)', before, after }])
+    expect(i.rawMessages).toEqual([warning])
+  })
+
+  it('keeps closing tag removal visible after intervention normalization', () => {
+    const i = deriveOne('Repaired interview batch field tag at progress, payload line 5: "</progress>" -> "".')
+    expect(normalizeStructuredInterventions([i])[0]!.examples).toEqual([
+      { scope: 'progress (payload line 5)', before: '</progress>', after: '[removed]' },
+    ])
+  })
+
   it('maps inline yaml', () => {
     const i = deriveOne('Converted inline yaml flow syntax to block format.')
     expectIntervention(i, { code: 'parser_inline_yaml', stage: 'parse', category: 'parser_fix' })

@@ -99,6 +99,25 @@ import type { OpenCodeStreamState } from './types'
 
 const INTERVIEW_BATCH_IN_FLIGHT_ARTIFACT = 'interview_batch_in_flight'
 
+function logInterviewBatchRepairs(
+  ticketId: string,
+  externalId: string,
+  modelId: string,
+  sessionId: string,
+  batch: BatchResponse,
+) {
+  if (!batch.structuredOutput?.repairWarnings.length) return
+  emitModelSystemLog(
+    ticketId,
+    externalId,
+    'WAITING_INTERVIEW_ANSWERS',
+    'info',
+    `Interview output normalization repairs:\n${batch.structuredOutput.repairWarnings.join('\n')}`,
+    modelId,
+    { sessionId, structuredOutput: batch.structuredOutput },
+  )
+}
+
 interface InterruptedInterviewBatch {
   originalSnapshot: InterviewSessionSnapshot
   answeredSnapshotFingerprint: string
@@ -1891,6 +1910,7 @@ export async function handleInterviewQAStart(
   const persistedBatch = buildPersistedBatch(firstBatch, 'prom4', baseSnapshot)
   const updatedSnapshot = recordPreparedBatch(baseSnapshot, persistedBatch)
   persistInterviewSession(ticketId, updatedSnapshot)
+  logInterviewBatchRepairs(ticketId, context.externalId, winnerId, sessionId, firstBatch)
 
   emitModelSystemLog(
     ticketId,
@@ -2266,6 +2286,7 @@ export async function handleInterviewQABatch(
       }
       throw error
     }
+    logInterviewBatchRepairs(ticketId, externalId, winnerId, result.sessionId ?? sessionInfo.sessionId, result)
 
     emitPhaseLog(
       ticketId,
@@ -2284,6 +2305,7 @@ export async function handleInterviewQABatch(
   const persistedNextBatch = buildPersistedBatch(result, 'prom4', answeredSnapshot)
   const updatedSnapshot = recordPreparedBatch(answeredSnapshot, persistedNextBatch)
   persistResultSnapshot(updatedSnapshot)
+  logInterviewBatchRepairs(ticketId, externalId, winnerId, result.sessionId ?? sessionInfo.sessionId, result)
 
   emitPhaseLog(ticketId, externalId, 'WAITING_INTERVIEW_ANSWERS', 'info',
     `PROM4 batch ${persistedNextBatch.batchNumber}: ${persistedNextBatch.questions.length} questions. Progress: ${persistedNextBatch.progress.current}/${persistedNextBatch.progress.total}.`)

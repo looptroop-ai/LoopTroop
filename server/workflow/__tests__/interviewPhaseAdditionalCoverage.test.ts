@@ -324,7 +324,7 @@ describe('additional interview phase flows', () => {
   })
 
   it('persists a replacement PROM4 session when a submitted batch has no reusable session', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Restart an interview session after its persisted session is unavailable',
     })
     makeActiveProm4Batch(ticket.id)
@@ -337,6 +337,11 @@ describe('additional interview phase flows', () => {
       isFinalFreeForm: false,
       aiCommentary: 'Continue with one boundary question.',
       batchNumber: 2,
+      structuredOutput: {
+        repairApplied: true,
+        repairWarnings: ['Repaired interview batch field tag at batch_number, payload line 1: "<batch_number>2</batch_number>" -> "batch_number: 2".'],
+        autoRetryCount: 0,
+      },
     }
     const start = vi.spyOn(interviewQa, 'startInterviewSession').mockResolvedValue({
       sessionId: 'replacement-prom4-session',
@@ -359,6 +364,15 @@ describe('additional interview phase flows', () => {
         sessionId: 'replacement-prom4-session',
         winnerId: TEST.councilMembers[0],
       })
+      const phaseLog = readFileSync(paths.executionLogPath, 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line))
+      expect(phaseLog).toContainEqual(expect.objectContaining({
+        phase: 'WAITING_INTERVIEW_ANSWERS',
+        modelId: TEST.councilMembers[0],
+        sessionId: 'replacement-prom4-session',
+        content: `Interview output normalization repairs:\n${firstBatch.structuredOutput.repairWarnings[0]}`,
+        data: expect.objectContaining({ structuredOutput: firstBatch.structuredOutput }),
+      }))
       expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'interview_qa_session')!.content)).toEqual({
         sessionId: 'replacement-prom4-session',
         winnerId: TEST.councilMembers[0],

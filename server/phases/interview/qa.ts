@@ -12,8 +12,10 @@ import { throwIfCancelled } from '../../lib/abort'
 import type { OpenCodeResponseMeta } from '../../opencode/assistantMessageAnalysis'
 import {
   buildStructuredRetryPrompt,
+  buildStructuredOutputMetadata,
   normalizeInterviewTurnOutput,
   type InterviewTurnOutput,
+  type StructuredOutputMetadata,
 } from '../../structuredOutput'
 import { calculateFollowUpLimit } from './followUpBudget'
 import {
@@ -26,6 +28,10 @@ import { buildInterviewQuestionViews } from './sessionState'
 import { SessionManager } from '../../opencode/sessionManager'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
+import {
+  attachOpenCodeBlockedErrorDiagnostics,
+  buildOpenCodeBlockedErrorDiagnostics,
+} from '../../opencode/blockedErrorDiagnostics'
 
 export { calculateFollowUpLimit } from './followUpBudget'
 
@@ -66,6 +72,7 @@ export interface BatchResponse {
   finalYaml?: string
   batchNumber: number
   sessionId?: string
+  structuredOutput?: StructuredOutputMetadata
 }
 
 const PROM4_SCHEMA_REMINDER = [
@@ -81,12 +88,17 @@ const PROM4_SCHEMA_REMINDER = [
   PROM4_FINAL_INTERVIEW_SCHEMA,
 ].join('\n')
 
-function logInterviewTurnRepairWarnings(warnings: string[], ticketId?: string) {
-  if (warnings.length === 0) return
-  const label = ticketId
-    ? `Interview batch normalization repairs applied for ticket ${ticketId}:`
-    : 'Interview batch normalization repairs applied:'
-  console.warn(label, warnings.join(' '))
+function withInterviewErrorDiagnostics(
+  error: unknown,
+  modelId?: string,
+  sessionId?: string,
+  responseMeta?: OpenCodeResponseMeta,
+): unknown {
+  if (!(error instanceof Error)) return error
+  const responseDiagnostics = buildOpenCodeBlockedErrorDiagnostics({ responseMeta, modelId, sessionId })
+  return attachOpenCodeBlockedErrorDiagnostics(error, responseDiagnostics.diagnostics
+    ? responseDiagnostics
+    : buildOpenCodeBlockedErrorDiagnostics({ error, modelId, sessionId }))
 }
 
 function formatResumeQuestionLine(question: ReturnType<typeof buildInterviewQuestionViews>[number]): string {
@@ -222,11 +234,14 @@ export async function startInterviewSession(
       },
     })
   } catch (error) {
-    if (sessionId) {
-      await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+    let failure = error
+    try {
+      if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+    } catch (cleanupError) {
+      failure = cleanupError
     }
-    throwIfCancelled(error, signal)
-    throw error
+    throwIfCancelled(failure, signal)
+    throw withInterviewErrorDiagnostics(failure, winnerId, sessionId || undefined)
   }
 
   throwIfAborted(signal)
@@ -285,11 +300,14 @@ export async function startInterviewSession(
     })
     return { sessionId: firstBatch.sessionId ?? result.session.id, firstBatch }
   } catch (error) {
-    if (sessionId) {
-      await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+    let failure = error
+    try {
+      if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+    } catch (cleanupError) {
+      failure = cleanupError
     }
-    throwIfCancelled(error, signal)
-    throw error
+    throwIfCancelled(failure, signal)
+    throw withInterviewErrorDiagnostics(failure, winnerId, sessionId || undefined)
   }
 }
 
@@ -355,9 +373,14 @@ export async function submitBatchToSession(
       },
     })
   } catch (error) {
-    await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
-    throwIfCancelled(error, signal)
-    throw error
+    let failure = error
+    try {
+      await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+    } catch (cleanupError) {
+      failure = cleanupError
+    }
+    throwIfCancelled(failure, signal)
+    throw withInterviewErrorDiagnostics(failure, model, currentSessionId)
   }
 
   throwIfAborted(signal)
@@ -421,9 +444,14 @@ export async function submitBatchToSession(
       : undefined,
     })
   } catch (error) {
-    await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
-    throwIfCancelled(error, signal)
-    throw error
+    let failure = error
+    try {
+      await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+    } catch (cleanupError) {
+      failure = cleanupError
+    }
+    throwIfCancelled(failure, signal)
+    throw withInterviewErrorDiagnostics(failure, model, currentSessionId)
   }
 }
 
@@ -481,10 +509,17 @@ async function parseBatchResponseWithRetry(input: {
   for (let attempt = 0; attempt <= structuredRetryCount; attempt += 1) {
     const normalized = normalizeInterviewTurnOutput(response)
     if (normalized.ok) {
-      logInterviewTurnRepairWarnings(normalized.repairWarnings, input.ticketId)
       return {
         ...toBatchResponse(normalized.value),
         ...(sessionId !== input.sessionId ? { sessionId } : {}),
+        ...(normalized.repairWarnings.length > 0 || attempt > 0
+          ? { structuredOutput: buildStructuredOutputMetadata({
+              repairApplied: normalized.repairApplied,
+              repairWarnings: normalized.repairWarnings,
+              autoRetryCount: attempt,
+              ...(attempt > 0 ? { validationError: lastError } : {}),
+            }) }
+          : {}),
       }
     }
 
@@ -496,7 +531,12 @@ async function parseBatchResponseWithRetry(input: {
     const retryDecision = getStructuredRetryDecision(response, responseMeta)
     if (!retryDecision.reuseSession) {
       if (!input.restartSession) {
-        throw new Error(`PROM4 output failed validation without a recoverable session: ${normalized.error}`)
+        throw withInterviewErrorDiagnostics(
+          new Error(`PROM4 output failed validation without a recoverable session: ${normalized.error}`),
+          input.model,
+          sessionId,
+          responseMeta,
+        )
       }
 
       const restarted = await input.restartSession(sessionId)
@@ -545,5 +585,10 @@ async function parseBatchResponseWithRetry(input: {
     }
   }
 
-  throw new Error(`PROM4 output failed validation after ${structuredRetryCount} structured retry attempt(s): ${lastError}`)
+  throw withInterviewErrorDiagnostics(
+    new Error(`PROM4 output failed validation after ${structuredRetryCount} structured retry attempt(s): ${lastError}`),
+    input.model,
+    sessionId,
+    responseMeta,
+  )
 }

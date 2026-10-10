@@ -146,12 +146,52 @@ describe.concurrent('PROM4 interview session parsing', () => {
           ],
         },
       ],
+      structuredOutput: {
+        autoRetryCount: 1,
+        validationError: expect.any(String),
+      },
     })
 
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
     expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
     expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
+  })
+
+  it('returns accepted field-tag repair details without another model request', async () => {
+    const adapter = new MockOpenCodeAdapter()
+    adapter.mockResponses.set('existing-session', [
+      '<INTERVIEW_BATCH>',
+      '<batch_number>1</batch_number>',
+      '<progress>',
+      '  <current>1</current>',
+      '  <total>9</total>',
+      '</progress>',
+      '<is_final_free_form>false</is_final_free_form>',
+      '<ai_commentary>',
+      'Start with the intended outcome.',
+      '</ai_commentary>',
+      '<questions>',
+      '  - id: Q01',
+      '    question: What outcome matters most?',
+      '    phase: Foundation',
+      '    priority: high',
+      '    rationale: Establish the intended outcome.',
+      '    answer_type: free_text',
+      '</parameter>',
+      '</INTERVIEW_BATCH>',
+    ].join('\n'))
+
+    const result = await submitBatchToSession(adapter, 'existing-session', {}, undefined, 'provider/model-a')
+
+    expect(adapter.promptCalls).toHaveLength(1)
+    expect(result.structuredOutput).toMatchObject({
+      repairApplied: true,
+      autoRetryCount: 0,
+      repairWarnings: expect.arrayContaining([expect.stringContaining('batch_number')]),
+      interventions: expect.arrayContaining([expect.objectContaining({ code: 'parser_interview_batch_field_tags' })]),
+    })
+    expect(result.questions[0]?.question).toBe('What outcome matters most?')
   })
 
   it('returns a complete PROM4 artifact as a completed batch', async () => {
@@ -346,14 +386,20 @@ describe.concurrent('PROM4 interview session parsing', () => {
       'existing-session',
       { Q01: 'Reliable output' },
       undefined,
-      undefined,
+      'provider/model-a',
       undefined,
       undefined,
       undefined,
       undefined,
       undefined,
       1,
-    )).rejects.toThrow('PROM4 output failed validation after 1 structured retry attempt(s)')
+    )).rejects.toMatchObject({
+      message: expect.stringContaining('PROM4 output failed validation after 1 structured retry attempt(s)'),
+      blockedErrorDiagnostics: {
+        modelId: 'provider/model-a',
+        sessionId: 'existing-session',
+      },
+    })
     expect(adapter.promptCalls).toHaveLength(2)
   })
 
@@ -445,7 +491,80 @@ describe.concurrent('PROM4 interview session parsing', () => {
       undefined,
       undefined,
       0,
-    )).rejects.toThrow('PROM4 output failed validation after 0 structured retry attempt(s)')
+    )).rejects.toMatchObject({
+      message: expect.stringContaining('PROM4 output failed validation after 0 structured retry attempt(s)'),
+      blockedErrorDiagnostics: {
+        kind: 'runtime',
+        modelId: 'model-a',
+        sessionId: 'mock-session-1',
+      },
+    })
+  })
+
+  it('keeps the replacement session identity when restarted output still fails validation', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', '')
+    adapter.mockResponses.set('mock-session-2#1', 'The replacement also omitted the artifact.')
+
+    await expect(startInterviewSession(
+      adapter,
+      '/tmp/test',
+      'provider/model-a',
+      'questions: []',
+      { ticketId: TEST.externalId, title: 'Failed replacement', description: '' },
+      3,
+      20,
+    )).rejects.toMatchObject({
+      blockedErrorDiagnostics: {
+        modelId: 'provider/model-a',
+        sessionId: 'mock-session-2',
+      },
+    })
+  })
+
+  it('preserves output-length diagnostics when an incomplete interview batch fails validation', async () => {
+    class TruncatedResponseAdapter extends MockOpenCodeAdapter {
+      override async getSessionMessages(sessionId: string) {
+        const messages = await super.getSessionMessages(sessionId)
+        return messages.map((message) => message.role === 'assistant'
+          ? { ...message, parts: [{
+              id: 'finish-part',
+              sessionID: sessionId,
+              messageID: message.id,
+              type: 'step-finish' as const,
+              reason: 'length',
+              tokens: { input: 100, output: 200, reasoning: 50, cache: { read: 20, write: 0 } },
+            }] }
+          : message)
+      }
+    }
+    const adapter = new TruncatedResponseAdapter()
+    adapter.mockResponses.set('existing-session', '<INTERVIEW_BATCH>\nquestions:')
+
+    await expect(submitBatchToSession(
+      adapter,
+      'existing-session',
+      {},
+      undefined,
+      'provider/model-a',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+    )).rejects.toMatchObject({
+      blockedErrorCodes: ['OPENCODE_OUTPUT_TRUNCATED'],
+      blockedErrorDiagnostics: {
+        kind: 'model_output_truncated',
+        modelId: 'provider/model-a',
+        sessionId: 'existing-session',
+        finishReason: 'length',
+        outputTokens: 200,
+        cacheReadTokens: 20,
+        cacheWriteTokens: 0,
+      },
+    })
   })
 
   it('fails closed when aborting an invalid initial session throws', async () => {

@@ -161,7 +161,7 @@ describe("ErrorView", () => {
       assert(details);
       expect(errorMessage).toBeVisible();
       expect(errorMessage.closest("details")).toBeNull();
-      expect(details).toHaveAttribute("open");
+      expect(details).not.toHaveAttribute("open");
       expect(
         errorMessage.compareDocumentPosition(details) &
           Node.DOCUMENT_POSITION_FOLLOWING,
@@ -183,6 +183,8 @@ describe("ErrorView", () => {
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
 
+      fireEvent.click(screen.getByText("Technical details"));
+      expect(details).toHaveAttribute("open");
       fireEvent.click(screen.getByText("Technical details"));
       expect(details).not.toHaveAttribute("open");
       expect(errorMessage).toBeVisible();
@@ -356,6 +358,7 @@ describe("ErrorView", () => {
     ).toBeVisible();
     expect(screen.getAllByText(message)).toHaveLength(1);
     expect(screen.getByText(message)).toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
     expect(screen.getByText("Transport")).toBeVisible();
     expect(screen.getByText("Opencode")).toBeVisible();
     expect(screen.getByText("provider/model")).toBeVisible();
@@ -437,6 +440,11 @@ describe("ErrorView", () => {
     expect(
       screen.getByRole("heading", { name: "Implementation attempt timed out" }),
     ).toBeVisible();
+    expect(
+      screen.getByText("Technical details").closest("details"),
+    ).not.toHaveAttribute("open");
+    expect(screen.getByText(/Resolved /)).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
     expect(screen.getByText(/Resolved /)).toBeVisible();
     expect(
       screen.queryByText("Implementation failed."),
@@ -1434,7 +1442,9 @@ describe("ErrorView", () => {
     ).toBeTruthy();
     expect(
       screen.getByText("Technical details").closest("details"),
-    ).toHaveAttribute("open");
+    ).not.toHaveAttribute("open");
+    expect(screen.getByText("HTTP:")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
     expect(screen.getByText("HTTP:")).toBeVisible();
     expect(screen.getByText("HTTP:")).toBeInTheDocument();
     expect(screen.getByText("401")).toBeInTheDocument();
@@ -1520,10 +1530,134 @@ describe("ErrorView", () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />);
 
+    fireEvent.click(screen.getByText("Technical details"));
     expect(screen.getByText("Provider message:")).toBeVisible();
     expect(
       screen.getByText("Sign in again to refresh the authentication token."),
     ).toBeVisible();
+  });
+
+  it.each([false, true])(
+    "keeps model, session, and provider data collapsed until requested (historical: %s)",
+    (historical) => {
+      const ticket = makeLiveErrorTicket({
+        diagnostics: {
+          kind: "opencode_provider",
+          source: "provider",
+          summary: "Provider rejected the request.",
+          modelId: "example/model",
+          sessionId: "ses-failed-request",
+          cacheReadTokens: 1234,
+          cacheWriteTokens: 0,
+          responseBodyPreview: '{"error":"rate_limit"}',
+        },
+      });
+      const occurrence = ticket.errorOccurrences?.[0];
+      assert(occurrence);
+      if (historical) occurrence.resolvedAt = "2026-01-01T00:01:00.000Z";
+
+      renderWithProviders(
+        <ErrorView ticket={ticket} occurrence={occurrence} readOnly={historical} />,
+      );
+
+      const details = screen.getByText("Technical details").closest("details");
+      assert(details);
+      expect(details).not.toHaveAttribute("open");
+      expect(screen.getByText("Implementation failed.")).toBeVisible();
+      expect(screen.getByText("example/model")).not.toBeVisible();
+      expect(screen.getByText("ses-failed-request")).not.toBeVisible();
+      expect(screen.getByText('{"error":"rate_limit"}')).not.toBeVisible();
+
+      fireEvent.click(screen.getByText("Technical details"));
+
+      expect(details).toHaveAttribute("open");
+      expect(within(details).getByText("example/model")).toBeVisible();
+      expect(within(details).getByText("ses-failed-request")).toBeVisible();
+      expect(within(details).getByText("Cache read tokens:")).toBeVisible();
+      expect(within(details).getByText("1,234")).toBeVisible();
+      expect(within(details).getByText("Cache write tokens:")).toBeVisible();
+      expect(within(details).getByText("0")).toBeVisible();
+      expect(within(details).getByText('{"error":"rate_limit"}')).toBeVisible();
+    },
+  );
+
+  it("closes technical details when switching failures or tickets without mixing their diagnostics", () => {
+    const ticket = makeLiveErrorTicket({
+      diagnostics: {
+        kind: "runtime",
+        source: "opencode",
+        summary: "Invalid model response.",
+        modelId: "example/current-model",
+        sessionId: "ses-current",
+      },
+    });
+    const activeOccurrence = ticket.errorOccurrences?.[0];
+    assert(activeOccurrence);
+    const historicalOccurrence = {
+      ...activeOccurrence,
+      id: "historical-error",
+      diagnostics: null,
+      resolvedAt: "2025-12-31T23:59:00.000Z",
+    };
+    ticket.errorOccurrences = [historicalOccurrence, activeOccurrence];
+    const { rerender } = renderWithProviders(<ErrorView ticket={ticket} />);
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(screen.getByText("ses-current")).toBeVisible();
+
+    rerender(
+      <ErrorView ticket={ticket} occurrence={historicalOccurrence} readOnly />,
+    );
+
+    expect(
+      screen.getByText("Technical details").closest("details"),
+    ).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(screen.queryByText("ses-current")).not.toBeInTheDocument();
+    expect(screen.queryByText("example/current-model")).not.toBeInTheDocument();
+
+    rerender(<ErrorView ticket={ticket} />);
+    expect(
+      screen.getByText("Technical details").closest("details"),
+    ).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(screen.getByText("ses-current")).toBeVisible();
+
+    rerender(<ErrorView ticket={{ ...ticket, id: "different-ticket" }} />);
+    expect(
+      screen.getByText("Technical details").closest("details"),
+    ).not.toHaveAttribute("open");
+  });
+
+  it("redacts and bounds provider previews and cleans terminal formatting in historical diagnostics", () => {
+    const ticket = makeLiveErrorTicket();
+    const occurrence = ticket.errorOccurrences?.[0];
+    assert(occurrence);
+    occurrence.diagnostics = {
+      kind: "opencode_provider",
+      source: "provider",
+      summary: "Request failed.",
+      modelId: "\u001b[31mexample/model\u001b[39m\u0000",
+      sessionId: "\u001b[31mses-provider\u001b[39m\u0000",
+      responseBodyPreview:
+        '\u001b[31m{"api_key":"sk-privatevalue123","message":"Quota exceeded","detail":"' +
+        "x".repeat(1200) +
+        '"}\u001b[39m\u0000',
+    };
+
+    renderWithProviders(
+      <ErrorView ticket={ticket} occurrence={occurrence} readOnly />,
+    );
+    fireEvent.click(screen.getByText("Technical details"));
+
+    expect(screen.getByText("example/model")).toBeVisible();
+    expect(screen.getByText("ses-provider")).toBeVisible();
+    const preview = screen.getByText(/Quota exceeded/);
+    expect(preview.tagName).toBe("PRE");
+    expect(preview.textContent).toContain('[redacted]');
+    expect(preview.textContent?.length).toBeLessThanOrEqual(1000);
+    expect(document.body.textContent).not.toContain("sk-privatevalue123");
+    expect(document.body.textContent).not.toContain("\u001b");
+    expect(document.body.textContent).not.toContain("\u0000");
   });
 
   it("renders model output truncation diagnostics with finish reason and token counts", () => {

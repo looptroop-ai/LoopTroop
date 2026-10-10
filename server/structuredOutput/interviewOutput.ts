@@ -43,6 +43,7 @@ import { MAX_INTERVIEW_BATCH_SIZE } from '../lib/constants'
 import { resolveLosingDraftReference } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
+import { repairInterviewBatchFieldTags } from './interviewBatchTagRepair'
 
 const INTERVIEW_ID_PREFIX = 'Q'
 const INTERVIEW_ID_PAD_WIDTH = 2
@@ -1229,6 +1230,40 @@ function normalizeInterviewCompletePayload(value: unknown, shouldAllowQuestionsO
   }
 }
 
+function parseInterviewBatchCandidate(candidate: string, repairWarnings: string[]) {
+  const originalWarnings: string[] = []
+  try {
+    const normalized = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(candidate, {
+      nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
+      repairWarnings: originalWarnings,
+    }))
+    repairWarnings.push(...originalWarnings, ...normalized.repairWarnings)
+    return normalized
+  } catch (error) {
+    const repaired = repairInterviewBatchFieldTags(candidate)
+    if (!repaired) {
+      repairWarnings.push(...originalWarnings)
+      throw error
+    }
+    repairWarnings.push(...repaired.repairWarnings)
+    const aliasConflicts: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(aliasConflicts)
+    try {
+      const normalized = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(repaired.content, {
+        nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
+        repairWarnings,
+      }))
+      if (aliasConflicts.length > 0) {
+        throw new Error(`Interview batch field-tag recovery has conflicting aliases: ${aliasConflicts.join(' ')}`)
+      }
+      repairWarnings.push(...normalized.repairWarnings)
+      return normalized
+    } finally {
+      releaseAliasConflicts()
+    }
+  }
+}
+
 export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutputResult<InterviewTurnOutput> {
   let lastError = 'No interview batch or completion content found'
   let lastErrorCause: unknown = null
@@ -1270,11 +1305,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     const candidateWarnings: string[] = []
     const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
-      const normalizedBatch = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(candidate, {
-        nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
-        repairWarnings: candidateWarnings,
-      }))
-      candidateWarnings.push(...normalizedBatch.repairWarnings)
+      const normalizedBatch = parseInterviewBatchCandidate(candidate, candidateWarnings)
       appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_BATCH })
       return {
         ok: true,

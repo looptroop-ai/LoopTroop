@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/tooltip";
 import { CancelTicketDialog } from "@/components/ticket/CancelTicketDialog";
 import { sanitizeErrorForDisplay } from "@shared/errorDisplay";
+import { normalizeBlockedErrorDiagnostics } from "@shared/errorDiagnostics";
 
 const MAX_RETRY_NOTE_LENGTH = 20_000;
 
@@ -201,8 +202,23 @@ function buildDiagnosticRows(
       label: "Input tokens",
       value: diagnostics.inputTokens.toLocaleString(),
     });
+  if (typeof diagnostics.cacheReadTokens === "number")
+    rows.push({
+      label: "Cache read tokens",
+      value: diagnostics.cacheReadTokens.toLocaleString(),
+    });
+  if (typeof diagnostics.cacheWriteTokens === "number")
+    rows.push({
+      label: "Cache write tokens",
+      value: diagnostics.cacheWriteTokens.toLocaleString(),
+    });
 
-  return rows;
+  return rows
+    .map(({ label, value }) => ({
+      label,
+      value: sanitizeErrorForDisplay(value),
+    }))
+    .filter((row) => row.value.length > 0);
 }
 
 function normalizeErrorText(value: string): string {
@@ -382,17 +398,19 @@ function ErrorTechnicalDetails({
   primaryErrorMessage: string;
 }) {
   if (!occurrence) return null;
-  const diagnostics = occurrence.diagnostics ?? null;
+  const diagnostics = normalizeBlockedErrorDiagnostics(occurrence.diagnostics);
   const diagnosticRows = diagnostics
     ? buildDiagnosticRows(diagnostics, primaryErrorMessage)
     : [];
+  const responseBodyPreview = sanitizeErrorForDisplay(
+    diagnostics?.responseBodyPreview ?? "",
+  );
   const displayErrorCodes = occurrence.errorCodes
     .map((code) => sanitizeErrorForDisplay(code))
     .filter((code) => code.length > 0);
 
   return (
     <details
-      open
       className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]"
     >
       <summary className="cursor-pointer font-medium text-foreground">
@@ -457,6 +475,16 @@ function ErrorTechnicalDetails({
                 </div>
               ))}
             </div>
+            {responseBodyPreview && (
+              <div className="space-y-1">
+                <div className="text-muted-foreground/80">
+                  Provider response preview
+                </div>
+                <pre className="max-h-48 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
+                  {responseBodyPreview}
+                </pre>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -664,7 +692,9 @@ export function ErrorView({
     isSetupRuntimeError &&
     visibleOccurrence?.blockedFromStatus === "PREPARING_EXECUTION_ENV" &&
     ticket.availableActions.includes("edit_execution_setup_plan");
-  const diagnostics = visibleOccurrence?.diagnostics ?? null;
+  const diagnostics = normalizeBlockedErrorDiagnostics(
+    visibleOccurrence?.diagnostics,
+  );
   const diagnosticSummary = sanitizeErrorForDisplay(diagnostics?.summary ?? "");
   const rawPrimaryErrorMessage =
     visibleOccurrence?.errorMessage ||
@@ -934,6 +964,7 @@ export function ErrorView({
               )}
               {isLiveCodingError && <LiveCodingBeadContext ticket={ticket} />}
               <ErrorTechnicalDetails
+                key={JSON.stringify([ticket.id, visibleOccurrence?.id])}
                 occurrence={visibleOccurrence}
                 primaryErrorMessage={primaryErrorMessage}
               />

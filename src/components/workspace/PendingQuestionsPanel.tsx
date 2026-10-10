@@ -317,7 +317,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
       </div>
 
       {!collapsed && (
-        <div id="pending-questions-body" className="min-h-0 overflow-y-auto px-3 pb-3">
+        <div id="pending-questions-body" className="min-h-0 overflow-y-auto px-3 pb-3 [overflow-wrap:anywhere]">
           {requests.length > 1 && (
             <div role="tablist" aria-label="Models asking" className="mb-3 flex flex-wrap gap-1">
               {requests.map((request, index) => {

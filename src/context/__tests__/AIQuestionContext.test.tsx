@@ -704,7 +704,7 @@ describe('AIQuestionProvider', () => {
     </>)
     await waitFor(() => expect(screen.getByText('pending:2 requests:2')).toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Skip all', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }))
     fireEvent.change(screen.getByLabelText(/skip reason/i), { target: { value: '  Not my decision.  ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Skip all questions' }))
 

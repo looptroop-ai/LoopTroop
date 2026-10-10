@@ -38,6 +38,9 @@ export interface BlockedErrorDiagnostics {
   summary: string
   modelId?: string
   sessionId?: string
+  operation?: string
+  transportCode?: string
+  causeMessage?: string
   providerId?: string
   providerModelId?: string
   statusCode?: number
@@ -61,7 +64,7 @@ import { stripTerminalFormatting } from './errorDisplay'
 const REDACTED = '[redacted]'
 const CREDENTIAL_WORD_KEY_PATTERN = String.raw`(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|authorization|cookie|set[-_\s]?cookie)`
 const CREDENTIAL_KEY_PATTERN = String.raw`(?:[a-z0-9]+[-_])*(?:authorization|${CREDENTIAL_WORD_KEY_PATTERN}|token|client[-_\s]?secret|private[-_\s]?key|access[-_\s]?key|secret[-_\s]?key)`
-const CREDENTIAL_VALUE = String.raw`(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:Bearer\s+)?[^"',\s}&]+)`
+const CREDENTIAL_VALUE = String.raw`(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)\s+)?[^"',\s}&]+)`
 const CREDENTIAL_VALUE_PATTERN = new RegExp(
   String.raw`((?<![a-z0-9_-])${CREDENTIAL_KEY_PATTERN}\b["']?\s*[:=]\s*)(${CREDENTIAL_VALUE})`,
   'gi',
@@ -74,8 +77,8 @@ const CREDENTIAL_WORD_PATTERN = new RegExp(
 const PREFIXED_CREDENTIAL_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|xox[abprs]-[A-Za-z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,})\b/g
 
 function redactCredentialValue(_match: string, prefix: string, value: string): string {
-  if (/^authorization\s+(?:is\s+)?$/i.test(prefix)
-    && /^(?:required|missing|invalid|expired|denied|failed|unavailable|not|was|has)[.!?]?$/i.test(value)) return _match
+  if (/^(?:authorization|cookie|set[-_\s]?cookie)\s+(?:is\s+)?$/i.test(prefix)
+    && /^(?:header|headers|banner|required|missing|invalid|expired|denied|failed|unavailable|not|was|has)[.!?]?$/i.test(value)) return _match
   const quote = value.startsWith('"') || value.startsWith("'") ? value[0] : ''
   const closingQuote = quote && value.length > 1 && value.endsWith(quote) ? quote : ''
   return `${prefix}${quote}${REDACTED}${closingQuote}`
@@ -127,6 +130,9 @@ export function normalizeBlockedErrorDiagnostics(value: unknown): BlockedErrorDi
 
   const modelId = cleanString(value.modelId, 240)
   const sessionId = cleanString(value.sessionId, 240)
+  const operation = cleanString(value.operation, 240)
+  const transportCode = cleanString(value.transportCode, 240)
+  const causeMessage = cleanString(value.causeMessage)
   const providerId = cleanString(value.providerId, 240)
   const providerModelId = cleanString(value.providerModelId, 240)
   const requestModel = cleanString(value.requestModel, 240)
@@ -142,6 +148,9 @@ export function normalizeBlockedErrorDiagnostics(value: unknown): BlockedErrorDi
     summary,
     ...(modelId ? { modelId } : {}),
     ...(sessionId ? { sessionId } : {}),
+    ...(operation ? { operation } : {}),
+    ...(transportCode ? { transportCode } : {}),
+    ...(causeMessage ? { causeMessage } : {}),
     ...(providerId ? { providerId } : {}),
     ...(providerModelId ? { providerModelId } : {}),
     ...(cleanNumber(value.statusCode) !== undefined ? { statusCode: cleanNumber(value.statusCode) } : {}),

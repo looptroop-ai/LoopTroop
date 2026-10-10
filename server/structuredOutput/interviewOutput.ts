@@ -1330,7 +1330,12 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     }
   }
 
-  const fallbackCandidates = collectStructuredCandidates(rawContent, {
+  // A suffix of a field-tagged batch can omit emitted fields and silently use defaults.
+  const fallbackContent = rawContent.replace(
+    new RegExp(`${openTag(PROTOCOL_TAGS.INTERVIEW_BATCH)}([\\s\\S]*?)(?:<\\/${PROTOCOL_TAGS.INTERVIEW_BATCH}>|$)`, 'gi'),
+    (candidate: string, body: string) => /^<(?:batch_number|progress|is_final_free_form|ai_commentary|questions)(?:>|\s)/m.test(body) ? '\n' : candidate,
+  )
+  const fallbackCandidates = collectStructuredCandidates(fallbackContent, {
     topLevelHints: ['batch_number', 'batchnumber', 'progress', 'schema_version', 'approval', 'generated_by', 'generatedby', 'ticket_id', 'ticketid', 'answers', 'status'],
   })
 

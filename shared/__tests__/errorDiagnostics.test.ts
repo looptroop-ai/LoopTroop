@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest'
 import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText } from '../errorDiagnostics'
 
 describe('shared blocked error diagnostics', () => {
+  it('keeps bounded, sanitized connection context through repeated normalization', () => {
+    const diagnostics = normalizeBlockedErrorDiagnostics({
+      kind: 'transport',
+      source: 'opencode',
+      summary: 'Communication with OpenCode failed.',
+      operation: '\u001b[31mWaiting for the session to become idle\u001b[0m',
+      transportCode: 'ECONNRESET',
+      causeMessage: `socket closed; Authorization: Bearer privatevalue123 ${'x'.repeat(1200)}`,
+    })
+
+    expect(diagnostics).toMatchObject({
+      operation: 'Waiting for the session to become idle',
+      transportCode: 'ECONNRESET',
+    })
+    expect(diagnostics?.causeMessage).toContain('socket closed; Authorization: [redacted]')
+    expect(diagnostics?.causeMessage).not.toContain('privatevalue123')
+    expect(diagnostics?.causeMessage?.length).toBeLessThanOrEqual(1000)
+    expect(normalizeBlockedErrorDiagnostics(diagnostics)).toEqual(diagnostics)
+  })
+
   it('redacts common credential patterns from diagnostic text', () => {
     const diagnostics = normalizeBlockedErrorDiagnostics({
       summary: [
@@ -53,11 +73,11 @@ describe('shared blocked error diagnostics', () => {
   })
 
   it.each([
-    'ghp_1234567890abcdefghijklmnopqrstuvwxyz',
+    'ghp_' + '1234567890abcdefghijklmnopqrstuvwxyz',
     'github_pat_1234567890abcdefghijklmnopqrstuvwxyz',
     'xoxb-123456789012-abcdefghijklmnop',
     'xoxp-123456789012-abcdefghijklmnop',
-    'AKIA1234567890ABCDEF',
+    'AKIA' + '1234567890ABCDEF',
     'AIzaSyA1234567890abcdefghijklmnopqrstu',
   ])('redacts recognizable standalone credentials: %s', (credential) => {
     const diagnostics = normalizeBlockedErrorDiagnostics({
@@ -110,7 +130,7 @@ describe('shared blocked error diagnostics', () => {
   })
 
   it('keeps ordinary provider prose about tokens and authorization readable', () => {
-    const summary = 'Your authentication token has been invalidated. Authorization is required. Token limit exceeded.'
+    const summary = 'Your authentication token has been invalidated. Authorization is required. Missing Authorization header. Cookie banner unavailable. Set-Cookie headers are missing. Token limit exceeded.'
 
     expect(normalizeBlockedErrorDiagnostics({ summary })?.summary).toBe(summary)
   })
@@ -118,6 +138,15 @@ describe('shared blocked error diagnostics', () => {
   it.each(['Authorization privatevalue123', 'Authorization is privatevalue123'])('redacts legacy authorization word forms: %s', (summary) => {
     expect(normalizeBlockedErrorDiagnostics({ summary })?.summary).not.toContain('privatevalue123')
     expect(normalizeBlockedErrorDiagnostics({ summary })?.summary).toContain('[redacted]')
+  })
+
+  it.each(['Authorization: Basic', 'Authorization=Basic', 'Authorization Basic', 'authorization: basic'])('redacts the complete unquoted Basic credential: %s', (prefix) => {
+    const value = `${prefix} Zm9vOmJhcg==`
+    const diagnostics = normalizeBlockedErrorDiagnostics({ summary: value, responseBodyPreview: value })
+
+    expect(diagnostics?.summary).toContain('[redacted]')
+    expect(diagnostics?.summary).not.toContain('Zm9vOmJhcg==')
+    expect(diagnostics?.responseBodyPreview).not.toContain('Zm9vOmJhcg==')
   })
 
   it('redacts explicit authorization assignments even when their value resembles prose', () => {

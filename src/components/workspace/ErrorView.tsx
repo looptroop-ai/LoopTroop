@@ -157,6 +157,12 @@ function buildDiagnosticRows(
     rows.push({ label: "Request model", value: diagnostics.requestModel });
   if (diagnostics.sessionId)
     rows.push({ label: "Session", value: diagnostics.sessionId });
+  if (diagnostics.operation)
+    rows.push({ label: "Operation", value: diagnostics.operation });
+  if (diagnostics.transportCode)
+    rows.push({ label: "Connection code", value: diagnostics.transportCode });
+  if (diagnostics.causeMessage)
+    rows.push({ label: "Underlying cause", value: diagnostics.causeMessage });
   if (typeof diagnostics.statusCode === "number")
     rows.push({ label: "HTTP", value: String(diagnostics.statusCode) });
   if (diagnostics.providerErrorType)

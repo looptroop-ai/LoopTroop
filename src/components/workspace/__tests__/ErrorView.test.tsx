@@ -1537,6 +1537,44 @@ describe("ErrorView", () => {
   });
 
   it.each([false, true])(
+    "keeps connection context collapsed for live and historical errors (historical: %s)",
+    (historical) => {
+      const ticket = makeLiveErrorTicket({
+        diagnostics: {
+          kind: "transport",
+          source: "opencode",
+          summary: "Communication with OpenCode failed.",
+          operation: "Waiting for the session to become idle",
+          transportCode: "ECONNRESET",
+          causeMessage: "socket closed; Authorization: Bearer privatevalue123",
+        },
+      });
+      const occurrence = ticket.errorOccurrences?.[0];
+      assert(occurrence);
+      if (historical) occurrence.resolvedAt = "2026-01-01T00:01:00.000Z";
+
+      renderWithProviders(
+        <ErrorView ticket={ticket} occurrence={occurrence} readOnly={historical} />,
+      );
+
+      const details = screen.getByText("Technical details").closest("details");
+      assert(details);
+      expect(details).not.toHaveAttribute("open");
+      expect(within(details).getByText("Operation:")).not.toBeVisible();
+      expect(within(details).getByText("ECONNRESET")).not.toBeVisible();
+      expect(details.textContent).not.toContain("privatevalue123");
+
+      fireEvent.click(screen.getByText("Technical details"));
+
+      expect(within(details).getByText("Waiting for the session to become idle")).toBeVisible();
+      expect(within(details).getByText("Connection code:")).toBeVisible();
+      expect(within(details).getByText("ECONNRESET")).toBeVisible();
+      expect(within(details).getByText("Underlying cause:")).toBeVisible();
+      expect(within(details).getByText("socket closed; Authorization: [redacted]")).toBeVisible();
+    },
+  );
+
+  it.each([false, true])(
     "keeps model, session, and provider data collapsed until requested (historical: %s)",
     (historical) => {
       const ticket = makeLiveErrorTicket({

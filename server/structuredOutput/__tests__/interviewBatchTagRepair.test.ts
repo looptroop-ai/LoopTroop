@@ -138,6 +138,101 @@ describe('interview batch field tag recovery', () => {
     expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
   })
 
+  it.each([
+    ['final flag', '<is_final_free_form>true</is_final_free_form>', { ai_commentary: 'Keep this commentary.' }],
+    ['commentary', '<ai_commentary>Keep this commentary.</ai_commentary>', { is_final_free_form: true }],
+  ])('does not replace emitted %s with a default from a shortened fallback', (_label, taggedField, nativeField) => {
+    const body = `${taggedField}\n${buildYamlDocument({
+      batch_number: 3,
+      progress: { current: 9, total: 9 },
+      ...nativeField,
+      questions: [{ id: 'Q09', question: 'Any final comments?' }],
+    })}`
+    const result = normalizeInterviewTurnOutput(batchResponse(body))
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch).toMatchObject({
+      batchNumber: 3, isFinalFreeForm: true, aiCommentary: 'Keep this commentary.',
+      questions: [{ id: 'Q09', question: 'Any final comments?' }],
+    })
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(true)
+  })
+
+  it.each(['tagged', 'untagged', 'fenced'])('still prefers a later complete %s batch over a mixed batch with an earlier tagged flag', (kind) => {
+    const body = `<is_final_free_form>true</is_final_free_form>\n${buildYamlDocument({
+      batch_number: 3,
+      progress: { current: 9, total: 9 },
+      ai_commentary: 'The recoverable final question.',
+      questions: [{ id: 'Q09', question: 'Any final comments?' }],
+    })}`
+    const canonical = buildYamlDocument({
+      batch_number: 4,
+      progress: { current: 9, total: 9 },
+      is_final_free_form: true,
+      ai_commentary: 'The complete ordinary batch.',
+      questions: [{ id: 'Q10', question: 'Use this final question?' }],
+    })
+    const candidate = kind === 'tagged' ? batchResponse(canonical) : kind === 'fenced' ? `\`\`\`yaml\n${canonical}\`\`\`` : canonical
+    const result = normalizeInterviewTurnOutput(`${batchResponse(body)}\n${candidate}`)
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch.batchNumber).toBe(4)
+    expect(result.value.batch.isFinalFreeForm).toBe(true)
+    expect(result.value.batch.questions).toEqual([{ id: 'Q10', question: 'Use this final question?' }])
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
+  it.each([
+    ['duplicate tagged/native flag', 'is_final_free_form: false\n'],
+    ['duplicate flag alias', 'isFinalFreeForm: false\n'],
+    ['duplicate batch number', 'batch_number: 2\n'],
+    ['unknown root field', 'unknown: do not discard\n'],
+  ])('does not bypass %s by selecting a shortened fallback', (_label, conflictingField) => {
+    const body = `<is_final_free_form>true</is_final_free_form>\n${conflictingField}${buildYamlDocument({
+      batch_number: 3,
+      progress: { current: 9, total: 9 },
+      ai_commentary: 'Keep this commentary.',
+      questions: [{ id: 'Q09', question: 'Any final comments?' }],
+    })}`
+    expect(repairInterviewBatchFieldTags(body)).toBeNull()
+    expect(normalizeInterviewTurnOutput(batchResponse(body)).ok).toBe(false)
+  })
+
+  it('keeps conflicting question aliases visible instead of accepting a shortened fallback', () => {
+    const body = `<is_final_free_form>true</is_final_free_form>\n${buildYamlDocument({
+      batch_number: 3,
+      progress: { current: 9, total: 9 },
+      ai_commentary: 'Keep this commentary.',
+      questions: [{ id: 'Q09', question: 'Any final comments?', prompt: 'A conflicting question.' }],
+    })}`
+    const result = normalizeInterviewTurnOutput(batchResponse(body))
+    assert(!result.ok)
+    expect(result.error).toContain('Interview batch field-tag recovery has conflicting aliases:')
+    expect(result.error).toContain('"prompt"')
+  })
+
+  it('preserves an emitted final flag when only the outer closing tag is missing', () => {
+    const body = `<is_final_free_form>true</is_final_free_form>\n${buildYamlDocument({
+      batch_number: 3,
+      progress: { current: 9, total: 9 },
+      ai_commentary: 'Keep this commentary.',
+      questions: [{ id: 'Q09', question: 'Any final comments?' }],
+    })}`
+    const result = normalizeInterviewTurnOutput(`<INTERVIEW_BATCH>\n${body}`)
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch.isFinalFreeForm).toBe(true)
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(true)
+  })
+
+  it('keeps ordinary fallback defaults and literal XML for a batch with a prose prefix', () => {
+    const questions = [{ id: 'Q01', question: '<is_final_free_form>\n  true\n</is_final_free_form>' }]
+    const canonical = buildYamlDocument({ batch_number: 1, progress: { current: 1, total: 9 }, questions })
+    const result = normalizeInterviewTurnOutput(batchResponse(`Here is the batch.\n${canonical}`))
+    assert(result.ok && result.value.kind === 'batch')
+    expect(result.value.batch.isFinalFreeForm).toBe(false)
+    expect(result.value.batch.aiCommentary).toBe('')
+    expect(result.value.batch.questions).toEqual(questions)
+    expect(result.repairWarnings.some((warning) => warning.startsWith('Repaired interview batch field tag'))).toBe(false)
+  })
+
   it('keeps a normally valid fallback completion ahead of field-tag recovery', () => {
     const complete = buildYamlDocument({
       schema_version: '1.0',

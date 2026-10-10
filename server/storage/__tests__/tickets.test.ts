@@ -1089,6 +1089,45 @@ describe('ticket error occurrences', () => {
     })).toBeUndefined()
   })
 
+  it('persists sanitized connection context for current and resolved error occurrences', () => {
+    const project = attachProject({
+      folderPath: errorRepoManager.createRepo(),
+      name: 'LoopTroop',
+      shortname: 'LOOP',
+    })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Retain connection diagnostics',
+      description: 'Connection context should remain available in error history.',
+    })
+    const occurrence = recordTicketErrorOccurrence(ticket.id, {
+      blockedFromStatus: 'VERIFYING_PRD_COVERAGE',
+      errorMessage: 'PRD coverage revision could not finish.',
+      diagnostics: {
+        kind: 'transport',
+        source: 'opencode',
+        summary: 'Communication with OpenCode failed.',
+        sessionId: 'ses-connection-failure',
+        operation: 'Waiting for the session to become idle',
+        transportCode: 'ECONNRESET',
+        causeMessage: 'socket closed; Authorization: Bearer privatevalue123',
+      },
+    })
+    const expectedDiagnostics = {
+      operation: 'Waiting for the session to become idle',
+      transportCode: 'ECONNRESET',
+      causeMessage: 'socket closed; Authorization: [redacted]',
+    }
+
+    expect(occurrence?.diagnostics).toMatchObject(expectedDiagnostics)
+    expect(getTicketByRef(ticket.id)?.errorOccurrences[0]?.diagnostics).toMatchObject(expectedDiagnostics)
+    resolveLatestTicketErrorOccurrence(ticket.id, {
+      resolutionStatus: 'RETRIED',
+      resumedToStatus: 'VERIFYING_PRD_COVERAGE',
+    })
+    expect(getTicketByRef(ticket.id)?.errorOccurrences[0]?.diagnostics).toMatchObject(expectedDiagnostics)
+  })
+
   it('records repeated block/retry cycles as append-only occurrences and exposes them on the public ticket', () => {
     const repoDir = errorRepoManager.createRepo()
     const project = attachProject({

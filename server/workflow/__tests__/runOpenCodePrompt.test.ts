@@ -809,6 +809,32 @@ describe('runOpenCodePrompt', () => {
     })
   })
 
+  it('reports new and reconnected session acquisition without changing prompt dispatches', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    patchTicket(ticket.id, { status: 'CODING' })
+    const adapter = new TestOpenCodeAdapter(['first response', 'second response'])
+    const onSessionCreated = vi.fn()
+    const options = {
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text' as const, content: 'Prompt' }],
+      sessionOwnership: { ticketId: ticket.id, phase: 'CODING' as const, keepActive: true },
+      onSessionCreated,
+    }
+
+    await runOpenCodePrompt(options)
+    await runOpenCodePrompt(options)
+
+    expect(onSessionCreated.mock.calls.map(([session, acquisition]) => [session.id, acquisition])).toEqual([
+      ['ses-1', { reconnected: false }],
+      ['ses-1', { reconnected: true }],
+    ])
+    expect(adapter.sessionCreateCalls).toHaveLength(1)
+    expect(adapter.promptCalls).toHaveLength(2)
+    expect(adapter.abortCalls).toEqual([])
+  })
+
   it('classifies setup-plan drafting prompt metadata as AI response timeout by default', async () => {
     resetTestDb()
     const { ticket } = await createInitializedTestTicket(repoManager, {

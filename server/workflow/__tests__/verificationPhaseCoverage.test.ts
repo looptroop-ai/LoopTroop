@@ -18,6 +18,7 @@ import type { executeFinalTestWithRetries } from '../../phases/finalTest/executo
 import type { FinalTestGenerationResult } from '../../phases/finalTest/generator'
 import type { FinalTestCommandResult, FinalTestExecutionReport } from '../../phases/finalTest/runner'
 import type { PromptPart } from '../../opencode/types'
+import { CancelledError } from '../../council/types'
 
 const {
   executeFinalTestWithRetriesMock,
@@ -228,6 +229,37 @@ describe('interview coverage recovery', () => {
     })
     return { winnerId, questions, answeredSnapshot }
   }
+
+  it('retains session diagnostics and response-attempt context for an interview audit connection failure', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const { winnerId } = await createCompletedInterviewSnapshot(ticket.id)
+    context.lockedStructuredRetryCount = 2
+    const connectionError = new Error('Failed to prompt OpenCode session: fetch failed')
+    runOpenCodePromptMock.mockImplementationOnce(async (options: Parameters<typeof import('../runOpenCodePrompt').runOpenCodePrompt>[0]) => {
+      options.onSessionCreated?.({ id: 'interview-connection-failure', projectPath: paths.worktreePath }, { reconnected: false })
+      throw connectionError
+    })
+
+    const error = await handleCoverageVerification(ticket.id, context, vi.fn(), 'interview', new AbortController().signal)
+      .then(() => null, (caught: unknown) => caught)
+
+    expect((error as Error).message).toContain('Interview coverage check 1 of 2: auditing the interview; response attempt 1 of 3 failed:')
+    expect(error).toMatchObject({ cause: connectionError, blockedErrorDiagnostics: { modelId: winnerId, sessionId: 'interview-connection-failure' } })
+  })
+
+  it('preserves cancellation when an interview prompt returns a timeout after cancellation', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    await createCompletedInterviewSnapshot(ticket.id)
+    const controller = new AbortController()
+    runOpenCodePromptMock.mockImplementationOnce(async () => {
+      controller.abort()
+      throw new Error('Timeout')
+    })
+    const sendEvent = vi.fn()
+
+    await expect(handleCoverageVerification(ticket.id, context, sendEvent, 'interview', controller.signal)).rejects.toBeInstanceOf(CancelledError)
+    expect(sendEvent).not.toHaveBeenCalled()
+  })
 
   it('rebuilds missing interview.yaml from the session snapshot before clean coverage', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager)

@@ -81,6 +81,47 @@ describe('shared blocked error diagnostics', () => {
     })
   })
 
+  it.each(['\n', '\r\n', '\t\n ', ' \r\n\t'])('redacts quoted JSON credentials across whitespace %j', (whitespace) => {
+    const responseBodyPreview = `{"api_key"${whitespace}:${whitespace}"opaque-private-value","authorization"${whitespace}:${whitespace}"Token opaque-auth-value","cookie"${whitespace}:${whitespace}"a=opaque-cookie-value; sessionid=opaque-session-value","message":"Keep this."}`
+    const diagnostics = normalizeBlockedErrorDiagnostics({ summary: 'Provider error', responseBodyPreview })
+
+    expect(JSON.parse(diagnostics?.responseBodyPreview ?? '')).toEqual({
+      api_key: '[redacted]',
+      authorization: '[redacted]',
+      cookie: '[redacted]',
+      message: 'Keep this.',
+    })
+    expect(normalizeBlockedErrorDiagnostics(diagnostics)).toEqual(diagnostics)
+  })
+
+  it.each([
+    'api_key=\nopaque-private-value',
+    'password\r\n=\r\nopaque-private-value',
+    'Authorization header:\nToken opaque-private-value',
+    'Authorization:\nBearer\nopaque-private-value',
+    'Authorization:\r\nBasic\r\nopaque-private-value',
+    'Authorization Bearer\nopaque-private-value',
+    'Bearer\nopaque-private-value',
+    'Basic\r\nopaque-private-value',
+    'Cookie header:\r\na=opaque-private-value; sessionid=opaque-session-value',
+    'API key provided:\nopaque-private-value',
+  ])('redacts explicit credentials with line breaks: %j', (value) => {
+    const diagnostics = normalizeBlockedErrorDiagnostics({ summary: value, causeMessage: value, responseBodyPreview: value })
+
+    expect(diagnostics?.summary).toContain('[redacted]')
+    expect(diagnostics?.summary).not.toContain('opaque-private-value')
+    expect(diagnostics?.summary).not.toContain('opaque-session-value')
+    expect(diagnostics?.causeMessage).toBe(diagnostics?.summary)
+    expect(diagnostics?.responseBodyPreview).toBe(diagnostics?.summary)
+    expect(normalizeBlockedErrorDiagnostics(diagnostics)).toEqual(diagnostics)
+  })
+
+  it('preserves unrelated lines after ordinary credential prose', () => {
+    const value = 'API key not valid.\nPlease pass a valid API key.\nMissing Authorization header.\nThe password\nhas expired.\nCookie\nbanner unavailable.'
+
+    expect(sanitizeDiagnosticText(value)).toBe(value)
+  })
+
   it.each([
     'ghp_' + '1234567890abcdefghijklmnopqrstuvwxyz',
     'github_pat_1234567890abcdefghijklmnopqrstuvwxyz',

@@ -4,7 +4,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 
 const BATCH_FIELD_NAMES = ['batch_number', 'progress', 'is_final_free_form', 'ai_commentary', 'questions']
 const BATCH_FIELDS = new Set(BATCH_FIELD_NAMES.map(normalizeKey))
-export const INTERVIEW_BATCH_FIELD_TAG_LINE = /^[ \t]*<(batch_number|progress|is_final_free_form|ai_commentary|questions)(?:[ \t]+[^>\r\n]*)?>(?:[^\r\n]*<\/\1>)?[ \t]*$/mi
+export const INTERVIEW_BATCH_FIELD_TAG_LINE = /^[ \t]*<(batch_number|progress|is_final_free_form|ai_commentary|questions)(?:[ \t][^>\r\n]*)?>(?:[^\r\n]*<\/\1>)?[ \t]*$/mi
 
 /** Recover only schema fields; XML inside emitted prose or YAML values is payload. */
 export function repairInterviewBatchFieldTags(content: string, rejectionReasons?: string[]): {

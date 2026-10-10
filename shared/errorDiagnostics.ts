@@ -64,13 +64,13 @@ import { stripTerminalFormatting } from './errorDisplay'
 const REDACTED = '[redacted]'
 const DIAGNOSTIC_URL_PATTERN = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi
 const URL_USERINFO_PATTERN = /^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i
-const CREDENTIAL_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?(?:authorization|x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|cookie|set[-_\s]?cookie|token|client[-_\s]?secret|private[-_\s]?key|access[-_\s]?key|secret[-_\s]?key)\b["']?[ \t]*(?:headers?(?:[ \t]+value)?[ \t]*)?[:=][ \t]*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)[ \t]+)?[^"',\s}&]+)/gi
-const AUTHORIZATION_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?authorization\b["']?[ \t]*(?:headers?(?:[ \t]+value)?[ \t]*)?[:=][ \t]*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:[A-Za-z][\w.-]*[ \t]+)?[^"',\s}&]+)/gi
-const COOKIE_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?(?:set[-_\s]?cookie|cookie)\b["']?[ \t]*(?:headers?(?:[ \t]+value)?[ \t]*)?[:=][ \t]*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|[^\n]+)/gi
-const CREDENTIAL_WORD_PATTERN = /(\b(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret)\b[ \t]+(?:(?:headers?(?:[ \t]+value)?|provided|code)(?:[ \t]*[:=][ \t]*|[ \t]+(?:(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)|(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)[ \t]+)?[^"',\s}&]+)/gi
-const AUTHORIZATION_WORD_PATTERN = /(\bauthorization\b[ \t]+(?:(?:headers?(?:[ \t]+value)?|provided|code)(?:[ \t]*[:=][ \t]*|[ \t]+(?:(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)|(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:[A-Za-z][\w.-]*[ \t]+)?[^"',\s}&]+)/gi
-const COOKIE_WORD_PATTERN = /(\b(?:set[-_\s]?cookie|cookie)\b[ \t]+(?:(?:headers?(?:[ \t]+value)?|provided)(?:[ \t]*[:=][ \t]*|[ \t]+(?:(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)|(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|[^"',\s};]+(?:[ \t]*;[^\n]*)?)/gi
-const AUTHORIZATION_TOKEN_PATTERN = /\b((?:Bearer|Basic)[ \t]+)([A-Za-z0-9._~+/-]+=*)/gi
+const CREDENTIAL_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?(?:authorization|x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|cookie|set[-_\s]?cookie|token|client[-_\s]?secret|private[-_\s]?key|access[-_\s]?key|secret[-_\s]?key)\b["']?\s*(?:headers?(?:[ \t]+value)?\s*)?[:=]\s*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)\s+)?[^"',\s}&]+)/gi
+const AUTHORIZATION_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?authorization\b["']?\s*(?:headers?(?:[ \t]+value)?\s*)?[:=]\s*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:[A-Za-z][\w.-]*\s+)?[^"',\s}&]+)/gi
+const COOKIE_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?(?:set[-_\s]?cookie|cookie)\b["']?\s*(?:headers?(?:[ \t]+value)?\s*)?[:=]\s*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|[^\n]+)/gi
+const CREDENTIAL_WORD_PATTERN = /(\b(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret)\b[ \t]+(?:(?:headers?(?:[ \t]+value)?|provided|code)(?:[ \t]*[:=]\s*|[ \t]+(?:(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)|(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)\s+)?[^"',\s}&]+)/gi
+const AUTHORIZATION_WORD_PATTERN = /(\bauthorization\b[ \t]+(?:(?:headers?(?:[ \t]+value)?|provided|code)(?:[ \t]*[:=]\s*|[ \t]+(?:(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)|(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)\s+|[A-Za-z][\w.-]*[ \t]+)?[^"',\s}&]+)/gi
+const COOKIE_WORD_PATTERN = /(\b(?:set[-_\s]?cookie|cookie)\b[ \t]+(?:(?:headers?(?:[ \t]+value)?|provided)(?:[ \t]*[:=]\s*|[ \t]+(?:(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)|(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|[^"',\s};]+(?:[ \t]*;[^\n]*)?)/gi
+const AUTHORIZATION_TOKEN_PATTERN = /\b((?:Bearer|Basic)\s+)([A-Za-z0-9._~+/-]+=*)/gi
 const CREDENTIAL_PROSE_PATTERN = /^(?:headers?|banner|required|missing|invalid|expired|denied|failed|unavailable|available|not|is|are|was|has|been|stale|rotated|valid|limit)\b/i
 const PREFIXED_CREDENTIAL_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|xox[abprs]-[A-Za-z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,})\b/g
 
@@ -81,7 +81,7 @@ function redactCredentialValue(_match: string, prefix: string, value: string): s
 }
 
 function redactCredentialWord(match: string, prefix: string, value: string): string {
-  if (!/[:=][ \t]*$/.test(prefix) && CREDENTIAL_PROSE_PATTERN.test(value)) return match
+  if (!/[:=]\s*$/.test(prefix) && CREDENTIAL_PROSE_PATTERN.test(value)) return match
   return redactCredentialValue(match, prefix, value)
 }
 

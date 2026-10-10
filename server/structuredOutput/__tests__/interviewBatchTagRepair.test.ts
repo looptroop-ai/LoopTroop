@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import * as jsYaml from 'js-yaml'
 import { assert, describe, expect, it } from 'vitest'
-import { repairInterviewBatchFieldTags } from '../interviewBatchTagRepair'
+import { INTERVIEW_BATCH_FIELD_TAG_LINE, repairInterviewBatchFieldTags } from '../interviewBatchTagRepair'
 import { normalizeInterviewTurnOutput } from '../interviewOutput'
 import { buildYamlDocument, collectTaggedCandidates } from '../yamlUtils'
 import { PROTOCOL_TAGS } from '@shared/protocolTags'
@@ -29,6 +29,23 @@ function batchResponse(body: string): string {
 }
 
 describe('interview batch field tag recovery', () => {
+  it.each([
+    '<questions>',
+    '<questions  >',
+    '<questions \t  source="model">',
+    '  <is_final_free_form \t source="model">true</is_final_free_form>',
+  ])('recognizes complete field-tag lines with whitespace or attributes without accepting them as prose: %s', (line) => {
+    expect(INTERVIEW_BATCH_FIELD_TAG_LINE.test(line)).toBe(true)
+    expect(INTERVIEW_BATCH_FIELD_TAG_LINE.test(`${line} prose`)).toBe(false)
+  })
+
+  it('rejects a long unclosed attribute without repeatedly rescanning its whitespace', () => {
+    const malformedTag = `<questions ${' '.repeat(32_000)}not closed`
+    const start = performance.now()
+    expect(INTERVIEW_BATCH_FIELD_TAG_LINE.test(malformedTag)).toBe(false)
+    expect(performance.now() - start).toBeLessThan(500)
+  })
+
   it.each([['original', original], ['retry', retry], ['CRLF', original.replace(/\n/g, '\r\n')]])(
     'recovers the real RICH-3 %s response without changing emitted text or choices',
     (_label, response) => {

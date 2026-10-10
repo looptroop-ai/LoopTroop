@@ -1,109 +1,165 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
-import { HelpCircle, X } from 'lucide-react'
-import { QUESTION_RECOVERY_INTERVAL_MS } from '@/lib/constants'
-import { queryClient } from '@/lib/queryClient'
-import { cn } from '@/lib/utils'
-import type { Ticket } from '@/hooks/useTickets'
-import { useUI } from '@/context/useUI'
-import type { AiQuestionTimerState } from '@shared/aiQuestions'
-import { getErrorMessage } from '@shared/typeGuards'
-import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
+import { HelpCircle, X } from "lucide-react";
+import { QUESTION_RECOVERY_INTERVAL_MS } from "@/lib/constants";
+import { queryClient } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
+import type { Ticket } from "@/hooks/useTickets";
+import { useUI } from "@/context/useUI";
+import type { AiQuestionTimerState } from "@shared/aiQuestions";
+import { getErrorMessage } from "@shared/typeGuards";
+import { isTerminalWorkflowStatus } from "@shared/workflowMeta";
 import {
   AIQuestionContext,
   type AIQuestionContextValue,
   type AiQuestionInfo,
   type AiQuestionRequest,
-} from './aiQuestionContextDef'
-import { apiTicketPath } from '@/lib/apiPaths'
-import { throwIfNotOk } from '@/lib/fetchError'
+} from "./aiQuestionContextDef";
+import { apiTicketPath } from "@/lib/apiPaths";
+import { throwIfNotOk } from "@/lib/fetchError";
 
 interface AiQuestionPayload {
-  type: 'opencode_question' | 'opencode_question_resolved' | 'opencode_question_updated'
-  action?: 'asked' | 'replied' | 'rejected'
-  ticketId: string
-  ticketExternalId?: string
-  ticketTitle?: string
-  status?: string
-  phase?: string
-  phaseAttempt?: number
-  modelId?: string
-  sessionId?: string
-  requestId?: string
-  questions?: AiQuestionInfo[]
-  timer?: AiQuestionTimerState
-  requests?: Array<Record<string, unknown>>
-  timestamp?: string
+  type:
+    | "opencode_question"
+    | "opencode_question_resolved"
+    | "opencode_question_updated";
+  action?: "asked" | "replied" | "rejected";
+  ticketId: string;
+  ticketExternalId?: string;
+  ticketTitle?: string;
+  status?: string;
+  phase?: string;
+  phaseAttempt?: number;
+  modelId?: string;
+  sessionId?: string;
+  requestId?: string;
+  questions?: AiQuestionInfo[];
+  timer?: AiQuestionTimerState;
+  requests?: Array<Record<string, unknown>>;
+  timestamp?: string;
 }
 
 function normalizeQuestion(question: AiQuestionInfo): AiQuestionInfo {
   return {
-    question: question.question || question.header || 'AI question',
-    header: question.header || 'AI question',
-    options: Array.isArray(question.options) ? question.options.map((option) => ({
-      label: typeof option.label === 'string' ? option.label : '',
-      ...(typeof option.value === 'string' ? { value: option.value } : {}),
-      ...(typeof option.description === 'string' ? { description: option.description } : {}),
-    })) : [],
-    ...(typeof question.multiple === 'boolean' ? { multiple: question.multiple } : {}),
-    ...(typeof question.custom === 'boolean' ? { custom: question.custom } : {}),
-  }
+    question: question.question || question.header || "AI question",
+    header: question.header || "AI question",
+    options: Array.isArray(question.options)
+      ? question.options.map((option) => ({
+          label: typeof option.label === "string" ? option.label : "",
+          ...(typeof option.value === "string" ? { value: option.value } : {}),
+          ...(typeof option.description === "string"
+            ? { description: option.description }
+            : {}),
+        }))
+      : [],
+    ...(typeof question.multiple === "boolean"
+      ? { multiple: question.multiple }
+      : {}),
+    ...(typeof question.custom === "boolean"
+      ? { custom: question.custom }
+      : {}),
+  };
 }
 
 function parseTimer(value: unknown): AiQuestionTimerState | null {
-  if (!value || typeof value !== 'object') return null
-  const record = value as Record<string, unknown>
-  if (typeof record.timerKey !== 'string' || typeof record.deadlineAt !== 'string') return null
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.timerKey !== "string" ||
+    typeof record.deadlineAt !== "string"
+  )
+    return null;
   return {
     timerKey: record.timerKey,
-    generation: typeof record.generation === 'number' ? record.generation : 0,
-    windowMs: typeof record.windowMs === 'number' ? record.windowMs : 0,
-    armedAt: typeof record.armedAt === 'string' ? record.armedAt : record.deadlineAt,
+    generation: typeof record.generation === "number" ? record.generation : 0,
+    windowMs: typeof record.windowMs === "number" ? record.windowMs : 0,
+    armedAt:
+      typeof record.armedAt === "string" ? record.armedAt : record.deadlineAt,
     deadlineAt: record.deadlineAt,
-    stoppedAt: typeof record.stoppedAt === 'string' ? record.stoppedAt : null,
-    stoppedBy: typeof record.stoppedBy === 'string' ? record.stoppedBy : null,
-    resetCount: typeof record.resetCount === 'number' ? record.resetCount : 0,
-    revision: typeof record.revision === 'number' ? record.revision : 0,
-    serverNow: typeof record.serverNow === 'string' ? record.serverNow : new Date().toISOString(),
-  }
+    stoppedAt: typeof record.stoppedAt === "string" ? record.stoppedAt : null,
+    stoppedBy: typeof record.stoppedBy === "string" ? record.stoppedBy : null,
+    resetCount: typeof record.resetCount === "number" ? record.resetCount : 0,
+    revision: typeof record.revision === "number" ? record.revision : 0,
+    serverNow:
+      typeof record.serverNow === "string"
+        ? record.serverNow
+        : new Date().toISOString(),
+  };
 }
 
-function parseQuestionPayload(data: Record<string, unknown>): AiQuestionPayload | null {
-  const type = data.type
-  if (type !== 'opencode_question' && type !== 'opencode_question_resolved' && type !== 'opencode_question_updated') {
-    return null
+function parseQuestionPayload(
+  data: Record<string, unknown>,
+): AiQuestionPayload | null {
+  const type = data.type;
+  if (
+    type !== "opencode_question" &&
+    type !== "opencode_question_resolved" &&
+    type !== "opencode_question_updated"
+  ) {
+    return null;
   }
-  if (typeof data.ticketId !== 'string') return null
+  if (typeof data.ticketId !== "string") return null;
   const questions = Array.isArray(data.questions)
     ? data.questions
-        .filter((question): question is AiQuestionInfo => Boolean(question) && typeof question === 'object')
+        .filter(
+          (question): question is AiQuestionInfo =>
+            Boolean(question) && typeof question === "object",
+        )
         .map(normalizeQuestion)
-    : undefined
-  const timer = parseTimer(data.timer)
+    : undefined;
+  const timer = parseTimer(data.timer);
   return {
     type,
-    action: data.action === 'replied' || data.action === 'rejected' || data.action === 'asked' ? data.action : undefined,
+    action:
+      data.action === "replied" ||
+      data.action === "rejected" ||
+      data.action === "asked"
+        ? data.action
+        : undefined,
     ticketId: data.ticketId,
-    ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
-    ...(typeof data.ticketExternalId === 'string' ? { ticketExternalId: data.ticketExternalId } : {}),
-    ...(typeof data.ticketTitle === 'string' ? { ticketTitle: data.ticketTitle } : {}),
-    ...(typeof data.status === 'string' ? { status: data.status } : {}),
-    ...(typeof data.phase === 'string' ? { phase: data.phase } : {}),
-    ...(typeof data.phaseAttempt === 'number' ? { phaseAttempt: data.phaseAttempt } : {}),
-    ...(typeof data.modelId === 'string' ? { modelId: data.modelId } : {}),
-    ...(typeof data.sessionId === 'string' ? { sessionId: data.sessionId } : {}),
+    ...(typeof data.requestId === "string"
+      ? { requestId: data.requestId }
+      : {}),
+    ...(typeof data.ticketExternalId === "string"
+      ? { ticketExternalId: data.ticketExternalId }
+      : {}),
+    ...(typeof data.ticketTitle === "string"
+      ? { ticketTitle: data.ticketTitle }
+      : {}),
+    ...(typeof data.status === "string" ? { status: data.status } : {}),
+    ...(typeof data.phase === "string" ? { phase: data.phase } : {}),
+    ...(typeof data.phaseAttempt === "number"
+      ? { phaseAttempt: data.phaseAttempt }
+      : {}),
+    ...(typeof data.modelId === "string" ? { modelId: data.modelId } : {}),
+    ...(typeof data.sessionId === "string"
+      ? { sessionId: data.sessionId }
+      : {}),
     ...(questions ? { questions } : {}),
     ...(timer ? { timer } : {}),
-    ...(Array.isArray(data.requests) ? { requests: data.requests as Array<Record<string, unknown>> } : {}),
-    ...(typeof data.timestamp === 'string' ? { timestamp: data.timestamp } : {}),
-  }
+    ...(Array.isArray(data.requests)
+      ? { requests: data.requests as Array<Record<string, unknown>> }
+      : {}),
+    ...(typeof data.timestamp === "string"
+      ? { timestamp: data.timestamp }
+      : {}),
+  };
 }
 
 function requestKey(sessionId: string, requestId: string): string {
-  return `${sessionId}:${requestId}`
+  return `${sessionId}:${requestId}`;
 }
 
 function stopKeyTicketId(stopKey: string): string {
-  return stopKey.slice(0, stopKey.lastIndexOf(':'))
+  return stopKey.slice(0, stopKey.lastIndexOf(":"));
 }
 
 /**
@@ -112,12 +168,17 @@ function stopKeyTicketId(stopKey: string): string {
  * A non-numeric generation is a stop posted before any timer frame arrived; it
  * has no ordering, so it is kept until the ticket itself goes away.
  */
-function pruneSupersededStopKeys(stopKeys: Set<string>, ticketId: string, currentGeneration: number): void {
-  const prefix = `${ticketId}:`
+function pruneSupersededStopKeys(
+  stopKeys: Set<string>,
+  ticketId: string,
+  currentGeneration: number,
+): void {
+  const prefix = `${ticketId}:`;
   for (const stopKey of stopKeys) {
-    if (!stopKey.startsWith(prefix)) continue
-    const generation = Number(stopKey.slice(prefix.length))
-    if (Number.isFinite(generation) && generation < currentGeneration) stopKeys.delete(stopKey)
+    if (!stopKey.startsWith(prefix)) continue;
+    const generation = Number(stopKey.slice(prefix.length));
+    if (Number.isFinite(generation) && generation < currentGeneration)
+      stopKeys.delete(stopKey);
   }
 }
 
@@ -128,15 +189,17 @@ function pruneTicketRequests(
   live: Set<string>,
 ): void {
   setRequests((current) => {
-    const stale = Object.keys(current).filter((key) => current[key]?.ticketId === ticketId && !live.has(key))
-    if (stale.length === 0) return current
-    const next = { ...current }
-    for (const key of stale) delete next[key]
-    return next
-  })
+    const stale = Object.keys(current).filter(
+      (key) => current[key]?.ticketId === ticketId && !live.has(key),
+    );
+    if (stale.length === 0) return current;
+    const next = { ...current };
+    for (const key of stale) delete next[key];
+    return next;
+  });
 }
 
-type RequestTombstones = Map<string, Map<string, number>>
+type RequestTombstones = Map<string, Map<string, number>>;
 
 function rememberRequestTombstone(
   tombstones: RequestTombstones,
@@ -144,10 +207,12 @@ function rememberRequestTombstone(
   key: string,
   generation: number,
 ): void {
-  const ticketTombstones = tombstones.get(ticketId) ?? new Map<string, number>()
-  const previous = ticketTombstones.get(key)
-  if (previous === undefined || generation > previous) ticketTombstones.set(key, generation)
-  tombstones.set(ticketId, ticketTombstones)
+  const ticketTombstones =
+    tombstones.get(ticketId) ?? new Map<string, number>();
+  const previous = ticketTombstones.get(key);
+  if (previous === undefined || generation > previous)
+    ticketTombstones.set(key, generation);
+  tombstones.set(ticketId, ticketTombstones);
 }
 
 function requestIsTombstoned(
@@ -155,7 +220,7 @@ function requestIsTombstoned(
   ticketId: string,
   key: string,
 ): boolean {
-  return tombstones.get(ticketId)?.has(key) ?? false
+  return tombstones.get(ticketId)?.has(key) ?? false;
 }
 
 function clearAbsentRequestTombstones(
@@ -163,21 +228,33 @@ function clearAbsentRequestTombstones(
   ticketId: string,
   live: Set<string>,
 ): void {
-  const ticketTombstones = tombstones.get(ticketId)
-  if (!ticketTombstones) return
+  const ticketTombstones = tombstones.get(ticketId);
+  if (!ticketTombstones) return;
   for (const key of ticketTombstones.keys()) {
-    if (!live.has(key)) ticketTombstones.delete(key)
+    if (!live.has(key)) ticketTombstones.delete(key);
   }
-  if (ticketTombstones.size === 0) tombstones.delete(ticketId)
+  if (ticketTombstones.size === 0) tombstones.delete(ticketId);
 }
 
-export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; children: ReactNode }) {
-  const { state: uiState } = useUI()
-  const selectedTicketId = uiState.selectedTicketId
-  const [requests, setRequests] = useState<Record<string, AiQuestionRequest>>({})
-  const [timers, setTimers] = useState<Record<string, AiQuestionTimerState>>({})
-  const [dismissedTickets, setDismissedTickets] = useState<Set<string>>(new Set())
-  const submittingRequestsRef = useRef(new Set<string>())
+export function AIQuestionProvider({
+  tickets,
+  children,
+}: {
+  tickets: Ticket[];
+  children: ReactNode;
+}) {
+  const { state: uiState } = useUI();
+  const selectedTicketId = uiState.selectedTicketId;
+  const [requests, setRequests] = useState<Record<string, AiQuestionRequest>>(
+    {},
+  );
+  const [timers, setTimers] = useState<Record<string, AiQuestionTimerState>>(
+    {},
+  );
+  const [dismissedTickets, setDismissedTickets] = useState<Set<string>>(
+    new Set(),
+  );
+  const submittingRequestsRef = useRef(new Set<string>());
   /**
    * How far this browser's clock is ahead of the server's.
    *
@@ -185,7 +262,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * countdown a viewer sees matches the one that will actually fire, on a
    * machine whose clock is minutes out.
    */
-  const clockOffsetRef = useRef(0)
+  const clockOffsetRef = useRef(0);
   /**
    * Clocks whose stop has already been posted, so typing does not re-post.
    *
@@ -195,7 +272,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * `timerKey` fixed that only until the *same* step asked a second time, which
    * reuses the key.
    */
-  const stoppedTimersRef = useRef(new Set<string>())
+  const stoppedTimersRef = useRef(new Set<string>());
   /**
    * The newest `refreshTicket` call per ticket.
    *
@@ -215,10 +292,10 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * either after an SSE update that arrived while the request was in flight.
    * Guarding one direction at a time is what left the other two open.
    */
-  const snapshotTokenRef = useRef(0)
-  const appliedSnapshotRef = useRef(new Map<string, number>())
+  const snapshotTokenRef = useRef(0);
+  const appliedSnapshotRef = useRef(new Map<string, number>());
   /** Resolved request ids suppress stale snapshots until a successful snapshot omits them. */
-  const requestTombstonesRef = useRef<RequestTombstones>(new Map())
+  const requestTombstonesRef = useRef<RequestTombstones>(new Map());
   /**
    * The last live event per ticket, kept apart from the last snapshot.
    *
@@ -229,18 +306,36 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * question the snapshot had learned about. What it does invalidate is the
    * snapshot's right to prune.
    */
-  const liveEventRef = useRef(new Map<string, number>())
+  const liveEventRef = useRef(new Map<string, number>());
   /** The newest timer frame accepted per ticket; see `applyTimer`. */
-  const timerFreshnessRef = useRef(new Map<string, { generation: number; revision: number }>())
+  const timerFreshnessRef = useRef(
+    new Map<string, { generation: number; revision: number }>(),
+  );
 
-  const ticketsById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket])), [tickets])
+  const ticketsById = useMemo(
+    () => new Map(tickets.map((ticket) => [ticket.id, ticket])),
+    [tickets],
+  );
   // Ticket list polling replaces ticket objects even when membership is unchanged. The question
   // recovery interval only needs the current metadata lookup, so keep it out of callback identity.
-  const ticketsByIdRef = useRef(ticketsById)
-  ticketsByIdRef.current = ticketsById
-  const activeTickets = useMemo(() => tickets.filter((ticket) => !isTerminalWorkflowStatus(ticket.status)), [tickets])
-  const activeTicketIds = useMemo(() => new Set(activeTickets.map((ticket) => ticket.id)), [activeTickets])
-  const activeTicketKey = useMemo(() => activeTickets.map((ticket) => ticket.id).sort().join('|'), [activeTickets])
+  const ticketsByIdRef = useRef(ticketsById);
+  ticketsByIdRef.current = ticketsById;
+  const activeTickets = useMemo(
+    () => tickets.filter((ticket) => !isTerminalWorkflowStatus(ticket.status)),
+    [tickets],
+  );
+  const activeTicketIds = useMemo(
+    () => new Set(activeTickets.map((ticket) => ticket.id)),
+    [activeTickets],
+  );
+  const activeTicketKey = useMemo(
+    () =>
+      activeTickets
+        .map((ticket) => ticket.id)
+        .sort()
+        .join("|"),
+    [activeTickets],
+  );
   /**
    * The active set, for the poll to read without depending on it.
    *
@@ -250,94 +345,117 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * active. `activeTicketKey` changes only when the membership does. Written in
    * an effect declared before the poll's, so it is current when `recover` runs.
    */
-  const activeTicketIdsRef = useRef(activeTicketIds)
-  activeTicketIdsRef.current = activeTicketIds
+  const activeTicketIdsRef = useRef(activeTicketIds);
+  activeTicketIdsRef.current = activeTicketIds;
 
-  const noteServerClock = useCallback((timer: AiQuestionTimerState | null | undefined) => {
-    if (!timer?.serverNow) return
-    const serverNow = Date.parse(timer.serverNow)
-    if (Number.isNaN(serverNow)) return
-    clockOffsetRef.current = Date.now() - serverNow
-  }, [])
+  const noteServerClock = useCallback(
+    (timer: AiQuestionTimerState | null | undefined) => {
+      if (!timer?.serverNow) return;
+      const serverNow = Date.parse(timer.serverNow);
+      if (Number.isNaN(serverNow)) return;
+      clockOffsetRef.current = Date.now() - serverNow;
+    },
+    [],
+  );
 
-  const applyTimer = useCallback((ticketId: string, timer: AiQuestionTimerState | null) => {
-    // The clock offset is shared by every ticket, so a late frame that the state
-    // below rejects must not move it either — the countdown jumped on every open
-    // ticket when it did. Decided from a ref rather than inside the updater,
-    // which has to stay pure: React may run it twice.
-    if (timer) {
-      const seen = timerFreshnessRef.current.get(ticketId)
-      const isStale = seen !== undefined && (
-        seen.generation > timer.generation
-        || (seen.generation === timer.generation && seen.revision > timer.revision)
-      )
-      if (!isStale) {
-        timerFreshnessRef.current.set(ticketId, { generation: timer.generation, revision: timer.revision })
-        noteServerClock(timer)
+  const applyTimer = useCallback(
+    (ticketId: string, timer: AiQuestionTimerState | null) => {
+      // The clock offset is shared by every ticket, so a late frame that the state
+      // below rejects must not move it either — the countdown jumped on every open
+      // ticket when it did. Decided from a ref rather than inside the updater,
+      // which has to stay pure: React may run it twice.
+      if (timer) {
+        const seen = timerFreshnessRef.current.get(ticketId);
+        const isStale =
+          seen !== undefined &&
+          (seen.generation > timer.generation ||
+            (seen.generation === timer.generation &&
+              seen.revision > timer.revision));
+        if (!isStale) {
+          timerFreshnessRef.current.set(ticketId, {
+            generation: timer.generation,
+            revision: timer.revision,
+          });
+          noteServerClock(timer);
+        }
+      } else {
+        timerFreshnessRef.current.delete(ticketId);
       }
-    } else {
-      timerFreshnessRef.current.delete(ticketId)
-    }
 
-    setTimers((current) => {
-      if (!timer) {
-        if (!current[ticketId]) return current
-        const next = { ...current }
-        delete next[ticketId]
-        return next
-      }
-      const existing = current[ticketId]
-      // A late frame must never undo a newer one. The server bumps `revision`
-      // on every transition precisely so an out-of-order delivery is detectable
-      // — but only within one clock, and revisions restart at 1 for each new
-      // one. `timerKey` cannot separate them either: a step that asks, is
-      // answered, and asks again arms a second clock under the same key, so a
-      // key-scoped comparison would read the new countdown as a stale frame and
-      // keep showing one that has already gone. `generation` is what actually
-      // identifies the clock.
-      if (existing && (
-        existing.generation > timer.generation
-        || (existing.generation === timer.generation && existing.revision > timer.revision)
-      )) {
-        return current
-      }
-      return { ...current, [ticketId]: timer }
-    })
-    if (timer?.stoppedAt) stoppedTimersRef.current.add(`${ticketId}:${timer.generation}`)
-    // A clock that has been superseded can never be stopped again, so its entry
-    // is dead weight in a set that otherwise grows for the life of the tab. The
-    // current generation's entry stays: that is what stops a burst of keystrokes
-    // posting Stop more than once.
-    if (timer) pruneSupersededStopKeys(stoppedTimersRef.current, ticketId, timer.generation)
-  }, [noteServerClock])
+      setTimers((current) => {
+        if (!timer) {
+          if (!current[ticketId]) return current;
+          const next = { ...current };
+          delete next[ticketId];
+          return next;
+        }
+        const existing = current[ticketId];
+        // A late frame must never undo a newer one. The server bumps `revision`
+        // on every transition precisely so an out-of-order delivery is detectable
+        // — but only within one clock, and revisions restart at 1 for each new
+        // one. `timerKey` cannot separate them either: a step that asks, is
+        // answered, and asks again arms a second clock under the same key, so a
+        // key-scoped comparison would read the new countdown as a stale frame and
+        // keep showing one that has already gone. `generation` is what actually
+        // identifies the clock.
+        if (
+          existing &&
+          (existing.generation > timer.generation ||
+            (existing.generation === timer.generation &&
+              existing.revision > timer.revision))
+        ) {
+          return current;
+        }
+        return { ...current, [ticketId]: timer };
+      });
+      if (timer?.stoppedAt)
+        stoppedTimersRef.current.add(`${ticketId}:${timer.generation}`);
+      // A clock that has been superseded can never be stopped again, so its entry
+      // is dead weight in a set that otherwise grows for the life of the tab. The
+      // current generation's entry stays: that is what stops a burst of keystrokes
+      // posting Stop more than once.
+      if (timer)
+        pruneSupersededStopKeys(
+          stoppedTimersRef.current,
+          ticketId,
+          timer.generation,
+        );
+    },
+    [noteServerClock],
+  );
 
   const removeRequest = useCallback((sessionId: string, requestId: string) => {
     setRequests((current) => {
-      const key = requestKey(sessionId, requestId)
-      if (!current[key]) return current
-      const next = { ...current }
-      delete next[key]
-      return next
-    })
-  }, [])
+      const key = requestKey(sessionId, requestId);
+      if (!current[key]) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
 
   const upsertRequest = useCallback((payload: AiQuestionPayload) => {
-    if (!payload.requestId || !payload.sessionId || !payload.questions?.length) return
-    const { requestId, sessionId, questions } = payload
-    const ticket = ticketsByIdRef.current.get(payload.ticketId)
+    if (!payload.requestId || !payload.sessionId || !payload.questions?.length)
+      return;
+    const { requestId, sessionId, questions } = payload;
+    const ticket = ticketsByIdRef.current.get(payload.ticketId);
     setRequests((current) => {
-      const key = requestKey(sessionId, requestId)
+      const key = requestKey(sessionId, requestId);
       // Never clobber a draft the operator is part-way through typing.
-      if (current[key]) return current
+      if (current[key]) return current;
       return {
         ...current,
         [key]: {
           ticketId: payload.ticketId,
-          ticketExternalId: payload.ticketExternalId ?? ticket?.externalId ?? payload.ticketId,
-          ticketTitle: payload.ticketTitle ?? ticket?.title ?? 'Ticket',
-          status: payload.status ?? ticket?.status ?? payload.phase ?? 'UNKNOWN',
-          phase: payload.phase ?? payload.status ?? ticket?.status ?? 'UNKNOWN',
-          ...(typeof payload.phaseAttempt === 'number' ? { phaseAttempt: payload.phaseAttempt } : {}),
+          ticketExternalId:
+            payload.ticketExternalId ?? ticket?.externalId ?? payload.ticketId,
+          ticketTitle: payload.ticketTitle ?? ticket?.title ?? "Ticket",
+          status:
+            payload.status ?? ticket?.status ?? payload.phase ?? "UNKNOWN",
+          phase: payload.phase ?? payload.status ?? ticket?.status ?? "UNKNOWN",
+          ...(typeof payload.phaseAttempt === "number"
+            ? { phaseAttempt: payload.phaseAttempt }
+            : {}),
           ...(payload.modelId ? { modelId: payload.modelId } : {}),
           sessionId,
           requestId,
@@ -345,156 +463,193 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
           receivedAt: payload.timestamp ?? new Date().toISOString(),
           submitting: false,
         },
-      }
-    })
-  }, [])
+      };
+    });
+  }, []);
 
-  const ingestPayload = useCallback((payload: AiQuestionPayload) => {
-    // A live event is newer than any snapshot request already in flight, so it
-    // claims the sequence: a response that read the server before this arrived
-    // must not prune what it just told us.
-    const eventGeneration = payload.ticketId ? ++snapshotTokenRef.current : 0
-    if (payload.ticketId) liveEventRef.current.set(payload.ticketId, eventGeneration)
-    if (payload.type === 'opencode_question_resolved') {
-      if (payload.sessionId && payload.requestId) {
-        rememberRequestTombstone(
+  const ingestPayload = useCallback(
+    (payload: AiQuestionPayload) => {
+      // A live event is newer than any snapshot request already in flight, so it
+      // claims the sequence: a response that read the server before this arrived
+      // must not prune what it just told us.
+      const eventGeneration = payload.ticketId ? ++snapshotTokenRef.current : 0;
+      if (payload.ticketId)
+        liveEventRef.current.set(payload.ticketId, eventGeneration);
+      if (payload.type === "opencode_question_resolved") {
+        if (payload.sessionId && payload.requestId) {
+          rememberRequestTombstone(
+            requestTombstonesRef.current,
+            payload.ticketId,
+            requestKey(payload.sessionId, payload.requestId),
+            eventGeneration,
+          );
+        }
+        if (payload.sessionId && payload.requestId)
+          removeRequest(payload.sessionId, payload.requestId);
+        // The card has to leave Needs Input too. Without this a question refused
+        // by its own timer, or answered in another tab, left the board showing a
+        // ticket waiting on input that nothing was waiting on.
+        void queryClient.invalidateQueries({ queryKey: ["tickets"] });
+        return;
+      }
+      if (payload.type === "opencode_question_updated") {
+        applyTimer(payload.ticketId, payload.timer ?? null);
+        // Carries the step's whole pending set, so it is also how this client
+        // learns a request went away — which moves the card.
+        void queryClient.invalidateQueries({ queryKey: ["tickets"] });
+        // The update carries the full pending set for the step, so it is also the
+        // signal that a request this client never saw arrive is now outstanding.
+        // Its rows use the server's own vocabulary (`memberId`) and omit the
+        // ticket fields that sit on the envelope, so both are mapped across —
+        // `upsertRequest` never overwrites an existing row, which would otherwise
+        // leave the first arrival permanently unlabelled.
+        const live = new Set<string>();
+        for (const raw of payload.requests ?? []) {
+          const parsed = parseQuestionPayload({
+            ...raw,
+            type: "opencode_question",
+            ticketId: payload.ticketId,
+            ...(typeof raw.memberId === "string"
+              ? { modelId: raw.memberId }
+              : {}),
+            ...(payload.ticketExternalId
+              ? { ticketExternalId: payload.ticketExternalId }
+              : {}),
+            ...(payload.ticketTitle
+              ? { ticketTitle: payload.ticketTitle }
+              : {}),
+            ...(payload.status ? { status: payload.status } : {}),
+          });
+          if (!parsed?.sessionId || !parsed.requestId) continue;
+          live.add(requestKey(parsed.sessionId, parsed.requestId));
+          upsertRequest(parsed);
+        }
+        // The set is the step's whole pending list, so it also says what is gone.
+        // Only upserting meant a request dropped without an explicit `resolved`
+        // event stayed answerable until the 30-second poll noticed. An update that
+        // carries no `requests` array is not a statement about the set, and prunes
+        // nothing.
+        if (Array.isArray(payload.requests))
+          pruneTicketRequests(setRequests, payload.ticketId, live);
+        return;
+      }
+      upsertRequest(payload);
+      if (payload.timer) applyTimer(payload.ticketId, payload.timer);
+      // Without this the card never moves into Needs Input, however live the panel is.
+      void queryClient.invalidateQueries({ queryKey: ["tickets"] });
+    },
+    [applyTimer, removeRequest, upsertRequest],
+  );
+
+  const ingestSseEvent = useCallback(
+    (data: Record<string, unknown>) => {
+      const payload = parseQuestionPayload(data);
+      if (payload) ingestPayload(payload);
+    },
+    [ingestPayload],
+  );
+
+  const applyTicketSnapshot = useCallback(
+    (
+      ticketId: string,
+      rawQuestions: Array<Record<string, unknown>>,
+      timer: AiQuestionTimerState | null,
+      options: { generation: number; prune?: boolean },
+    ) => {
+      const live = new Set<string>();
+      const visibleLive = new Set<string>();
+      for (const raw of rawQuestions) {
+        const payload = parseQuestionPayload(raw);
+        if (!payload?.sessionId || !payload.requestId) continue;
+        const key = requestKey(payload.sessionId, payload.requestId);
+        live.add(key);
+        if (requestIsTombstoned(requestTombstonesRef.current, ticketId, key)) {
+          // A successful endpoint can still return a resolving request when its
+          // adapter lookup failed and it fell back to the local window store. Its
+          // presence is retained in `live` so the tombstone is not cleared, but
+          // it must not keep the rest of this authoritative snapshot from being
+          // pruned or from advancing the timer. Otherwise one stale row makes a
+          // ticket permanently non-authoritative until the tab is reloaded.
+          continue;
+        }
+        visibleLive.add(key);
+        upsertRequest(payload);
+      }
+      // A successful fetch is authoritative for this ticket: anything it does not
+      // list was resolved elsewhere, and leaving it on screen would show a
+      // question nobody can answer. A *failed* fetch prunes nothing, and neither
+      // does one a live event has overtaken — its list is older than what the
+      // event just told us, but the requests it carries are still real.
+      const authoritative = options.prune !== false;
+      if (authoritative) {
+        pruneTicketRequests(setRequests, ticketId, visibleLive);
+        applyTimer(ticketId, timer);
+        clearAbsentRequestTombstones(
           requestTombstonesRef.current,
-          payload.ticketId,
-          requestKey(payload.sessionId, payload.requestId),
-          eventGeneration,
-        )
+          ticketId,
+          live,
+        );
       }
-      if (payload.sessionId && payload.requestId) removeRequest(payload.sessionId, payload.requestId)
-      // The card has to leave Needs Input too. Without this a question refused
-      // by its own timer, or answered in another tab, left the board showing a
-      // ticket waiting on input that nothing was waiting on.
-      void queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      return
-    }
-    if (payload.type === 'opencode_question_updated') {
-      applyTimer(payload.ticketId, payload.timer ?? null)
-      // Carries the step's whole pending set, so it is also how this client
-      // learns a request went away — which moves the card.
-      void queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      // The update carries the full pending set for the step, so it is also the
-      // signal that a request this client never saw arrive is now outstanding.
-      // Its rows use the server's own vocabulary (`memberId`) and omit the
-      // ticket fields that sit on the envelope, so both are mapped across —
-      // `upsertRequest` never overwrites an existing row, which would otherwise
-      // leave the first arrival permanently unlabelled.
-      const live = new Set<string>()
-      for (const raw of payload.requests ?? []) {
-        const parsed = parseQuestionPayload({
-          ...raw,
-          type: 'opencode_question',
-          ticketId: payload.ticketId,
-          ...(typeof raw.memberId === 'string' ? { modelId: raw.memberId } : {}),
-          ...(payload.ticketExternalId ? { ticketExternalId: payload.ticketExternalId } : {}),
-          ...(payload.ticketTitle ? { ticketTitle: payload.ticketTitle } : {}),
-          ...(payload.status ? { status: payload.status } : {}),
-        })
-        if (!parsed?.sessionId || !parsed.requestId) continue
-        live.add(requestKey(parsed.sessionId, parsed.requestId))
-        upsertRequest(parsed)
-      }
-      // The set is the step's whole pending list, so it also says what is gone.
-      // Only upserting meant a request dropped without an explicit `resolved`
-      // event stayed answerable until the 30-second poll noticed. An update that
-      // carries no `requests` array is not a statement about the set, and prunes
-      // nothing.
-      if (Array.isArray(payload.requests)) pruneTicketRequests(setRequests, payload.ticketId, live)
-      return
-    }
-    upsertRequest(payload)
-    if (payload.timer) applyTimer(payload.ticketId, payload.timer)
-    // Without this the card never moves into Needs Input, however live the panel is.
-    void queryClient.invalidateQueries({ queryKey: ['tickets'] })
-  }, [applyTimer, removeRequest, upsertRequest])
-
-  const ingestSseEvent = useCallback((data: Record<string, unknown>) => {
-    const payload = parseQuestionPayload(data)
-    if (payload) ingestPayload(payload)
-  }, [ingestPayload])
-
-  const applyTicketSnapshot = useCallback((
-    ticketId: string,
-    rawQuestions: Array<Record<string, unknown>>,
-    timer: AiQuestionTimerState | null,
-    options: { generation: number; prune?: boolean },
-  ) => {
-    const live = new Set<string>()
-    const visibleLive = new Set<string>()
-    for (const raw of rawQuestions) {
-      const payload = parseQuestionPayload(raw)
-      if (!payload?.sessionId || !payload.requestId) continue
-      const key = requestKey(payload.sessionId, payload.requestId)
-      live.add(key)
-      if (requestIsTombstoned(requestTombstonesRef.current, ticketId, key)) {
-        // A successful endpoint can still return a resolving request when its
-        // adapter lookup failed and it fell back to the local window store. Its
-        // presence is retained in `live` so the tombstone is not cleared, but
-        // it must not keep the rest of this authoritative snapshot from being
-        // pruned or from advancing the timer. Otherwise one stale row makes a
-        // ticket permanently non-authoritative until the tab is reloaded.
-        continue
-      }
-      visibleLive.add(key)
-      upsertRequest(payload)
-    }
-    // A successful fetch is authoritative for this ticket: anything it does not
-    // list was resolved elsewhere, and leaving it on screen would show a
-    // question nobody can answer. A *failed* fetch prunes nothing, and neither
-    // does one a live event has overtaken — its list is older than what the
-    // event just told us, but the requests it carries are still real.
-    const authoritative = options.prune !== false
-    if (authoritative) {
-      pruneTicketRequests(setRequests, ticketId, visibleLive)
-      applyTimer(ticketId, timer)
-      clearAbsentRequestTombstones(requestTombstonesRef.current, ticketId, live)
-    }
-  }, [applyTimer, upsertRequest])
+    },
+    [applyTimer, upsertRequest],
+  );
 
   /**
    * Whether a snapshot that has just landed may still be applied, and how.
    *
    * `null` means a newer snapshot already answered for this ticket.
    */
-  const resolveSnapshotApplication = useCallback((
-    ticketId: string,
-    generation: number,
-  ): { generation: number; prune: boolean } | null => {
-    // A ticket can finish while a per-ticket response is in flight. Its
-    // lifecycle cleanup advances the same fence used for snapshot ordering;
-    // checking membership here also closes the render-to-effect gap.
-    if (!activeTicketIdsRef.current.has(ticketId)) return null
-    if (generation < (appliedSnapshotRef.current.get(ticketId) ?? 0)) return null
-    appliedSnapshotRef.current.set(ticketId, generation)
-    return { generation, prune: generation > (liveEventRef.current.get(ticketId) ?? 0) }
-  }, [])
+  const resolveSnapshotApplication = useCallback(
+    (
+      ticketId: string,
+      generation: number,
+    ): { generation: number; prune: boolean } | null => {
+      // A ticket can finish while a per-ticket response is in flight. Its
+      // lifecycle cleanup advances the same fence used for snapshot ordering;
+      // checking membership here also closes the render-to-effect gap.
+      if (!activeTicketIdsRef.current.has(ticketId)) return null;
+      if (generation < (appliedSnapshotRef.current.get(ticketId) ?? 0))
+        return null;
+      appliedSnapshotRef.current.set(ticketId, generation);
+      return {
+        generation,
+        prune: generation > (liveEventRef.current.get(ticketId) ?? 0),
+      };
+    },
+    [],
+  );
 
-  const refreshTicket = useCallback((ticketId: string) => {
-    if (!activeTicketIdsRef.current.has(ticketId)) return
-    const generation = ++snapshotTokenRef.current
-    void (async () => {
-      try {
-        const res = await fetch(apiTicketPath(ticketId, 'opencode', 'questions'))
-        await throwIfNotOk(res, 'Failed to refresh questions')
-        const body = await res.json() as { questions?: Array<Record<string, unknown>>; timer?: unknown }
-        // The snapshot prunes, so applying an older one deletes questions that
-        // are still live — whether the newer thing was a poll or an SSE event.
-        const application = resolveSnapshotApplication(ticketId, generation)
-        if (!application) return
-        applyTicketSnapshot(
-          ticketId,
-          Array.isArray(body.questions) ? body.questions : [],
-          parseTimer(body.timer),
-          application,
-        )
-      } catch {
-        // Best-effort; the aggregate poll is the backstop.
-      }
-    })()
-  }, [applyTicketSnapshot, resolveSnapshotApplication])
+  const refreshTicket = useCallback(
+    (ticketId: string) => {
+      if (!activeTicketIdsRef.current.has(ticketId)) return;
+      const generation = ++snapshotTokenRef.current;
+      void (async () => {
+        try {
+          const res = await fetch(
+            apiTicketPath(ticketId, "opencode", "questions"),
+          );
+          await throwIfNotOk(res, "Failed to refresh questions");
+          const body = (await res.json()) as {
+            questions?: Array<Record<string, unknown>>;
+            timer?: unknown;
+          };
+          // The snapshot prunes, so applying an older one deletes questions that
+          // are still live — whether the newer thing was a poll or an SSE event.
+          const application = resolveSnapshotApplication(ticketId, generation);
+          if (!application) return;
+          applyTicketSnapshot(
+            ticketId,
+            Array.isArray(body.questions) ? body.questions : [],
+            parseTimer(body.timer),
+            application,
+          );
+        } catch {
+          // Best-effort; the aggregate poll is the backstop.
+        }
+      })();
+    },
+    [applyTicketSnapshot, resolveSnapshotApplication],
+  );
 
   /**
    * The aggregate poll.
@@ -507,57 +662,61 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * however late the discovery was.
    */
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
 
     const recover = async () => {
-      const activeIds = activeTicketIdsRef.current
-      if (activeIds.size === 0) return
+      const activeIds = activeTicketIdsRef.current;
+      if (activeIds.size === 0) return;
       // The snapshot this poll applies is authoritative — it prunes anything it
       // does not list — so one slow poll landing after a faster later one, or
       // after a per-ticket refresh, would delete questions that are still live.
-      const generation = ++snapshotTokenRef.current
+      const generation = ++snapshotTokenRef.current;
       try {
-        const res = await fetch('/api/opencode/questions')
-        await throwIfNotOk(res, 'Failed to recover questions')
-        const body = await res.json() as {
-          questions?: Array<Record<string, unknown>>
-          timers?: Record<string, unknown>
-        }
-        if (cancelled || !Array.isArray(body.questions)) return
+        const res = await fetch("/api/opencode/questions");
+        await throwIfNotOk(res, "Failed to recover questions");
+        const body = (await res.json()) as {
+          questions?: Array<Record<string, unknown>>;
+          timers?: Record<string, unknown>;
+        };
+        if (cancelled || !Array.isArray(body.questions)) return;
 
-        const byTicket = new Map<string, Array<Record<string, unknown>>>()
+        const byTicket = new Map<string, Array<Record<string, unknown>>>();
         for (const raw of body.questions) {
-          const ticketId = typeof raw.ticketId === 'string' ? raw.ticketId : null
-          if (!ticketId || !activeIds.has(ticketId)) continue
-          const bucket = byTicket.get(ticketId) ?? []
-          bucket.push(raw)
-          byTicket.set(ticketId, bucket)
+          const ticketId =
+            typeof raw.ticketId === "string" ? raw.ticketId : null;
+          if (!ticketId || !activeIds.has(ticketId)) continue;
+          const bucket = byTicket.get(ticketId) ?? [];
+          bucket.push(raw);
+          byTicket.set(ticketId, bucket);
         }
         for (const ticketId of activeIds) {
           // Per ticket, because a refresh or an SSE event may have overtaken
           // this poll for one ticket and not for the others.
-          const application = resolveSnapshotApplication(ticketId, generation)
-          if (!application) continue
+          const application = resolveSnapshotApplication(ticketId, generation);
+          if (!application) continue;
           applyTicketSnapshot(
             ticketId,
             byTicket.get(ticketId) ?? [],
             parseTimer(body.timers?.[ticketId]),
             application,
-          )
+          );
         }
       } catch {
         // Leave what is already known standing; an unreachable server is not
         // evidence that a question went away.
       }
-    }
+    };
 
-    void recover()
-    const interval = setInterval(() => void recover(), QUESTION_RECOVERY_INTERVAL_MS)
+    void recover();
+    const interval = setInterval(
+      () => void recover(),
+      QUESTION_RECOVERY_INTERVAL_MS,
+    );
     return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [activeTicketKey, applyTicketSnapshot, resolveSnapshotApplication])
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeTicketKey, applyTicketSnapshot, resolveSnapshotApplication]);
 
   /**
    * Everything belonging to a ticket that is finished or no longer listed.
@@ -569,41 +728,46 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * a ticket arrives or leaves rather than on every ten-second refetch.
    */
   useEffect(() => {
-    const activeIds = activeTicketIdsRef.current
+    const activeIds = activeTicketIdsRef.current;
 
     setRequests((current) => {
-      const stale = Object.keys(current).filter((key) => !activeIds.has(current[key]!.ticketId))
-      if (stale.length === 0) return current
-      const next = { ...current }
-      for (const key of stale) delete next[key]
-      return next
-    })
+      const stale = Object.keys(current).filter(
+        (key) => !activeIds.has(current[key]!.ticketId),
+      );
+      if (stale.length === 0) return current;
+      const next = { ...current };
+      for (const key of stale) delete next[key];
+      return next;
+    });
 
     setTimers((current) => {
-      const stale = Object.keys(current).filter((ticketId) => !activeIds.has(ticketId))
-      if (stale.length === 0) return current
-      const next = { ...current }
-      for (const ticketId of stale) delete next[ticketId]
-      return next
-    })
+      const stale = Object.keys(current).filter(
+        (ticketId) => !activeIds.has(ticketId),
+      );
+      if (stale.length === 0) return current;
+      const next = { ...current };
+      for (const ticketId of stale) delete next[ticketId];
+      return next;
+    });
 
     setDismissedTickets((current) => {
-      const stale = [...current].filter((ticketId) => !activeIds.has(ticketId))
-      if (stale.length === 0) return current
-      const next = new Set(current)
-      for (const ticketId of stale) next.delete(ticketId)
-      return next
-    })
+      const stale = [...current].filter((ticketId) => !activeIds.has(ticketId));
+      if (stale.length === 0) return current;
+      const next = new Set(current);
+      for (const ticketId of stale) next.delete(ticketId);
+      return next;
+    });
 
     for (const stopKey of stoppedTimersRef.current) {
-      if (!activeIds.has(stopKeyTicketId(stopKey))) stoppedTimersRef.current.delete(stopKey)
+      if (!activeIds.has(stopKeyTicketId(stopKey)))
+        stoppedTimersRef.current.delete(stopKey);
     }
     // `appliedSnapshotRef` is deliberately not pruned here. Clearing it would
     // reset a ticket to sequence 0, and a response still in flight from that
     // ticket's previous life would then compare as newer and prune the current
     // one. It holds one number per ticket seen in this tab.
     for (const ticketId of timerFreshnessRef.current.keys()) {
-      if (!activeIds.has(ticketId)) timerFreshnessRef.current.delete(ticketId)
+      if (!activeIds.has(ticketId)) timerFreshnessRef.current.delete(ticketId);
     }
     // `liveEventRef`, like `appliedSnapshotRef`, is not pruned: resetting a
     // ticket to sequence 0 would let a response from its previous life apply.
@@ -612,159 +776,225 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       ...appliedSnapshotRef.current.keys(),
       ...liveEventRef.current.keys(),
     ])) {
-      if (activeIds.has(ticketId)) continue
+      if (activeIds.has(ticketId)) continue;
       // The ticket's request identity is no longer reusable in this view. Keep
       // one monotonic fence before retiring the tombstones so an outstanding
       // response from the old lifetime cannot put the card back.
-      const fence = ++snapshotTokenRef.current
-      appliedSnapshotRef.current.set(ticketId, fence)
-      requestTombstonesRef.current.delete(ticketId)
+      const fence = ++snapshotTokenRef.current;
+      appliedSnapshotRef.current.set(ticketId, fence);
+      requestTombstonesRef.current.delete(ticketId);
     }
-  }, [activeTicketKey])
+  }, [activeTicketKey]);
 
-  const ticketRequests = useCallback((ticketId: string) => Object.values(requests)
-    .filter((request) => request.ticketId === ticketId)
-    .sort((left, right) => Date.parse(left.receivedAt) - Date.parse(right.receivedAt)), [requests])
+  const ticketRequests = useCallback(
+    (ticketId: string) =>
+      Object.values(requests)
+        .filter((request) => request.ticketId === ticketId)
+        .sort(
+          (left, right) =>
+            Date.parse(left.receivedAt) - Date.parse(right.receivedAt),
+        ),
+    [requests],
+  );
 
-  const getPendingCount = useCallback((ticketId: string) => ticketRequests(ticketId)
-    .reduce((total, request) => total + request.questions.length, 0), [ticketRequests])
+  const getPendingCount = useCallback(
+    (ticketId: string) =>
+      ticketRequests(ticketId).reduce(
+        (total, request) => total + request.questions.length,
+        0,
+      ),
+    [ticketRequests],
+  );
 
-  const getRequestCount = useCallback((ticketId: string) => ticketRequests(ticketId).length, [ticketRequests])
+  const getRequestCount = useCallback(
+    (ticketId: string) => ticketRequests(ticketId).length,
+    [ticketRequests],
+  );
 
-  const getTimer = useCallback((ticketId: string) => timers[ticketId] ?? null, [timers])
+  const getTimer = useCallback(
+    (ticketId: string) => timers[ticketId] ?? null,
+    [timers],
+  );
 
-  const getRemainingMs = useCallback((ticketId: string) => {
-    const timer = timers[ticketId]
-    if (!timer || timer.stoppedAt) return null
-    const deadline = Date.parse(timer.deadlineAt)
-    if (Number.isNaN(deadline)) return null
-    return Math.max(0, deadline + clockOffsetRef.current - Date.now())
-  }, [timers])
+  const getRemainingMs = useCallback(
+    (ticketId: string) => {
+      const timer = timers[ticketId];
+      if (!timer || timer.stoppedAt) return null;
+      const deadline = Date.parse(timer.deadlineAt);
+      if (Number.isNaN(deadline)) return null;
+      return Math.max(0, deadline + clockOffsetRef.current - Date.now());
+    },
+    [timers],
+  );
 
-  const setSubmitting = useCallback((sessionId: string, requestId: string, submitting: boolean, error?: string) => {
-    setRequests((current) => {
-      const key = requestKey(sessionId, requestId)
-      const existing = current[key]
-      if (!existing) return current
-      return { ...current, [key]: { ...existing, submitting, ...(error ? { error } : { error: undefined }) } }
-    })
-  }, [])
+  const setSubmitting = useCallback(
+    (
+      sessionId: string,
+      requestId: string,
+      submitting: boolean,
+      error?: string,
+    ) => {
+      setRequests((current) => {
+        const key = requestKey(sessionId, requestId);
+        const existing = current[key];
+        if (!existing) return current;
+        return {
+          ...current,
+          [key]: {
+            ...existing,
+            submitting,
+            ...(error ? { error } : { error: undefined }),
+          },
+        };
+      });
+    },
+    [],
+  );
 
-  const stopTimer = useCallback((ticketId: string) => {
-    const stopKey = `${ticketId}:${timers[ticketId]?.generation ?? 'unknown'}`
-    if (stoppedTimersRef.current.has(stopKey)) return
-    // Marked before the request lands so a burst of keystrokes posts once.
-    stoppedTimersRef.current.add(stopKey)
-    void (async () => {
-      try {
-        const res = await fetch(apiTicketPath(ticketId, 'opencode', 'question-timer', 'stop'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        })
-        if (!res.ok) {
-          // Not `throwIfNotOk`: a refused stop has to release the receipt so a
-          // later keystroke can try again, which a throw past this line skips.
-          stoppedTimersRef.current.delete(stopKey)
-          return
+  const stopTimer = useCallback(
+    (ticketId: string) => {
+      const stopKey = `${ticketId}:${timers[ticketId]?.generation ?? "unknown"}`;
+      if (stoppedTimersRef.current.has(stopKey)) return;
+      // Marked before the request lands so a burst of keystrokes posts once.
+      stoppedTimersRef.current.add(stopKey);
+      void (async () => {
+        try {
+          const res = await fetch(
+            apiTicketPath(ticketId, "opencode", "question-timer", "stop"),
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: "{}",
+            },
+          );
+          if (!res.ok) {
+            // Not `throwIfNotOk`: a refused stop has to release the receipt so a
+            // later keystroke can try again, which a throw past this line skips.
+            stoppedTimersRef.current.delete(stopKey);
+            return;
+          }
+          const body = (await res.json()) as { timer?: unknown };
+          const timer = parseTimer(body.timer);
+          if (timer) applyTimer(ticketId, timer);
+        } catch {
+          stoppedTimersRef.current.delete(stopKey);
         }
-        const body = await res.json() as { timer?: unknown }
-        const timer = parseTimer(body.timer)
-        if (timer) applyTimer(ticketId, timer)
-      } catch {
-        stoppedTimersRef.current.delete(stopKey)
-      }
-    })()
-  }, [applyTimer, timers])
+      })();
+    },
+    [applyTimer, timers],
+  );
 
-  const submitToRoute = useCallback((
-    ticketId: string,
-    requestId: string,
-    path: string,
-    body: unknown,
-    failureMessage: string,
-  ) => {
-    const request = Object.values(requests).find((candidate) => (
-      candidate.ticketId === ticketId && candidate.requestId === requestId
-    ))
-    if (!request) return
-    const key = requestKey(request.sessionId, requestId)
-    if (submittingRequestsRef.current.has(key)) return
-    // React batches state updates, so claim the request before posting.
-    submittingRequestsRef.current.add(key)
-    setSubmitting(request.sessionId, requestId, true)
-    void fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(async (res) => {
-      // The success path does not read the body, so the shared reader can have
-      // it. Its own parser turned a Zod field map in `details` into
-      // "[object Object]" in the question panel, and dropped the status.
-      await throwIfNotOk(res, failureMessage)
-      removeRequest(request.sessionId, requestId)
-      void queryClient.invalidateQueries({ queryKey: ['tickets'] })
-    }).catch((error: unknown) => {
-      setSubmitting(request.sessionId, requestId, false, getErrorMessage(error))
-    }).finally(() => {
-      submittingRequestsRef.current.delete(key)
-    })
-  }, [removeRequest, requests, setSubmitting])
+  const submitToRoute = useCallback(
+    (
+      ticketId: string,
+      requestId: string,
+      path: string,
+      body: unknown,
+      failureMessage: string,
+    ) => {
+      const request = Object.values(requests).find(
+        (candidate) =>
+          candidate.ticketId === ticketId && candidate.requestId === requestId,
+      );
+      if (!request) return;
+      const key = requestKey(request.sessionId, requestId);
+      if (submittingRequestsRef.current.has(key)) return;
+      // React batches state updates, so claim the request before posting.
+      submittingRequestsRef.current.add(key);
+      setSubmitting(request.sessionId, requestId, true);
+      void fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(async (res) => {
+          // The success path does not read the body, so the shared reader can have
+          // it. Its own parser turned a Zod field map in `details` into
+          // "[object Object]" in the question panel, and dropped the status.
+          await throwIfNotOk(res, failureMessage);
+          removeRequest(request.sessionId, requestId);
+          void queryClient.invalidateQueries({ queryKey: ["tickets"] });
+        })
+        .catch((error: unknown) => {
+          setSubmitting(
+            request.sessionId,
+            requestId,
+            false,
+            getErrorMessage(error),
+          );
+        })
+        .finally(() => {
+          submittingRequestsRef.current.delete(key);
+        });
+    },
+    [removeRequest, requests, setSubmitting],
+  );
 
-  const answerRequest = useCallback((ticketId: string, requestId: string, answers: string[][]) => {
-    submitToRoute(
-      ticketId,
-      requestId,
-      apiTicketPath(ticketId, 'opencode', 'questions', requestId, 'reply'),
-      { answers },
-      'Could not send that answer',
-    )
-  }, [submitToRoute])
+  const answerRequest = useCallback(
+    (ticketId: string, requestId: string, answers: string[][]) => {
+      submitToRoute(
+        ticketId,
+        requestId,
+        apiTicketPath(ticketId, "opencode", "questions", requestId, "reply"),
+        { answers },
+        "Could not send that answer",
+      );
+    },
+    [submitToRoute],
+  );
 
-  const skipRequest = useCallback((ticketId: string, requestId: string, reason: string | null) => {
-    submitToRoute(
-      ticketId,
-      requestId,
-      apiTicketPath(ticketId, 'opencode', 'questions', requestId, 'reject'),
-      reason ? { reason } : {},
-      'Could not skip that question',
-    )
-  }, [submitToRoute])
+  const skipRequest = useCallback(
+    (ticketId: string, requestId: string, reason: string | null) => {
+      submitToRoute(
+        ticketId,
+        requestId,
+        apiTicketPath(ticketId, "opencode", "questions", requestId, "reject"),
+        reason ? { reason } : {},
+        "Could not skip that question",
+      );
+    },
+    [submitToRoute],
+  );
 
-  const value = useMemo<AIQuestionContextValue>(() => ({
-    getPendingCount,
-    getRequestCount,
-    getTicketRequests: ticketRequests,
-    getTimer,
-    getRemainingMs,
-    answerRequest,
-    skipRequest,
-    stopTimer,
-    ingestSseEvent,
-    refreshTicket,
-  }), [
-    answerRequest,
-    getPendingCount,
-    getRemainingMs,
-    getRequestCount,
-    getTimer,
-    ingestSseEvent,
-    refreshTicket,
-    skipRequest,
-    stopTimer,
-    ticketRequests,
-  ])
+  const value = useMemo<AIQuestionContextValue>(
+    () => ({
+      getPendingCount,
+      getRequestCount,
+      getTicketRequests: ticketRequests,
+      getTimer,
+      getRemainingMs,
+      answerRequest,
+      skipRequest,
+      stopTimer,
+      ingestSseEvent,
+      refreshTicket,
+    }),
+    [
+      answerRequest,
+      getPendingCount,
+      getRemainingMs,
+      getRequestCount,
+      getTimer,
+      ingestSseEvent,
+      refreshTicket,
+      skipRequest,
+      stopTimer,
+      ticketRequests,
+    ],
+  );
 
   const waitingTickets = useMemo(() => {
-    const seen = new Map<string, AiQuestionRequest>()
+    const seen = new Map<string, AiQuestionRequest>();
     for (const request of Object.values(requests)) {
       // A finished or removed ticket is not waiting on anybody, whatever this
       // provider is still holding for it.
-      if (!activeTicketIds.has(request.ticketId)) continue
-      if (!seen.has(request.ticketId)) seen.set(request.ticketId, request)
+      if (!activeTicketIds.has(request.ticketId)) continue;
+      if (!seen.has(request.ticketId)) seen.set(request.ticketId, request);
     }
-    return [...seen.values()].filter((request) => !dismissedTickets.has(request.ticketId))
-  }, [activeTicketIds, dismissedTickets, requests])
+    return [...seen.values()].filter(
+      (request) => !dismissedTickets.has(request.ticketId),
+    );
+  }, [activeTicketIds, dismissedTickets, requests]);
 
   return (
     <AIQuestionContext.Provider value={value}>
@@ -772,10 +1002,12 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       <AiQuestionSlideInBar
         waiting={waitingTickets}
         selectedTicketId={selectedTicketId}
-        onDismiss={(ticketId) => setDismissedTickets((current) => new Set(current).add(ticketId))}
+        onDismiss={(ticketId) =>
+          setDismissedTickets((current) => new Set(current).add(ticketId))
+        }
       />
     </AIQuestionContext.Provider>
-  )
+  );
 }
 
 /**
@@ -794,28 +1026,31 @@ function AiQuestionSlideInBar({
   selectedTicketId,
   onDismiss,
 }: {
-  waiting: AiQuestionRequest[]
-  selectedTicketId: string | null
-  onDismiss: (ticketId: string) => void
+  waiting: AiQuestionRequest[];
+  selectedTicketId: string | null;
+  onDismiss: (ticketId: string) => void;
 }) {
-  const { dispatch } = useUI()
+  const { dispatch } = useUI();
   // The ticket on screen already shows the panel; naming it here would be noise.
-  const elsewhere = waiting.filter((request) => request.ticketId !== selectedTicketId)
-  const first = elsewhere[0]
+  const elsewhere = waiting.filter(
+    (request) => request.ticketId !== selectedTicketId,
+  );
+  const first = elsewhere[0];
 
-  if (!first) return null
+  if (!first) return null;
 
-  const others = elsewhere.length - 1
-  const label = others > 0
-    ? `${first.ticketExternalId} and ${others} other ticket${others === 1 ? '' : 's'} are waiting on a question`
-    : `${first.ticketExternalId} is waiting on a question`
+  const others = elsewhere.length - 1;
+  const label =
+    others > 0
+      ? `${first.ticketExternalId} and ${others} other ticket${others === 1 ? "" : "s"} are waiting on a question`
+      : `${first.ticketExternalId} is waiting on a question`;
 
   return (
     <div
       className={cn(
-        'fixed inset-x-0 top-0 z-[70] flex items-center gap-3 border-b border-sky-200 bg-sky-50/95 px-4 py-2',
-        'shadow-sm backdrop-blur lt-slide-in-top',
-        'dark:border-sky-900/60 dark:bg-sky-950/90',
+        "fixed inset-x-0 top-0 z-[70] flex items-center gap-3 border-b border-sky-200 bg-sky-50/95 px-4 py-2",
+        "shadow-sm backdrop-blur lt-slide-in-top",
+        "dark:border-sky-900/60 dark:bg-sky-950/90",
       )}
       role="status"
       aria-live="polite"
@@ -824,7 +1059,11 @@ function AiQuestionSlideInBar({
         type="button"
         className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-sky-900 hover:underline dark:text-sky-100"
         onClick={() => {
-          dispatch({ type: 'SELECT_TICKET', ticketId: first.ticketId, externalId: first.ticketExternalId })
+          dispatch({
+            type: "SELECT_TICKET",
+            ticketId: first.ticketId,
+            externalId: first.ticketExternalId,
+          });
         }}
       >
         <HelpCircle className="h-4 w-4 shrink-0" aria-hidden />
@@ -839,5 +1078,5 @@ function AiQuestionSlideInBar({
         <X className="h-4 w-4" />
       </button>
     </div>
-  )
+  );
 }

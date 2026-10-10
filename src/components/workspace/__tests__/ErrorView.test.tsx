@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import type { LogContextValue, LogEntry } from "@/context/logUtils";
 import { renderWithProviders, withLogContext } from "@/test/renderHelpers";
 import { makeTicket } from "@/test/factories";
+import type { TicketErrorOccurrence } from "@/lib/errorOccurrences";
 import { ErrorView } from "../ErrorView";
 import {
   BEAD_AGENT_RESPONSE_INVALID,
@@ -34,25 +35,45 @@ vi.mock("@/hooks/useTickets", async (importOriginal) => {
   };
 });
 
-function makeLiveCodingErrorTicket() {
+const usageLimitDiagnostics: TicketErrorOccurrence["diagnostics"] = {
+  kind: "opencode_provider",
+  source: "provider",
+  summary: "usage limit reached",
+  sessionId: "ses-continue",
+  statusCode: 429,
+  isRetryable: true,
+};
+
+function makeLiveErrorTicket(
+  overrides: Partial<
+    Pick<
+      TicketErrorOccurrence,
+      "id" | "blockedFromStatus" | "errorMessage" | "diagnostics"
+    >
+  > = {},
+  availableActions: ReturnType<typeof makeTicket>["availableActions"] = [
+    "retry",
+    "cancel",
+  ],
+) {
+  const occurrence: TicketErrorOccurrence = {
+    id: "coding-error",
+    occurrenceNumber: 1,
+    blockedFromStatus: "CODING",
+    errorMessage: "Implementation failed.",
+    errorCodes: [],
+    occurredAt: "2026-01-01T00:00:00.000Z",
+    resolvedAt: null,
+    resolutionStatus: null,
+    resumedToStatus: null,
+    ...overrides,
+  };
   return makeTicket({
     status: "BLOCKED_ERROR",
-    previousStatus: "CODING",
-    availableActions: ["retry", "cancel"],
-    activeErrorOccurrenceId: "coding-error",
-    errorOccurrences: [
-      {
-        id: "coding-error",
-        occurrenceNumber: 1,
-        blockedFromStatus: "CODING",
-        errorMessage: "Implementation failed.",
-        errorCodes: [],
-        occurredAt: "2026-01-01T00:00:00.000Z",
-        resolvedAt: null,
-        resolutionStatus: null,
-        resumedToStatus: null,
-      },
-    ],
+    previousStatus: occurrence.blockedFromStatus,
+    availableActions,
+    activeErrorOccurrenceId: occurrence.id,
+    errorOccurrences: [occurrence],
   });
 }
 
@@ -218,7 +239,7 @@ describe("ErrorView", () => {
   ])(
     "does not recommend unavailable recovery for %s in %s",
     (errorCode, blockedFromStatus) => {
-      const ticket = makeLiveCodingErrorTicket();
+      const ticket = makeLiveErrorTicket();
       const occurrence = ticket.errorOccurrences?.[0];
       assert(occurrence);
       occurrence.blockedFromStatus = blockedFromStatus;
@@ -256,7 +277,7 @@ describe("ErrorView", () => {
   ])(
     "matches provider recovery guidance and keyboard order to $actions",
     ({ actions, recommendation }) => {
-      const ticket = makeLiveCodingErrorTicket();
+      const ticket = makeLiveErrorTicket();
       const occurrence = ticket.errorOccurrences?.[0];
       assert(occurrence);
       occurrence.errorCodes = [OPENCODE_PROVIDER_ERROR];
@@ -279,7 +300,7 @@ describe("ErrorView", () => {
   );
 
   it("recommends setup-plan editing alone when retry is unavailable", () => {
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     const occurrence = ticket.errorOccurrences?.[0];
     assert(occurrence);
     occurrence.blockedFromStatus = "PREPARING_EXECUTION_ENV";
@@ -351,7 +372,7 @@ describe("ErrorView", () => {
   });
 
   it("keeps the selected historical failure visible with its resolution and no recovery controls", () => {
-    const activeTicket = makeLiveCodingErrorTicket();
+    const activeTicket = makeLiveErrorTicket();
     const activeOccurrence = activeTicket.errorOccurrences?.[0];
     assert(activeOccurrence);
     const occurrence = {
@@ -435,7 +456,7 @@ describe("ErrorView", () => {
   });
 
   it("treats an older unresolved occurrence as history even without a readOnly prop", () => {
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     const activeOccurrence = ticket.errorOccurrences?.[0];
     assert(activeOccurrence);
     const occurrence = {
@@ -453,7 +474,7 @@ describe("ErrorView", () => {
   });
 
   it("does not use the live ticket message for an empty historical error", () => {
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     const activeOccurrence = ticket.errorOccurrences?.[0];
     assert(activeOccurrence);
     const occurrence = {
@@ -507,24 +528,10 @@ describe("ErrorView", () => {
   });
 
   it("identifies operational failures from workspace setup drafting", () => {
-    const ticket = makeTicket({
-      status: "BLOCKED_ERROR",
-      previousStatus: "GENERATING_EXECUTION_SETUP_PLAN",
-      availableActions: ["retry", "cancel"],
-      activeErrorOccurrenceId: "setup-drafting-failure",
-      errorOccurrences: [
-        {
-          id: "setup-drafting-failure",
-          occurrenceNumber: 1,
-          blockedFromStatus: "GENERATING_EXECUTION_SETUP_PLAN",
-          errorMessage: "Provider request failed.",
-          errorCodes: [],
-          occurredAt: "2026-01-01T00:00:00.000Z",
-          resolvedAt: null,
-          resolutionStatus: null,
-          resumedToStatus: null,
-        },
-      ],
+    const ticket = makeLiveErrorTicket({
+      id: "setup-drafting-failure",
+      blockedFromStatus: "GENERATING_EXECUTION_SETUP_PLAN",
+      errorMessage: "Provider request failed.",
     });
 
     renderWithProviders(<ErrorView ticket={ticket} />);
@@ -542,7 +549,7 @@ describe("ErrorView", () => {
       mutateAsync: cancelMutate,
       isPending: false,
     });
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
 
     renderWithProviders(<ErrorView ticket={ticket} />);
 
@@ -601,7 +608,7 @@ describe("ErrorView", () => {
   });
 
   it("shows each append-only bead note history under its own heading", () => {
-    const base = makeLiveCodingErrorTicket();
+    const base = makeLiveErrorTicket();
     const ticket = makeTicket({
       ...base,
       runtime: {
@@ -661,7 +668,7 @@ describe("ErrorView", () => {
     const otherCodeNote = { ...note, errorCode: "CHECK_TIMEOUT" };
     const otherContentNote = { ...note, content: "provider interrupted" };
     const ticket = makeTicket({
-      ...makeLiveCodingErrorTicket(),
+      ...makeLiveErrorTicket(),
       runtime: {
         lastFailedBeadId: "bead-1",
         beads: [
@@ -808,7 +815,7 @@ describe("ErrorView", () => {
 
   it("offers an extra-note retry only for a live retryable implementation error", () => {
     const liveView = renderWithProviders(
-      <ErrorView ticket={makeLiveCodingErrorTicket()} />,
+      <ErrorView ticket={makeLiveErrorTicket()} />,
     );
 
     expect(
@@ -817,7 +824,7 @@ describe("ErrorView", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     liveView.unmount();
 
-    const baseTicket = makeLiveCodingErrorTicket();
+    const baseTicket = makeLiveErrorTicket();
     const baseOccurrence = baseTicket.errorOccurrences?.[0];
     assert(baseOccurrence);
     const nonCodingTicket = makeTicket({
@@ -839,14 +846,14 @@ describe("ErrorView", () => {
     nonCodingView.unmount();
 
     const historyView = renderWithProviders(
-      <ErrorView ticket={makeLiveCodingErrorTicket()} readOnly />,
+      <ErrorView ticket={makeLiveErrorTicket()} readOnly />,
     );
     expect(
       screen.queryByRole("button", { name: "Retry with extra note..." }),
     ).not.toBeInTheDocument();
     historyView.unmount();
 
-    const noRetryTicket = makeLiveCodingErrorTicket();
+    const noRetryTicket = makeLiveErrorTicket();
     noRetryTicket.availableActions = ["cancel"];
     renderWithProviders(<ErrorView ticket={noRetryTicket} />);
     expect(
@@ -1011,7 +1018,7 @@ describe("ErrorView", () => {
   });
 
   it("cleans terminal formatting and duplicate warnings from the displayed error", () => {
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     const occurrence = ticket.errorOccurrences?.[0];
     assert(occurrence);
     occurrence.errorMessage = [
@@ -1034,7 +1041,7 @@ describe("ErrorView", () => {
   });
 
   it("opens an accessible extra-note dialog and requires non-whitespace text", () => {
-    renderWithProviders(<ErrorView ticket={makeLiveCodingErrorTicket()} />);
+    renderWithProviders(<ErrorView ticket={makeLiveErrorTicket()} />);
 
     fireEvent.click(
       screen.getByRole("button", { name: "Retry with extra note..." }),
@@ -1070,7 +1077,7 @@ describe("ErrorView", () => {
       options?.onSuccess?.();
     });
     mockUseTicketAction.mockReturnValue({ mutate, isPending: false });
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     renderWithProviders(<ErrorView ticket={ticket} />);
 
     fireEvent.click(
@@ -1110,7 +1117,7 @@ describe("ErrorView", () => {
       },
     );
     mockUseTicketAction.mockReturnValue({ mutate, isPending: false });
-    renderWithProviders(<ErrorView ticket={makeLiveCodingErrorTicket()} />);
+    renderWithProviders(<ErrorView ticket={makeLiveErrorTicket()} />);
 
     fireEvent.click(
       screen.getByRole("button", { name: "Retry with extra note..." }),
@@ -1131,7 +1138,7 @@ describe("ErrorView", () => {
   it("disables the extra-note form while the retry request is pending", () => {
     const mutate = vi.fn();
     mockUseTicketAction.mockReturnValue({ mutate, isPending: false });
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     renderWithProviders(<ErrorView ticket={ticket} />);
 
     fireEvent.click(
@@ -1192,33 +1199,15 @@ describe("ErrorView", () => {
   it("shows Continue only when the live blocked ticket exposes the continue action", () => {
     const mutate = vi.fn();
     mockUseTicketAction.mockReturnValue({ mutate, isPending: false });
-    const ticket = makeTicket({
-      status: "BLOCKED_ERROR",
-      previousStatus: "PREPARING_EXECUTION_ENV",
-      availableActions: ["retry", "continue", "cancel"],
-      activeErrorOccurrenceId: "continue-1",
-      errorOccurrences: [
-        {
-          id: "continue-1",
-          occurrenceNumber: 1,
-          blockedFromStatus: "PREPARING_EXECUTION_ENV",
-          errorMessage: "Usage limit reached.",
-          errorCodes: [],
-          diagnostics: {
-            kind: "opencode_provider",
-            source: "provider",
-            summary: "usage limit reached",
-            sessionId: "ses-continue",
-            statusCode: 429,
-            isRetryable: true,
-          },
-          occurredAt: "2026-01-01T00:00:00.000Z",
-          resolvedAt: null,
-          resolutionStatus: null,
-          resumedToStatus: null,
-        },
-      ],
-    });
+    const ticket = makeLiveErrorTicket(
+      {
+        id: "continue-1",
+        blockedFromStatus: "PREPARING_EXECUTION_ENV",
+        errorMessage: "Usage limit reached.",
+        diagnostics: usageLimitDiagnostics,
+      },
+      ["retry", "continue", "cancel"],
+    );
 
     renderWithProviders(<ErrorView ticket={ticket} />);
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -1357,33 +1346,15 @@ describe("ErrorView", () => {
       },
     );
     mockUseTicketAction.mockReturnValue({ mutate, isPending: false });
-    const ticket = makeTicket({
-      status: "BLOCKED_ERROR",
-      previousStatus: "PREPARING_EXECUTION_ENV",
-      availableActions: ["retry", "continue", "cancel"],
-      activeErrorOccurrenceId: "continue-rejected",
-      errorOccurrences: [
-        {
-          id: "continue-rejected",
-          occurrenceNumber: 1,
-          blockedFromStatus: "PREPARING_EXECUTION_ENV",
-          errorMessage: "Usage limit reached.",
-          errorCodes: [],
-          diagnostics: {
-            kind: "opencode_provider",
-            source: "provider",
-            summary: "usage limit reached",
-            sessionId: "ses-continue",
-            statusCode: 429,
-            isRetryable: true,
-          },
-          occurredAt: "2026-01-01T00:00:00.000Z",
-          resolvedAt: null,
-          resolutionStatus: null,
-          resumedToStatus: null,
-        },
-      ],
-    });
+    const ticket = makeLiveErrorTicket(
+      {
+        id: "continue-rejected",
+        blockedFromStatus: "PREPARING_EXECUTION_ENV",
+        errorMessage: "Usage limit reached.",
+        diagnostics: usageLimitDiagnostics,
+      },
+      ["retry", "continue", "cancel"],
+    );
 
     renderWithProviders(<ErrorView ticket={ticket} />);
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -1394,24 +1365,10 @@ describe("ErrorView", () => {
   });
 
   it("hides Continue when the live blocked ticket does not expose the continue action", () => {
-    const ticket = makeTicket({
-      status: "BLOCKED_ERROR",
-      previousStatus: "PREPARING_EXECUTION_ENV",
-      availableActions: ["retry", "cancel"],
-      activeErrorOccurrenceId: "retry-only",
-      errorOccurrences: [
-        {
-          id: "retry-only",
-          occurrenceNumber: 1,
-          blockedFromStatus: "PREPARING_EXECUTION_ENV",
-          errorMessage: "Invalid request.",
-          errorCodes: [],
-          occurredAt: "2026-01-01T00:00:00.000Z",
-          resolvedAt: null,
-          resolutionStatus: null,
-          resumedToStatus: null,
-        },
-      ],
+    const ticket = makeLiveErrorTicket({
+      id: "retry-only",
+      blockedFromStatus: "PREPARING_EXECUTION_ENV",
+      errorMessage: "Invalid request.",
     });
 
     renderWithProviders(<ErrorView ticket={ticket} />);
@@ -1495,7 +1452,7 @@ describe("ErrorView", () => {
   });
 
   it("keeps additional provider context visible when its summary contains the primary error", () => {
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     const occurrence = ticket.errorOccurrences?.[0];
     assert(occurrence);
     occurrence.errorMessage = "Request failed";
@@ -1520,7 +1477,7 @@ describe("ErrorView", () => {
   });
 
   it("uses the diagnostic cause as the main error when no message was captured", () => {
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     const occurrence = ticket.errorOccurrences?.[0];
     assert(occurrence);
     occurrence.errorMessage = "";
@@ -1549,7 +1506,7 @@ describe("ErrorView", () => {
   });
 
   it("retains a provider message row when it adds details absent from the main error and summary", () => {
-    const ticket = makeLiveCodingErrorTicket();
+    const ticket = makeLiveErrorTicket();
     const occurrence = ticket.errorOccurrences?.[0];
     assert(occurrence);
     occurrence.errorMessage = "Request failed.";

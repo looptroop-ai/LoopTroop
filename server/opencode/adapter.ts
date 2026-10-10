@@ -2088,15 +2088,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             paths.ticketDir,
             bead.qaOrigin!.version,
           );
+          const ticketDir = paths.ticketDir;
+          const relativePath = evidence.relativePath;
+          const evidencePath = resolve(ticketDir, relativePath);
           localPath = resolveContainedPath(
             paths.ticketDir,
             resolveContainedEvidencePath(
               evidencePaths.root,
               evidencePaths.evidenceDir,
-              relative(
-                evidencePaths.evidenceDir,
-                resolve(paths.ticketDir, evidence.relativePath),
-              ),
+              relative(evidencePaths.evidenceDir, evidencePath),
             ),
           );
         } catch {

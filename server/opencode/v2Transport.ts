@@ -821,7 +821,9 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       );
     }
 
-    const iterator = parseSse(response.body)[Symbol.asyncIterator]();
+    const events = parseSse(response.body);
+    const createIterator = events[Symbol.asyncIterator];
+    const iterator = createIterator.call(events);
     let closed = false;
     return {
       iterator,

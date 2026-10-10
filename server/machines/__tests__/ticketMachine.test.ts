@@ -7,7 +7,24 @@ import {
   WORKFLOW_PHASE_IDS,
 } from "@shared/workflowMeta";
 import { ticketMachine } from "../ticketMachine";
-import type { TicketEvent } from "../types";
+import type { TicketContext, TicketEvent } from "../types";
+import { makeTicketContext } from "../../test/factories";
+
+function createRestoredActor(overrides: Partial<TicketContext>) {
+  const context = makeTicketContext({
+    ticketId: "1:T-1",
+    externalId: "T-1",
+    lockedMainImplementer: "model-a",
+    lockedCouncilMembers: ["model-a", "model-b"],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  });
+  return createActor(ticketMachine, {
+    snapshot: ticketMachine.resolveState({ value: context.status, context }),
+    input: {},
+  });
+}
 
 describe("ticketMachine states", () => {
   it("keeps cleanup running when a late Cancel arrives", () => {
@@ -145,44 +162,14 @@ describe("ticketMachine execution setup flow", () => {
   );
 
   it("records a stable cause code when Final Testing fails", () => {
-    const actor = createActor(ticketMachine, {
-      snapshot: {
-        status: "active",
-        value: "RUNNING_FINAL_TEST",
-        historyValue: {},
-        context: {
-          ticketId: "1:T-1",
-          projectId: 1,
-          externalId: "T-1",
-          title: "Final test failure",
-          status: "RUNNING_FINAL_TEST",
-          lockedMainImplementer: "model-a",
-          lockedMainImplementerVariant: null,
-          lockedCouncilMembers: ["model-a"],
-          lockedCouncilMemberVariants: null,
-          lockedInterviewQuestions: null,
-          lockedCoverageFollowUpBudgetPercent: null,
-          lockedMaxCoveragePasses: null,
-          lockedMaxPrdCoveragePasses: null,
-          lockedMaxBeadsCoveragePasses: null,
-          lockedStructuredRetryCount: null,
-          lockedManualQaEnabled: false,
-          lockedManualQaSource: "profile",
-          previousStatus: "CODING",
-          error: null,
-          errorCodes: [],
-          errorDiagnostics: null,
-          blockedErrorResolution: null,
-          beadProgress: { total: 1, completed: 1, current: null },
-          iterationCount: 0,
-          maxIterations: 5,
-          councilResults: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        children: {},
-      } as unknown as never,
-      input: {},
+    const actor = createRestoredActor({
+      title: "Final test failure",
+      status: "RUNNING_FINAL_TEST",
+      lockedCouncilMembers: ["model-a"],
+      lockedManualQaEnabled: false,
+      lockedManualQaSource: "profile",
+      previousStatus: "CODING",
+      beadProgress: { total: 1, completed: 1, current: null },
     });
 
     actor.start();
@@ -195,44 +182,14 @@ describe("ticketMachine execution setup flow", () => {
 
   it("routes passed final tests through Manual QA only when the started ticket locked it on", () => {
     const makeActor = (enabled: boolean | null) =>
-      createActor(ticketMachine, {
-        snapshot: {
-          status: "active",
-          value: "RUNNING_FINAL_TEST",
-          historyValue: {},
-          context: {
-            ticketId: "1:T-1",
-            projectId: 1,
-            externalId: "T-1",
-            title: "Manual QA gate",
-            status: "RUNNING_FINAL_TEST",
-            lockedMainImplementer: "model-a",
-            lockedMainImplementerVariant: null,
-            lockedCouncilMembers: ["model-a"],
-            lockedCouncilMemberVariants: null,
-            lockedInterviewQuestions: null,
-            lockedCoverageFollowUpBudgetPercent: null,
-            lockedMaxCoveragePasses: null,
-            lockedMaxPrdCoveragePasses: null,
-            lockedMaxBeadsCoveragePasses: null,
-            lockedStructuredRetryCount: null,
-            lockedManualQaEnabled: enabled,
-            lockedManualQaSource: enabled === null ? null : "profile",
-            previousStatus: "CODING",
-            error: null,
-            errorCodes: [],
-            errorDiagnostics: null,
-            blockedErrorResolution: null,
-            beadProgress: { total: 1, completed: 1, current: null },
-            iterationCount: 0,
-            maxIterations: 5,
-            councilResults: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-          children: {},
-        } as unknown as never,
-        input: {},
+      createRestoredActor({
+        title: "Manual QA gate",
+        status: "RUNNING_FINAL_TEST",
+        lockedCouncilMembers: ["model-a"],
+        lockedManualQaEnabled: enabled,
+        lockedManualQaSource: enabled === null ? null : "profile",
+        previousStatus: "CODING",
+        beadProgress: { total: 1, completed: 1, current: null },
       });
 
     const enabled = makeActor(true);
@@ -297,50 +254,13 @@ describe("ticketMachine execution setup flow", () => {
   });
 
   it("records and clears structured diagnostics for blocked BEAD_ERROR events", () => {
-    const actor = createActor(ticketMachine, {
-      snapshot: {
-        status: "active",
-        value: "CODING",
-        historyValue: {},
-        context: {
-          ticketId: "1:T-1",
-          projectId: 1,
-          externalId: "T-1",
-          title: "Diagnostic bead error",
-          status: "CODING",
-          lockedMainImplementer: "openai/gpt-5.2",
-          lockedMainImplementerVariant: null,
-          lockedCouncilMembers: ["openai/gpt-5.2"],
-          lockedCouncilMemberVariants: null,
-          lockedInterviewQuestions: null,
-          lockedCoverageFollowUpBudgetPercent: null,
-          lockedMaxCoveragePasses: null,
-          lockedMaxPrdCoveragePasses: null,
-          lockedMaxBeadsCoveragePasses: null,
-          lockedStructuredRetryCount: null,
-          previousStatus: "PREPARING_EXECUTION_ENV",
-          error: null,
-          errorCodes: [],
-          errorDiagnostics: null,
-          blockedErrorResolution: null,
-          beadProgress: { total: 1, completed: 0, current: "bead-1" },
-          iterationCount: 0,
-          maxIterations: 5,
-          councilResults: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        children: {},
-      } as unknown as never,
-      input: {
-        ticketId: "1:T-1",
-        projectId: 1,
-        externalId: "T-1",
-        title: "Diagnostic bead error",
-        maxIterations: 5,
-        lockedMainImplementer: "openai/gpt-5.2",
-        lockedCouncilMembers: ["openai/gpt-5.2"],
-      },
+    const actor = createRestoredActor({
+      title: "Diagnostic bead error",
+      status: "CODING",
+      lockedMainImplementer: "openai/gpt-5.2",
+      lockedCouncilMembers: ["openai/gpt-5.2"],
+      previousStatus: "PREPARING_EXECUTION_ENV",
+      beadProgress: { total: 1, completed: 0, current: "bead-1" },
     });
 
     actor.start();
@@ -465,45 +385,15 @@ describe("ticketMachine execution setup flow", () => {
   });
 
   it("preserves a pending regeneration request through blocked-error retry", () => {
-    const actor = createActor(ticketMachine, {
-      snapshot: {
-        status: "active",
-        value: "GENERATING_EXECUTION_SETUP_PLAN",
-        historyValue: {},
-        context: {
-          ticketId: "1:T-1",
-          projectId: 1,
-          externalId: "T-1",
-          title: "Restart-safe setup-plan regeneration",
-          status: "GENERATING_EXECUTION_SETUP_PLAN",
-          lockedMainImplementer: "model-a",
-          lockedMainImplementerVariant: null,
-          lockedCouncilMembers: ["model-a"],
-          lockedCouncilMemberVariants: null,
-          lockedInterviewQuestions: null,
-          lockedCoverageFollowUpBudgetPercent: null,
-          lockedMaxCoveragePasses: null,
-          lockedMaxPrdCoveragePasses: null,
-          lockedMaxBeadsCoveragePasses: null,
-          lockedStructuredRetryCount: null,
-          lockedManualQaEnabled: false,
-          lockedManualQaSource: "profile",
-          pendingExecutionSetupPlanRequestArtifactId: 73,
-          previousStatus: "WAITING_EXECUTION_SETUP_APPROVAL",
-          error: null,
-          errorCodes: [],
-          errorDiagnostics: null,
-          blockedErrorResolution: null,
-          beadProgress: { total: 1, completed: 0, current: null },
-          iterationCount: 0,
-          maxIterations: 5,
-          councilResults: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        children: {},
-      } as unknown as never,
-      input: {},
+    const actor = createRestoredActor({
+      title: "Restart-safe setup-plan regeneration",
+      status: "GENERATING_EXECUTION_SETUP_PLAN",
+      lockedCouncilMembers: ["model-a"],
+      lockedManualQaEnabled: false,
+      lockedManualQaSource: "profile",
+      pendingExecutionSetupPlanRequestArtifactId: 73,
+      previousStatus: "WAITING_EXECUTION_SETUP_APPROVAL",
+      beadProgress: { total: 1, completed: 0, current: null },
     });
 
     actor.start();
@@ -529,45 +419,13 @@ describe("ticketMachine execution setup flow", () => {
   });
 
   it("retries back into PREPARING_EXECUTION_ENV from blocked error", () => {
-    const actor = createActor(ticketMachine, {
-      snapshot: {
-        status: "active",
-        value: "BLOCKED_ERROR",
-        historyValue: {},
-        context: {
-          ticketId: "1:T-1",
-          projectId: 1,
-          externalId: "T-1",
-          title: "Execution setup retry",
-          status: "BLOCKED_ERROR",
-          lockedMainImplementer: "model-a",
-          lockedMainImplementerVariant: null,
-          lockedCouncilMembers: ["model-a", "model-b"],
-          lockedCouncilMemberVariants: null,
-          lockedInterviewQuestions: null,
-          lockedCoverageFollowUpBudgetPercent: null,
-          lockedMaxCoveragePasses: null,
-          previousStatus: "PREPARING_EXECUTION_ENV",
-          error: "Execution setup failed",
-          errorCodes: ["EXECUTION_SETUP_FAILED"],
-          beadProgress: { total: 2, completed: 0, current: null },
-          iterationCount: 0,
-          maxIterations: 5,
-          councilResults: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        children: {},
-      } as unknown as never,
-      input: {
-        ticketId: "1:T-1",
-        projectId: 1,
-        externalId: "T-1",
-        title: "Execution setup retry",
-        maxIterations: 5,
-        lockedMainImplementer: "model-a",
-        lockedCouncilMembers: ["model-a", "model-b"],
-      },
+    const actor = createRestoredActor({
+      title: "Execution setup retry",
+      status: "BLOCKED_ERROR",
+      previousStatus: "PREPARING_EXECUTION_ENV",
+      error: "Execution setup failed",
+      errorCodes: ["EXECUTION_SETUP_FAILED"],
+      beadProgress: { total: 2, completed: 0, current: null },
     });
 
     actor.start();
@@ -578,50 +436,12 @@ describe("ticketMachine execution setup flow", () => {
   });
 
   it("continues back into PREPARING_EXECUTION_ENV from blocked error", () => {
-    const actor = createActor(ticketMachine, {
-      snapshot: {
-        status: "active",
-        value: "BLOCKED_ERROR",
-        historyValue: {},
-        context: {
-          ticketId: "1:T-1",
-          projectId: 1,
-          externalId: "T-1",
-          title: "Execution setup continue",
-          status: "BLOCKED_ERROR",
-          lockedMainImplementer: "model-a",
-          lockedMainImplementerVariant: null,
-          lockedCouncilMembers: ["model-a", "model-b"],
-          lockedCouncilMemberVariants: null,
-          lockedInterviewQuestions: null,
-          lockedCoverageFollowUpBudgetPercent: null,
-          lockedMaxCoveragePasses: null,
-          lockedMaxPrdCoveragePasses: null,
-          lockedMaxBeadsCoveragePasses: null,
-          lockedStructuredRetryCount: null,
-          previousStatus: "PREPARING_EXECUTION_ENV",
-          error: "Usage limit reached",
-          errorCodes: [],
-          errorDiagnostics: null,
-          blockedErrorResolution: null,
-          beadProgress: { total: 2, completed: 0, current: null },
-          iterationCount: 0,
-          maxIterations: 5,
-          councilResults: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        children: {},
-      } as unknown as never,
-      input: {
-        ticketId: "1:T-1",
-        projectId: 1,
-        externalId: "T-1",
-        title: "Execution setup continue",
-        maxIterations: 5,
-        lockedMainImplementer: "model-a",
-        lockedCouncilMembers: ["model-a", "model-b"],
-      },
+    const actor = createRestoredActor({
+      title: "Execution setup continue",
+      status: "BLOCKED_ERROR",
+      previousStatus: "PREPARING_EXECUTION_ENV",
+      error: "Usage limit reached",
+      beadProgress: { total: 2, completed: 0, current: null },
     });
 
     actor.start();
@@ -635,45 +455,13 @@ describe("ticketMachine execution setup flow", () => {
   });
 
   it("retries back into setup-plan approval from blocked error", () => {
-    const actor = createActor(ticketMachine, {
-      snapshot: {
-        status: "active",
-        value: "BLOCKED_ERROR",
-        historyValue: {},
-        context: {
-          ticketId: "1:T-1",
-          projectId: 1,
-          externalId: "T-1",
-          title: "Execution setup plan retry",
-          status: "BLOCKED_ERROR",
-          lockedMainImplementer: "model-a",
-          lockedMainImplementerVariant: null,
-          lockedCouncilMembers: ["model-a", "model-b"],
-          lockedCouncilMemberVariants: null,
-          lockedInterviewQuestions: null,
-          lockedCoverageFollowUpBudgetPercent: null,
-          lockedMaxCoveragePasses: null,
-          previousStatus: "WAITING_EXECUTION_SETUP_APPROVAL",
-          error: "Execution setup plan failed",
-          errorCodes: ["EXECUTION_SETUP_PLAN_FAILED"],
-          beadProgress: { total: 2, completed: 0, current: null },
-          iterationCount: 0,
-          maxIterations: 5,
-          councilResults: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        children: {},
-      } as unknown as never,
-      input: {
-        ticketId: "1:T-1",
-        projectId: 1,
-        externalId: "T-1",
-        title: "Execution setup plan retry",
-        maxIterations: 5,
-        lockedMainImplementer: "model-a",
-        lockedCouncilMembers: ["model-a", "model-b"],
-      },
+    const actor = createRestoredActor({
+      title: "Execution setup plan retry",
+      status: "BLOCKED_ERROR",
+      previousStatus: "WAITING_EXECUTION_SETUP_APPROVAL",
+      error: "Execution setup plan failed",
+      errorCodes: ["EXECUTION_SETUP_PLAN_FAILED"],
+      beadProgress: { total: 2, completed: 0, current: null },
     });
 
     actor.start();
@@ -684,47 +472,13 @@ describe("ticketMachine execution setup flow", () => {
   });
 
   it("does not retry blocked errors when previousStatus is missing", () => {
-    const actor = createActor(ticketMachine, {
-      snapshot: {
-        status: "active",
-        value: "BLOCKED_ERROR",
-        historyValue: {},
-        context: {
-          ticketId: "1:T-1",
-          projectId: 1,
-          externalId: "T-1",
-          title: "Missing retry target",
-          status: "BLOCKED_ERROR",
-          lockedMainImplementer: "model-a",
-          lockedMainImplementerVariant: null,
-          lockedCouncilMembers: ["model-a", "model-b"],
-          lockedCouncilMemberVariants: null,
-          lockedInterviewQuestions: null,
-          lockedCoverageFollowUpBudgetPercent: null,
-          lockedMaxCoveragePasses: null,
-          lockedMaxPrdCoveragePasses: null,
-          lockedMaxBeadsCoveragePasses: null,
-          previousStatus: null,
-          error: "Unknown failure",
-          errorCodes: ["UNKNOWN"],
-          beadProgress: { total: 0, completed: 0, current: null },
-          iterationCount: 0,
-          maxIterations: 5,
-          councilResults: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        children: {},
-      } as unknown as never,
-      input: {
-        ticketId: "1:T-1",
-        projectId: 1,
-        externalId: "T-1",
-        title: "Missing retry target",
-        maxIterations: 5,
-        lockedMainImplementer: "model-a",
-        lockedCouncilMembers: ["model-a", "model-b"],
-      },
+    const actor = createRestoredActor({
+      title: "Missing retry target",
+      status: "BLOCKED_ERROR",
+      previousStatus: null,
+      error: "Unknown failure",
+      errorCodes: ["UNKNOWN"],
+      beadProgress: { total: 0, completed: 0, current: null },
     });
 
     actor.start();

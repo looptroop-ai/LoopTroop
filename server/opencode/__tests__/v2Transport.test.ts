@@ -391,7 +391,9 @@ describe("OpenCode v2 fetch transport", () => {
       4,
     );
     expect(subscription.cursor).toBe(5);
-    const iterator = subscription.events[Symbol.asyncIterator]();
+    const events = subscription.events;
+    const createIterator = events[Symbol.asyncIterator];
+    const iterator = createIterator.call(events);
     await expect(iterator.next()).resolves.toEqual({
       done: false,
       value: {

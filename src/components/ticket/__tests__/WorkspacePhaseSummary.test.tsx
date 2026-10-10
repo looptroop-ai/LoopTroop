@@ -34,11 +34,50 @@ function createLogEntry(
   };
 }
 
-function mockWorkspacePhaseQueries() {
+function mockWorkspacePhaseQueries(
+  artifacts: unknown[] = [],
+  retriedPhase?: string,
+) {
   vi.mocked(globalThis.fetch).mockImplementation((input) => {
     const url = String(input);
-    if (url.endsWith("/artifacts")) return createJsonResponse([]);
-    if (url.includes("/attempts")) return createJsonResponse([]);
+    if (
+      url.endsWith(
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
+      )
+    )
+      return createJsonResponse(artifacts);
+    if (
+      retriedPhase
+        ? url.endsWith(
+            `/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/${retriedPhase}/attempts`,
+          )
+        : url.includes("/attempts")
+    ) {
+      return createJsonResponse(
+        retriedPhase
+          ? [
+              {
+                ticketId: TEST.ticketId,
+                phase: retriedPhase,
+                attemptNumber: 2,
+                state: "active",
+                archivedReason: null,
+                createdAt: "2026-01-01T00:01:00.000Z",
+                archivedAt: null,
+              },
+              {
+                ticketId: TEST.ticketId,
+                phase: retriedPhase,
+                attemptNumber: 1,
+                state: "archived",
+                archivedReason: "manual_retry_after_blocked_error",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                archivedAt: "2026-01-01T00:01:00.000Z",
+              },
+            ]
+          : [],
+      );
+    }
     throw new Error(`Unhandled fetch: ${url}`);
   });
 }
@@ -451,20 +490,7 @@ describe("WorkspacePhaseSummary", () => {
   });
 
   it("shows the next live PRD coverage version and pass in the main title when revision work starts", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (
-        url.endsWith(
-          `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
-        )
-      ) {
-        return createJsonResponse([]);
-      }
-      if (url.includes("/attempts")) {
-        return createJsonResponse([]);
-      }
-      throw new Error(`Unhandled fetch: ${url}`);
-    });
+    mockWorkspacePhaseQueries();
 
     const ticket = makeTicket({
       id: TEST.ticketId,
@@ -502,36 +528,23 @@ describe("WorkspacePhaseSummary", () => {
   });
 
   it("shows the latest live beads coverage version and pass in the main title from coverage artifacts", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (
-        url.endsWith(
-          `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
-        )
-      ) {
-        return createJsonResponse([
-          {
-            id: 1,
-            ticketId: TEST.ticketId,
-            phase: "VERIFYING_BEADS_COVERAGE",
-            artifactType: "beads_coverage_revision",
-            filePath: null,
-            content: JSON.stringify({
-              winnerId: TEST.councilMembers[0],
-              refinedContent: "beads: []",
-              candidateVersion: 3,
-              coverageRunNumber: 2,
-              maxCoveragePasses: 5,
-            }),
-            createdAt: "2026-01-01T00:00:03.000Z",
-          },
-        ]);
-      }
-      if (url.includes("/attempts")) {
-        return createJsonResponse([]);
-      }
-      throw new Error(`Unhandled fetch: ${url}`);
-    });
+    mockWorkspacePhaseQueries([
+      {
+        id: 1,
+        ticketId: TEST.ticketId,
+        phase: "VERIFYING_BEADS_COVERAGE",
+        artifactType: "beads_coverage_revision",
+        filePath: null,
+        content: JSON.stringify({
+          winnerId: TEST.councilMembers[0],
+          refinedContent: "beads: []",
+          candidateVersion: 3,
+          coverageRunNumber: 2,
+          maxCoveragePasses: 5,
+        }),
+        createdAt: "2026-01-01T00:00:03.000Z",
+      },
+    ]);
 
     const ticket = makeTicket({
       id: TEST.ticketId,
@@ -556,37 +569,24 @@ describe("WorkspacePhaseSummary", () => {
   });
 
   it("shows the live interview coverage pass without a candidate version", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (
-        url.endsWith(
-          `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
-        )
-      ) {
-        return createJsonResponse([
-          {
-            id: 1,
-            ticketId: TEST.ticketId,
-            phase: "VERIFYING_INTERVIEW_COVERAGE",
-            phaseAttempt: 1,
-            artifactType: "interview_coverage",
-            filePath: null,
-            content: JSON.stringify({
-              status: "gaps",
-              summary: "Need more details.",
-              coverageRunNumber: 2,
-              maxCoveragePasses: 5,
-            }),
-            createdAt: "2026-01-01T00:00:03.000Z",
-            updatedAt: "2026-01-01T00:00:03.000Z",
-          },
-        ]);
-      }
-      if (url.includes("/attempts")) {
-        return createJsonResponse([]);
-      }
-      throw new Error(`Unhandled fetch: ${url}`);
-    });
+    mockWorkspacePhaseQueries([
+      {
+        id: 1,
+        ticketId: TEST.ticketId,
+        phase: "VERIFYING_INTERVIEW_COVERAGE",
+        phaseAttempt: 1,
+        artifactType: "interview_coverage",
+        filePath: null,
+        content: JSON.stringify({
+          status: "gaps",
+          summary: "Need more details.",
+          coverageRunNumber: 2,
+          maxCoveragePasses: 5,
+        }),
+        createdAt: "2026-01-01T00:00:03.000Z",
+        updatedAt: "2026-01-01T00:00:03.000Z",
+      },
+    ]);
 
     const ticket = makeTicket({
       id: TEST.ticketId,
@@ -611,43 +611,7 @@ describe("WorkspacePhaseSummary", () => {
   });
 
   it("shows the live retry attempt for manually retried phases", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (
-        url.endsWith(
-          `/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/REFINING_PRD/attempts`,
-        )
-      ) {
-        return createJsonResponse([
-          {
-            ticketId: TEST.ticketId,
-            phase: "REFINING_PRD",
-            attemptNumber: 2,
-            state: "active",
-            archivedReason: null,
-            createdAt: "2026-01-01T00:01:00.000Z",
-            archivedAt: null,
-          },
-          {
-            ticketId: TEST.ticketId,
-            phase: "REFINING_PRD",
-            attemptNumber: 1,
-            state: "archived",
-            archivedReason: "manual_retry_after_blocked_error",
-            createdAt: "2026-01-01T00:00:00.000Z",
-            archivedAt: "2026-01-01T00:01:00.000Z",
-          },
-        ]);
-      }
-      if (
-        url.endsWith(
-          `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
-        )
-      ) {
-        return createJsonResponse([]);
-      }
-      throw new Error(`Unhandled fetch: ${url}`);
-    });
+    mockWorkspacePhaseQueries([], "REFINING_PRD");
 
     const ticket = makeTicket({ id: TEST.ticketId, status: "REFINING_PRD" });
 
@@ -708,43 +672,7 @@ describe("WorkspacePhaseSummary", () => {
   });
 
   it("shows the live execution setup attempt with phase attempt label when status is PREPARING_EXECUTION_ENV", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (
-        url.endsWith(
-          `/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/PREPARING_EXECUTION_ENV/attempts`,
-        )
-      ) {
-        return createJsonResponse([
-          {
-            ticketId: TEST.ticketId,
-            phase: "PREPARING_EXECUTION_ENV",
-            attemptNumber: 2,
-            state: "active",
-            archivedReason: null,
-            createdAt: "2026-01-01T00:01:00.000Z",
-            archivedAt: null,
-          },
-          {
-            ticketId: TEST.ticketId,
-            phase: "PREPARING_EXECUTION_ENV",
-            attemptNumber: 1,
-            state: "archived",
-            archivedReason: "manual_retry_after_blocked_error",
-            createdAt: "2026-01-01T00:00:00.000Z",
-            archivedAt: "2026-01-01T00:01:00.000Z",
-          },
-        ]);
-      }
-      if (
-        url.endsWith(
-          `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
-        )
-      ) {
-        return createJsonResponse([]);
-      }
-      throw new Error(`Unhandled fetch: ${url}`);
-    });
+    mockWorkspacePhaseQueries([], "PREPARING_EXECUTION_ENV");
 
     const ticket = makeTicket({
       id: TEST.ticketId,

@@ -22,6 +22,39 @@ interface LiveOnlyServerOptions {
   stallAfterCursorLog?: boolean;
 }
 
+function inboxLifecycle(firstSequence: number, inboxID: string): LiveEvent[] {
+  return [
+    {
+      type: "session.inbox.enqueued",
+      seq: firstSequence,
+      data: { sessionID: "session-1", inboxID },
+    },
+    {
+      type: "session.execution.started",
+      seq: firstSequence + 1,
+      data: { sessionID: "session-1" },
+    },
+    {
+      type: "session.inbox.delivered",
+      seq: firstSequence + 2,
+      data: { sessionID: "session-1", inboxID },
+    },
+  ];
+}
+
+function emitSuccessfulPrompt(
+  emit: (event: LiveEvent) => void,
+  firstSequence: number,
+  inboxID: string,
+) {
+  inboxLifecycle(firstSequence, inboxID).forEach(emit);
+  emit({
+    type: "session.execution.succeeded",
+    seq: firstSequence + 3,
+    data: { sessionID: "session-1" },
+  });
+}
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json" },
@@ -390,21 +423,7 @@ describe("OpenCode v2 live-only event coverage", () => {
     "attributes more than three replay-only recoveries after $failure without reposting",
     async ({ streamFailure }) => {
       const replayRecoveries: LiveEvent[] = [
-        {
-          type: "session.inbox.enqueued",
-          seq: startCursor + 1,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        },
-        {
-          type: "session.execution.started",
-          seq: startCursor + 2,
-          data: { sessionID: "session-1" },
-        },
-        {
-          type: "session.inbox.delivered",
-          seq: startCursor + 3,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        },
+        ...inboxLifecycle(startCursor + 1, "inbox-own"),
         {
           type: "session.step.started",
           seq: startCursor + 4,
@@ -484,7 +503,10 @@ describe("OpenCode v2 live-only event coverage", () => {
       { sessionId: "session-1", parts: promptParts },
       controller.signal,
     );
-    const event = subscription.events[Symbol.asyncIterator]().next();
+    const events = subscription.events;
+    const createIterator = events[Symbol.asyncIterator];
+    const iterator = createIterator.call(events);
+    const event = iterator.next();
 
     try {
       await expect(settleWithin(event, 1000)).rejects.toThrow(
@@ -540,26 +562,7 @@ describe("OpenCode v2 live-only event coverage", () => {
     const server = createLiveOnlyServer({
       autoTitleAfterTerminal: true,
       onPrompt(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 1,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 2,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 3,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.succeeded",
-          seq: startCursor + 4,
-          data: { sessionID: "session-1" },
-        });
+        emitSuccessfulPrompt(emit, startCursor + 1, "inbox-own");
       },
     });
     const controller = new AbortController();
@@ -602,26 +605,7 @@ describe("OpenCode v2 live-only event coverage", () => {
         });
       },
       onPrompt(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 3,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 4,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 5,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.succeeded",
-          seq: startCursor + 6,
-          data: { sessionID: "session-1" },
-        });
+        emitSuccessfulPrompt(emit, startCursor + 3, "inbox-own");
       },
     });
     const controller = new AbortController();
@@ -663,26 +647,7 @@ describe("OpenCode v2 live-only event coverage", () => {
       const server = createLiveOnlyServer({
         omitWatermarkAt: phase,
         onPrompt(emit) {
-          emit({
-            type: "session.inbox.enqueued",
-            seq: startCursor + 1,
-            data: { sessionID: "session-1", inboxID: "inbox-own" },
-          });
-          emit({
-            type: "session.execution.started",
-            seq: startCursor + 2,
-            data: { sessionID: "session-1" },
-          });
-          emit({
-            type: "session.inbox.delivered",
-            seq: startCursor + 3,
-            data: { sessionID: "session-1", inboxID: "inbox-own" },
-          });
-          emit({
-            type: "session.execution.succeeded",
-            seq: startCursor + 4,
-            data: { sessionID: "session-1" },
-          });
+          emitSuccessfulPrompt(emit, startCursor + 1, "inbox-own");
         },
       });
       const controller = new AbortController();
@@ -713,21 +678,7 @@ describe("OpenCode v2 live-only event coverage", () => {
   it("attributes a scan across internal title-usage sequences omitted from the public stream", async () => {
     const server = createLiveOnlyServer({
       onPrompt(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 1,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 2,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 3,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
+        inboxLifecycle(startCursor + 1, "inbox-own").forEach(emit);
         // Title usage consumes +4 internally; only the ephemeral totals and title reach clients.
         emit({
           type: "session.usage.updated",
@@ -774,21 +725,7 @@ describe("OpenCode v2 live-only event coverage", () => {
   it("keeps preflight coverage across hidden usage while an earlier prompt drains", async () => {
     const server = createLiveOnlyServer({
       onConnect(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 1,
-          data: { sessionID: "session-1", inboxID: "inbox-old" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 2,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 3,
-          data: { sessionID: "session-1", inboxID: "inbox-old" },
-        });
+        inboxLifecycle(startCursor + 1, "inbox-old").forEach(emit);
         emit({
           type: "session.renamed",
           seq: startCursor + 5,
@@ -803,26 +740,7 @@ describe("OpenCode v2 live-only event coverage", () => {
         });
       },
       onPrompt(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 7,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 8,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 9,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.succeeded",
-          seq: startCursor + 10,
-          data: { sessionID: "session-1" },
-        });
+        emitSuccessfulPrompt(emit, startCursor + 7, "inbox-own");
       },
     });
 
@@ -867,21 +785,7 @@ describe("OpenCode v2 live-only event coverage", () => {
   it("uses contiguous live events through a positive watermark when a reused session has empty replay", async () => {
     const server = createLiveOnlyServer({
       onConnect(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 1,
-          data: { sessionID: "session-1", inboxID: "inbox-old" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 2,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 3,
-          data: { sessionID: "session-1", inboxID: "inbox-old" },
-        });
+        inboxLifecycle(startCursor + 1, "inbox-old").forEach(emit);
       },
       onWait(emit) {
         emit({
@@ -891,26 +795,7 @@ describe("OpenCode v2 live-only event coverage", () => {
         });
       },
       onPrompt(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 5,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 6,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 7,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.succeeded",
-          seq: startCursor + 8,
-          data: { sessionID: "session-1" },
-        });
+        emitSuccessfulPrompt(emit, startCursor + 5, "inbox-own");
       },
     });
 
@@ -976,21 +861,7 @@ describe("OpenCode v2 live-only event coverage", () => {
         },
       ],
       onConnect(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 1,
-          data: { sessionID: "session-1", inboxID: "inbox-prior" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 2,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 3,
-          data: { sessionID: "session-1", inboxID: "inbox-prior" },
-        });
+        inboxLifecycle(startCursor + 1, "inbox-prior").forEach(emit);
       },
       onWait(emit) {
         emit({
@@ -1000,26 +871,7 @@ describe("OpenCode v2 live-only event coverage", () => {
         });
       },
       onPrompt(emit) {
-        emit({
-          type: "session.inbox.enqueued",
-          seq: startCursor + 5,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.started",
-          seq: startCursor + 6,
-          data: { sessionID: "session-1" },
-        });
-        emit({
-          type: "session.inbox.delivered",
-          seq: startCursor + 7,
-          data: { sessionID: "session-1", inboxID: "inbox-own" },
-        });
-        emit({
-          type: "session.execution.succeeded",
-          seq: startCursor + 8,
-          data: { sessionID: "session-1" },
-        });
+        emitSuccessfulPrompt(emit, startCursor + 5, "inbox-own");
       },
     });
 

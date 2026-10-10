@@ -201,6 +201,31 @@ function makeNote(content: string, iteration = 1) {
   return { timestamp: "2026-01-01T00:00:00.000Z", iteration, content };
 }
 
+async function runCodingWithSuccessfulBead(
+  title: string,
+  beadOverrides: Partial<Bead> = {},
+) {
+  const { ticket, context } = createExecutionTestTicket(repoManager, { title });
+  writeTicketBeads(ticket.id, [makePendingBead("bead-1", 1, beadOverrides)]);
+  const sendEvent = vi.fn();
+  executeBeadMock.mockResolvedValueOnce({
+    success: true,
+    beadId: "bead-1",
+    iteration: 1,
+    output: "done",
+    errors: [],
+  });
+
+  await handleCoding(
+    ticket.id,
+    context,
+    sendEvent,
+    new AbortController().signal,
+  );
+
+  return { ticket, sendEvent };
+}
+
 function writeExecutionCheckpoint(
   ticketId: string,
   bead: Bead,
@@ -1438,33 +1463,15 @@ describe("handleCoding", () => {
     commitBeadChangesMock.mockImplementation(() => {
       throw new Error("\u001b[31mgit commit failed\u001b[0m");
     });
-    const { ticket, context } = createExecutionTestTicket(repoManager, {
-      title: "commitBeadChanges throws",
-    });
     const existingFinalizationNote = {
       ...makeNote("Earlier finalization failure"),
       errorCode: "BEAD_FINALIZATION_FAILED",
     };
-    writeTicketBeads(ticket.id, [
-      makePendingBead("bead-1", 1, {
+    const { ticket, sendEvent } = await runCodingWithSuccessfulBead(
+      "commitBeadChanges throws",
+      {
         finalizationFailureNotes: [existingFinalizationNote],
-      }),
-    ]);
-    const sendEvent = vi.fn();
-
-    executeBeadMock.mockResolvedValueOnce({
-      success: true,
-      beadId: "bead-1",
-      iteration: 1,
-      output: "done",
-      errors: [],
-    });
-
-    await handleCoding(
-      ticket.id,
-      context,
-      sendEvent,
-      new AbortController().signal,
+      },
     );
 
     expect(sendEvent).toHaveBeenCalledWith(
@@ -1505,25 +1512,8 @@ describe("handleCoding", () => {
       pushed: false,
       error: "git add failed: permission denied",
     });
-    const { ticket, context } = createExecutionTestTicket(repoManager, {
-      title: "commitBeadChanges returns error",
-    });
-    writeTicketBeads(ticket.id, [makePendingBead("bead-1", 1)]);
-    const sendEvent = vi.fn();
-
-    executeBeadMock.mockResolvedValueOnce({
-      success: true,
-      beadId: "bead-1",
-      iteration: 1,
-      output: "done",
-      errors: [],
-    });
-
-    await handleCoding(
-      ticket.id,
-      context,
-      sendEvent,
-      new AbortController().signal,
+    const { ticket, sendEvent } = await runCodingWithSuccessfulBead(
+      "commitBeadChanges returns error",
     );
 
     expect(sendEvent).toHaveBeenCalledWith(
@@ -1939,7 +1929,8 @@ describe("handleCoding", () => {
         title: "Step cap merge",
       });
       const paths = getTicketPaths(ticket.id)!;
-      const configPath = join(paths.worktreePath, "opencode.json");
+      const worktreePath = paths.worktreePath;
+      const configPath = join(worktreePath, "opencode.json");
       const original = `${JSON.stringify({ mcp: { docs: { type: "local" } } }, null, 2)}\n`;
       writeFileSync(configPath, original, "utf8");
       writeTicketBeads(ticket.id, [makePendingBead("bead-1", 1)]);
@@ -2009,8 +2000,9 @@ describe("handleCoding", () => {
         title: "Step cap commit",
       });
       const paths = getTicketPaths(ticket.id)!;
+      const worktreePath = paths.worktreePath;
       writeFileSync(
-        join(paths.worktreePath, "opencode.json"),
+        join(worktreePath, "opencode.json"),
         '{"mcp": {}}\n',
         "utf8",
       );
@@ -2065,9 +2057,9 @@ describe("handleCoding", () => {
         new AbortController().signal,
       );
 
-      expect(
-        existsSync(join(paths.ticketDir, "opencode-steps-restore.json")),
-      ).toBe(true);
+      const ticketDir = paths.ticketDir;
+      const restorePath = join(ticketDir, "opencode-steps-restore.json");
+      expect(existsSync(restorePath)).toBe(true);
       succeedOnce("bead-2");
       await handleCoding(
         ticket.id,

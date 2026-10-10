@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+
 - OpenCode v2 scans and prompts tolerate private bookkeeping events safely and avoid automatic title calls that can block a finished response; OpenCode v1 remains supported.
 - Ticket errors show the actual failure first, with fewer repeated labels and expanded technical details below recovery actions.
 - Development dependency updates fix command injection and denial-of-service vulnerabilities.
@@ -24,6 +25,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - `looptroop doctor` compares your Node with the newest release of your own Node line, says what `gh` is still needed for, and names the checks that actually stop LoopTroop from running.
 
 ### Changed
+
 - Reorganized the error panel around one failed-phase heading, the full error message, and any distinct underlying cause. Removed repeated active-error labels and generic failure advice while preserving explanations for recognized failures. Live recovery guidance names only available actions, recovery buttons come before Cancel, and paused-bead context appears before technical details. A paused current bead takes precedence over an older failed bead's notes. Historical errors show their own message and phase without current bead counters or notes. Technical details starts expanded and remains collapsible; the error stays visible when details are closed, and duplicate provider-message rows are omitted.
 - New OpenCode v2 sessions use the title "LoopTroop" to avoid the separate model call for automatic session naming. LoopTroop ticket titles and OpenCode v1 session creation are unchanged.
 - Moved AI questions and AI question wait into Configuration **Advanced**. Across Configuration, Project, New Ticket, and saved drafts, the wait is an indented subitem directly below AI questions, without a separator. Configuration offers **Default / Custom**: **Default** uses 5 minutes, and **Custom** accepts whole minutes from 1 to 60. Project and Ticket retain **Inherit / Custom**, showing the effective duration and its source. Selecting **Default** or **Inherit** resets the custom override and replaces the separate Clear override action. Configuration treats a mode change as an unsaved edit even when both modes use 5 minutes.
@@ -34,12 +36,15 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - When OpenCode's default address (`127.0.0.1:4096`) is held by a server LoopTroop cannot use, because it rejects LoopTroop's password or is not OpenCode, LoopTroop leaves that server alone and starts its own OpenCode on the next free port. OpenCode v2 makes up a new password for every `opencode serve` started by hand, and other tools built on OpenCode take 4096 too, so a server left running there used to stop LoopTroop from starting at all. A server that answers with a 5xx error still counts as an OpenCode that is starting up: LoopTroop waits for it, then judges it by what it answers once it is up. An address you set with `LOOPTROOP_OPENCODE_BASE_URL` or `opencodeBaseUrl` is never moved, and the move never takes LoopTroop's own web port. When LoopTroop's own address is the one OpenCode would use, as with `looptroop start --port 4096`, the default address moves too and `doctor` names the port it would take; an address you set on that port and host stops the start, even when a server already answers there, with a message that names both settings. `looptroop start`, `looptroop open`, `looptroop status`, `looptroop doctor` and the daemon log say where OpenCode went and why. Before the first start, `doctor` reports a held default port as a warning that names the port a start would take, and as a failure when no port is free.
 
 ### Security
+
 - Updated development dependencies to patched releases of `shell-quote`, `brace-expansion` and `source-map-js`. Their fixes prevent command injection when quoting tokens after shell comments and denial of service when expanding nested braces or reading malformed indexed source maps.
 
 ### Removed
+
 - Local OpenCode configuration and plugins in `.opencode/` are now ignored by Git. The repository no longer includes the listener-limit plugin.
 
 ### Fixed
+
 - Fixed valid OpenCode v2 prompts failing when private title or compaction events leave gaps in the public stream. A new connection must account for its first event before later private gaps can be accepted. Malformed events clearly belonging to other sessions no longer block the ticket, while missing or conflicting routing still stops unsafe responses. Late events inside an earlier gap and log watermarks behind an observed event are rejected. Reconnects still verify the full missing history, retry transient connection failures, and preserve mapping state across failed replay attempts without submitting the prompt again. Complete, valid replay that proves new progress resets the retry budget; empty reconnects remain bounded.
 - Pre-flight checks, execution setup, bead failures, and final tests keep their actual failure text in the ticket and error history instead of hiding it behind a generic label or diagnostic code. Coding failures put the final stopping reason first, followed by attempts from newest to oldest, so short ticket summaries name the reason the bead stopped.
 - Artifact compare-and-set tests now run in isolated integration workers, matching their use of real Git worktrees and SQLite databases.
@@ -122,8 +127,8 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 
 💚 Thanks to everyone testing, reporting issues, and helping shape LoopTroop!
 
-
 ### Summary
+
 - Improved punctuation and readability across user-facing app text, the website and repository documentation while preserving their content.
 - Setup instructions are shorter, documentation code blocks wrap to fit the page, and obsolete repository audit records are removed.
 - The repository now links to the published roadmap and explains where contributions are welcome and when to discuss larger changes.
@@ -171,6 +176,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - The OrcaCode pull-request review workflow is removed; it reported a failed check on every pull request and never completed a successful run.
 
 ### Performance
+
 - Log route tests use uninitialized ticket fixtures, and one 2,000-row cold catch-up case now covers exact newest-page contents, paging metadata, health, and concurrent-reader agreement; the duplicate 300-row replay test is removed.
 - PR review route tests no longer initialize a ticket worktree per case, and now remove their fixture repositories after the suite; the focused file runtime fell from 46.8s to 23.7s.
 - Execution-phase ticket fixtures fell from 50.9s to 22.4s, execution-setup fixtures from 27.0s to 15.4s, and Manual QA operations from 34.1s to 19.9s by reserving initialized Git worktrees for cases that assert Git behavior.
@@ -179,6 +185,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Timeout executor tests with injected child identities skip real Linux process-group scans, keeping assertions independent of runner PID allocation.
 
 ### Added
+
 - Added `ROADMAP.md` linking to the published planning notes, with alpha and priority caveats, and contribution guidance for bug reports, documentation corrections, platform feedback, focused fixes, and discussion before substantial changes.
 - Added a manually dispatched Pullfrog workflow with immutable action references and no persisted checkout credentials; model keys stay in Pullfrog's encrypted secret store instead of being passed through as a bundle of GitHub secrets.
 - Hook recovery tests now cover the tracked-worktree-edit refusal path, including preservation of the changed file and marker and proof that no hook runs.
@@ -216,6 +223,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
 
 ### Security
+
 - Private vulnerability reports have an explicit scope and maintainer-controlled Safe Harbor. Research authorization covers source review and local-copy testing on systems, accounts, and data the researcher owns or is allowed to use; it excludes active testing of the public website, hosted/provider services, and another user's installation.
 - Hono is updated to 4.13.7, including its released JSX escaping fix.
 - Remote browser sessions require one explicit HTTPS public origin; startup rejects a public origin without remote API mode, and plain-HTTP remote access remains bearer-only without trusting forwarded headers.
@@ -253,20 +261,21 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Manual QA version responses read submission receipts through ticket containment, and evidence downloads stream a verified descriptor that closes on completion or cancellation. OpenCode step-limit restore records use contained reads and writes; outside aliases cannot supply restore instructions or receive configuration backups.
 - The stream endpoint validates ticket references and rejects control characters or excessively long reconnect cursors. An ordinary invalid cursor or unavailable replay position produces `replay_gap` with `{ ticketId, reason: 'invalid_cursor' | 'cursor_unavailable' }` and an empty SSE id. The client clears its stored cursor and cached server logs, refreshes ticket/artifact/bead/skip-receipt state and continues listening. Recovery avoids duplicate refreshes during the same handshake while preserving later reconnects. Replay preserves event order after streaming updates are coalesced, and failed streams release their timers and connection slots.
 - Release documentation follow-up: publish the folder-opening restrictions and `replay_gap` contract in the website's API reference, frontend and architecture pages when this behavior ships.
-- Every external tool is resolved to a file before it is spawned, through one implementation in `server/lib/executablePath.ts`. `spawn('git', …)` names a tool and lets the operating system pick which file answers, and `shell: false` does nothing about that: the first directory on `PATH` decides, inside a repository whose contents the daemon does not control. The file is now chosen once and the current directory never wins. What is judged is the real file behind any link; what is *spawned* is the `PATH` entry itself, because Homebrew, rustup, mise and Volta work out where they live from how they were started: run by its real path, `brew` picked the wrong prefix and compiled Node from source. On POSIX the search directory, the real file, its directory and every directory above them (along the path as written as well as the real one, since a link on the way is followed again at spawn time) must belong to root, to you, or to the owner of the Node running LoopTroop; permission bits are deliberately not consulted, because GitHub's Ubuntu runners ship a world-writable `/usr/local/bin`. A POSIX `PATH` entry is read exactly as written: ` /usr/bin` with a leading space is a relative directory to the operating system, and trimming it had the resolver search somewhere the system did not. Windows has no usable ownership or mode through `fs.stat`, so it gets `PATHEXT` handling and the system directories searched ahead of `PATH` (as `CreateProcess` does) but no directory judgement; the override adds directories to search and cannot narrow it. Tools installed from the Microsoft Store or App Installer, such as `winget` and the Store's `python`, are found too: they are app execution aliases that Node's `fs.stat` cannot read, and they used to be reported as not installed. WSL's Windows drive mounts are recognised from the mount table, and a `9p` or `virtiofs` mount only counts when it says it is a Windows drive. The trust policy (the override, the Windows system root, `PATHEXT` and `ComSpec`) is read from the daemon's own environment by default, never from the one a command is given; it used to default to the child's, and three callers resolving for a child inherited that. Resolutions are cached, in a bounded cache, and every hit re-checks that nothing earlier on `PATH` now answers first, the link, the file's identity and execute bit, and the ownership rule. An unreadable `PATH` entry is skipped instead of crashing the lookup. Test-only Git helpers that pin repository line endings now use the same trusted resolution instead of a bare `git` name.
+- Every external tool is resolved to a file before it is spawned, through one implementation in `server/lib/executablePath.ts`. `spawn('git', …)` names a tool and lets the operating system pick which file answers, and `shell: false` does nothing about that: the first directory on `PATH` decides, inside a repository whose contents the daemon does not control. The file is now chosen once and the current directory never wins. What is judged is the real file behind any link; what is _spawned_ is the `PATH` entry itself, because Homebrew, rustup, mise and Volta work out where they live from how they were started: run by its real path, `brew` picked the wrong prefix and compiled Node from source. On POSIX the search directory, the real file, its directory and every directory above them (along the path as written as well as the real one, since a link on the way is followed again at spawn time) must belong to root, to you, or to the owner of the Node running LoopTroop; permission bits are deliberately not consulted, because GitHub's Ubuntu runners ship a world-writable `/usr/local/bin`. A POSIX `PATH` entry is read exactly as written: ` /usr/bin` with a leading space is a relative directory to the operating system, and trimming it had the resolver search somewhere the system did not. Windows has no usable ownership or mode through `fs.stat`, so it gets `PATHEXT` handling and the system directories searched ahead of `PATH` (as `CreateProcess` does) but no directory judgement; the override adds directories to search and cannot narrow it. Tools installed from the Microsoft Store or App Installer, such as `winget` and the Store's `python`, are found too: they are app execution aliases that Node's `fs.stat` cannot read, and they used to be reported as not installed. WSL's Windows drive mounts are recognised from the mount table, and a `9p` or `virtiofs` mount only counts when it says it is a Windows drive. The trust policy (the override, the Windows system root, `PATHEXT` and `ComSpec`) is read from the daemon's own environment by default, never from the one a command is given; it used to default to the child's, and three callers resolving for a child inherited that. Resolutions are cached, in a bounded cache, and every hit re-checks that nothing earlier on `PATH` now answers first, the link, the file's identity and execute bit, and the ownership rule. An unreadable `PATH` entry is skipped instead of crashing the lookup. Test-only Git helpers that pin repository line endings now use the same trusted resolution instead of a bare `git` name.
 - Windows command scripts start through one launcher, shared by the daemon, `doctor`, the managed OpenCode server, execution-setup commands, the installer and the repository scripts. Node refuses to spawn a `.cmd` or `.bat` directly, so those two (and nothing else) go through `cmd.exe`, which is itself resolved (`ComSpec` from the daemon's environment, or the system directory) instead of looked up by name with `shell: true`. An argument with nothing `cmd.exe` acts on is passed as it is, so a script comparing `%1` sees `--version` rather than `"--version"`. Anything else is escaped with the algorithm cross-spawn uses, so a space, `&`, `|` or quote stays text and `%NAME%` is no longer expanded, and `cmd.exe` runs with delayed expansion off. One departure from cross-spawn: its 7.0.6 escaping drops a backslash from a run of two or more before a quote or at the end of an argument, and this one does not. What escaping cannot protect is refused with the reason instead of passed on changed: a line break, which would end the command line; a `%…%` that `cmd.exe` would expand anyway: the `%PATH:a=b%` edit forms, or a name the command's own environment defines; and a quote that would leave `&` or `|` outside quotes when a script such as npm's global shims reads its arguments a second time. `doctor` and OpenCode used `shell: true` so `PATH` would find `npm.cmd` and `opencode.cmd`; the resolver applies `PATHEXT` itself now.
 - The `POST /api/files/open-path` openers (`wslpath`, `powershell.exe`, `explorer.exe`, `open`, `xdg-open`) are resolved rather than taken from `PATH`; their requested paths follow the containment policy above.
 - A command from an execution setup plan is resolved against the child's own environment, so a project-local tool on the plan's `PATH` still works, but the plan cannot vouch for a directory through its own environment, or choose the Windows command interpreter. Its working directory, its `pathPrepend` entries and a relative program must all stay inside the repository after links are followed, not only before. On Windows a resolved `npm.cmd` starts through the shared launcher, and does not start at all if no trusted interpreter is found.
 - The installer's copy of the resolver is now generated from the same source by `npm run installers:sync`, and `installers:check` fails on drift, on a relative import the installer could not follow, or on a copy that does not parse. The hand-written copy it replaces searched `PATH` only and ignored the operator override. The installer also stops with the reason on a refused tool; it used to fall back to the bare name and run the very file it had refused.
 - Windows command-script launches preserve second-read quote state across command-line parts and detect percent references spanning arguments, so metacharacters and environment edits cannot be reinterpreted by `cmd.exe` on a later read.
 - An ESLint rule now refuses a bare program name in `spawn`, `spawnSync`, `execFile` and their promisified forms, `util.promisify(childProcess.execFile)` included (as a string, an uninterpolated template, the fallback of `||`, or either branch of a conditional) plus `shell: true` beside a literal command and any aliased `child_process` import. It matches the syntax rather than the text, so a resolved path or a variable is not flagged, and a test runs it over every bypass. It covers the `.mjs` scripts, now with `no-undef` as well, which the lint configuration never reached before. Test scaffolding is exempt: it spawns `git` against a fixture repository it just made.
-- `git` now runs *in* a project's directory instead of being handed it as `-C <path>`, so a caller's path never enters git's arguments; the command log still reads `git -C <path> …`. Every entry point, the remote ones included, requires an absolute, NUL-free directory, and a missing one is reported as a directory that does not exist rather than as git being absent. The non-interactive askpass is `/bin/echo` by path on macOS and Linux, since git looks a bare name up on `PATH`.
+- `git` now runs _in_ a project's directory instead of being handed it as `-C <path>`, so a caller's path never enters git's arguments; the command log still reads `git -C <path> …`. Every entry point, the remote ones included, requires an absolute, NUL-free directory, and a missing one is reported as a directory that does not exist rather than as git being absent. The non-interactive askpass is `/bin/echo` by path on macOS and Linux, since git looks a bare name up on `PATH`.
 - No repository script hands a shell a command line any more. Every tool that may be a Windows command script starts through the shared launcher, so a tarball path with a space no longer splits, `C:\Tools&CI` is no longer two commands, and Node no longer prints its DEP0190 warning about joining arguments for a shell. `npm run licenses:check`, `npm run verify:package`, the native-addon check and the bundle build start `npm` the same way; on Windows they failed with `EINVAL`.
 - A tool that is not installed is never looked for in the current directory. The installer and the scripts used to fall back to the bare name, and the operating system's own search (which does not skip an empty `PATH` entry the way the resolver does) ran `./tool` from wherever they were started when `PATH` ended in a colon. On Windows, which searches the current directory before `PATH` whatever `PATH` says, the scripts never fall back to the bare name. `install.sh` and `install.ps1` drop empty and relative `PATH` entries before they look up `node`, so `curl … | sh` run from a folder holding a file called `node` runs the real one, and a `PATH` with no absolute entry at all is reported as Node missing rather than searched as the current directory.
 - LoopTroop refuses to start a managed OpenCode server on a host name that is not a plain host name or IP address. `http://foo&bar:4096` parses, and on Windows an npm-installed OpenCode is started through `cmd.exe`, where an unescaped `&` runs a second command.
 - Closed the two critical and seven high code-scanning findings. Windows opens sign-in links through the URL protocol handler without `cmd.exe`; the published install smoke accepts only the stable and `rc.N` version formats the release tooling can produce; channel checks no longer compile command-line values as regular expressions or mistake uninstall output for an installed channel; ticket links receive URI encoding after protocol validation without changing existing percent escapes; release-note markers and multiline third-party notice cells use context-specific handling; node-manager smoke paths come from fixed manager mappings; and test fixtures no longer use predictable paths under `/tmp`.
 
 ### Changed
+
 - CI validates Renovate configuration with a pinned official container, keeping strict checks without installing deprecated dependencies.
 - Made small punctuation, grammar and plain-language edits across user-facing app text, the website and repository Markdown. The edits retain the original ideas, details and qualifications.
 - Simplified README installation choices, moved standalone executables into the final collapsed option, and kept detailed operational guidance in the published docs. Public installer examples use `curl -fsSL` on macOS/Linux and `irm ... | iex` in PowerShell; argument-bearing PowerShell commands stay on one line and reject failed, empty or blank downloads before execution. Release checksum verification is unchanged.
@@ -274,13 +283,13 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - OpenCode transport race tests now wait for dispatch and event-consumption signals instead of polling and sleeping; the original race assertions remain intact.
 - Pure text-diff tests run in the Node client project, unused test helpers are removed, and shared cache stores are cleared in the cache-hook suite.
 - Renovate pull requests never merge themselves. The patch-level lint and test lane and the Node floor pull request used to merge once their checks passed; every update now waits for a person, or an agent acting for one, to review and merge it. Renovate now rebases open pull requests whenever `main` moves (`rebaseWhen: behind-base-branch`), because `main` requires branches to be up to date and Renovate's automatic choice could not be relied on to detect that from a ruleset.
-- Renovate opens fewer, clearer pull requests. Below a major, updates arrive in three groups: *ships to users* (runtime dependencies plus the frontend packages Vite bundles), *dev tooling* (now also TypeScript, `@types/node`, Tailwind and the lint and test tools), and *CI and container* (GitHub Actions plus Dockerfile base-image digests). esbuild, Drizzle, the OpenCode SDK, the toolchain, the Node floor, the lockfile refresh and security fixes keep their own pull requests, and a major arrives alone unless its packages have to move together: React with react-dom and their types, Vite with its React plugin, the Drizzle pair, Tailwind with its Vite plugin, node with npm, and the families Renovate's built-in presets keep together, such as CodeMirror, Radix, ESLint and the artifact actions. The old *bundled frontend* group had never taken effect: it sat above the dev tooling rule, which claimed React, CodeMirror and the rest. Up to ten pull requests may be open at once, up from five; security fixes open even past that. Renovate also consults OSV, an option its documentation still marks experimental, for vulnerabilities in direct dependencies. When OSV marks the version Renovate would propose as malicious, Renovate holds back every update to that dependency until the entry clears.
+- Renovate opens fewer, clearer pull requests. Below a major, updates arrive in three groups: _ships to users_ (runtime dependencies plus the frontend packages Vite bundles), _dev tooling_ (now also TypeScript, `@types/node`, Tailwind and the lint and test tools), and _CI and container_ (GitHub Actions plus Dockerfile base-image digests). esbuild, Drizzle, the OpenCode SDK, the toolchain, the Node floor, the lockfile refresh and security fixes keep their own pull requests, and a major arrives alone unless its packages have to move together: React with react-dom and their types, Vite with its React plugin, the Drizzle pair, Tailwind with its Vite plugin, node with npm, and the families Renovate's built-in presets keep together, such as CodeMirror, Radix, ESLint and the artifact actions. The old _bundled frontend_ group had never taken effect: it sat above the dev tooling rule, which claimed React, CodeMirror and the rest. Up to ten pull requests may be open at once, up from five; security fixes open even past that. Renovate also consults OSV, an option its documentation still marks experimental, for vulnerabilities in direct dependencies. When OSV marks the version Renovate would propose as malicious, Renovate holds back every update to that dependency until the entry clears.
 - Workflows read the build Node version from `.nvmrc` (`node-version-file`) instead of typing it in 45 places, so Renovate's toolchain pull request is complete as opened rather than red until every copy is edited by hand. `tests/workflowPolicy.test.ts` now refuses a typed copy. The Node floor users are held to is unaffected. Republishing an old release now uses the Node version that release recorded in its own `.nvmrc`, like its Dockerfile already did; releases before 0.5.0 have no `.nvmrc`, so they can no longer be republished.
 - The test suite runs on vitest 5, up from 4. Vitest 5 clears every mock's call history before each test by default; the suite already passes that way, and `vitest.config.ts` now states it with `clearMocks: true`, so a test cannot depend on calls an earlier one recorded and the behaviour does not change with a future default.
 - Renovate raises the Node version users are held to on its own schedule: to the newest Node release that has been out for 90 days, within the same major. It no longer travels with `.nvmrc`, `packageManager` and the Dockerfile base image, which keep taking releases after seven days. A new major is never automatic, because moving to one drops every user still on the previous line, which Node goes on supporting. A workflow completes each floor pull request by writing the floor into every other copy, and refuses to commit anything but the floor itself. No pull request that changes the floor, Renovate's or anyone's, can merge until winget, Chocolatey, Scoop and Homebrew all offer the new version: the required Verify check refuses it. The same workflow re-runs whatever failed on Renovate's floor pull request once a day, so it is green when someone comes to merge it, since a feed catching up changes nothing on the pull request that would run the check again. GitHub re-runs a run only within 30 days of its start, so past that the workflow ticks the pull request's rebase box instead, and Renovate rebuilds the branch with every check starting afresh.
 - Repository layout is slimmer without adding top-level folders: community files and Renovate configuration live under `.github/`, database tooling under `server/db/`, and the Dockerfile and installer sources under `scripts/`; all consumers and release workflows use the new paths while published asset names remain `install.sh` and `install.ps1`.
-- TypeScript is held below 6.1, and Renovate creates pull requests without an hourly cap. The two are related. `typescript-eslint` declares `peer typescript@">=4.8.4 <6.1.0"` on every release up to and including its latest, so anything at or above 6.1 fails `npm ci` on the peer range, which is why TypeScript 7 was reverted in August, and which means the next ordinary *minor* would have broken installation just as surely as the next major. The ceiling makes that a deliberate hold rather than a red pull request nobody expected, and the rule carries the command to check whether the peer has widened and instructions to delete itself when it has. Separately, `prHourlyLimit` was 1 while six updates sat waiting, so the queue drained about one per night; the weekly lockfile refresh sat last in that queue with a Monday-to-Wednesday window and would have missed it again. `prConcurrentLimit` already caps how many pull requests can be open at once, so the hourly throttle was a second governor doing the same job more slowly, and it is now removed rather than retuned.
-- The weekly lockfile refresh can now actually run, and resolves against a seven-day-old registry. It had never run once: it is subject to `prConcurrentLimit`, which was 2, and a refresh blocked by that limit is skipped rather than queued, so on a Monday-only schedule every blocked Monday cost a full week, and four consecutive Mondays were lost while unrelated pull requests held both slots. The window is now Monday to Wednesday, which is one run with two retries rather than three runs, and the concurrent limit was raised to reduce the chance that a refresh is crowded out. The refresh also now carries `minimumReleaseAge` explicitly: contrary to the note left when it moved from monthly to weekly, a maturity gate *does* apply on this path: Renovate converts it into `npm install --before`, so the re-resolve sees the registry as it stood seven days ago and cannot pull in anything published since. The earlier claim that no per-package gate could apply to it is superseded.
+- TypeScript is held below 6.1, and Renovate creates pull requests without an hourly cap. The two are related. `typescript-eslint` declares `peer typescript@">=4.8.4 <6.1.0"` on every release up to and including its latest, so anything at or above 6.1 fails `npm ci` on the peer range, which is why TypeScript 7 was reverted in August, and which means the next ordinary _minor_ would have broken installation just as surely as the next major. The ceiling makes that a deliberate hold rather than a red pull request nobody expected, and the rule carries the command to check whether the peer has widened and instructions to delete itself when it has. Separately, `prHourlyLimit` was 1 while six updates sat waiting, so the queue drained about one per night; the weekly lockfile refresh sat last in that queue with a Monday-to-Wednesday window and would have missed it again. `prConcurrentLimit` already caps how many pull requests can be open at once, so the hourly throttle was a second governor doing the same job more slowly, and it is now removed rather than retuned.
+- The weekly lockfile refresh can now actually run, and resolves against a seven-day-old registry. It had never run once: it is subject to `prConcurrentLimit`, which was 2, and a refresh blocked by that limit is skipped rather than queued, so on a Monday-only schedule every blocked Monday cost a full week, and four consecutive Mondays were lost while unrelated pull requests held both slots. The window is now Monday to Wednesday, which is one run with two retries rather than three runs, and the concurrent limit was raised to reduce the chance that a refresh is crowded out. The refresh also now carries `minimumReleaseAge` explicitly: contrary to the note left when it moved from monthly to weekly, a maturity gate _does_ apply on this path: Renovate converts it into `npm install --before`, so the re-resolve sees the registry as it stood seven days ago and cannot pull in anything published since. The earlier claim that no per-package gate could apply to it is superseded.
 - The Renovate dependency dashboard is enabled. Renovate maintains a single issue listing every update it is aware of and why it has not shipped: held by the maturity gate, blocked by the concurrent limit, rate limited, or errored. It opens no pull requests of its own. Without it the queue had no observable state at all: Renovate produced nothing for twenty-three days while its two slots sat occupied, and that was indistinguishable from it being broken, disabled, or simply having nothing to offer.
 - Chocolatey and WinGet are documented as live install channels. Both package feeds have accepted their first submission, so `choco install looptroop` and `winget install LoopTroopAI.LoopTroop` install LoopTroop, `choco upgrade` and `winget upgrade` upgrade it, and `looptroop doctor` already reported either channel correctly.
 - The release publishes to Chocolatey and WinGet on every stable release. Both jobs previously required a repository variable that was unset, which skipped them silently; the variable now gates only the AUR, where there is still no account to publish from. Neither channel gates a release: each submission joins a review queue and is reported as submitted.
@@ -343,9 +352,6 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Workflow phase identifiers are typed. Log emission, artifact storage, command logging, question windows, edit receipts and the machine-facing helpers accepted any string, so a typo or a status that no longer exists could be written to storage and to the log without complaint. Where a phase genuinely arrives from outside (a stored session row, an artifact written by an older build, a compound machine state) it now passes an explicit check with a stated fallback rather than the type being widened back. `UI_STATE`, the bucket the interface's saved view state is filed under, is declared as what it is: an artifact phase that is deliberately not a workflow status. No runtime behaviour or stored value changes.
 - Transcript speaker prefixes are stripped the same way everywhere. The interview parser removed every stacked prefix; the structured-output parser and the prompt-echo detector removed only the first, so a line reading `[assistant][tool] summary: ...` still opened with a bracket that YAML reads as a list. All three now strip to a fixpoint, so model output that stacks tags parses instead of failing.
 
-
-
-
 - Overlays now say what they are and keep the keyboard inside them. The Configuration, Prompts, About, Projects, New Ticket and folder-picker windows, and the keyboard-shortcuts overlay, are announced as modal dialogs named by their heading; opening one moves focus into it, Tab stays within it, the page behind it becomes inert, and closing it returns focus where it was. The attributes and the focus handling ship together on purpose: announcing a boundary the interface does not enforce is worse than saying nothing.
 - Both dropdowns now hand the keyboard back to the button that opened them however they close (Escape, a selection, or a click elsewhere) instead of dropping it at the top of the page. The one used by the project and appearance pickers also reports whether it is open and which popup it owns, and closes on Escape. It describes itself as a disclosure rather than claiming to open a menu or a dialog, because what the popup contains is up to whichever screen uses it.
 - Popups that are drawn outside the page (the project picker, the model list) now count as part of the window that opened them, so the keyboard can reach into one and cannot fall out of the window through it. Opening the project picker moves the keyboard into it rather than into the next field, and closing it hands the keyboard back to the control that opened it. A popup belonging to a window underneath is not treated as part of the one in front.
@@ -400,6 +406,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Two helpers that were deduplicated on their copies reading alike now have coverage that proves the surviving behaviour. The Manual QA focused diff, shared by the checklist generator and the fix-bead planner, is pinned on what it asks git for, on telling an empty diff apart from a failed one, and on truncating at the prompt budget; and which failed bead a retry resumes (the most recently touched, falling back to the highest iteration when no bead carries a usable timestamp) is pinned through the recovery that makes the choice.
 
 ### Removed
+
 - Removed historical pull-request review ledgers, implementation notes, and the `.github/audit-dispositions` folder; maintained security and install-script policies remain in the security documentation.
 - Three modules with no production importer. `server/lib/shellCommand.ts` was superseded by `commandExecutor`, which resolves the shell from the command spec rather than from the host alone; `server/council/pipeline.ts` sequenced a council round that the interview, PRD and beads phases each sequence themselves, and the council tests that ran through it now drive the same primitives directly; `server/phases/interview/types.ts` held three interfaces that only the deleted interview helpers referenced. The interview-question preview formatter went with them, its only caller having been one of those helpers.
 - The unreachable tail of `PUT /api/files/:ticketId/:file`. Both valid file types return from their own handler above it, so the raw-write fallback below could never run. The route now dispatches each file type explicitly and rejects anything else, so adding a third type without writing its handler fails to compile rather than quietly saving the new file as a PRD.
@@ -407,13 +414,14 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Roughly fifty Tailwind animation class names (`animate-in`, `animate-out`, `fade-in-*`, `zoom-in-*`, `slide-in-from-*` and friends) across dialogs, dropdowns, tooltips, toasts and the dashboard header. They come from `tailwindcss-animate`, which this project does not install, so each generated no CSS at all. Verified by rebuilding: the emitted stylesheet is byte-identical before and after. The plugin is deliberately not added, because installing it would switch all fifty on at once.
 - The `duration-200` / `duration-300` classes those animations were paired with, at seven places: the shared dialog panel, the toast, and five blocks in the dashboard header. Unlike the animation names these are real utilities, and with no `transition-property` of their own they applied CSS's default of "transition everything" over 200-300ms: a duration attached to animations that were never running. Those elements now transition nothing, which is how they already appeared. The dialog one is the shared `DialogContent`, so it reaches all sixteen dialogs rather than a single panel. Every `duration-*` paired with an explicit `transition-*`, such as the header chevrons and the progress bars, is untouched.
 - Around a hundred exported symbols with no reader: nine SSE payload interfaces that nothing imported while the broadcaster takes untyped payloads; `PHASE_LOG_DESCRIPTIONS`, a fourth copy of per-status description text that no screen rendered; `API_TIMEOUT_MS`, documented as the default API timeout and applied by nothing; raw-content savers for the PRD, interview and setup plan whose callers build and save in two steps; the `visiblePhase` and `fullLogOpen` props on the log provider and `ticketId` on the context tree, all passed and never read; `SSEClient.ticketId`, assigned and never read; and the `.glass-panel`, `.glass-card` and `.glow-brand` styles, which no element carried. Forty-eight further helpers and types stay where they are with the `export` dropped, since they were only ever used inside their own module.
-- A second `git push` implementation, and four production entry points that only their own tests still called. `pushSquashedCandidate` pushed the squashed candidate with its own retry loop, which the pull-request phase's push replaced; `recoverFailedCodingBead` requeued a failed bead *without* resetting the worktree to that bead's start commit, which the recovery the retry route actually uses does. Neither had a caller outside a test. `isAllowedFile` and `filterAllowedFiles` were boolean wrappers over the shared worktree classifier, and `ensureRepoGitignore` and `getBeadsPath` are now private to their own modules. The tests that covered them now drive the production functions, so what they assert is what runs.
+- A second `git push` implementation, and four production entry points that only their own tests still called. `pushSquashedCandidate` pushed the squashed candidate with its own retry loop, which the pull-request phase's push replaced; `recoverFailedCodingBead` requeued a failed bead _without_ resetting the worktree to that bead's start commit, which the recovery the retry route actually uses does. Neither had a caller outside a test. `isAllowedFile` and `filterAllowedFiles` were boolean wrappers over the shared worktree classifier, and `ensureRepoGitignore` and `getBeadsPath` are now private to their own modules. The tests that covered them now drive the production functions, so what they assert is what runs.
 - `getStatusRingColor`, which took a status and ignored it. Its one call site now names the single colour it always returned.
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 - The OrcaCode Review workflow, `.github/workflows/orcarouter-code-review.yml`, along with the paragraph describing it in `CONTRIBUTING.md` and the policy test that pinned its configuration. It put a red check on every pull request and never once succeeded: of 132 runs since it was introduced, none completed. Two separate causes sat behind that. The configured OrcaRouter router selected no model for the review engine's tool-bearing requests and had no `default_model` to fall back on, so every call was rejected before a model saw it; once that was corrected the run still failed closed, because a few upstream calls went unanswered and the action treats any partial result as unusable. Neither fault was in this repository, and the check was never a required one, so nothing about merging changes. The `ORCAROUTER_API_KEY` secret is now unused and can be deleted separately.
 - The unused `server/db/drizzle.config.ts` alias. Every database script already selects its app or project config explicitly, so keeping a third config that Drizzle Kit cannot discover from the repository root only advertised a command that no longer worked.
 
 ### Fixed
+
 - Standalone upgrades and rollbacks wait up to 5.5 seconds for temporary Windows executable locks to clear, while keeping the existing safety checks and failure recovery. Installer verification stops its test daemon even when an upgrade fails.
 - Release artifact verification uses Bash on every runner, so Windows reads the version environment variable correctly when checking and installing the tarball and bundle.
 - Update-check test fixtures use a distinct future version so new releases do not collide with the running version or fail the version-consistency check.
@@ -515,7 +523,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Every ticket the interface draws is now put into one shape as it arrives, instead of each screen patching up the server's payload its own way. Manual QA fix beads finally show their origin badge and their completion time, which the dashboard had been dropping; the board and the phase timeline agree on bead progress; and an action the server offers that this version does not recognise no longer renders a button that cannot work.
 - A tab left open past its session now says so. The live stream cannot report an expired session (the browser gives its error no status), so an overnight tab with nothing running reconnected forever against an API that refused every request, with nothing on screen saying the session had run out.
 - Deleting a ticket, or a project, now clears everything the browser was holding for it. Six kinds of cached data survived a delete (phase attempts, Manual QA rounds, AI details, bead lists, bead diffs and per-artifact content), and a ticket id can be issued again, so the next ticket with that id started off showing the previous one's data.
-- A request that fails no longer looks like a result that is empty. Bead lists, approval outlines, a phase's version history, per-bead diffs, interview, PRD, beads and setup-plan content, the artifact list and the log panels each drew "nothing here yet" for a server error, so a broken daemon read as work still in progress and nobody retried. Each of those surfaces now says the request failed, quotes the status, and offers a retry. The setup-plan screen no longer reports a failed *request* as a failed plan *generation* and offers to regenerate.
+- A request that fails no longer looks like a result that is empty. Bead lists, approval outlines, a phase's version history, per-bead diffs, interview, PRD, beads and setup-plan content, the artifact list and the log panels each drew "nothing here yet" for a server error, so a broken daemon read as work still in progress and nobody retried. Each of those surfaces now says the request failed, quotes the status, and offers a retry. The setup-plan screen no longer reports a failed _request_ as a failed plan _generation_ and offers to regenerate.
 - A council round can no longer finish on a draft nobody scored. Voting used to fall back to the first council member when the scorecard was empty or every score was zero, and the refine step then rewrote a draft that did not exist. An empty reply from the winning model is no longer accepted as a finished refinement either: it is retried, and reported as empty if the retries run out.
 - A bead can no longer be marked done by a report that names a different bead, and a stored bead status the scheduler does not recognise no longer stalls the whole ticket in silence.
 - Repair notices on model output now describe the artifact that was accepted. A repair attempted on a rejected candidate, or one that never fed the parser at all, used to be reported against whatever eventually validated, which is what raised an intervention warning on output that needed no repair.
@@ -646,7 +654,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed the artifact view printing a bead's context guidance as raw JSON when the bead simply has none. Every saved plan carries an empty guidance record, and the viewer showed that record instead of leaving the section out.
 - Fixed a bead plan being read differently by every surface that reads it, depending on which spelling its fields were stored under. Bead files carry two spellings of most fields (`blockedBy` beside `blocked_by`, `acceptance_criteria` beside `acceptanceCriteria`), and each screen and each step recognised its own subset. The same bead showed its dependencies in the editor and none in the artifact view or the outline; an issue type stored the older way fell back to a default in the editor; and, worst of it, the runtime recognised the fewest of all, so a plan that read correctly on the approval screen could be approved and then never run, crash the coding step, block its own retry with a false reason, resume the wrong bead, or lose its Manual QA evidence with nothing said. Every accepted spelling is now written down once and read the same way by every screen, by approval, and by the runtime, with a test that holds the interface's list and the runtime's to each other. Saving a plan writes each field once, under the spelling the runtime reads, while keeping any field the editor does not touch.
 - Fixed an interrupted bead-plan edit being restored over a file that has since changed. A draft saved before the tracker was damaged (or before someone else repaired it) came back as though it were the file on disk, and saving it wrote over the change. A draft is now restored only onto the file it was typed against; otherwise the screen shows what is actually stored. Saving also leaves the editor holding what was just written, instead of the pre-save draft coming back as unsaved changes against a file that already has them.
-- Fixed the beads approval screen reporting a different line number from the server for the same damaged row, and losing every intact bead in a tracker whose *first* line is damaged.
+- Fixed the beads approval screen reporting a different line number from the server for the same damaged row, and losing every intact bead in a tracker whose _first_ line is damaged.
 - Fixed a refused save leaving nowhere to go: when the tracker changed underneath a draft, the screen kept showing the old file with no way to see the new one. It now offers to reload it, and keeps the draft.
 - Fixed the beads approval screen dropping rows that are valid JSON but not beads. A stored `null`, a list, or an object with no id was absent from the structured editor with nothing said, and a save wrote the file back without it: the same loss a damaged line used to cause, one step further along. Those lines are now named beside the damaged ones, the structured editor is withdrawn while any exist, and approval waits until every line reads as a bead. Guidance stored as anything other than pattern lists is refused the same way, whichever spelling it is under.
 - Fixed the YAML repairs rewriting text inside a literal block. Model output written as a block scalar (a description, a rationale, an answer) was scanned as ordinary YAML by repairs that did not recognise the block, so a body line came back reformatted, split in two, re-indented or quoted. Every repair now leaves that text alone, in every form the block can be opened with: an explicit indentation width, a trailing comment, and a block written as a list entry.
@@ -689,7 +697,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed the release scripts accepting a malformed command line and acting on it. An unknown flag was dropped rather than refused, so a typo ran the default behaviour and reported success; a flag whose value was missing fell back to its default; and a flag followed by another flag took that flag as its value, so `--out --foo` wrote to a file literally named `--foo`. All six release and packaging scripts now declare the options they accept and refuse anything else. These command lines are assembled by a workflow from expressions that can expand to nothing, so each of those shapes was reachable rather than hypothetical.
 - Fixed release channel input rendering accepting an unsafe manifest asset name. Asset names are now checked as safe basenames before they reach workflow arguments or package descriptors.
 - Fixed the release drafter treating every lookup failure as "no release exists yet". An expired token, a rate limit or a GitHub outage sent it down the create path, and a release that did exist was edited, and could have its assets replaced, without anything having established that it was still a draft. It now requires a confirmed absence to create, requires a confirmed draft to edit, and stops on any other answer before it changes anything.
-- Fixed an upgrade reporting success when the daemon it restarted never came back. Teaching the installer that a live-but-unresponsive process counts as "running" made it count as "started" too, so a version that came up and never answered passed the health check the rollback depends on. Whether something is *there* and whether it is *answering* are now asked separately.
+- Fixed an upgrade reporting success when the daemon it restarted never came back. Teaching the installer that a live-but-unresponsive process counts as "running" made it count as "started" too, so a version that came up and never answered passed the health check the rollback depends on. Whether something is _there_ and whether it is _answering_ are now asked separately.
 - Fixed the installer treating a daemon that is alive but not answering as stopped. `looptroop status --json` reports that case as `running: false` with the process id in a separate field, precisely so an installer does not read it as "nothing is there", and the installer read only the first field. An upgrade replaced the executable under a live process holding the port, then started a daemon that could not bind it. Both fields are now read.
 - Fixed the installer accepting an empty or flag-shaped option value. `--prefix "$DIR"` with `DIR` unset installed the standalone executable into whatever directory you happened to be in, and `--version -h` asked GitHub for a release called `v-h`. The installer now applies the same three rules the release scripts do.
 - Fixed a signal arriving in the instant after `install.sh` starts the installer but before it is ready to pass signals on, which killed the wrapper outright and left the installer running without it. The handlers are now in place before anything starts.
@@ -712,7 +720,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed two installers in one directory being able to hold the same lock. Both could see one stale lock, both remove it, and both create their own, after which the second deleted the first's. A stale lock is now taken over through a rename, which exactly one process can win, and a lock is only ever removed by the installer that holds it.
 - Fixed delivery stalling for two minutes on a machine whose only GitHub credential is a token in the environment. The branch push lends `git` the credential helper `gh` already has, but the push of the squashed candidate commit built its own settings and took the shared timeout and retry count without the credentials, so on a container, which is where a bare `GH_TOKEN` is normal, every `gh` call worked and that one push stopped to ask for a password it has no way to request. Ticket creation and delivery's remote fetches had the same gap and failed instead of stalling. All of them now use the same environment.
 - Fixed `looptroop doctor` reporting a Node version as fine when the program would refuse to start on it. Anything from 24.15 passed, and so did the read-only install check, while the launcher required 24.18. Machines in that range could never run LoopTroop; they now find out from `doctor` rather than from a program that exits immediately.
-- Fixed a nightly or release candidate of the minimum Node version passing for the minimum itself. `24.18.1-nightly.0` comes *before* `24.18.1` (which is how npm reads `engines.node`, and therefore how whatever installed that runtime read it), but the launcher and `doctor` compared the three numbers alone, so a build missing the fix the floor exists for started the app and failed somewhere unrelated.
+- Fixed a nightly or release candidate of the minimum Node version passing for the minimum itself. `24.18.1-nightly.0` comes _before_ `24.18.1` (which is how npm reads `engines.node`, and therefore how whatever installed that runtime read it), but the launcher and `doctor` compared the three numbers alone, so a build missing the fix the floor exists for started the app and failed somewhere unrelated.
 - Fixed the launcher and `doctor` telling every user to install Node with nvm, which is not how anybody installs it on Windows and not how most people do on macOS. Both now name Homebrew, winget or a distribution package as appropriate, and always offer nodejs.org as well.
 - Fixed the launcher telling a user on Node 24.18.0 to install Node 24.18.0. It compared only the major and minor parts and printed a zero patch level.
 - Fixed the read-only install check misreading a Node path that contains a space, which is where Node lives on Windows by default. It split the whole line on spaces and took the second field as the version, so the check reported a version of `Files\nodejs\node.exe`.
@@ -847,7 +855,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed the question poll restarting every ten seconds. It depended on a set rebuilt by each ticket-list refetch, so it tore down its interval and re-fetched every open question each time, whichever tickets were active.
 - Fixed a slow per-ticket question refresh arriving after a newer one and pruning questions that were still live.
 - Fixed a historical error rendering with no logs at all. The error list runs newest-first, but the code that bounds a failure's time window read the "previous" error backwards and took the newer one, so the window ended before it started. Undated lines used to slip through and hide it; excluding them, as this release does, made it visible.
-- Fixed the error view falling back to the *oldest* unresolved error rather than the most recent, which put its recovery actions beside the wrong failure.
+- Fixed the error view falling back to the _oldest_ unresolved error rather than the most recent, which put its recovery actions beside the wrong failure.
 - Fixed the live-stream session check running on every reconnect. A daemon that was simply down was asked about the session every three seconds for as long as the tab stayed open; it is now asked once per connection, and again only after a stream has successfully opened.
 - Fixed a slow question refresh overwriting a newer poll, or a question that had just arrived live, and pruning it; the ordering was only enforced in one direction.
 - Fixed a slow poll for waiting questions overwriting a newer one, or a newer per-ticket refresh, and pruning questions that were still live.
@@ -966,8 +974,8 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 
 ## 0.5.9 (2026-08-26)
 
-
 ### Summary
+
 - `stop` no longer strands a running LoopTroop it briefly could not reach, leaving it impossible to stop and `clean` free to delete worktrees it was still using.
 - Raising the Node floor no longer requires editing branch protection by hand before the change can merge.
 - LoopTroop now builds, packages and installs correctly under npm 12, whose install-script blocking and changed `npm pack` output silently broke two release checks.
@@ -975,12 +983,15 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Dependency pull requests now arrive with their licence notices already regenerated, instead of failing until someone updated the file by hand.
 
 ### Added
+
 - Added a `Renovate notices` workflow that regenerates `THIRD-PARTY-NOTICES.md` on Renovate's branches and pushes the result back. The file records the exact version of every redistributed package and `licenses:check` fails when it is stale, so every dependency update invalidated it; because the hosted Renovate app cannot run `postUpgradeTasks`, each of those pull requests previously arrived red and needed a person to run one command and commit the result. The workflow builds before regenerating, since the generator reads `dist/client/bundled-packages.json` and would otherwise omit every inlined frontend package and write a file that is wrong rather than merely stale. It pushes with `RELEASE_PR_TOKEN` rather than `GITHUB_TOKEN`, because a push made with the latter does not start workflow runs and the required checks would never re-run.
 
 ### Security
+
 - Refreshed `brace-expansion`, `postcss` and `@babel/core` in the lockfile, clearing one high, one moderate and one low advisory. All three are transitive development dependencies whose declared version ranges already permitted the patched releases, so no dependency changed, only the versions resolved against them. The refresh is deliberately scoped to those three packages: refreshing the whole lockfile also moves everything else within its range, which would have carried `@opencode-ai/sdk`, `@hono/node-server` and the CodeMirror packages past the maturity delay and the per-package review they are gated behind.
 
 ### Changed
+
 - The Scoop channel check now unpacks with the runner's own 7-Zip instead of downloading Scoop's private copy. Scoop fetches that helper the first time it has to unpack anything, and the fetch failed a job outright (an SSL error retrieving the 7-Zip installer from GitHub releases), which is a network hiccup with nothing to do with this repository failing a check about a LoopTroop manifest. The Windows image already ships 7-Zip, so the download is removed rather than retried: a retry would re-run the same fetch against the same flaky path, while this makes it unnecessary. The step asserts `7z` is on PATH first and fails there if it is not, so an image that stops providing it is reported as itself rather than silently leaving the setting pointing at nothing.
 - The integration test bucket runs on its own, capped at two workers, on Windows only. The Windows lane has been failing with several unrelated files crossing their timeouts in a single job while the same commit passes in its sibling run: two files hitting the 45-second and 60-second ceilings together in one job, and once a suite taking 861 seconds against a sibling's 413 while every other Windows job in that run was normal. Budgets were already raised from 20 seconds once for this, and raising them again would only move the ceiling; a bounded budget is what keeps a genuine hang failing rather than holding the job for thirty minutes. Part of the cause is a runner nobody controls, and this does not address that: a machine that turns 413 seconds into 861 will still miss a deadline with two workers. What it does address is the self-inflicted share: this is the only bucket combining process isolation with real git worktrees and real SQLite, and three of those in flight on a 4-vCPU runner, each performing thousands of file operations through Defender, is contention this repository chose. It becomes a separate scheduling group rather than taking a smaller share of the existing one because vitest requires a single worker count per group, so a lower cap is only expressible by leaving it, and lowering the shared count would also throttle the jsdom and pure-logic buckets, which are not what is starving. Sequential groups cost wall-clock time on a lane already near 400 seconds, well inside the 30-minute job timeout. Linux and macOS are unchanged.
 - The lockfile is refreshed weekly rather than monthly. Renovate's ordinary pass only sees the packages declared in `package.json`; the lockfile holds several hundred more, reached transitively, and advisories against those produce no pull request. That makes the lockfile refresh their only response path and its cadence their exposure window: monthly meant up to thirty days, and did, leaving a high-severity `brace-expansion` advisory open until it was refreshed by hand. It is not daily because a full re-resolve produces a large diff whenever anything transitive publishes, which is most days, and no per-package maturity gate can apply to it.
@@ -996,19 +1007,20 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Pull request concurrency and creation rate are throttled while the accumulated backlog is worked through, so the first batch arrives in reviewable order rather than all at once.
 
 ### Fixed
+
 - Fixed Windows test failures caused by temporary directories being removed while a child process still held a handle inside them. Tests that spawn `git`, a hook command or any other child into a scratch directory then delete that tree in an `afterEach`; POSIX unlinks files other processes have open, Windows refuses, and the removal throws `EPERM` from the teardown. Vitest reports that as a failing test with a real name and a real assertion, in a file that is working perfectly: a Windows-only signature this repository has chased more than once and never resolved. All 58 such cleanups across 48 test files now go through one helper that gives the removal `rmSync`'s own bounded retry, the same treatment the git fixture helper already had. The options are inert off Windows, so nothing changes on Linux or macOS.
 - Fixed `stop` destroying the records of a daemon that was running but slow to answer, which left that daemon impossible to stop for the rest of its life. The health probe gives a daemon two seconds to reply, and a machine under load can exceed that while the daemon is perfectly healthy; the result was reported as "not running", and `stop` deleted the state file on that basis before it had looked at the single-instance lock. That file holds the only copy of the daemon's API token, so every later `stop` took the same branch and never reached the authenticated shutdown it needed, `status` reported nothing running while a process and a lock survived, and `clean` (whose two guards both read that same file) stopped refusing and was free to remove worktrees the daemon was still using. `stop` now distinguishes a daemon that did not answer from one that is not there, and acts on the first only when the recorded start token proves the pid has not been recycled. Where it cannot prove that, the process is left alone and its records are kept, because stranding a working daemon is worse than declining to stop it. `start` and `status` report the same situation instead of claiming nothing is running, `clean` additionally refuses on a held lock so it no longer depends on a single file, and every escalation rung that confirms the process is gone now clears the records; the two that did not were written for a daemon that answers and therefore cleans up after itself, which a wedged one does not do.
 - Fixed the install smoke reporting `exit 1` and nothing else when a lifecycle command failed, which is why the defect above was investigated three times as three separate bugs. Failing commands now report their signal or spawn error as well as their exit code, print what the command actually said, and dump the daemon's state, lock, recent log and doctor report at the point of failure with tokens and sign-in nonces redacted. Assertions downstream of a failed `restart` are skipped rather than scored, since a restart that did not happen cannot produce a new instance id and their failures described consequences rather than causes.
 - Fixed atomic file writes failing on Windows when another process still held the file open. Every durable write in LoopTroop (settings, ticket artifacts, runtime projections, receipts, the daemon record) lands by writing a temporary file and renaming it over the target. POSIX replaces a file other processes have open; Windows refuses while the handle exists and reports `EPERM`, `EACCES` or `EBUSY` depending on how the holder opened it, and a virus scanner indexing the file that was just written is enough to produce one. That surfaced as a `daemon.json` rename failing an install check outright. The rename now waits out a handle that has not been released, in ten short steps matching the budget already given to directory removal against the same class of lock. The destination is never unlinked first, since that would trade the atomic replace for a window where the file does not exist, and the temporary file is not rewritten between attempts; it is already written, mode-matched and flushed, and only the final step repeats. Errors that will not resolve themselves, such as a full disk, still fail immediately and report themselves rather than the retries. POSIX keeps the bare rename, because it has no such failure.
 - Fixed the four required CI checks carrying the Node version in the names branch protection matches on, which made every toolchain floor bump unmergeable. Raising the floor renamed those jobs, so they reported under names nothing required while the required names were never reported at all, and GitHub waits on an unreported required check indefinitely rather than failing it. The result was a pull request showing every check green and a merge button that never unlocked, with nothing on the pull request naming the cause. The required lanes are now named for their purpose rather than their version, so a floor bump changes only the files that pin it. The advisory lanes keep the version in their names, since nothing requires them and the marker that separates a blocking lane from a `continue-on-error` one is retained.
 - Fixed the packaging and install checks misreading `npm pack --json` on npm 12, where its report changed from an array to an object keyed by package name. Both readers took the first array element, which is now `undefined`: `verify:package` (a required check) stopped finding the file list, and the install smoke resolved the tarball to the repository root and tried to delete it, surfacing as `EISDIR` rather than as a parse failure. Both now accept either shape, and the smoke aborts loudly when no filename is reported instead of continuing with an empty path.
-- Fixed the package managers installed by CI and by the published install smoke arriving unusable under npm 12. npm 12 blocks dependency install scripts by default and *skips* an unapproved one with a warning rather than an error, so `bun` and `opencode-ai` (both of which fetch their real binary from a postinstall) installed "successfully" with nothing runnable behind them, failing several steps later on an assertion that named neither npm nor the blocked script. Each global install now names the single package it approves through `--allow-scripts`, rather than enabling scripts wholesale. The flag is deliberately confined to those steps: npm 12 rejects it outright in a project-scoped install, so the repository's own `npm ci` continues to take its policy from the `allowScripts` field in `package.json`. LoopTroop itself declares no install scripts, so nothing changes for users installing it under npm 12.
+- Fixed the package managers installed by CI and by the published install smoke arriving unusable under npm 12. npm 12 blocks dependency install scripts by default and _skips_ an unapproved one with a warning rather than an error, so `bun` and `opencode-ai` (both of which fetch their real binary from a postinstall) installed "successfully" with nothing runnable behind them, failing several steps later on an assertion that named neither npm nor the blocked script. Each global install now names the single package it approves through `--allow-scripts`, rather than enabling scripts wholesale. The flag is deliberately confined to those steps: npm 12 rejects it outright in a project-scoped install, so the repository's own `npm ci` continues to take its policy from the `allowScripts` field in `package.json`. LoopTroop itself declares no install scripts, so nothing changes for users installing it under npm 12.
 - Fixed the published install smoke reporting every channel as broken when the release was fine. Its check on how the daemon obtained OpenCode read `kind`, the discriminant of the supervisor's in-memory status, rather than `status`, which is what `describeOpenCode` writes into `daemon.json`. Nothing else in any leg failed (install, version, doctor, start, the health endpoint, the interface, the refused unauthenticated call, stop and uninstall all passed on all eight legs of the 0.5.8 release), so the only defect was the assertion. A test now pins the field against the code that renders the persisted shape, so renaming the discriminant fails in CI rather than in a post-release smoke.
 
 ## 0.5.8 (2026-08-23)
 
-
 ### Summary
+
 - Execution-lock errors now explain the blocking ticket, user-facing workflow step, and the LoopTroop alpha concurrency limit at every entry point.
 - Project status now documents the council-size and per-project execution limits users should plan around.
 - Structured-output cleanup now preserves colon-containing list text for every project type while safely repairing clearly proven mappings in shared artifacts and candidate-file audits.
@@ -1023,7 +1035,8 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Releases keep working past the macOS 14 runner retirement, which would otherwise have stopped them entirely from November 2026.
 
 ### Added
-- Added `scripts/smoke-published.mjs` (`npm run verify:published`), which installs a *published* release from its real feed using the command the documentation gives users, then drives it until it serves: version, `doctor --json` before start, `start` on an explicit port, `/api/health`, the interface and one of its hashed assets, a 401 on an unauthenticated API call, `status --json` agreeing with the daemon, `doctor --json` again after start, a clean `stop` that releases the port and removes both the state file and the lock, and finally the documented uninstall. Every other smoke test in this repository proves a *locally built* artefact works; none of them can see a tap that never received its commit, a `bin` mapping that survived `npm pack` but not `npm publish`, or a registry still serving the previous version behind `@latest`.
+
+- Added `scripts/smoke-published.mjs` (`npm run verify:published`), which installs a _published_ release from its real feed using the command the documentation gives users, then drives it until it serves: version, `doctor --json` before start, `start` on an explicit port, `/api/health`, the interface and one of its hashed assets, a 401 on an unauthenticated API call, `status --json` agreeing with the daemon, `doctor --json` again after start, a clean `stop` that releases the port and removes both the state file and the lock, and finally the documented uninstall. Every other smoke test in this repository proves a _locally built_ artefact works; none of them can see a tap that never received its commit, a `bin` mapping that survived `npm pack` but not `npm publish`, or a registry still serving the previous version behind `@latest`.
 - Added a `Published install smoke` workflow that runs those legs on real runners, one independently named leg per channel and operating system, with `fail-fast: false` so a broken channel is identifiable instead of hidden behind another. Failures open or update a single issue per version rather than a new one per run, and legs whose setup failed before the driver could report are listed as such rather than silently omitted.
 - Added the documented one-liner installers to the published smoke, on Linux and macOS as well as Windows. `install.sh` and `install.ps1` are the only two files in this repository that nothing else exercised end to end (the existing installer smoke runs them against a locally built tarball and says so), so a stale website redirect, a change to how the installer discovers releases, or published wrapper bytes that differ from the ones in the commit could all reach users unnoticed. Both modes are covered: the default one that hands a verified tarball to npm, and `--binary`, which places the standalone executable and is documented as a way to install rather than only to upgrade.
 - Added Homebrew and Scoop legs that install from the real tap and bucket after a release has pushed to them. CI already proves the formula and the manifest against throwaway local copies on every change; neither can fail when the push itself did not land, which stays invisible until someone types the documented command. The Homebrew leg additionally runs the launcher with no Node on `PATH`, because the formula depends on a keg-only `node@24` and has to wire it up itself; on a runner that already has Node, a formula that forgot would pass every other check and fail only for the user who has none.
@@ -1031,25 +1044,30 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added verification of a repaired package channel. Republishing Homebrew or Scoop now dispatches the smoke for that channel alone, so a repair is confirmed against the real feed within minutes instead of being believed until the next weekly run. Chocolatey and WinGet are deliberately excluded: a push to either is a submission, and the package is not publicly installable until review completes.
 - Added weekly legs for bun, pnpm, Yarn Classic, the standalone executables and the container image, completing the matrix at eight legs per release and seventeen per week. The standalone leg downloads the archive straight off the releases page rather than using the installer, because the installer is itself a Node program and refuses to run without Node, so for the audience a standalone executable exists for, that download is the only route, and nothing covered it. Each of those legs additionally proves the launcher runs with no Node on `PATH` at all.
 - Added Chocolatey, WinGet and the AUR as explicitly uncovered channels rather than silently absent ones. Each is listed with the reason it is not installable yet (moderation, a manifest review, closed registrations) on every run of the plan, including green ones, because a channel nobody mentions is indistinguishable from a channel nobody covers. Their packages continue to be built and installed by CI on every change.
-- Added a version-presence poll that waits for a feed to *carry* a release before asserting anything, and is explicitly not a retry: it reads feed metadata only, never installs, never re-runs an assertion, and prints how long propagation took even on a green run, so a channel that is quietly getting slower is visible before it starts failing.
+- Added a version-presence poll that waits for a feed to _carry_ a release before asserting anything, and is explicitly not a retry: it reads feed metadata only, never installs, never re-runs an assertion, and prints how long propagation took even on a green run, so a channel that is quietly getting slower is visible before it starts failing.
 
 ### Removed
+
 - Removed the release workflow's `smoke-installer-network` job. It ran the PowerShell one-liner against the real release, which the published smoke now does as one leg of many: with a daemon started, the health endpoint checked and the install removed again, none of which it did. Keeping both would have run `irm | iex` twice per release and reported the same failure through two channels.
 
 ### Changed
-- Changed the release workflow's registry smoke to drive the shared script rather than its own inline copy of the assertions, so "this release installs correctly" has one definition instead of two that drift apart. It stays deliberately smaller than the published smoke (install, version and the doctor checks, no daemon) because it gates the tag, and every assertion added there is another way to leave a version published on npm with no tag and no release. It now also pins the exact version explicitly: the job has no dist-tag condition, so it runs for release candidates too, where an unpinned `npm install -g looptroop` resolves `latest` to the *previous stable* release and would have failed its own version assertion after npm had already published.
-- Moved the `darwin-arm64` standalone-binary build from the `macos-14` runner image to `macos-15`, in both CI and the release workflow. GitHub began deprecating `macos-14` on 6 July 2026 and withdrew it on 2 November 2026; because the binary jobs gate `build`, and `build` refuses to proceed without all four archives, losing that image would have stopped every release rather than just the macOS one, including a security fix. Both sites now record why the runner is pinned rather than floating: so the OS a distributed binary is built on stays a deliberate choice. It is explicitly *not* what sets the binary's minimum macOS version: the build copies the running Node executable and re-signs it, so that comes from Node, which `setup-node` already pins. The runner-outage example in the `skip_binaries` documentation was updated to match.
+
+- Changed the release workflow's registry smoke to drive the shared script rather than its own inline copy of the assertions, so "this release installs correctly" has one definition instead of two that drift apart. It stays deliberately smaller than the published smoke (install, version and the doctor checks, no daemon) because it gates the tag, and every assertion added there is another way to leave a version published on npm with no tag and no release. It now also pins the exact version explicitly: the job has no dist-tag condition, so it runs for release candidates too, where an unpinned `npm install -g looptroop` resolves `latest` to the _previous stable_ release and would have failed its own version assertion after npm had already published.
+- Moved the `darwin-arm64` standalone-binary build from the `macos-14` runner image to `macos-15`, in both CI and the release workflow. GitHub began deprecating `macos-14` on 6 July 2026 and withdrew it on 2 November 2026; because the binary jobs gate `build`, and `build` refuses to proceed without all four archives, losing that image would have stopped every release rather than just the macOS one, including a security fix. Both sites now record why the runner is pinned rather than floating: so the OS a distributed binary is built on stays a deliberate choice. It is explicitly _not_ what sets the binary's minimum macOS version: the build copies the running Node executable and re-signs it, so that comes from Node, which `setup-node` already pins. The runner-outage example in the `skip_binaries` documentation was updated to match.
 - Manual QA is now enabled by default. The profile default (`PROFILE_DEFAULTS.manualQaEnabled`) flips to `true`, new database profiles seed the enabled value, and every place that fell back to "disabled" when no explicit choice existed (profile setup, project creation, ticket creation, and the draft ticket view) now falls back to the profile default. Existing profiles, projects, and tickets keep whatever they had set; only unset values change. Tickets already in flight are unaffected because the Manual QA route is locked when the ticket starts.
 
 ### Added
+
 - Added a project-status note documenting the 2 to 10 distinct-model council range, including the main implementer, and the one-active-execution-ticket limit per project.
 - Added `LOOPTROOP_DEV_FRONTEND=preview`, which makes `npm run dev` build the dashboard once and serve the bundle rather than starting the frontend dev server. The dev server sends every source file as its own request (over 300 source modules before dependencies), and over a tunnel each one pays the round trip; the built bundle is a few dozen assets. Hot reload is the trade, so code changes need a restart. Everything else is unchanged: same port, same backend, same proxy. An unrecognised value warns and falls back to the dev server rather than silently serving the slow path to someone who asked for the fast one.
 
 ### Changed
+
 - Changed the folder-ignore policy control, in both Configuration **Advanced** and Project **Advanced**, from a stack of three description cards to the single-row layout its neighbours already use: label, `?` documentation link and a one-line description on the left, a compact **Repository / This clone / Nowhere** selector on the right, and each choice's full explanation on hover. It was the one option in that section that did not look like the others, and it took three times the height to ask a smaller question. The stored values (`repo`, `local`, `skip`), the `local` default, and the warning shown when no rules are written are unchanged; the visible option labels are shorter, and their previous wording now lives in the hover text.
 - Changed the Configuration model list so each row shows the catalog pretty name with the stored `provider/model` id in parentheses, so two models that share a display name can still be told apart. The closed picker still shows pretty name and provider; the main-implementer auto-included council row is unchanged.
 
 ### Fixed
+
 - Fixed completed bead log panels showing no entries after their logs fell outside the newest phase-history page. The panel now reads durable history scoped to the selected bead and fetches older pages as needed, while retaining the existing iteration-level filtering.
 - Replaced the project execution-lock error's internal status code and vague "busy" wording at blueprint/setup approvals, retry, continue, and pre-flight diagnostics with an actionable explanation that identifies both tickets, names the blocking workflow step, states the configured LoopTroop alpha limitation that each project may have only one active ticket in the execution band at a time, and tells the user to finish or cancel the running ticket before trying again.
 - Fixed shared YAML cleanup converting valid colon-containing list text such as `style:main` into mappings. List-item mapping repairs now require structural evidence or configured structured-list context, preserve the original key/value text, and report the formatting-only correction in artifact processing notices.
@@ -1064,8 +1082,8 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 
 ## 0.5.7 (2026-08-20)
 
-
 ### Summary
+
 - `looptroop open` no longer leaves you stranded when no browser opens. It checks whether one actually signed in, and prints a link to paste when none did (over SSH, in WSL, in a fresh VM, or on any machine with no browser registered).
 - Windows installations work with tools that are not `.exe` files: `doctor` finds npm again, and the daemon can start an OpenCode installed from npm, bun or pnpm, which it previously could not launch at all.
 - CI now proves the two things that let both of those ship: that `doctor` finds npm on every platform, and that the published `irm` one-liner installs a working LoopTroop on stock Windows PowerShell.
@@ -1074,6 +1092,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Startup now points directly to live logs, with opt-in full DEBUG output from managed OpenCode servers.
 
 ### Added
+
 - Added `looptroop open --print-url`, which prints the sign-in link instead of launching a browser. `open` now also verifies the handoff: after launching, it waits for the browser to spend its single-use nonce, and prints the link if none arrives. Launch failures are no longer discarded either: the opener's exit code and message are reported rather than swallowed, so "no application is associated with http" reaches the person who needs to read it. The link is still withheld whenever a browser does sign in, because the nonce in it is a live credential; it is printed only when the alternative is no way in at all.
 - Added a `POST /api/auth/bootstrap/status` route, behind the same API token that guards nonce minting, so the CLI can ask whether a sign-in link was used. No operating system reports whether the browser it launched ever loaded the page, and this is the only honest signal available.
 - Added a release-time job that installs LoopTroop through the published one-liner (`irm https://www.looptroop.ovh/install.ps1 | iex` on a clean Windows runner, in Windows PowerShell 5.1) and then checks the version and `doctor`. Nothing had ever exercised the network path: CI tests the installer wrappers against a local tarball, which cannot catch a stale redirect, a change in release discovery, or published bytes that differ from the ones in the commit. A comment in `ci.yml` had claimed this coverage existed for several releases.
@@ -1082,6 +1101,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added `--opencode-logs=all` to `looptroop start` and `looptroop open`. When LoopTroop starts OpenCode itself, the option captures its full DEBUG stream in the daemon log or prints it during a foreground run; adopted and external servers remain untouched. Successful background starts now advertise `looptroop logs --follow`, while an already-running daemon explains that changing its OpenCode log mode requires a stop and start. The overview and command-specific `--help` output document both paths.
 
 ### Fixed
+
 - Fixed project attachment accepting an already-attached repository or reusing another project's name or short name. Attachment checks now compare the canonical Git root, the form warns and disables submission for visible conflicts, and the API returns a `409` conflict without changing the existing project. Local `.looptroop` state that is no longer registered remains recoverable through the existing restore, clear-tickets, and start-fresh choices.
 - Fixed `looptroop doctor` reporting `npm not found on PATH` on Windows machines where npm works, including machines it had just installed LoopTroop on with npm seconds earlier. Doctor's probes spawned without a shell, and Windows resolves a bare command name by appending `.exe` alone: it never reads `PATHEXT`, so `npm.cmd` was invisible, and naming the shim directly does not help either because Node has refused to launch `.cmd` files since the BatBadBut hardening. All of doctor's probes now go through a shell on Windows, which also fixes the OpenCode CLI check for anyone who installed OpenCode from npm.
 - Fixed the daemon being unable to start OpenCode on Windows when it was installed with npm, bun or pnpm. `opencode` is only an `.exe` when it came from the official installer or Scoop; from a package manager it is `opencode.cmd`, which the daemon could not spawn, so LoopTroop reported OpenCode as missing while it sat on the user's PATH, and there was no way to use LoopTroop at all. The same root cause as the npm check, one layer down and considerably more serious.
@@ -1089,19 +1109,21 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed compact Configuration duration editors squeezing native number spinners against their values on narrow screens. The minute and second inputs no longer show browser spinner controls, and out-of-range edits are passed through the shared validator so lower-bound errors are visible and Save is blocked just like upper-bound errors.
 
 ### Changed
+
 - Moved the LoopTroop folder-ignore choice into Project **Advanced**, added a Configuration default and contextual documentation, and changed the built-in default to **This clone only** (`.git/info/exclude`). Each project saves one of `repo`, `local`, or `skip`; restored projects retain it, and ticket worktrees continue applying the project policy.
 - Made Git-hook policy project-scoped. Configuration **Advanced** seeds new projects, tickets snapshot their project's `observe_only`, `validate_advisory`, `validate_required`, or `use_native_hooks` choice at Start, and execution setup now presents that policy read-only while leaving detected-hook validation commands editable. Ticket create/update and ticket UI controls no longer accept a Git-hook override.
 
 ## 0.5.6 (2026-08-17)
 
-
 ### Summary
+
 - Remote development works from the advertised LAN and trusted Tailscale URLs again, including ticket creation and every other write action.
 - New releases are now visible wherever users naturally look: the core CLI commands, Doctor, the header version, and an install-aware About window with full GitHub release notes.
 - Installing now points you at the interface with `looptroop open`, every command explains itself with `--help`, and `doctor` reports each tool's version against the newest published one.
 - Every downloadable release asset now carries signed build provenance, not just the standalone binaries, including the two installer scripts, which are the assets a user pipes into a shell.
 
 ### Added
+
 - Added one shared published-release status for the CLI and interface. `looptroop --version`, `status`, `start`, and `open` now report a notice on **stderr** whenever a newer GitHub release exists, leaving stdout byte-for-byte as it was so scripts that read `looptroop --version` keep working; `doctor` always reports the current and latest known versions, and both `status --json` and `doctor --json` expose the same structured update facts without adding non-JSON output.
 - Added an Updates section to About with the current and latest versions, the detected installation channel, exact ordered upgrade commands, restart or container-recreation guidance, and a Changelog control whose hover/focus card shows the complete latest GitHub release body. The header version now opens About and gains a quiet monochrome update icon only when a newer release is available.
 - Extended artefact attestation from the standalone binaries to the npm tarball, the bundle, `install.sh`, `install.ps1`, `release-manifest.json` and `checksums.sha256`. Any of them can be checked with `gh attestation verify <file> --repo looptroop-ai/LoopTroop`, which now covers the installer scripts a user executes rather than only the executables they unpack.
@@ -1110,15 +1132,18 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added workflow linting to CI. `actionlint` checks the schema and every `${{ }}` expression across all five workflows, and hands their inline shell to ShellCheck: 4,400 lines that no existing check read, where a bad expression or an unquoted variable previously reached `main` and surfaced as a half-finished release.
 
 ### Changed
+
 - The first thing suggested after installing is now `looptroop open` rather than `looptroop setup`. LoopTroop is used through its interface, and `open` starts it and lands you there; `setup` attaches a project from the terminal, which many people never need. `open` also leads the command list.
 - `doctor` marks something missing with `✗` and something present-but-unhappy with `!`, because "gh is not installed" and "gh is not signed in" want different fixes. Which checks fail, and so the exit code scripts gate on, is unchanged. It also names the install method with the upgrade command on its own line, says that the schema version belongs to the database and where that database is, and reports "no failed start on record" rather than a phrase that read like a missing value.
 - Release discovery now follows the latest published GitHub release rather than npm alone, so the version users are shown has public release notes and is not announced while its GitHub release is still a draft. Results and failed attempts are cached for 15 minutes so each requested command can report updates without repeatedly waiting on GitHub when offline.
 - Upgrade guidance now includes what happens after package replacement: ordinary package-manager and source installations restart the daemon to load the new code, the transactional standalone installer explains that it handles the restart itself, WinGet opens LoopTroop after replacing the stopped executable, and containers explicitly require recreation after pulling the image.
 
 ### Removed
+
 - Removed the `-bundle.zip` release asset. It was built, hashed, recorded in the release manifest and uploaded on every release, but nothing consumed it: WinGet installs the standalone Windows binary archive instead, which it has done since WinGet support landed. Dropping it also removes Info-ZIP as a build requirement. The bundle is still published as `-bundle.tar.gz`, and the channels that use it are unaffected.
 
 ### Fixed
+
 - Fixed `status` and `doctor` reporting "not running" to someone looking straight at the interface. Run from a checkout, `npm run dev` serves the interface through Vite and registers no daemon, so both commands were answering truthfully about something the reader was not asking about. Both now detect the development server and say which of the two they mean.
 - Fixed the release failure report telling operators to repair a failed `publish-aur` with `channel-republish.yml`, which has no AUR support and never had. The report now names the four channels that workflow does cover and says plainly that the AUR needs the release job re-run or a manual push.
 - Fixed the release PR workflow failing when re-run for a version whose pull request already exists. It now updates the existing pull request in place (same number, same URL, refreshed notes) rather than aborting on `gh pr create`.
@@ -1126,23 +1151,26 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 
 ## 0.5.5 (2026-08-14)
 
-
 ### Summary
+
 - **Starting LoopTroop is one command.** `looptroop open` now starts the daemon if it is not already running, instead of refusing and naming a second command to run first.
 - **`gh` is installed for you** on every channel that can declare a dependency: Homebrew already did, and Scoop, Chocolatey, WinGet and the AUR now do too.
-- **The documentation leads with installing, not with a channel list.** The install block is a tab group (on the website, in the README and in the docs) with the one-line installer first and each channel stating what *it* needs, rather than one prerequisites list that was the union of all of them and accurate for nobody.
+- **The documentation leads with installing, not with a channel list.** The install block is a tab group (on the website, in the README and in the docs) with the one-line installer first and each channel stating what _it_ needs, rather than one prerequisites list that was the union of all of them and accurate for nobody.
 - An emergency release path that would have produced nothing, and a download-checking command that failed for everyone who ran it, are both fixed.
 
 ### Changed
+
 - **`looptroop open` now starts LoopTroop if it is not running.** Getting to the interface was two commands, and `open` on a stopped daemon did nothing but name the other one. It now starts the daemon, waits for it, and opens the browser, and when one is already running it opens that, without starting a second. Starting and reporting have been separated internally so this does not print a start report and mint a sign-in link that is thrown away a moment later; a failed start still reports exactly what it reported before. `looptroop start` is unchanged for anyone who wants only the service.
 - **`gh` is now a declared dependency of the Scoop, Chocolatey, WinGet and AUR packages**, and no longer merely suggested by the AUR one. Delivering a pull request is the last step of every ticket, so a channel that can install `gh` now does; Homebrew already did. `looptroop doctor` still only warns when `gh` is missing rather than failing, deliberately: npm, bun, pnpm and the standalone executable have no way to declare a dependency, so their users may legitimately not have it.
 
 ### Fixed
+
 - Fixed the operator bypass that skips the standalone binaries, which could not have produced a release. It exists so a runner-class outage cannot strand a security fix, and it had never been run. Running it showed that skipping the binary builds also skipped every job after them (artefact verification on all three platforms, the read-only install check, the draft, and then every publish), so the emergency path would have produced nothing at all. Both halves are fixed, and a release with binaries skipped now builds, verifies and drafts exactly as a normal one does.
 - Corrected the command shown for checking a download against `checksums.sha256`. The file lists every asset a release publishes, so `sha256sum -c checksums.sha256` reports the eight you did not download as `FAILED open or read` and exits non-zero, which reads as a corrupted release and is not one. The documented command now checks the one file you actually have, and works the same way on macOS, where `shasum` has no flag for skipping the rest.
 - Installing bun on Windows in CI is no longer a coin toss. Its npm package's postinstall replaces its own shim with the native binary, which races npm's cleanup of that same file and fails with `EBUSY` on `bun.exe`. Windows now installs bun from its own installer with the version pinned, which is what bun's error message recommends; Linux keeps npm, where the postinstall is fine. No retry was added: the failure was a real race in the tool's installer, and a retry on a required check would only have hidden it for longer.
 
 ### Documentation
+
 - The install instructions are now a tab group everywhere they appear (the website hero, the README and the docs) with the one-line installer first and **each channel stating its own requirements**. They genuinely differ: Homebrew and Scoop install Node, git and `gh` for you, npm, bun and pnpm expect all three, and Docker needs only Docker but also an OpenCode server it can reach. The previous single prerequisites list was the union of every channel and therefore accurate for none of them.
 - The README's quick start was 285 of its 535 lines. The container documentation moved to the Installation page, which until then pointed back at the README for it, and the development-stack section was dropped because `CONTRIBUTING.md` already carries the same three commands.
 - The Operations Guide had one advisory note in front of 382 lines about running from a checkout. It is now explicitly two parts, installed first, and the state files that were missing from its storage table entirely (`config.json`, `daemon.json`, `daemon.lock`, `logs/`) are in it. Several things it said were simply wrong: `build` was documented as a command it has not been since the distribution work, "all scripts" listed about half of them, the query-string API token was described without saying it is development-only, and `diagnose:stall` was recommended to installed users, who cannot run it because `scripts/` is not shipped.
@@ -1150,28 +1178,31 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 
 ## 0.5.4 (2026-08-14)
 
-
 ### Summary
+
 - Installing with **bun** and **pnpm** is properly supported. Both could always install LoopTroop, but neither had ever been tried, and both installations reported themselves as npm ones, so they were told to upgrade with a command that does not upgrade them, and quietly installs a second copy alongside instead. Each now has its own upgrade command, proved by installing globally with both on Linux and Windows.
 - Every release now publishes `checksums.sha256`, so a download can be checked with `sha256sum -c` rather than by reading hashes out of a JSON file by hand.
 - The documentation now describes LoopTroop as something you install. Every published page still opened with `git clone` and `npm run dev`, four releases after it began installing from seven channels and running as a background service. There are new **Installation** and **CLI Reference** pages, and the rest of the site has been brought in line.
 
 ### Added
+
 - Installing with **bun** and **pnpm** is now supported properly. Both could always install LoopTroop (it is the same package from the same registry), but neither was ever tried, and both installations reported themselves as npm ones and were told to upgrade with `npm install -g looptroop@latest`. That command does not upgrade a bun or pnpm installation: it installs a second copy under npm's prefix, leaves the original where it is, and which of the two runs afterwards depends on the order of your PATH. Each now has its own upgrade command, and CI installs LoopTroop globally with both, on Linux and Windows, and requires it to name the manager it was actually installed by. One thing pnpm users should know: pnpm will not resolve `@latest` to a version published in the last day or so, as a supply-chain protection, so it arrives on pnpm about a day after everywhere else.
 - Every release now publishes `checksums.sha256` alongside the assets, so a download can be checked with `sha256sum -c` (or `shasum -a 256 -c` on macOS, or `Get-FileHash` on Windows) rather than by reading hashes out of `release-manifest.json` by hand. It is generated from that manifest rather than by hashing the files a second time, so the two cannot disagree, and it is verified on Linux, macOS and Windows before a release publishes: both that the file is intact, and that what it claims about every other asset matches what the release recorded.
 
 ### Fixed
+
 - The README no longer says the container image is published "from the next release onward"; it has been published for several releases. The install table now also marks which channels actually work today, rather than describing Chocolatey and WinGet as merely slower: a command that cannot succeed yet is not a slow command.
 
 ## 0.5.3 (2026-08-14)
 
-
 ### Summary
+
 - Fixed an upgrade of the standalone executable that could leave LoopTroop stopped. If replacing the file failed, or the new version would not run, the old one was put back, but the daemon that had been stopped first was never started again, and the message said it was "back in place and working". Every path that stops the daemon now starts it again and says whether that worked.
 - Corrected the WinGet package to declare `x64` rather than `neutral`. `neutral` means "runs on any architecture", which would have offered an Intel-only executable to Windows on ARM, where it is not built.
 - Paused publishing to Chocolatey, WinGet and the AUR. None of the three can currently complete (a moderation queue, a review queue, and a registration that is closed upstream), and a release job that cannot succeed teaches everyone to ignore a failed release. Each is one repository variable away from being switched back on.
 
 ### Fixed
+
 - An upgrade to the standalone executable could stop LoopTroop and not start it again. The `--binary` installer stops a running daemon before replacing the file; if the replacement failed or the new executable did not run, it restored the previous version and stopped there, leaving the service down while reporting that the previous version was "back in place and working". All three failure paths now restart what they stopped, and report whether it came back.
 - The standalone upgrade also discarded its only copy of the working version before confirming the new one could serve. An executable that reports the right version and then exits on start passes the first check and fails the second; the backup now survives until the daemon answers.
 - `looptroop doctor` told WinGet users to run `looptroop stop && winget upgrade …`, which is a syntax error in the PowerShell that Windows ships. The two commands are now printed on separate lines, each valid in every Windows shell.
@@ -1179,12 +1210,13 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - A failed standalone-binary build was shown in the release report but never opened the release-failure issue.
 
 ### Changed
+
 - Publishing to Chocolatey, WinGet and the AUR is switched off until each becomes possible again.
 
 ## 0.5.2 (2026-08-13)
 
-
 ### Summary
+
 - LoopTroop can now be installed with WinGet on Windows, and every release publishes a standalone executable for macOS on Apple silicon, Linux on x64 and arm64, and Windows on x64. The executable carries its own Node runtime, so it needs nothing installed but git, which is what makes the WinGet package work on a machine that has never had Node.
 - Each binary is built twice and required to be byte-identical before it is published, carries the licence of the Node runtime inside it, and comes with a build provenance attestation: a signed statement of which workflow, repository and commit produced those exact bytes.
 - `looptroop doctor` now recognises a WinGet install and a directly downloaded binary, and names the right upgrade command for each. On WinGet that command starts with `looptroop stop`, because Windows will not replace a running executable and the daemon holds it open.
@@ -1192,30 +1224,35 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - The one-line installer can now install and upgrade that executable, with `--binary`. An upgrade stops a running daemon first, checks that the new executable actually runs, puts the old one back if it does not, and starts the daemon again, so an upgrade that goes wrong leaves you on the version you already had rather than with nothing.
 
 ### Added
+
 - An AUR package, `looptroop-bin`, which is written and tested but **not yet published**: new registrations at the AUR are closed following a security incident, so there is no account to publish it from. CI builds it with `makepkg` in an Arch container, checks the generated `.SRCINFO` against the `PKGBUILD`, lints it with `namcap`, installs it with `pacman`, runs it, and removes it again on every change, so the first submission after registration reopens is one that has already been proved rather than one written under release pressure. It installs the same bundle the other channels do and depends on Arch's own `nodejs`, rather than carrying a second Node runtime that a rolling distribution does not need. The release workflow publishes it when an SSH key is configured and skips when there is none, so a channel nobody can publish to cannot fail a release.
 - `--binary` (`-Binary` on Windows) on the one-line installer, which installs the standalone executable into `~/.looptroop` instead of installing the npm package. Upgrading is the same command again, and it is transactional: the archive is verified against the checksum the release published, the running daemon is stopped and confirmed stopped, the executable is replaced by a rename rather than written over in place, and the new one has to report the version that was asked for before the old one is discarded. If it does not, the previous executable is restored and the failure says so. A daemon that was running is started again afterwards, because an upgrade should not quietly become an outage. Two installers in the same directory cannot interleave, and a lock left by a killed run is taken rather than obeyed. Platforms with no executable (Intel Macs, Alpine and other musl systems, Windows on ARM) are refused by name, each pointing at the channel that does work there. Installing this way still needs Node, because the installer is itself a Node program; what the executable removes is Node as a requirement to run LoopTroop.
 
 ### Fixed
+
 - Stopped the one-line installer reporting the wrong version when another copy of LoopTroop comes first on your PATH. It finished by running `looptroop --version` and printing whatever answered, which is a different copy whenever an older one is earlier in the search order, including when npm's global directory is not on the PATH at all, in which case it cheerfully reported a successful install of a version it had not touched. It now names the version it actually installed, and says so plainly when the command your shell will run is a different one.
 
 ### Changed
+
 - The README no longer says the package managers are unpopulated, and describes the one way Chocolatey genuinely differs: every version waits for community moderation, so it trails the other channels rather than arriving with them.
 
 ## 0.5.1 (2026-08-13)
 
-
 ### Summary
+
 - Added a one-line install for macOS, Linux and Windows (`curl -fsSL https://www.looptroop.ovh/install | sh` and `irm https://www.looptroop.ovh/install.ps1 | iex`), which resolves the newest release that carries the files, checks what it downloaded against the checksum that release published, and refuses to install anything that does not match. It never installs Node and never asks for sudo.
 - Made LoopTroop installable with Homebrew, Scoop and Chocolatey. This is the first release that publishes to all three, and it does so in parallel with npm and the container image, gating none of them, so a package channel that fails cannot hold up a release.
 - Added a self-contained bundle to every release: the compiled application plus its dependencies resolved once, at build time. The three managed channels install that rather than resolving dependencies afresh on each machine, which is the difference between everyone running the versions the release was tested against and everyone running whatever their machine resolved that day.
 - Fixed the upgrade command shown to anyone who installed with `npm install -g` on a machine whose Node came from Homebrew, which advised a `brew upgrade` that could only fail, and made the correction reach the people already holding the wrong answer.
 
 ### Fixed
+
 - Fixed the upgrade command shown to anyone who installed LoopTroop with `npm install -g` on a machine whose Node came from Homebrew. Homebrew's Node puts global packages under the Homebrew prefix, which LoopTroop read as a Homebrew installation, so it advised `brew upgrade looptroop`: a command that fails, because no such formula was ever installed. Detection now looks for the Cellar entry Homebrew actually creates.
 - Made that fix reach the people it is for. The install channel is detected once and then remembered, and reinstalling puts the files back where they already were, so the remembered wrong answer would have outlived any correction to detection. A remembered answer that contradicts the location it was recorded for is now treated as stale and worked out again.
 - Stopped a configuration file naming a channel like `constructor` from being accepted as a real one.
 
 ### Added
+
 - An installer may now state the channel outright by leaving a `.install-channel` file at the package root, instead of LoopTroop having to infer it from the install path. The three managed package channels all unpack the same files, so the path is often the only difference between them and sometimes not even that.
 - A one-line install for macOS, Linux and Windows: `curl -fsSL https://www.looptroop.ovh/install | sh` and `irm https://www.looptroop.ovh/install.ps1 | iex`. It resolves the newest release that actually carries the files, checks what it downloaded against the checksum that release published, and refuses to install anything that does not match. It never installs Node, never asks for sudo, and installs through npm, so `npm install -g looptroop@latest` and `npm uninstall -g looptroop` keep working. The minimum Node and npm versions it enforces travel with the release rather than being written into the script, so an installer downloaded months ago still applies the right floor.
 - Releases now carry a self-contained bundle alongside the npm tarball: the compiled application plus its dependencies resolved once, at build time, into a tree that runs anywhere with Node. It exists for the Homebrew, Scoop and Chocolatey packages that follow, which unpack it instead of resolving dependencies afresh on each user's machine: the difference between everyone running the versions the release was tested against and everyone running whatever their machine resolved that day. The build refuses to produce one containing compiled code, platform-specific packages, or anything needing an install step, and CI requires two builds of the same commit to be byte-identical and runs the Linux-built bundle on macOS and Windows.
@@ -1224,8 +1261,8 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 
 ## 0.5.0 (2026-08-12)
 
-
 ### Summary
+
 - Restructured the server into an embeddable runtime that performs no work when imported, so tooling can load it without starting a server, opening the database, or installing signal handlers.
 - Added a production build that bundles the server and ships only compiled output, cutting a global installation from roughly three hundred packages to sixteen.
 - Made the production server serve the interface itself, so a single command opens a working application on one address with no separate web server to configure.
@@ -1258,6 +1295,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Made the container image a release channel rather than a Dockerfile nobody ran. It is now built on every push for both architectures, pinned to its base image by digest, labelled with the version and the commit it came from, and driven from inside a running container by a smoke test that proves the daemon starts as an unprivileged user, keeps its API closed without credentials, and shuts down cleanly when asked.
 
 ### Changed
+
 - Applied the loopback-only network boundary to every bind address, including one supplied directly by an embedding host rather than through the environment. There is deliberately no host setting in `config.json`, so the control interface cannot be published to a network by editing a configuration file.
 - Split the server into an embeddable runtime (`createRuntime`) and a thin daemon entry point. Constructing a runtime no longer creates directories, starts timers, binds sockets, or registers signal handlers; all of that now happens explicitly when the runtime is started, and signal handling belongs to the executable rather than the library.
 - Made cross-origin request handling conditional on the build mode. Development keeps the allowances the Vite dev server needs across ports; production serves the interface and the API from a single origin and sends no cross-origin headers.
@@ -1271,6 +1309,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+
 - Added a settings file at `config.json` in the LoopTroop configuration directory, resolved with the precedence command-line flag, then environment variable, then file, then built-in default. Unrecognised keys are preserved when the file is rewritten, so settings written by a newer version survive being loaded by an older one, and a malformed file is ignored with a warning rather than preventing startup.
 - Added a production server build that bundles the application's own source while leaving runtime dependencies to be installed normally, so the published package runs on a plain Node installation without a TypeScript loader.
 - Added an explicit published-file allowlist covering the compiled output, licence, notices, readme and changelog. Without it the build output would have been excluded from the package, because it is deliberately untracked.
@@ -1299,7 +1338,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added an exclusive single-instance lock per configuration directory, recording the holder's process identity as well as a heartbeat. Identity settles the question on the same host, so a recycled pid is recognised as stale immediately, and a daemon whose timers slept through a suspended laptop is not mistaken for an abandoned one. Reclaiming a lock replaces the abandoned record atomically under a claim scoped to the nonce being replaced, so the path is never momentarily free and no number of processes reclaiming at once can produce two winners.
 - Added a readiness handshake, so `looptroop start` reports success only once the daemon is answering on its port with the instance identity it wrote, rather than when its process was spawned. A start that never becomes ready fails with the refusal the daemon recorded, or the tail of the daemon log when it recorded none, instead of a bare timeout.
 - Added browser sign-in over a single-use code: `looptroop open` mints one, carries it in the URL fragment (which browsers never send in a request line, so it cannot land in an access log, a proxy log or a `Referer`), and the interface exchanges it for a 12-hour `HttpOnly`, `SameSite=Strict` session cookie scoped to `/api`. The code is spent on first use, so a shared or re-opened link buys nothing.
-- Added a separate bearer token for scripts, accepted only as a header. It is persisted in the daemon state file, which is created owner-only *before* the atomic write so it is never briefly world-readable, and it is redacted from `status --json`. Sign-in codes are minted on demand behind an authenticated route rather than once at startup, so `start` and `open` fetch a fresh single-use link over HTTP and the daemon never writes a usable credential anywhere durable; a detached daemon prints no sign-in URL at all. `/api/health` is the sole unauthenticated route and reports the instance identity, so `status` and `doctor` can confirm they reached this daemon rather than a process that inherited its process id, without holding a credential for it.
+- Added a separate bearer token for scripts, accepted only as a header. It is persisted in the daemon state file, which is created owner-only _before_ the atomic write so it is never briefly world-readable, and it is redacted from `status --json`. Sign-in codes are minted on demand behind an authenticated route rather than once at startup, so `start` and `open` fetch a fresh single-use link over HTTP and the daemon never writes a usable credential anywhere durable; a detached daemon prints no sign-in URL at all. `/api/health` is the sole unauthenticated route and reports the instance identity, so `status` and `doctor` can confirm they reached this daemon rather than a process that inherited its process id, without holding a credential for it.
 - Added an OpenCode supervisor that adopts a server already answering on the configured address or starts its own, and records in the daemon state file which of the three outcomes it was (adopted, started, or given up on) together with the reason when there is one. `stop` and `clean` shut down only servers LoopTroop started.
 - Added daemon log rotation, bounded while the daemon runs rather than only across restarts, since a detached daemon is designed to be started once and left alone.
 - Added an update check that asks the registry at most once a day and prints the upgrade command for the way this copy was actually installed (npm, Homebrew, Scoop, Chocolatey, a container image or a repository checkout) inferred from where the files live and recorded so it is decided once. Anything ambiguous is reported as unknown with a pointer to the documentation, because the wrong upgrade command is worse than none: it installs a second copy somewhere else and leaves the running one untouched.
@@ -1333,6 +1372,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Extended the release report to the container channel, so a run says whether the image built, which index digest it tagged, whether it pulled, and whether the notes were updated, and the issue opened by a failed release now says which channel to repair and how.
 
 ### Changed
+
 - Disabled Renovate auto-merge for development dependency updates. Dependency PRs are now reviewed by hand until the Phase 2 release smoke test lands in CI and is added to the required status checks, so an automated merge can never slip a broken dependency update past a test that is not yet enforced.
 - Added a "No telemetry" statement to the landing page hero badge and footer, making the absence of usage tracking visible rather than only documented.
 - Corrected three inaccurate roadmap entries: provider API keys were never read by LoopTroop and are explicitly out of scope for user-space configuration, no configuration migration receipts are needed because there is no prior on-disk format, the archived `pkg` project is replaced by `@yao-pkg/pkg`/`bun build --compile`/Node SEA, and the installer URL is `looptroop.ovh/install`.
@@ -1363,6 +1403,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Documented the image as it actually behaves, in both the README and the Dockerfile header. A bare `docker run` exits at startup rather than serving anything, because OpenCode is deliberately not in the image and a daemon that cannot run a single coding operation is worse than one that refuses, so a run needs either a reachable OpenCode server or the explicit mock mode, and neither is baked in. `--network host` is Linux-only: on Docker Desktop the containers run in a VM, so it is that VM's loopback and not yours. The published-port alternative is `-p 127.0.0.1:3000:3000` and not `-p 3000:3000`, which on a shared network would offer a control plane that executes code to everyone on it. And `LOOPTROOP_API_TOKEN` authorises the wider bind without being the token the API accepts: the daemon mints its own at startup and records it owner-only, so the documentation now says where to read the one that works.
 
 ### Fixed
+
 - Fixed the container repair failing its own verification whenever it did the thing it exists for. When a repair adopts an already-published index, that index carries the earlier publish's per-architecture manifests and not the rebuild's, but verification was still handed the rebuild's digests, so the leg comparing them failed by construction. The registry would be correctly repaired and the workflow would go red anyway, leaving the release notes unwritten. The tagging step now reports the manifests the published index actually lists, and verification compares against those.
 - Fixed a repair of an old release dragging the floating tags back with it. Republishing 0.5.0 after 0.8.0 had shipped would have written `latest` and `0.5` as part of the repair, so `docker pull looptroopai/looptroop` would quietly serve a version three releases behind, reported as a success. A repair now writes the immutable version tag and nothing else unless it can show the floating tag belongs to that version: npm's dist-tags decide `latest` and `next`, and the series is claimed only by the newest stable release in it. Every floating tag a run does not write is now one it must prove it did not move, which also means a stable release is now checked for leaving `next` alone.
 - Tightened what a repair will inherit. An index already on the version tag is now required to carry exactly one `linux/amd64` and one `linux/arm64` manifest, pointing at different bytes, before anything is copied from it; the version and commit labels are checked on every architecture rather than on whichever one the registry listed first; and where more than one registry already holds the version they must agree on the index digest itself, not merely on the set of manifests it contains.
@@ -1421,6 +1462,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed `--out` and `--registry-integrity` being unusable in the release manifest and artefact-verification scripts. Both discarded arguments beginning with `--` and counted what remained as positionals, but a flag's value is not a flag: the path or the integrity string was counted as one positional too many, so every invocation using the flag the script documents was rejected with the usage message. Values are now excluded by position. The manifest tool also shortened its closing output path by slicing the repository root's length off the front whether or not the path was inside the repository, so writing to a staging directory elsewhere reported having written a file in the checkout; it now shortens only what genuinely is inside.
 
 ### Removed
+
 - Removed obsolete documentation file-format and removed website-asset ignore rules from the application repository after moving the website and documentation out.
 - Removed the tracked marketing website, VitePress documentation, local docs process, docs-specific ports and LAN forwarding, Vercel configuration, site assets, and site-only dependencies from the application repository.
 - Removed the Tech Logo Wall section (OpenCode, Ollama, Anthropic, OpenAI, TypeScript, SQLite) from the landing page.
@@ -1431,6 +1473,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.4.1 (2026-08-02)
 
 ### Release Highlights
+
 - 🎨 **Visual Prompts Editor:** Full prompt customization with editable YAML templates, side-by-side diffs, live previews, validation, word wrap, and one-click revert/reset controls in a clean ticket-style sidebar.
 - 📱 **Responsive Mobile and Tablet Overhaul:** Fully refreshed layouts across the AppShell, Kanban board, ticket details, dialogs, profile setup, and landing page.
 - ⚙️ **Human-in-the-Loop Workspace Setup:** Separate AI drafting and human approval statuses with restart-safe versioned regeneration, current-host-aware commands, and resilient malformed-draft handling.
@@ -1438,6 +1481,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - 💅 **UI Polish and Reliability Upgrades:** Refined P1 to P5 priority visuals, advisory GitHub write-permission checks, persistent OpenRouter routing preferences, stronger dark-mode contrast, and boot resilience during temporary npm audit outages.
 
 ### Summary
+
 - Collapsed the changelog `## Unreleased` section by default behind a VitePress `::: details` block, so the page opens on the latest tagged release.
 - Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with a single ticket-style sidebar nesting prompts under their workflow statuses and phases (all collapsed by default), a live side-by-side diff against the built-in default, word wrap, per-prompt preview, validation, revert, and reset-to-defaults.
 - Improved mobile and tablet responsive layouts across AppShell navigation, DashboardHeader and Ticket Details, KanbanBoard column framing and scrolling, dialogs, ticket workspaces, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
@@ -1458,9 +1502,11 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Removed the backend health status circle indicator overlaid on the top navigation logo.
 
 ### Removed
+
 - Removed the status circle indicator next to the LoopTroop logo in the AppShell header.
 
 ### Added
+
 - Added a **Prompts** screen, reachable from the top-right header or the `/prompts` route, that lists every built-in prompt grouped by workflow phase and status, plus a separated **General** group containing the three general rule blocks. Prompts are labeled with their human-readable descriptions and flagged when they differ from the built-in default.
 - Added user-editable prompt templates stored as one YAML file per prompt under `<config dir>/templates` (honoring `LOOPTROOP_CONFIG_DIR` and `XDG_CONFIG_HOME`). Files are bootstrapped from the built-in defaults on first start and are never overwritten afterwards, so edits survive upgrades and the folder can be version-controlled with Git.
 - Added a CodeMirror-based prompt editor with Save, Revert, a **Compare to default** side-by-side diff whose right-hand pane stays fully editable while changed regions re-highlight live in subtle red/green tints, a **Word wrap** toggle for long prose instructions, and a **Preview** that renders the fully assembled prompt including the prepended rule block and placeholder context sections.
@@ -1475,6 +1521,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
+
 - Updated the title of the Prompts modal window from "Prompts" to "Prompts editor" while preserving the "Prompts" label on dashboard header navigation.
 - Restructured the Prompts editor into a single sidebar in ticket-navigator style: collapsible workflow groups with their statuses nested beneath, where a status running a single prompt opens it directly and a status running several lists them beneath it (with a small indentation). Workflow groups start collapsed by default so the sidebar stays compact until a phase is opened. This replaces the previous separate workflow-group and prompt-list columns.
 - Changed prompt assembly so user overrides are resolved centrally inside `buildPromptWithRules()`, meaning every existing phase call site picks up edited templates without per-phase changes. General rule blocks resolve through the same override layer.
@@ -1492,6 +1539,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Wrapped the changelog `## Unreleased` section in a collapsed-by-default VitePress `::: details` block, preceded by an explanatory note.
 
 ### Fixed
+
 - Improved mobile and tablet responsiveness across AppShell navigation overflow, DashboardHeader title and details modal, dynamic-height KanbanBoard scrolling, dialog gutters, ticket workspace resizing, ProfileSetup grid fields, AppearancePickers popovers, and web landing page components.
 - Restored expanded-by-default logs for historical council drafting, voting, and refining phases while preserving collapsed defaults for approval and other review surfaces.
 - Safely restored displaced PRD and Beads item IDs from uniquely matching winner/final records, collapsed duplicate PRD modifications, surfaced exact UI repair details, and continued rejecting ambiguous mappings without inventing text.
@@ -1507,6 +1555,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.4.0 (2026-07-24)
 
 ### Release Highlights
+
 - Manual QA Verification: Interactive post-implementation testing gate with evidence uploads, automated QA-fix loops, and direct backlog improvement creation.
 - Modernized Dashboard and UI: Glassmorphic dashboard refresh, Markdown description previews, and resizable log drawers.
 - Native OS File Watching: Replaced brute-force file polling with native file watching across Linux, macOS, native Windows, and WSL Linux filesystems for major CPU savings and faster feedback.
@@ -1515,6 +1564,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Repo and Lifecycle Tools: New existing-repo attachment modes, complete ticket deletion, 50,000-character descriptions, and npm 12 support.
 
 ### Summary
+
 - Redesigned the main dashboard and landing page using taste-skill anti-slop frontend guidelines, introducing sleek glassmorphism, refined dark/light mode tech aesthetics, ambient glow effects, header-aligned priority badges on Kanban cards, keyboard search shortcuts, and tech stack logo walls.
 - Fixed ticket log opening so the newest 20 visible entries appear immediately instead of inheriting another ticket's scroll position or landing on hidden AI-detail rows.
 - Added a pause-aware Actual implementation time to Ticket Details, with workspace, final-testing, and Manual QA fix-bead context.
@@ -1593,6 +1643,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Added **Actual implementation time** below the overall Ticket Details duration. It totals only `CODING` intervals for originally planned beads, excluding time in `BLOCKED_ERROR` while an exhausted or failed bead waits for Retry or Continue and keeping Manual QA fix-bead work separate. Its help tooltip shows bead execution start, the final originally planned bead's completion (unchanged by Manual QA fix beads), and separate workspace-preparation, final-testing, and Manual QA-fix durations.
 - Added client-side handling for server validation messages, including the exact ticket field and constraint that failed.
 - Added visible new-ticket guidance when no project is attached and error toasts for failed ticket creation requests.
@@ -1625,6 +1676,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+
 - Aligned priority badges (`P1` to `P5`) into the top header row of Kanban ticket cards alongside the project badge and ticket key, preventing priority text truncation and visual line misalignments on short or multi-line titles.
 - Updated `docs/core-philosophy.md` with a TL;DR block summarizing LoopTroop's purpose and key AI engineering methodologies, added Manual QA Verification as the fifteenth core philosophy section, and updated section count references from fourteen to fifteen.
 - Increased create and update ticket descriptions from 10,000 to 50,000 characters and added explicit operation/category context to surfaced request errors.
@@ -1683,6 +1735,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Changed Manual QA workspace drift detection to bypass Git worktree checks and return no drift for display-only mock tickets, resolving baseline-missing errors when loading mock tickets in the UI.
 
 #### Fixed
+
 - Fixed the initial ALL log page appearing empty when its newest projected rows were AI tool/detail entries that belong only in dedicated tabs. Overview pagination now filters those hidden rows before applying its 20-entry limit, so opening a high-latency remote ticket shows visible history without requiring a scroll-triggered older-page request.
 - Fixed the Vite dev server unconditionally forcing `usePolling` for frontend file watching on every platform. The frontend and backend watchers now share one OS-agnostic decision (`resolveWatchPollingDecision()` in `shared/wslPerformance.ts`): native OS file-system events are used by default on Linux (including remote/VPS hosts), macOS, native Windows, and WSL workspaces on the Linux filesystem, while polling is auto-enabled only for WSL workspaces on Windows-mounted drives (`/mnt/...`). An explicit `CHOKIDAR_USEPOLLING` value still overrides the auto-detection in either direction. This removes constant polling CPU overhead and reduces refresh latency and HMR jitter, most noticeably on remote hosts.
 - Deferred only the triggering direct dependency update when npm rejects a configured-registry tarball as remote during preview, while preserving npm's remote-package policy and clear daily-retry diagnostics.
@@ -1735,9 +1788,11 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 #### Removed
 
 #### Maintenance
+
 - Isolated the pull-request workflow suite from the shared pure-test module graph so its prompt-runner mocks cannot race with real council and PRD prompt tests during full parallel verification.
 
 #### Documentation
+
 - Documented conditional read-only repository grounding across Council, prompt inventory, context-engineering, workflow status Details, OpenCode integration, and ticket-flow references.
 - Reworked Git-hook guidance around the three user-facing choices, inheritance and locking, and the operational difference between explicit validation and running repository hooks.
 - Documented workspace input approval and materialization, setup-runtime recovery actions, retry API behavior, and readable blocked-error output across the execution guides and references.
@@ -1752,6 +1807,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.3.3 (2026-07-07)
 
 ### Summary
+
 - Added Google Analytics (gtag.js) to the marketing landing page.
 - Added live execution progress: during coding the ticket header, Kanban cards, and phase navigator show deterministic bead completion (done/total) as a distinct metric plus an approximate remaining-time (ETA) range that sharpens as work proceeds.
 - Folded the Deterministic Command Safety Guard roadmap item into the larger Sandboxing & Guardrails roadmap item.
@@ -1760,12 +1816,14 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Google Analytics (gtag.js) tracking code to the marketing landing page (`web.html`) with measurement ID `G-9L5KPS2CXD`.
 - Bead-completion progress during execution: while a ticket is coding, the header and Kanban card show a distinct bead-completion chip so workflow progress and bead progress do not share the same visual scale.
 - ETA forecast for active execution: a best/likely/worst remaining-time range shown in the ticket header, Kanban cards, and phase navigator, recomputed on each bead completion. Estimates use historical throughput bucketed by ticket size and effort tier when enough history exists, fall back to the current run while a ticket is building its own sample set, use sparse history before the hardcoded default, and are always flagged as approximate on hover.
 - Per-bead throughput telemetry: a new project-database table (`bead_execution_metrics`) records completion time and retry count for each completed bead, measured from bead start to bead completion while excluding time spent outside `CODING`. Recording is best-effort and can never interrupt an execution run. Token/cost columns are reserved for a future Cost Management feature.
 
 #### Changed
+
 - Consolidated the standalone Deterministic Command Safety Guard roadmap item into the Sandboxing & Guardrails roadmap item, merging pre-execution command checking, subshell detection, and path confinement rules with runtime container/VM safety profiles.
 - Updated the Ticket-Scoped Phase Flags roadmap item with historical details of the features it consolidated and replaced, including Argue the opposite, Winner model discussion, and Exhaustive Interrogation Mode for Interviews.
 
@@ -1774,6 +1832,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.3.2 (2026-07-01)
 
 ### Summary
+
 - Added Status (every workflow step) and Phase (all workflow groups) multi-select filters plus a tri-state Errors filter (No errors / Has errored before / Currently blocked) to the Kanban triage bar.
 - Fixed saved Kanban filter presets disappearing after a browser refresh by keeping them in the single durable UI-state record and no longer overwriting stored state with an empty read on load.
 - Fixed Kanban preset saving to gracefully fallback to in-memory storage when browser storage (localStorage) is disabled or sandboxed, avoiding "Could not save preset" errors.
@@ -1791,7 +1850,9 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added approval-screen AI extra fixes for unresolved PRD and beads coverage warnings, with unlimited manual attempts and `Extra Fix N` report history.
 
 ### Detailed Changes
+
 #### Added
+
 - Added a Triage & Filter Control Bar to the Kanban board (`KanbanBoard.tsx`), enabling client-side filtering of tickets by Project (dropdown with project icons and emojis), Priority (Very High to Very Low toggle badges with hover tooltips), Inactivity age (Stale > 24h, > 3d, > 7d affecting only the Needs Input and In Progress columns), and Errors only. The bar is hidden by default and can be toggled via a premium filter control button next to the search bar.
 - Added custom filter presets that let users save, load, and delete named filter/sort configurations, scoped per project and persisted in the durable `looptroop-ui-state` record (`UIState.presetsByProject`).
 - Added 8 bidirectional sorting modes to Kanban columns (`KanbanColumn.tsx`): Last Updated (Newest/Oldest), Date Created (Newest/Oldest), Priority (High to Low/Low to High), and Title (A-Z/Z-A).
@@ -1810,6 +1871,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added Status and Phase multi-select filters to the Kanban triage bar (`KanbanBoard.tsx`). Status lists every workflow step grouped by phase (Backlog, Scanning, Council Drafting, …, Done, Canceled, Blocked Error); Phase offers all ten workflow groups (To Do, Discovery, Interview, Specs (PRD), Blueprint (Beads), Pre-Implementation, Implementation, Post-Implementation, Done, Errors). Both narrow tickets within their existing Kanban columns and are included in saved presets and the header active-filter summary.
 
 #### Changed
+
 - Kanban saved presets now show their full saved filter/sort details on hover instead of relying on expanded preview content in the dropdown.
 - Kanban stale/inactive filtering now clears To Do and Done and only evaluates Needs Input and In Progress tickets, making stale triage focus on live operator workflow columns.
 - Beads approval extra fixes now refresh the semantic blueprint and rerun expansion when the blueprint changes, so the execution-ready approval plan and reviewed content hash stay current before approval.
@@ -1819,6 +1881,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Kanban triage presets live in `UIState.presetsByProject`, persisted through the same durable `looptroop-ui-state` record as filters and theme. The app no longer writes standalone `looptroop-presets-*` localStorage keys; any left by older builds are recovered once at startup so previously saved presets are not lost.
 
 #### Fixed
+
 - Fixed Kanban preset saving to gracefully handle `localStorage` security/quota exceptions by using an in-memory fallback.
 - Fixed Kanban preset saving so the dropdown form uses controlled input state, reports inline save/failure feedback, and avoids exposing collapsed filter controls to hidden hit targets.
 - Fixed a React console warning on pulsing ticket cards by avoiding mixed border shorthand and side-specific border styles.
@@ -1826,12 +1889,15 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed saved Kanban presets disappearing after a browser refresh. Presets are stored only in the durable `looptroop-ui-state` record, and the UI-state provider no longer writes state back to storage on its initial render, so a failed or empty rehydrate can no longer overwrite good data (the previous self-destruct on load). Committed React state is now the single source of truth, written before paint so changes survive an immediate refresh. The fragile dual-storage machinery this replaced (per-scope mirror keys, read-back-and-merge on every write, and migrate-on-every-read) was removed; legacy `looptroop-presets-*` keys are still recovered once at startup so nothing saved by older builds is lost. Trade-off: cross-tab preset merging is gone, so with two tabs open the last writer wins.
 
 #### Removed
+
 - Removed the "Run active / Run 19/19" progress/health badge from Kanban board ticket cards along with its unused helpers and imports.
 
 #### Maintenance
+
 - Removed the stale `@types/js-yaml` dev dependency because `js-yaml` v5 ships bundled TypeScript declarations.
 
 #### Documentation
+
 - Removed the old mixed `Storage config` roadmap entry, folded the global app-storage portion into `System Info + About`, and added a separate roadmap item for project-local `.looptroop` visibility so the roadmap matches the split UI.
 - Documented the new Configuration `About` window and clarified that app-wide storage is shown there while project-local LoopTroop state remains discoverable in Project Details.
 - Added `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, GitHub issue templates, and a pull request template with practical guidance adapted to LoopTroop's local AI orchestration workflow, safety expectations, docs maintenance, and validation commands.
@@ -1850,6 +1916,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.3.1 (2026-06-22)
 
 ### Summary
+
 - Changed the documentation "Last updated" date format to a clear, non-ambiguous DD/MMM/YYYY, HH:MM UTC format (e.g., 02/Jun/2026, 14:15 UTC) and linked it directly to the specific file diff in the corresponding git commit.
 - Corrected documentation drift across the API, workflow, architecture, frontend, and operations docs to match the current code (SSE event payloads, pre-flight attribution, council module paths, prompt-template subsystem, YAML approval editor, and dev-script caveats).
 - Updated the README with a new walkthrough animation GIF and renamed the video demo section.
@@ -1863,14 +1930,17 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Added a contact section at the bottom of the landing page, offering direct contact options via email (`contact@looptroop.ovh`) and Twitter (`@liviusa`) alongside a text reference pointing to the official LoopTroop socials.
 - Added an expandable "Show details" panel to the top-level `App crashed` screen (`src/components/shared/AppCrashScreen.tsx`). The `ErrorBoundary` now forwards the caught `error` and `componentStack` to a render-prop fallback, surfacing the error name, message, full stack trace, and React component stack on screen with a copy-to-clipboard action and an explicit Refresh button.
 
 #### Changed
+
 - Modified the VitePress "Last updated" footer display format from the default localized style (e.g., 6/4/26, 6:26 PM) to a non-ambiguous "DD/MMM/YYYY, HH:MM UTC" format (24-hour UTC clock) linked directly to the specific file diff inside the corresponding git commit, implemented by overriding the default layout footer using custom layout slots.
 - Updated `README.md` to display a 26-second animated walkthrough GIF showing LoopTroop's automated ticket lifecycle execution, and renamed the video demo section to highlight the 16-minute deep dive presentation and ticket demo.
 
 #### Documentation
+
 - Corrected the API Reference SSE event table and examples to match the broadcaster: removed the never-emitted `progress` and `app_error` events (noted as reserved type slots), fixed the `bead_complete` payload (`beadId`, `title`, `completed`, `total`), documented `log` as a flat `LogEvent` with no `logEntry` wrapper, and described the source-dependent `needs_input` shapes.
 - Fixed Ticket Flow pre-flight attribution: pre-flight runs in `handlePreFlight` (`server/workflow/phases/verificationPhase.ts`, backed by `server/phases/preflight/doctor.ts`), while `executionSetupPlanPhase.ts` only handles setup-plan approval and draft regeneration.
 - Fixed the LLM Council refinement module paths from the non-existent `server/workflow/council/*` to the real `server/council/*`.
@@ -1879,6 +1949,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Documented the `diagnose:stall --help` flag, the `dev:app` preflight-bypass caveat, and synced `.env.example` with `LOOPTROOP_DEV_HOST`, `LOOPTROOP_OPENCODE_LOGS`, and `LOOPTROOP_OPENCODE_PERMISSION_MODE`.
 
 #### Fixed
+
 - Fixed the marketing landing page (`web.html`) theme toggle by adding the custom variant `dark` selector configuration to `src/web.css` so Tailwind CSS v4 compiles class-based dark mode styles rather than media-query-only styles.
 - Fixed an issue where the floating "Back to top" button briefly flashed on page load by explicitly applying `opacity-0` and `pointer-events-none` classes to the element in `web.html`, preventing transition-on-load issues before its scroll position is verified.
 - Recovered structured artifacts when short commentary is glued directly before a known root key such as `questions:`, `draft_scores:`, `status:`, or `beads:`, while preserving schema validation for the recovered content.
@@ -1886,6 +1957,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Fixed `npm run dev` aborting on native Windows with `spawnSync ... EINVAL` from the startup preflight. The preflight and dev-maintenance scripts now launch Windows `.cmd` shims (`npm.cmd`, `tsx.cmd`, `opencode.cmd`) through the shell, working around Node's BatBadBut hardening (18.20.2/20.12.2/21+) that refuses to spawn `.cmd`/`.bat` files directly. Arguments are quoted to stay safe under shell re-parsing, and the missing-`opencode` detection that previously relied on `ENOENT` now also recognizes cmd.exe's "not recognized" exit. WSL/Linux/macOS behavior is unchanged.
 
 #### Maintenance
+
 - Updated `hono` to 4.12.25 and `typescript-eslint` to 8.61.0.
 - Stabilized the council pipeline hard-deadline unit test so full-suite timing variance no longer causes false failures while preserving the partial-result assertion.
 - Refreshed the generated marketing CSS asset from the 0.3.1 site build so tracked deploy assets match the current source and package version.
@@ -1896,6 +1968,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.3.0 (2026-06-15)
 
 ### Summary
+
 - Added dashboard ticket search for finding tickets by ID, title, or project, with mobile and keyboard support.
 - Refined the dashboard ticket search into a smaller, subtler pill control with the search/clear icon on the right.
 - Fixed dashboard startup for browsers with older saved UI filter state.
@@ -1957,6 +2030,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Added dashboard ticket search beside **New Ticket**, including persisted `filters.search` UI state, client-side kanban filtering by external ticket ID/title/project name/project shortname, compact ticket-ID matching such as `LOO15` to `LOO-15`, project-name prefix suggestions from all attached projects, mobile search popover behavior, `/` focus, `Escape`/clear recovery, and the empty search-results state.
 - Added Raw/Markdown tabs for ticket descriptions while creating or editing draft tickets, plus Markdown-only rendering in Ticket Details, including safe rich previews for headings, lists, task lists, code blocks, links, blockquotes, and tables while keeping the stored/copied description text unchanged.
 - Added worktree changes classification documentation (committable, looptroopExcluded, setupExcluded, generatedNoise) to the post-implementation file effects audit section.
@@ -1985,6 +2059,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Preserved raw per-bead execution attempts in `bead_execution:<beadId>` artifacts, including initial prompts, final model responses or diagnostics, outcomes, model/session audit context, and bead-iteration log metadata for live inspection.
 
 #### Changed
+
 - Restored the dashboard Cancel button and cancel API path for non-terminal display-only mock/demo tickets; canceling these tickets now moves them directly to Canceled without hydrating workflow actors, while Start and other runnable workflow actions remain blocked.
 - Updated `@opencode-ai/sdk` to `1.17.0` and `@tanstack/react-query` / `@tanstack/query-core` to `5.101.0`.
 - Refined the dashboard ticket search styling to use a compact ~20-character desktop width, softer pill-shaped chrome, and right-aligned search/clear affordances while preserving the same filtering behavior.
@@ -2046,9 +2121,11 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Introduced two distinct descriptions in `web.html`: a search-engine-focused `<meta name="description">` (richer keywords and a positioning statement) and a punchier social-hook `<meta property="og:description">` / `<meta name="twitter:description">` (focused on a single benefit).
 
 #### Removed
+
 - Removed now-redundant documentation files `docs/state-machine.md` and `docs/execution-loop.md` whose content is now merged into `docs/ticket-flow.md` and `docs/beads.md` respectively.
 
 #### Fixed
+
 - Fixed project execution-band conflict detection so display-only mock/demo tickets in statuses such as `WAITING_PR_REVIEW` do not reserve execution capacity or block real tickets from entering pre-flight.
 - Fixed a startup crash when an older persisted `looptroop-ui-state` filter object did not include the newer `filters.search` field, normalizing missing filter defaults before dashboard search renders.
 - Fixed ticket card overflow in the narrower To Do and Done kanban columns by allowing grid columns, scroll-area content, and card metadata rows to shrink and wrap within the existing board layout, avoiding horizontal scrollbars or column width changes.
@@ -2070,6 +2147,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added preloads for the self-hosted `inter-latin.woff2` and `jetbrains-mono-latin.woff2` font files in `web.html` to improve LCP and reduce render-blocking font loading.
 
 #### Maintenance
+
 - Removed dead exported functions and constants from `src/lib/beadsDocument.ts` and `server/lib/constants.ts` that were defined but never called.
 - Extracted shared `LogCollapseToggle` component used identically in `PhaseLogPanel` and `FullLogView`, eliminating duplicate JSX blocks.
 - Extracted `useApprovalPaneState` hook shared across all three approval panes (`InterviewApprovalPane`, `PrdApprovalPane`, `ExecutionSetupPlanApprovalPane`), removing duplicate state and type definitions.
@@ -2085,6 +2163,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.2.4 (2026-05-28)
 
 ### Summary
+
 - Added live-only workspace status progress labels for coding, coverage checks, and retried phases.
 - Made merged PR completion independent of the user's local checkout cleanliness.
 - Fixed long ticket descriptions being unscrollable in backlog and detail views.
@@ -2108,6 +2187,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Added trend-wide top system CPU/RSS/read/write attribution and a `--ticket-path` option to `npm run diagnose:stall`, so reports can identify memory/I/O spike owners and inspect a specific ticket runtime's logs, largest directories, and large build artifacts.
 - Added dynamically calculated bead implementation time (Completed At minus Started At) under the Timeline section in the CodingView's bead details panel, rendered on the fly when both timestamps are available and represent a valid positive duration.
 - Added live-only progress wording to the workspace status title: CODING now names the active bead and iteration, coverage phases show pass/version progress when known, and manually retried non-implementation phases show the active retry attempt while the status is live.
@@ -2123,6 +2203,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added a **"Create and Start"** button to the New Ticket modal, letting users create a ticket and immediately trigger the workflow from a single action.
 
 #### Fixed
+
 - Completed and later-phase tickets now keep the last known bead progress on the left-panel Implementing timeline row, showing labels such as `Implementing (Bead 8/8)` instead of the generic `Bead ?/?` fallback.
 - Runtime setup rewinds now suppress the restored approval actor's immediate auto-draft when the route is about to save an edited plan or start a commented regeneration, preventing duplicate setup-plan sessions and last-writer-wins overwrites.
 - The CMD log tab now shows a descriptive tooltip on hover, matching the tooltip behavior of all other log tabs (ALL, SYS, AI, ERROR, DEBUG).
@@ -2131,6 +2212,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Current Activity timeout warnings now render only for the ticket's live status, so revisiting an older phase cannot show an obsolete `Approaching timeout` banner until refresh.
 
 #### Changed
+
 - PR merge completion now verifies that `origin/<baseBranch>` contains the candidate commit and proceeds to cleanup without checking out, fast-forwarding, or requiring cleanliness in the user's main project folder.
 - Renamed Raw retry attempt selectors to the clearer `Attempt N Output - Accepted/Rejected` format.
 - Setup-plan edits and regenerations from active runtime setup now stop the runtime session, archive the approved setup contract and runtime attempt, clear stale runtime profile outputs while preserving the tool cache, and require approval again before setup reruns.
@@ -2150,6 +2232,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.2.3 (2026-05-26)
 
 ### Summary
+
 - Added future-ticket safety around PR merge completion and final-test file effects so merged PRs and test-produced files are handled audibly and recoverably.
 - Format commands in system logs to match tool calls exactly, using identical colors (`text-cyan-500`) and rendering output/error blocks in standard structured sections (squares/boxes) regardless of length.
 - Render bead separators in the per-phase normal log view for CODING phase, matching the existing Full Log bead grouping behavior.
@@ -2183,6 +2266,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Added language-agnostic final-test file-effects auditing. Final-test structured output now accepts `file_effects` entries (`candidate`, `temporary`, or `unexpected`), records baseline/post-test dirty files in a `final_test_file_effects_audit` artifact, and blocks integration with `FINAL_TEST_FILE_EFFECTS_UNCLASSIFIED` when final testing leaves undeclared dirty files.
 - Added blocked-error recovery actions for unresolved final-test file effects: **Include in PR** writes a `final_test_file_effects_override` that treats unclassified final-test-produced files as candidate changes, while **Discard and Continue** removes/reverts only files proven by the audit to have been produced or changed during final testing.
 - `emitOpenCodeSessionLogs` now emits an `audience: 'all'` milestone notification when `responseChars=0`, making silent OpenCode session restarts visible in the ALL tab across all workflow phases (coding, PRD, interview, verification, PR drafting, etc.).
@@ -2191,6 +2275,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added **OpenCode Max Steps** section to `docs/configuration.md` covering steps-vs-messages semantics, trade-offs, and git-exclusion implementation detail.
 
 #### Changed
+
 - PR merge completion now treats the GitHub merge as complete once GitHub reports the PR merged. Local base-branch sync runs afterward as a recoverable follow-up, and retries for already-merged PRs skip the remote merge call and resume local sync/cleanup.
 - New ticket worktrees now fetch `origin` before resolving their base and prefer `origin/<baseBranch>` when that remote ref is available.
 - Successful `git push` with informational remote STDERR is now rendered as a compact `→ push completed` log entry in `commandLogger`, suppressing the verbose multi-line `STDERR:` block.
@@ -2206,6 +2291,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Ticket worktree artifacts under `.ticket/**` now stay local: project attach installs `/.ticket/` in `.git/info/exclude`, and bead finalization excludes those files from commit capture while still preserving them across execution resets.
 
 #### Added
+
 - Added bead delimiter separators to the per-phase normal log view for the CODING phase. Log entries are grouped by detected bead boundaries (from `[SYS] Executing bead ...` system lines) and each bead section is preceded by a `Bead X/Y` delimiter showing the bead title, matching the existing Full Log behavior. Incomplete future beads are hidden when runtime data is available, and the grouping respects the current tab filter so empty bead sections are omitted.
 - Added a compact Current Activity strip to phase and full log views, deriving waiting-for-first-model, provider retry timeout, provider-timeout-preserved, iteration-timeout, empty-output, workflow timeout, and near-timeout states from structured log events.
 - Added a 'Reveal in File Explorer' button next to the copy path button in the ticket details view.
@@ -2221,6 +2307,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - OpenCode managed server is now always started with `--log-level DEBUG`, writing native logs at full verbosity to the OpenCode log directory so they are always available in the DEBUG tab. Use `npm run dev --opencode-logs=all` to additionally print them to the terminal. The `--opencode-logs=all` flag adds `--print-logs` to the OpenCode serve args.
 
 #### Fixed
+
 - Fixed PRD coverage revision parsing so `change_type` aliases are recognized and path/summary-only change notes are dropped as diagnostics while the validated PRD diff remains reviewable.
 - Fixed execution-setup and final-test attempt counters resetting to 1 after an app restart; both phases now resume from the correct attempt number derived from persisted retry notes, so the `maxIterations` guard is honoured across restarts.
 - Fixed bead iteration countdown timer showing 00:00 on iteration 2+ beads; the timer now anchors to `updatedAt` (updated at the start of each iteration session) instead of `startedAt` (frozen at the first iteration), so the remaining time is accurate across all iterations.
@@ -2243,6 +2330,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.2.2 (2026-05-22)
 
 ### Summary
+
 - Extracted magic numbers into named constants, consolidated a repeated Tailwind label class, and standardised boolean variable naming across the codebase.
 - Hardened workflow approval, audit, bead-finalization, archived-version, and cleanup boundaries with content hashes and visible cleanup warnings.
 - Documented the ticket-handler route split from a single file into focused route modules without changing workflow behavior.
@@ -2269,11 +2357,13 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Changed
+
 - Extracted 9 magic numbers (`GIT_CHECK_DEBOUNCE_MS`, `COUNTDOWN_TICK_MS`, `DROPDOWN_Z_INDEX`, etc.) into named constants in `src/lib/constants.ts`.
 - Consolidated the repeated `text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground` Tailwind pattern (21 occurrences) into a `.section-label` `@apply` class in `src/index.css`.
 - Standardised all boolean state and derived variables across 21 components to use `is`/`has`/`should` prefixes (e.g. `open` → `isOpen`, `showHistory` → `isHistoryOpen`, `showModelTabs` → `hasModelTabs`).
 
 #### Added
+
 - Added SHA-256 content identity to approval snapshots/receipts and artifact read responses, required `expectedContentSha256` approval payloads with stale-approval `409` responses, durable approval receipts for all approval gates, and append-only `user_edit_receipt:*` artifacts for manual artifact edits.
 - Added `cleanup.status` to cleanup reports and a top-level ticket cleanup summary so completed tickets can surface non-blocking cleanup warnings.
 - Added profile settings for `OpenCode Retry Limit` and `OpenCode Retry Grace Window`, exposed through the API, Configuration UI, and documentation with defaults of 10 retry events and 60 seconds.
@@ -2288,6 +2378,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added `npm run dev --opencode-logs=all` to print full managed OpenCode DEBUG logs with `--print-logs --log-level DEBUG`, plus `LOOPTROOP_OPENCODE_LOGS=all` for direct watcher launches.
 
 #### Changed
+
 - Clarified that the workspace phase header's `(details)` button opens the canonical workflow metadata from `shared/workflowMeta.ts`, and aligned the state-machine and ticket-flow wording for approval and execution-setup statuses with the current UI copy.
 - Bead completion now means OpenCode success plus local finalization success: local commits are required when code changes exist, true no-op completions are allowed, push failures are warnings, and fatal finalization failures route through `BEAD_FINALIZATION_FAILED` instead of broadcasting `bead_complete`.
 - Archived phase-attempt artifacts are explicitly read-only, while current approval-edit routes continue to write only the active version.
@@ -2314,6 +2405,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Annotated the unused `votes` context key as reserved and added a note to `CONTEXT_KEY_LABELS`.
 
 #### Fixed
+
 - OpenCode `session.status` retry events for rate limits, usage limits, overload/capacity, temporary unavailability, timeouts, and network/socket failures now block through `BLOCKED_ERROR` after the configured budget, preserving provider diagnostics and active sessions for Continue when eligible.
 - Coding completion-marker and bead retry-budget failures now retain the latest underlying OpenCode provider/session diagnostic, such as usage-limit retries, in the blocked error details.
 - CODING now routes continuable OpenCode/provider retry exhaustion through the normal blocked-error path instead of converting it into bead retry exhaustion, while ordinary implementation failures keep the existing bead reset/retry behavior.
@@ -2328,6 +2420,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - OpenCode session creation now retries the initial attempt up to three times with bounded backoff, collecting lightweight health diagnostics after failures while preserving cancellation and timeout behavior.
 
 #### Security & Reliability
+
 - Ticket cancel now awaits active OpenCode session abort before executing destructive cleanup, eliminating the race where cleanup could run while sessions were still writing.
 - Interview batch async path now explicitly returns 404 when no session artifact is found, replacing the non-null assertion that could crash at runtime.
 - Bead plan PUT endpoint now validates each bead against a required-field schema (id, title, status, priority, dependencies) and rejects duplicate IDs, preventing malformed execution plans from being written.
@@ -2339,6 +2432,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.2.1 (2026-05-20)
 
 ### Summary
+
 - Added a profile-level Structured Output Retries setting that is locked per ticket and now covers PR draft parsing before GitHub side effects.
 - Standardized automatic retry inspection in Raw tabs and manual retry review through archived phase versions.
 - Kept structured retry audit controls clearer by making model labels passive, labeling validated retry outputs with their attempt number, and limiting intervention warnings to the primary artifact tab.
@@ -2363,6 +2457,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Added configurable structured-output retry counts with profile/API/UI validation, ticket-start locking, and documented continued-session versus fresh-session retry classes.
 - Added structured retry for pull request title/body drafting before branch push or PR create/update, with diagnostics and deterministic fallback text when parsing remains invalid.
 - Added raw attempt persistence for PRD/interview/beads refinement, relevant-files scan, coverage audit/revision, execution setup plan/runtime generation, and final-test generation.
@@ -2371,6 +2466,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Added a conditional `Continue` action for `BLOCKED_ERROR` tickets with resumable OpenCode/provider diagnostics and a matching active preserved session; it dispatches `CONTINUE` and sends exactly `continue please` to the same OpenCode session.
 
 #### Changed
+
 - Replaced hardcoded one-shot structured retries across scanning, interview/PROM4 parsing, PRD/beads planning, coverage repair, execution setup, coding marker repair, and final-test generation with the locked ticket retry count while keeping broader workflow attempt budgets separate.
 - Documented the four retry classes and standardized status/details wording around **continued session**, **fresh session**, and broader **new attempt** loops.
 - Manual Retry from `BLOCKED_ERROR` now archives the failed tracked phase attempt and creates a fresh active attempt before rerunning, so rerun artifacts and logs are versioned separately.
@@ -2386,6 +2482,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - The `npm run dev` startup summary now prints the docs URL once instead of repeating its port as a suffix.
 
 #### Fixed
+
 - ApprovalView tests now mock the async UI-state save mutation used by debounced approval draft persistence, preventing timer-driven false failures during full-suite runs.
 - Selecting an error from the navigator while Full Log is open now exits full-log mode and opens the error review.
 - Blocked coverage errors now preserve underlying OpenCode retry/provider diagnostics, such as usage limits, and avoid repeating an identical parser-wrapper message in the error details.
@@ -2403,6 +2500,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.2.0 (2026-05-12)
 
 ### Summary
+
 - Added expanded runtime diagnostics, output-normalization documentation, operations guidance, configuration reference material, and refreshed onboarding docs.
 - Added richer ticket/workspace surfaces for setup-plan review, regenerated approval versions, raw/rejected artifact inspection, live phase logs, GitHub links, and completed-ticket worktree cleanup.
 - Added broader test coverage across middleware, routes, workflow phases, logs, structured output repair, UI components, dev maintenance, and diagnostics.
@@ -2413,16 +2511,19 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ### Detailed Changes
 
 #### Added
+
 - Added expanded runtime diagnostics, output-normalization documentation, operations guidance, configuration reference material, and refreshed onboarding docs.
 - Added richer ticket/workspace surfaces for setup-plan review, regenerated approval versions, raw/rejected artifact inspection, live phase logs, GitHub links, and completed-ticket worktree cleanup.
 - Added broader test coverage across middleware, routes, workflow phases, logs, structured output repair, UI components, dev maintenance, and diagnostics.
 
 #### Changed
+
 - Refined the planning flow around interview/PRD approval edits, member-specific council artifacts, winner-model context, coverage warnings, and beads planning.
 - Improved dashboard and workspace ergonomics with tighter status chrome, clearer phase summaries, better artifact rendering, keyboard/menu fixes, and more resilient ticket normalization.
 - Updated development maintenance behavior so dependency sync, npm audit remediation, and OpenCode maintenance are coordinated through the startup preflight.
 
 #### Security & Reliability
+
 - `npm run dev` now restores daily startup dependency/audit/OpenCode maintenance while gating npm dependency updates to releases that are at least 7 days old; if `latest` is too fresh, dependency sync installs the newest eligible older version instead, and audit remediation holds the whole fix when any proposed package version is too fresh. OpenCode CLI and `@opencode-ai/sdk` updates remain immediate.
 - Fixed timing side-channel in API token comparison: `constantTimeEquals` now always runs `timingSafeEqual` even when token lengths differ, preventing length-leak via response timing.
 - SSE authentication: `apiToken` query parameter now accepted exclusively on `/api/stream` (the only endpoint where browser `EventSource` clients cannot set custom headers); all other endpoints reject query-param tokens.
@@ -2438,6 +2539,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Basic auth header builder now validates that the username does not contain `:` (RFC 7617 compliance).
 
 #### Performance
+
 - OpenCode text/reasoning live AI detail updates now use a 10ms live cadence with no large-growth bypass, making thinking/model output feel closer to tool-call responsiveness while keeping streaming upserts out of persisted log files until a final row is emitted.
 - `npm run dev` startup logs are quieter by default while preserving dependency/audit summaries in the normal startup output.
 - Dev port inspection now avoids `netstat` unless earlier inspectors cannot identify the listener, removing noisy platform warnings during normal startup while preserving fallback diagnostics in verbose mode.
@@ -2447,6 +2549,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - `errorDiagnostics` `modelId` and similar fields now computed once and reused instead of double-sanitising.
 
 #### Bug Fixes
+
 - OpenCode live AI detail streaming now reads the SDK global event feed and filters it back to the active session, restoring real-time thinking/tool/output rows after the `@opencode-ai/sdk` 1.14.48 event behavior change while keeping the existing streaming throttle.
 - AI detail logs now backfill finalized thinking, tool, and step rows from all OpenCode assistant message parts for the completed prompt, so AI/model tabs can restore extended tool-use histories even when the browser was not open during the phase or the live event stream closed early.
 - Ticket dashboards now normalize partially cached ticket runtime/action/model data before rendering, preventing a full-page crash during fast start and workflow phase transitions.
@@ -2465,6 +2568,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 - Completed log entries are no longer entry-count capped in the log API or browser cache; server log files remain the durable source of truth, while streaming partials are still folded to avoid repeated in-progress snapshots.
 
 #### Configuration
+
 - `vitest.config.ts`: all test projects now use `isolate: true` to prevent test state leakage.
 - `tsconfig.json`: `scripts/` directory added to `include` so dev scripts are fully type-checked.
 
@@ -2473,6 +2577,7 @@ Chocolatey and WinGet are now live installation channels, alongside Scoop fixes 
 ## 0.1.0 (2026-04-27)
 
 ### Summary
+
 - Clarified the README around local AI coding orchestration for repo-scale work, LLM Council planning, Ralph-loop recovery, OpenCode worktrees, and human-in-the-loop PR automation.
 - Added repository trust files for licensing, security reporting, contribution flow, conduct expectations, citation metadata, issue templates, and pull request review.
 - Added a GitHub social preview asset for shared repository links.

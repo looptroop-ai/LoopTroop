@@ -1,29 +1,39 @@
-import { useState } from 'react'
-import { AlertTriangle, CirclePlay, Clock3, FilePenLine, MessageSquarePlus, RotateCcw } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { cn } from '@/lib/utils'
+import { useState } from "react";
+import {
+  AlertTriangle,
+  CirclePlay,
+  Clock3,
+  FilePenLine,
+  MessageSquarePlus,
+  RotateCcw,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { useTicketAction } from '@/hooks/useTickets'
-import { useLogs } from '@/context/useLogContext'
-import type { LogEntry } from '@/context/LogContext'
-import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
-import type { Ticket } from '@/hooks/useTickets'
-import { formatTimestamp, formatTimestampString } from './logFormat'
+} from "@/components/ui/dialog";
+import { useTicketAction } from "@/hooks/useTickets";
+import { useLogs } from "@/context/useLogContext";
+import type { LogEntry } from "@/context/LogContext";
+import { CollapsiblePhaseLogSection } from "./CollapsiblePhaseLogSection";
+import type { Ticket } from "@/hooks/useTickets";
+import { formatTimestamp, formatTimestampString } from "./logFormat";
 import {
   formatErrorOccurrenceStatus,
   getActiveErrorOccurrence,
   getTicketErrorOccurrences,
   type TicketErrorOccurrence,
-} from '@/lib/errorOccurrences'
-import { getStatusUserLabel, type StatusLabelOptions } from '@/lib/workflowMeta'
+} from "@/lib/errorOccurrences";
+import {
+  getStatusUserLabel,
+  type StatusLabelOptions,
+} from "@/lib/workflowMeta";
 import {
   BEAD_AGENT_RESPONSE_INVALID,
   BEAD_FINALIZATION_FAILED,
@@ -32,54 +42,63 @@ import {
   FINAL_TEST_FAILED,
   OPENCODE_PROVIDER_AUTH_FAILED,
   OPENCODE_PROVIDER_ERROR,
-} from '@shared/errorCodes'
-import type { WorkflowAction } from '@shared/workflowMeta'
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { CancelTicketDialog } from '@/components/ticket/CancelTicketDialog'
-import { sanitizeErrorForDisplay } from '@shared/errorDisplay'
+} from "@shared/errorCodes";
+import type { WorkflowAction } from "@shared/workflowMeta";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
+import { CancelTicketDialog } from "@/components/ticket/CancelTicketDialog";
+import { sanitizeErrorForDisplay } from "@shared/errorDisplay";
 
-const MAX_RETRY_NOTE_LENGTH = 20_000
+const MAX_RETRY_NOTE_LENGTH = 20_000;
 
 interface ErrorViewProps {
-  ticket: Ticket
-  occurrence?: TicketErrorOccurrence | null
-  readOnly?: boolean
+  ticket: Ticket;
+  occurrence?: TicketErrorOccurrence | null;
+  readOnly?: boolean;
 }
 
-function mergeErrorLogs(previousPhaseLogs: LogEntry[], blockedLogs: LogEntry[]): LogEntry[] {
-  const seen = new Set<string>()
-  const merged = [...previousPhaseLogs, ...blockedLogs].filter((entry, index) => {
-    const key = entry.timestamp
-      ? `${entry.timestamp}|${entry.status}|${entry.source}|${entry.line}`
-      : `no-ts:${index}|${entry.status}|${entry.source}|${entry.line}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+function mergeErrorLogs(
+  previousPhaseLogs: LogEntry[],
+  blockedLogs: LogEntry[],
+): LogEntry[] {
+  const seen = new Set<string>();
+  const merged = [...previousPhaseLogs, ...blockedLogs].filter(
+    (entry, index) => {
+      const key = entry.timestamp
+        ? `${entry.timestamp}|${entry.status}|${entry.source}|${entry.line}`
+        : `no-ts:${index}|${entry.status}|${entry.source}|${entry.line}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    },
+  );
 
   return merged.sort((a, b) => {
-    const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.NaN
-    const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.NaN
-    if (Number.isNaN(aTime) && Number.isNaN(bTime)) return 0
-    if (Number.isNaN(aTime)) return 1
-    if (Number.isNaN(bTime)) return -1
-    return aTime - bTime
-  })
+    const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.NaN;
+    const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.NaN;
+    if (Number.isNaN(aTime) && Number.isNaN(bTime)) return 0;
+    if (Number.isNaN(aTime)) return 1;
+    if (Number.isNaN(bTime)) return -1;
+    return aTime - bTime;
+  });
 }
 
 function readTimestamp(value?: string | null): number | null {
-  if (!value) return null
-  const parsed = Date.parse(value)
-  return Number.isNaN(parsed) ? null : parsed
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 function filterLogsWithinWindow(
   logs: LogEntry[],
   options: {
-    startTime?: number | null
-    endTime?: number | null
-    includeStart?: boolean
-    includeEnd?: boolean
+    startTime?: number | null;
+    endTime?: number | null;
+    includeStart?: boolean;
+    includeEnd?: boolean;
   },
 ) {
   const {
@@ -87,92 +106,150 @@ function filterLogsWithinWindow(
     endTime = null,
     includeStart = true,
     includeEnd = true,
-  } = options
+  } = options;
 
   // An undated line has no place in a window defined by time. Keeping them
   // pulled every undated row in the phase — every attempt of it — into the
   // failure window, which is the opposite of what a window is for.
-  if (startTime === null && endTime === null) return logs
+  if (startTime === null && endTime === null) return logs;
 
   return logs.filter((entry) => {
-    const timestamp = readTimestamp(entry.timestamp)
-    if (timestamp === null) return false
+    const timestamp = readTimestamp(entry.timestamp);
+    if (timestamp === null) return false;
     if (startTime !== null) {
-      if (includeStart ? timestamp < startTime : timestamp <= startTime) return false
+      if (includeStart ? timestamp < startTime : timestamp <= startTime)
+        return false;
     }
     if (endTime !== null) {
-      if (includeEnd ? timestamp > endTime : timestamp >= endTime) return false
+      if (includeEnd ? timestamp > endTime : timestamp >= endTime) return false;
     }
-    return true
-  })
+    return true;
+  });
 }
 
 function formatDiagnosticKind(value: string): string {
   return value
-    .split('_')
+    .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
+    .join(" ");
 }
 
-function buildDiagnosticRows(diagnostics: NonNullable<TicketErrorOccurrence['diagnostics']>, primaryErrorMessage: string) {
+function buildDiagnosticRows(
+  diagnostics: NonNullable<TicketErrorOccurrence["diagnostics"]>,
+  primaryErrorMessage: string,
+) {
   const rows: Array<{ label: string; value: string }> = [
-    { label: 'Kind', value: formatDiagnosticKind(diagnostics.kind) },
-    { label: 'Source', value: formatDiagnosticKind(diagnostics.source) },
-  ]
+    { label: "Kind", value: formatDiagnosticKind(diagnostics.kind) },
+    { label: "Source", value: formatDiagnosticKind(diagnostics.source) },
+  ];
 
-  if (diagnostics.modelId) rows.push({ label: 'Model', value: diagnostics.modelId })
-  if (diagnostics.providerId) rows.push({ label: 'Provider', value: diagnostics.providerId })
-  if (diagnostics.providerModelId) rows.push({ label: 'Provider model', value: diagnostics.providerModelId })
-  if (diagnostics.requestModel && diagnostics.requestModel !== diagnostics.modelId) rows.push({ label: 'Request model', value: diagnostics.requestModel })
-  if (diagnostics.sessionId) rows.push({ label: 'Session', value: diagnostics.sessionId })
-  if (typeof diagnostics.statusCode === 'number') rows.push({ label: 'HTTP', value: String(diagnostics.statusCode) })
-  if (diagnostics.providerErrorType) rows.push({ label: 'Provider type', value: diagnostics.providerErrorType })
-  if (typeof diagnostics.isRetryable === 'boolean') rows.push({ label: 'Retryable', value: diagnostics.isRetryable ? 'yes' : 'no' })
-  if (diagnostics.providerErrorTitle) rows.push({ label: 'Provider title', value: diagnostics.providerErrorTitle })
-  const providerMessage = sanitizeErrorForDisplay(diagnostics.providerErrorMessage ?? '')
-  const normalizedProviderMessage = normalizeErrorText(providerMessage)
-  if (providerMessage && ![primaryErrorMessage, diagnostics.summary].some((message) => (
-    normalizeErrorText(sanitizeErrorForDisplay(message)).includes(normalizedProviderMessage)
-  ))) {
-    rows.push({ label: 'Provider message', value: providerMessage })
+  if (diagnostics.modelId)
+    rows.push({ label: "Model", value: diagnostics.modelId });
+  if (diagnostics.providerId)
+    rows.push({ label: "Provider", value: diagnostics.providerId });
+  if (diagnostics.providerModelId)
+    rows.push({ label: "Provider model", value: diagnostics.providerModelId });
+  if (
+    diagnostics.requestModel &&
+    diagnostics.requestModel !== diagnostics.modelId
+  )
+    rows.push({ label: "Request model", value: diagnostics.requestModel });
+  if (diagnostics.sessionId)
+    rows.push({ label: "Session", value: diagnostics.sessionId });
+  if (typeof diagnostics.statusCode === "number")
+    rows.push({ label: "HTTP", value: String(diagnostics.statusCode) });
+  if (diagnostics.providerErrorType)
+    rows.push({ label: "Provider type", value: diagnostics.providerErrorType });
+  if (typeof diagnostics.isRetryable === "boolean")
+    rows.push({
+      label: "Retryable",
+      value: diagnostics.isRetryable ? "yes" : "no",
+    });
+  if (diagnostics.providerErrorTitle)
+    rows.push({
+      label: "Provider title",
+      value: diagnostics.providerErrorTitle,
+    });
+  const providerMessage = sanitizeErrorForDisplay(
+    diagnostics.providerErrorMessage ?? "",
+  );
+  const normalizedProviderMessage = normalizeErrorText(providerMessage);
+  if (
+    providerMessage &&
+    ![primaryErrorMessage, diagnostics.summary].some((message) =>
+      normalizeErrorText(sanitizeErrorForDisplay(message)).includes(
+        normalizedProviderMessage,
+      ),
+    )
+  ) {
+    rows.push({ label: "Provider message", value: providerMessage });
   }
-  if (diagnostics.finishReason) rows.push({ label: 'Finish reason', value: diagnostics.finishReason })
-  if (typeof diagnostics.outputTokens === 'number') rows.push({ label: 'Output tokens', value: diagnostics.outputTokens.toLocaleString() })
-  if (typeof diagnostics.reasoningTokens === 'number') rows.push({ label: 'Reasoning tokens', value: diagnostics.reasoningTokens.toLocaleString() })
-  if (typeof diagnostics.inputTokens === 'number') rows.push({ label: 'Input tokens', value: diagnostics.inputTokens.toLocaleString() })
+  if (diagnostics.finishReason)
+    rows.push({ label: "Finish reason", value: diagnostics.finishReason });
+  if (typeof diagnostics.outputTokens === "number")
+    rows.push({
+      label: "Output tokens",
+      value: diagnostics.outputTokens.toLocaleString(),
+    });
+  if (typeof diagnostics.reasoningTokens === "number")
+    rows.push({
+      label: "Reasoning tokens",
+      value: diagnostics.reasoningTokens.toLocaleString(),
+    });
+  if (typeof diagnostics.inputTokens === "number")
+    rows.push({
+      label: "Input tokens",
+      value: diagnostics.inputTokens.toLocaleString(),
+    });
 
-  return rows
+  return rows;
 }
 
 function normalizeErrorText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().toLowerCase()
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function getErrorPhaseLabel(status: string, options: StatusLabelOptions = {}): string {
-  if (status === 'BLOCKED_ERROR') return 'Error'
-  if (status === 'CODING' && (!options.currentBead || !options.totalBeads)) return 'Implementing'
-  return getStatusUserLabel(status, options)
+function getErrorPhaseLabel(
+  status: string,
+  options: StatusLabelOptions = {},
+): string {
+  if (status === "BLOCKED_ERROR") return "Error";
+  if (status === "CODING" && (!options.currentBead || !options.totalBeads))
+    return "Implementing";
+  return getStatusUserLabel(status, options);
 }
 
 function formatErrorReviewStatus(occurrence: TicketErrorOccurrence): string {
-  const status = formatErrorOccurrenceStatus({ ...occurrence, resumedToStatus: null })
-  if (occurrence.resumedToStatus && (occurrence.resolutionStatus === 'RETRIED' || occurrence.resolutionStatus === 'CONTINUED')) {
-    return `${status} to ${getErrorPhaseLabel(occurrence.resumedToStatus)}`
+  const status = formatErrorOccurrenceStatus({
+    ...occurrence,
+    resumedToStatus: null,
+  });
+  if (
+    occurrence.resumedToStatus &&
+    (occurrence.resolutionStatus === "RETRIED" ||
+      occurrence.resolutionStatus === "CONTINUED")
+  ) {
+    return `${status} to ${getErrorPhaseLabel(occurrence.resumedToStatus)}`;
   }
-  return status
+  return status;
 }
 
 interface BlockedErrorExplanation {
-  title: string
-  description: string
-  recommendation: string | null
+  title: string;
+  description: string;
+  recommendation: string | null;
 }
 
-function getProviderRecoveryRecommendation(canContinue: boolean, canRetry: boolean): string | null {
-  if (canContinue && canRetry) return 'Continue the preserved session, or retry after the service or credentials recover.'
-  if (canContinue) return 'Continue the preserved session after the service or credentials recover.'
-  if (canRetry) return 'Retry after the service or credentials recover.'
-  return null
+function getProviderRecoveryRecommendation(
+  canContinue: boolean,
+  canRetry: boolean,
+): string | null {
+  if (canContinue && canRetry)
+    return "Continue the preserved session, or retry after the service or credentials recover.";
+  if (canContinue)
+    return "Continue the preserved session after the service or credentials recover.";
+  if (canRetry) return "Retry after the service or credentials recover.";
+  return null;
 }
 
 function explainBlockedError(
@@ -180,143 +257,190 @@ function explainBlockedError(
   errorCodes: string[],
   availableActions: WorkflowAction[],
 ): BlockedErrorExplanation | null {
-  const codes = new Set(errorCodes)
-  const canRetry = availableActions.includes('retry')
-  const canContinue = availableActions.includes('continue')
-  const canRetryWithNote = blockedFromStatus === 'CODING' && canRetry
+  const codes = new Set(errorCodes);
+  const canRetry = availableActions.includes("retry");
+  const canContinue = availableActions.includes("continue");
+  const canRetryWithNote = blockedFromStatus === "CODING" && canRetry;
   const retryRecommendation = canRetryWithNote
-    ? 'Retry with an extra note that clarifies the approach or the remaining problem.'
+    ? "Retry with an extra note that clarifies the approach or the remaining problem."
     : canRetry
-      ? 'Retry the failed workflow step after reviewing the technical details.'
-      : null
+      ? "Retry the failed workflow step after reviewing the technical details."
+      : null;
 
   if (codes.has(BEAD_FINALIZATION_FAILED)) {
     return {
-      title: 'Git finalization failed',
-      description: 'The implementation finished, but LoopTroop could not save the bead as a Git commit.',
-      recommendation: canRetry ? 'Retry finalization. The completed implementation can be reused.' : null,
-    }
+      title: "Git finalization failed",
+      description:
+        "The implementation finished, but LoopTroop could not save the bead as a Git commit.",
+      recommendation: canRetry
+        ? "Retry finalization. The completed implementation can be reused."
+        : null,
+    };
   }
   if (codes.has(BEAD_AGENT_RESPONSE_INVALID)) {
     return {
-      title: 'Agent response incomplete',
-      description: 'The coding agent did not provide the required completion result, so LoopTroop could not confirm the bead finished.',
+      title: "Agent response incomplete",
+      description:
+        "The coding agent did not provide the required completion result, so LoopTroop could not confirm the bead finished.",
       recommendation: canRetryWithNote
-        ? 'Retry with an extra note that asks the agent to finish with the required result.'
+        ? "Retry with an extra note that asks the agent to finish with the required result."
         : retryRecommendation,
-    }
+    };
   }
   if (codes.has(BEAD_ITERATION_TIMEOUT)) {
     return {
-      title: 'Implementation attempt timed out',
-      description: 'The coding attempt exceeded its configured time limit before it could finish.',
+      title: "Implementation attempt timed out",
+      description:
+        "The coding attempt exceeded its configured time limit before it could finish.",
       recommendation: canRetryWithNote
-        ? 'Retry the bead with an extra note if the work should be split or approached differently.'
+        ? "Retry the bead with an extra note if the work should be split or approached differently."
         : retryRecommendation,
-    }
+    };
   }
-  if (codes.has(OPENCODE_PROVIDER_AUTH_FAILED) || codes.has(OPENCODE_PROVIDER_ERROR)) {
+  if (
+    codes.has(OPENCODE_PROVIDER_AUTH_FAILED) ||
+    codes.has(OPENCODE_PROVIDER_ERROR)
+  ) {
     return {
-      title: 'Provider or environment unavailable',
-      description: 'The model provider or its runtime interrupted this workflow step. This does not necessarily mean the work itself failed.',
+      title: "Provider or environment unavailable",
+      description:
+        "The model provider or its runtime interrupted this workflow step. This does not necessarily mean the work itself failed.",
       recommendation: getProviderRecoveryRecommendation(canContinue, canRetry),
-    }
+    };
   }
-  if (codes.has(FINAL_TEST_FAILED) || blockedFromStatus === 'RUNNING_FINAL_TEST') {
+  if (
+    codes.has(FINAL_TEST_FAILED) ||
+    blockedFromStatus === "RUNNING_FINAL_TEST"
+  ) {
     return {
-      title: 'Final Testing failed',
-      description: 'The ticket-wide automated checks did not pass, so LoopTroop stopped before delivery.',
-      recommendation: canRetry ? 'Review the failed checks, then retry Final Testing after addressing them.' : null,
-    }
+      title: "Final Testing failed",
+      description:
+        "The ticket-wide automated checks did not pass, so LoopTroop stopped before delivery.",
+      recommendation: canRetry
+        ? "Review the failed checks, then retry Final Testing after addressing them."
+        : null,
+    };
   }
   if (codes.has(BEAD_RETRY_BUDGET_EXHAUSTED)) {
     return {
-      title: 'Implementation retries exhausted',
-      description: 'The coding agent used every configured attempt without completing this bead.',
+      title: "Implementation retries exhausted",
+      description:
+        "The coding agent used every configured attempt without completing this bead.",
       recommendation: retryRecommendation,
-    }
+    };
   }
-  if (blockedFromStatus === 'GENERATING_EXECUTION_SETUP_PLAN') {
+  if (blockedFromStatus === "GENERATING_EXECUTION_SETUP_PLAN") {
     return {
-      title: 'Workspace setup drafting failed',
-      description: 'LoopTroop could not finish generating the workspace setup plan because an operational step failed.',
-      recommendation: canRetry ? 'Retry the drafting phase after resolving the reported provider or environment problem.' : null,
-    }
+      title: "Workspace setup drafting failed",
+      description:
+        "LoopTroop could not finish generating the workspace setup plan because an operational step failed.",
+      recommendation: canRetry
+        ? "Retry the drafting phase after resolving the reported provider or environment problem."
+        : null,
+    };
   }
-  if (blockedFromStatus === 'PREPARING_EXECUTION_ENV' || blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL') {
-    const canEdit = blockedFromStatus === 'PREPARING_EXECUTION_ENV'
-      && availableActions.includes('edit_execution_setup_plan')
-    const canRetry = availableActions.includes('retry')
+  if (
+    blockedFromStatus === "PREPARING_EXECUTION_ENV" ||
+    blockedFromStatus === "WAITING_EXECUTION_SETUP_APPROVAL"
+  ) {
+    const canEdit =
+      blockedFromStatus === "PREPARING_EXECUTION_ENV" &&
+      availableActions.includes("edit_execution_setup_plan");
+    const canRetry = availableActions.includes("retry");
     return {
-      title: 'Workspace setup failed',
-      description: 'LoopTroop could not prepare the repository environment needed for implementation.',
+      title: "Workspace setup failed",
+      description:
+        "LoopTroop could not prepare the repository environment needed for implementation.",
       recommendation: canEdit
         ? canRetry
-          ? 'Edit the setup plan when it is incorrect, or retry after fixing the environment.'
-          : 'Edit the setup plan to correct the reported environment problem.'
+          ? "Edit the setup plan when it is incorrect, or retry after fixing the environment."
+          : "Edit the setup plan to correct the reported environment problem."
         : canRetry
-          ? 'Retry the workspace setup after fixing the reported environment problem.'
+          ? "Retry the workspace setup after fixing the reported environment problem."
           : null,
-    }
+    };
   }
 
-  return null
+  return null;
 }
 
 function withContentKeys<T>(items: T[], getIdentity: (item: T) => string) {
-  const duplicateCounts = new Map<string, number>()
+  const duplicateCounts = new Map<string, number>();
   return items.map((item) => {
-    const identity = getIdentity(item)
-    const duplicateOrdinal = duplicateCounts.get(identity) ?? 0
-    duplicateCounts.set(identity, duplicateOrdinal + 1)
-    return { item, key: JSON.stringify([identity, duplicateOrdinal]) }
-  })
+    const identity = getIdentity(item);
+    const duplicateOrdinal = duplicateCounts.get(identity) ?? 0;
+    duplicateCounts.set(identity, duplicateOrdinal + 1);
+    return { item, key: JSON.stringify([identity, duplicateOrdinal]) };
+  });
 }
 
-function ErrorTechnicalDetails({ occurrence, primaryErrorMessage }: {
-  occurrence: TicketErrorOccurrence | null
-  primaryErrorMessage: string
+function ErrorTechnicalDetails({
+  occurrence,
+  primaryErrorMessage,
+}: {
+  occurrence: TicketErrorOccurrence | null;
+  primaryErrorMessage: string;
 }) {
-  if (!occurrence) return null
-  const diagnostics = occurrence.diagnostics ?? null
-  const diagnosticRows = diagnostics ? buildDiagnosticRows(diagnostics, primaryErrorMessage) : []
+  if (!occurrence) return null;
+  const diagnostics = occurrence.diagnostics ?? null;
+  const diagnosticRows = diagnostics
+    ? buildDiagnosticRows(diagnostics, primaryErrorMessage)
+    : [];
   const displayErrorCodes = occurrence.errorCodes
-    .map(code => sanitizeErrorForDisplay(code))
-    .filter(code => code.length > 0)
+    .map((code) => sanitizeErrorForDisplay(code))
+    .filter((code) => code.length > 0);
 
   return (
-    <details open className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]">
-      <summary className="cursor-pointer font-medium text-foreground">Technical details</summary>
+    <details
+      open
+      className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]"
+    >
+      <summary className="cursor-pointer font-medium text-foreground">
+        Technical details
+      </summary>
       <div className="mt-2 space-y-2">
         {occurrence && (
           <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
             <span>Error {occurrence.occurrenceNumber}</span>
-            <span className="flex items-center gap-1" title={formatTimestampString(occurrence.occurredAt, { includeMilliseconds: false })}>
+            <span
+              className="flex items-center gap-1"
+              title={formatTimestampString(occurrence.occurredAt, {
+                includeMilliseconds: false,
+              })}
+            >
               <Clock3 aria-hidden="true" className="h-3.5 w-3.5" />
-              {formatTimestamp(occurrence.occurredAt, { includeMilliseconds: false })}
+              {formatTimestamp(occurrence.occurredAt, {
+                includeMilliseconds: false,
+              })}
             </span>
             {occurrence.resolvedAt && (
               <span className="flex items-center gap-1">
                 <RotateCcw aria-hidden="true" className="h-3.5 w-3.5" />
-                Resolved {formatTimestamp(occurrence.resolvedAt, { includeMilliseconds: false })}
+                Resolved{" "}
+                {formatTimestamp(occurrence.resolvedAt, {
+                  includeMilliseconds: false,
+                })}
               </span>
             )}
           </div>
         )}
         {displayErrorCodes.length > 0 && (
           <div className="flex flex-col items-start gap-1">
-            {withContentKeys(displayErrorCodes, (code) => code).map(({ item: code, key }) => code.includes('\n') || code.length > 120 ? (
-              <div
-                key={key}
-                className="w-full rounded-md border border-border px-2.5 py-1 text-[10px] font-mono leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
-              >
-                {code}
-              </div>
-            ) : (
-              <Badge key={key} variant="outline" className="text-[10px]">
-                {code}
-              </Badge>
-            ))}
+            {withContentKeys(displayErrorCodes, (code) => code).map(
+              ({ item: code, key }) =>
+                code.includes("\n") || code.length > 120 ? (
+                  <div
+                    key={key}
+                    className="w-full rounded-md border border-border px-2.5 py-1 text-[10px] font-mono leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+                  >
+                    {code}
+                  </div>
+                ) : (
+                  <Badge key={key} variant="outline" className="text-[10px]">
+                    {code}
+                  </Badge>
+                ),
+            )}
           </div>
         )}
         {diagnostics && (
@@ -324,8 +448,12 @@ function ErrorTechnicalDetails({ occurrence, primaryErrorMessage }: {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
               {diagnosticRows.map((row) => (
                 <div key={`${row.label}:${row.value}`} className="min-w-0">
-                  <span className="text-muted-foreground/80">{row.label}: </span>
-                  <span className="font-mono text-foreground break-words">{row.value}</span>
+                  <span className="text-muted-foreground/80">
+                    {row.label}:{" "}
+                  </span>
+                  <span className="font-mono text-foreground break-words">
+                    {row.value}
+                  </span>
                 </div>
               ))}
             </div>
@@ -333,117 +461,167 @@ function ErrorTechnicalDetails({ occurrence, primaryErrorMessage }: {
         )}
       </div>
     </details>
-  )
+  );
 }
 
 function LiveCodingBeadContext({ ticket }: { ticket: Ticket }) {
   const activeRuntimeBead = ticket.runtime.activeBeadId
-    ? ticket.runtime.beads?.find((bead) => bead.id === ticket.runtime.activeBeadId) ?? null
-    : null
-  const pausedCodingBead = activeRuntimeBead?.status === 'in_progress' ? activeRuntimeBead : null
-  const failedBead = !pausedCodingBead && ticket.runtime.lastFailedBeadId
-    ? ticket.runtime.beads?.find((bead) => bead.id === ticket.runtime.lastFailedBeadId) ?? null
-    : null
+    ? (ticket.runtime.beads?.find(
+        (bead) => bead.id === ticket.runtime.activeBeadId,
+      ) ?? null)
+    : null;
+  const pausedCodingBead =
+    activeRuntimeBead?.status === "in_progress" ? activeRuntimeBead : null;
+  const failedBead =
+    !pausedCodingBead && ticket.runtime.lastFailedBeadId
+      ? (ticket.runtime.beads?.find(
+          (bead) => bead.id === ticket.runtime.lastFailedBeadId,
+        ) ?? null)
+      : null;
   const failedBeadNoteGroups = [
-    { title: 'Failed Iteration Notes', notes: failedBead?.failedIterationNotes ?? [] },
-    { title: 'User Retry Notes', notes: failedBead?.userRetryNotes ?? [] },
-    { title: 'Finalization Failure Notes', notes: failedBead?.finalizationFailureNotes ?? [] },
-  ].filter((group) => group.notes.length > 0)
-  const canContinue = ticket.availableActions.includes('continue')
-  const canRetry = ticket.availableActions.includes('retry')
+    {
+      title: "Failed Iteration Notes",
+      notes: failedBead?.failedIterationNotes ?? [],
+    },
+    { title: "User Retry Notes", notes: failedBead?.userRetryNotes ?? [] },
+    {
+      title: "Finalization Failure Notes",
+      notes: failedBead?.finalizationFailureNotes ?? [],
+    },
+  ].filter((group) => group.notes.length > 0);
+  const canContinue = ticket.availableActions.includes("continue");
+  const canRetry = ticket.availableActions.includes("retry");
 
-  if (!failedBead && !pausedCodingBead) return null
+  if (!failedBead && !pausedCodingBead) return null;
 
   return (
-      <div className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground space-y-1">
-        {failedBead && (
-          <div>
-            Failed bead <span className="font-mono text-foreground">{failedBead.id}</span>
-            {ticket.runtime.activeBeadIteration ? ` on iteration ${ticket.runtime.activeBeadIteration}` : ''}
-          </div>
-        )}
-        {pausedCodingBead && (
-          <>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant="outline" className="text-[10px]">Paused</Badge>
-              <span>
-                Bead <span className="font-mono text-foreground">{pausedCodingBead.id}</span>
-                {ticket.runtime.activeBeadIteration ? ` on iteration ${ticket.runtime.activeBeadIteration}` : ''}
+    <div className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground space-y-1">
+      {failedBead && (
+        <div>
+          Failed bead{" "}
+          <span className="font-mono text-foreground">{failedBead.id}</span>
+          {ticket.runtime.activeBeadIteration
+            ? ` on iteration ${ticket.runtime.activeBeadIteration}`
+            : ""}
+        </div>
+      )}
+      {pausedCodingBead && (
+        <>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant="outline" className="text-[10px]">
+              Paused
+            </Badge>
+            <span>
+              Bead{" "}
+              <span className="font-mono text-foreground">
+                {pausedCodingBead.id}
               </span>
-            </div>
-            <div>
-              Timer paused while the ticket is blocked. {canContinue
-                ? 'Continue resumes the preserved OpenCode session with a fresh bead timer.'
-                : canRetry ? 'Retry starts a fresh coding recovery attempt.' : ''}
-            </div>
-          </>
-        )}
-        {failedBeadNoteGroups.length > 0 && (
-          <div className="space-y-1">
-            {failedBeadNoteGroups.map((group) => (
-              <div key={group.title} className="space-y-1">
-                <div className="text-[10px] uppercase tracking-wider">{group.title}</div>
-                {withContentKeys(group.notes, (note) => JSON.stringify([
-                  note.timestamp, note.iteration, note.content, note.errorCode,
-                ])).map(({ item: note, key }) => (
-                  <div key={key} className="rounded border border-border/60 p-1.5">
-                    <div className="mb-0.5 flex flex-wrap gap-1.5 text-[9px] uppercase tracking-wide">
-                      {note.iteration > 0 ? <span>Iteration {note.iteration}</span> : null}
-                      {note.timestamp ? <span>{note.timestamp}</span> : null}
-                      {note.errorCode ? <span className="font-mono">{note.errorCode}</span> : null}
-                    </div>
-                    <p className="font-mono text-[10px] whitespace-pre-wrap text-muted-foreground/90">{note.content}</p>
-                  </div>
-                ))}
-              </div>
-            ))}
+              {ticket.runtime.activeBeadIteration
+                ? ` on iteration ${ticket.runtime.activeBeadIteration}`
+                : ""}
+            </span>
           </div>
-        )}
-      </div>
-  )
+          <div>
+            Timer paused while the ticket is blocked.{" "}
+            {canContinue
+              ? "Continue resumes the preserved OpenCode session with a fresh bead timer."
+              : canRetry
+                ? "Retry starts a fresh coding recovery attempt."
+                : ""}
+          </div>
+        </>
+      )}
+      {failedBeadNoteGroups.length > 0 && (
+        <div className="space-y-1">
+          {failedBeadNoteGroups.map((group) => (
+            <div key={group.title} className="space-y-1">
+              <div className="text-[10px] uppercase tracking-wider">
+                {group.title}
+              </div>
+              {withContentKeys(group.notes, (note) =>
+                JSON.stringify([
+                  note.timestamp,
+                  note.iteration,
+                  note.content,
+                  note.errorCode,
+                ]),
+              ).map(({ item: note, key }) => (
+                <div
+                  key={key}
+                  className="rounded border border-border/60 p-1.5"
+                >
+                  <div className="mb-0.5 flex flex-wrap gap-1.5 text-[9px] uppercase tracking-wide">
+                    {note.iteration > 0 ? (
+                      <span>Iteration {note.iteration}</span>
+                    ) : null}
+                    {note.timestamp ? <span>{note.timestamp}</span> : null}
+                    {note.errorCode ? (
+                      <span className="font-mono">{note.errorCode}</span>
+                    ) : null}
+                  </div>
+                  <p className="font-mono text-[10px] whitespace-pre-wrap text-muted-foreground/90">
+                    {note.content}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
-export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewProps) {
-  const { mutate: performAction, isPending } = useTicketAction()
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [retryNoteDialogOpen, setRetryNoteDialogOpen] = useState(false)
-  const [retryNote, setRetryNote] = useState('')
-  const [retryNoteError, setRetryNoteError] = useState<string | null>(null)
-  const [retryNoteSubmitting, setRetryNoteSubmitting] = useState(false)
-  const [editSetupPlanDialogOpen, setEditSetupPlanDialogOpen] = useState(false)
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false)
-  const logCtx = useLogs()
-  const activeOccurrence = getActiveErrorOccurrence(ticket)
-  const visibleOccurrence = occurrence ?? activeOccurrence
-  const retryActionLabel = (
-    visibleOccurrence?.blockedFromStatus === 'CODING'
-    && visibleOccurrence.errorCodes.includes(BEAD_RETRY_BUDGET_EXHAUSTED)
-    && typeof ticket.runtime.maxIterationsPerBead === 'number'
-    && ticket.runtime.maxIterationsPerBead > 0
-  )
-    ? `Try again ${ticket.runtime.maxIterationsPerBead} ${ticket.runtime.maxIterationsPerBead === 1 ? 'retry' : 'retries'}`
-    : 'Retry'
+export function ErrorView({
+  ticket,
+  occurrence,
+  readOnly = false,
+}: ErrorViewProps) {
+  const { mutate: performAction, isPending } = useTicketAction();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [retryNoteDialogOpen, setRetryNoteDialogOpen] = useState(false);
+  const [retryNote, setRetryNote] = useState("");
+  const [retryNoteError, setRetryNoteError] = useState<string | null>(null);
+  const [retryNoteSubmitting, setRetryNoteSubmitting] = useState(false);
+  const [editSetupPlanDialogOpen, setEditSetupPlanDialogOpen] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const logCtx = useLogs();
+  const activeOccurrence = getActiveErrorOccurrence(ticket);
+  const visibleOccurrence = occurrence ?? activeOccurrence;
+  const retryActionLabel =
+    visibleOccurrence?.blockedFromStatus === "CODING" &&
+    visibleOccurrence.errorCodes.includes(BEAD_RETRY_BUDGET_EXHAUSTED) &&
+    typeof ticket.runtime.maxIterationsPerBead === "number" &&
+    ticket.runtime.maxIterationsPerBead > 0
+      ? `Try again ${ticket.runtime.maxIterationsPerBead} ${ticket.runtime.maxIterationsPerBead === 1 ? "retry" : "retries"}`
+      : "Retry";
   const errorLogs = (() => {
     if (!visibleOccurrence) {
-      return logCtx?.getLogsForPhase('BLOCKED_ERROR') ?? []
+      return logCtx?.getLogsForPhase("BLOCKED_ERROR") ?? [];
     }
 
-    const allOccurrences = getTicketErrorOccurrences(ticket)
-    const occurrenceIndex = allOccurrences.findIndex((candidate) => candidate.id === visibleOccurrence.id)
+    const allOccurrences = getTicketErrorOccurrences(ticket);
+    const occurrenceIndex = allOccurrences.findIndex(
+      (candidate) => candidate.id === visibleOccurrence.id,
+    );
     // `getTicketErrorOccurrences` answers newest-first, so the chronologically
     // *previous* error is the next index, not the one before. Reading backwards
     // took the newer occurrence, which made `startTime` later than `endTime` and
     // produced a window nothing could fall inside. Undated rows used to slip
     // through that window and hide it; now that they are excluded, a historical
     // error would render with no phase logs at all.
-    const previousOccurrence = occurrenceIndex >= 0 && occurrenceIndex < allOccurrences.length - 1
-      ? allOccurrences[occurrenceIndex + 1]
-      : null
-    const previousResolutionTime = readTimestamp(previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt ?? null)
-    const blockedAt = readTimestamp(visibleOccurrence.occurredAt)
-    const resolvedAt = readTimestamp(visibleOccurrence.resolvedAt)
-    const blockedLogs = logCtx?.getLogsForPhase('BLOCKED_ERROR') ?? []
-    const phaseLogs = logCtx?.getLogsForPhase(visibleOccurrence.blockedFromStatus) ?? []
+    const previousOccurrence =
+      occurrenceIndex >= 0 && occurrenceIndex < allOccurrences.length - 1
+        ? allOccurrences[occurrenceIndex + 1]
+        : null;
+    const previousResolutionTime = readTimestamp(
+      previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt ?? null,
+    );
+    const blockedAt = readTimestamp(visibleOccurrence.occurredAt);
+    const resolvedAt = readTimestamp(visibleOccurrence.resolvedAt);
+    const blockedLogs = logCtx?.getLogsForPhase("BLOCKED_ERROR") ?? [];
+    const phaseLogs =
+      logCtx?.getLogsForPhase(visibleOccurrence.blockedFromStatus) ?? [];
     const merged = mergeErrorLogs(
       filterLogsWithinWindow(phaseLogs, {
         startTime: previousResolutionTime,
@@ -454,119 +632,173 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
         startTime: blockedAt,
         endTime: resolvedAt,
       }),
-    )
-    return merged
-  })()
+    );
+    return merged;
+  })();
 
-  const isLiveError = !readOnly
-    && ticket.status === 'BLOCKED_ERROR'
-    && visibleOccurrence?.resolvedAt === null
-    && visibleOccurrence.id === activeOccurrence?.id
-  const isLiveCodingError = isLiveError && visibleOccurrence.blockedFromStatus === 'CODING'
+  const isLiveError =
+    !readOnly &&
+    ticket.status === "BLOCKED_ERROR" &&
+    visibleOccurrence?.resolvedAt === null &&
+    visibleOccurrence.id === activeOccurrence?.id;
+  const isLiveCodingError =
+    isLiveError && visibleOccurrence.blockedFromStatus === "CODING";
   // The server advertises the recovery actions it can safely execute for this
   // occurrence. The error view must not invent a setup-plan edit or a coding
   // retry-note flow just because the failure happened near setup.
-  const isSetupRuntimeError = isLiveError
-    && (visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV'
-      || visibleOccurrence?.blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL')
-  const canContinue = isLiveError && ticket.availableActions.includes('continue')
-  const canRetry = isLiveError && ticket.availableActions.includes('retry')
-  const canCancel = isLiveError && ticket.availableActions.includes('cancel')
-  const canRetryWithNote = isLiveError
-    && (visibleOccurrence?.blockedFromStatus === 'CODING'
-      || visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV')
-    && ticket.availableActions.includes('retry')
-  const canEditExecutionSetupPlan = isSetupRuntimeError
-    && visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV'
-    && ticket.availableActions.includes('edit_execution_setup_plan')
-  const diagnostics = visibleOccurrence?.diagnostics ?? null
-  const diagnosticSummary = sanitizeErrorForDisplay(diagnostics?.summary ?? '')
-  const rawPrimaryErrorMessage = visibleOccurrence?.errorMessage || (isLiveError || !visibleOccurrence ? ticket.errorMessage : null) || ''
-  const primaryErrorMessage = sanitizeErrorForDisplay(rawPrimaryErrorMessage) || diagnosticSummary || 'No error details were captured. Check the server logs.'
+  const isSetupRuntimeError =
+    isLiveError &&
+    (visibleOccurrence?.blockedFromStatus === "PREPARING_EXECUTION_ENV" ||
+      visibleOccurrence?.blockedFromStatus ===
+        "WAITING_EXECUTION_SETUP_APPROVAL");
+  const canContinue =
+    isLiveError && ticket.availableActions.includes("continue");
+  const canRetry = isLiveError && ticket.availableActions.includes("retry");
+  const canCancel = isLiveError && ticket.availableActions.includes("cancel");
+  const canRetryWithNote =
+    isLiveError &&
+    (visibleOccurrence?.blockedFromStatus === "CODING" ||
+      visibleOccurrence?.blockedFromStatus === "PREPARING_EXECUTION_ENV") &&
+    ticket.availableActions.includes("retry");
+  const canEditExecutionSetupPlan =
+    isSetupRuntimeError &&
+    visibleOccurrence?.blockedFromStatus === "PREPARING_EXECUTION_ENV" &&
+    ticket.availableActions.includes("edit_execution_setup_plan");
+  const diagnostics = visibleOccurrence?.diagnostics ?? null;
+  const diagnosticSummary = sanitizeErrorForDisplay(diagnostics?.summary ?? "");
+  const rawPrimaryErrorMessage =
+    visibleOccurrence?.errorMessage ||
+    (isLiveError || !visibleOccurrence ? ticket.errorMessage : null) ||
+    "";
+  const primaryErrorMessage =
+    sanitizeErrorForDisplay(rawPrimaryErrorMessage) ||
+    diagnosticSummary ||
+    "No error details were captured. Check the server logs.";
   const errorExplanation = explainBlockedError(
     visibleOccurrence?.blockedFromStatus ?? ticket.previousStatus ?? undefined,
     visibleOccurrence?.errorCodes ?? [],
     isLiveError ? ticket.availableActions : [],
-  )
-  const statusLabelOptions = isLiveCodingError ? {
-    currentBead: ticket.runtime.currentBead ?? ticket.currentBead,
-    totalBeads: ticket.runtime.totalBeads ?? ticket.totalBeads,
-  } : {}
-  const normalizedPrimaryError = normalizeErrorText(primaryErrorMessage)
-  const normalizedDiagnosticSummary = normalizeErrorText(diagnosticSummary)
-  const hasDiagnosticSummary = diagnosticSummary.length > 0
-    && normalizedPrimaryError.length > 0
-    && !normalizedPrimaryError.includes(normalizedDiagnosticSummary)
+  );
+  const statusLabelOptions = isLiveCodingError
+    ? {
+        currentBead: ticket.runtime.currentBead ?? ticket.currentBead,
+        totalBeads: ticket.runtime.totalBeads ?? ticket.totalBeads,
+      }
+    : {};
+  const normalizedPrimaryError = normalizeErrorText(primaryErrorMessage);
+  const normalizedDiagnosticSummary = normalizeErrorText(diagnosticSummary);
+  const hasDiagnosticSummary =
+    diagnosticSummary.length > 0 &&
+    normalizedPrimaryError.length > 0 &&
+    !normalizedPrimaryError.includes(normalizedDiagnosticSummary);
   const handleAction = (action: WorkflowAction) => {
-    setActionError(null)
+    setActionError(null);
     performAction(
       { id: ticket.id, action },
       {
         onError: (error: unknown) => {
-          setActionError(error instanceof Error ? error.message : `Failed to ${action} ticket`)
+          setActionError(
+            error instanceof Error
+              ? error.message
+              : `Failed to ${action} ticket`,
+          );
         },
       },
-    )
-  }
-  const retryNoteIsBlank = retryNote.trim().length === 0
-  const isRetryNotePending = isPending || retryNoteSubmitting
+    );
+  };
+  const retryNoteIsBlank = retryNote.trim().length === 0;
+  const isRetryNotePending = isPending || retryNoteSubmitting;
   const handleRetryWithNote = () => {
     if (retryNoteIsBlank) {
-      setRetryNoteError('Enter an extra note before retrying.')
-      return
+      setRetryNoteError("Enter an extra note before retrying.");
+      return;
     }
 
-    setRetryNoteError(null)
-    setRetryNoteSubmitting(true)
+    setRetryNoteError(null);
+    setRetryNoteSubmitting(true);
     performAction(
-      { id: ticket.id, action: 'retry', payload: { kind: 'retry_note', note: retryNote } },
+      {
+        id: ticket.id,
+        action: "retry",
+        payload: { kind: "retry_note", note: retryNote },
+      },
       {
         onSuccess: () => {
-          setRetryNoteSubmitting(false)
-          setRetryNoteDialogOpen(false)
-          setRetryNote('')
-          setRetryNoteError(null)
+          setRetryNoteSubmitting(false);
+          setRetryNoteDialogOpen(false);
+          setRetryNote("");
+          setRetryNoteError(null);
         },
         onError: (error: unknown) => {
-          setRetryNoteSubmitting(false)
-          setRetryNoteError(error instanceof Error ? error.message : 'Failed to add note and retry ticket')
+          setRetryNoteSubmitting(false);
+          setRetryNoteError(
+            error instanceof Error
+              ? error.message
+              : "Failed to add note and retry ticket",
+          );
         },
       },
-    )
-  }
+    );
+  };
   const handleEditExecutionSetupPlan = () => {
-    setActionError(null)
+    setActionError(null);
     performAction(
-      { id: ticket.id, action: 'edit_execution_setup_plan' },
+      { id: ticket.id, action: "edit_execution_setup_plan" },
       {
         onSuccess: () => {
-          setEditSetupPlanDialogOpen(false)
+          setEditSetupPlanDialogOpen(false);
         },
         onError: (error: unknown) => {
-          setActionError(error instanceof Error ? error.message : 'Failed to return to setup plan editing')
+          setActionError(
+            error instanceof Error
+              ? error.message
+              : "Failed to return to setup plan editing",
+          );
         },
       },
-    )
-  }
+    );
+  };
 
   return (
     <div className="h-full min-h-0 flex flex-col overflow-hidden">
       <div className="min-h-0 shrink overflow-y-auto p-4">
-        <Card className={cn(
-          'rounded-xl border bg-card shadow-2xs transition-all overflow-hidden',
-          isLiveError ? 'border-rose-500/30 dark:border-rose-500/40' : 'border-amber-500/30 dark:border-amber-500/40'
-        )}>
+        <Card
+          className={cn(
+            "rounded-xl border bg-card shadow-2xs transition-all overflow-hidden",
+            isLiveError
+              ? "border-rose-500/30 dark:border-rose-500/40"
+              : "border-amber-500/30 dark:border-amber-500/40",
+          )}
+        >
           <CardHeader className="py-3">
             <div className="flex flex-wrap items-center gap-2">
-              <CardTitle role="heading" aria-level={2} className={cn('text-sm font-mono font-semibold flex items-center gap-2', isLiveError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')}>
-                <AlertTriangle aria-hidden="true" className={`h-4 w-4 shrink-0 ${isLiveError ? 'animate-wobble-throb' : ''}`} />
-                {getErrorPhaseLabel(visibleOccurrence?.blockedFromStatus ?? ticket.previousStatus ?? 'BLOCKED_ERROR', statusLabelOptions)}
+              <CardTitle
+                role="heading"
+                aria-level={2}
+                className={cn(
+                  "text-sm font-mono font-semibold flex items-center gap-2",
+                  isLiveError
+                    ? "text-rose-600 dark:text-rose-400"
+                    : "text-amber-600 dark:text-amber-400",
+                )}
+              >
+                <AlertTriangle
+                  aria-hidden="true"
+                  className={`h-4 w-4 shrink-0 ${isLiveError ? "animate-wobble-throb" : ""}`}
+                />
+                {getErrorPhaseLabel(
+                  visibleOccurrence?.blockedFromStatus ??
+                    ticket.previousStatus ??
+                    "BLOCKED_ERROR",
+                  statusLabelOptions,
+                )}
               </CardTitle>
               {!isLiveError && visibleOccurrence && (
                 <Badge variant="secondary" className="text-[10px]">
-                  {visibleOccurrence.resolvedAt || visibleOccurrence.resolutionStatus
+                  {visibleOccurrence.resolvedAt ||
+                  visibleOccurrence.resolutionStatus
                     ? formatErrorReviewStatus(visibleOccurrence)
-                    : 'Read-only'}
+                    : "Read-only"}
                 </Badge>
               )}
             </div>
@@ -574,19 +806,30 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
           <CardContent className="space-y-3 pb-3">
             <div className="rounded-md border border-border bg-muted/40 p-3 space-y-3">
               <div className="space-y-2">
-                <p className="text-sm font-medium leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">{primaryErrorMessage}</p>
+                <p className="text-sm font-medium leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
+                  {primaryErrorMessage}
+                </p>
                 {hasDiagnosticSummary && (
                   <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
-                    <span className="text-xs font-medium text-muted-foreground">Cause: </span>{diagnosticSummary}
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Cause:{" "}
+                    </span>
+                    {diagnosticSummary}
                   </p>
                 )}
               </div>
               {errorExplanation && (
                 <div className="space-y-1">
-                  <h3 className="text-xs font-semibold text-foreground">{errorExplanation.title}</h3>
-                  <p className="text-xs text-muted-foreground">{errorExplanation.description}</p>
+                  <h3 className="text-xs font-semibold text-foreground">
+                    {errorExplanation.title}
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {errorExplanation.description}
+                  </p>
                   {isLiveError && errorExplanation.recommendation && (
-                    <p className="text-xs text-foreground">{errorExplanation.recommendation}</p>
+                    <p className="text-xs text-foreground">
+                      {errorExplanation.recommendation}
+                    </p>
                   )}
                 </div>
               )}
@@ -599,23 +842,28 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => handleAction('continue')}
+                            onClick={() => handleAction("continue")}
                             disabled={isPending}
                             className="h-7 text-xs font-mono font-semibold rounded-lg border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 active:scale-[0.98] transition-all"
                           >
-                            <CirclePlay aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+                            <CirclePlay
+                              aria-hidden="true"
+                              className="mr-1 h-3.5 w-3.5"
+                            />
                             Continue
                           </Button>
                         </TooltipTrigger>
                         <TooltipContent className="max-w-xs text-center text-balance">
-                          Sends only &quot;continue please&quot; to the preserved session. It does not restart the original prompt.
+                          Sends only &quot;continue please&quot; to the
+                          preserved session. It does not restart the original
+                          prompt.
                         </TooltipContent>
                       </Tooltip>
                     )}
                     {canRetry && (
                       <Button
                         size="sm"
-                        onClick={() => handleAction('retry')}
+                        onClick={() => handleAction("retry")}
                         disabled={isPending}
                         className="h-7 text-xs font-mono font-semibold rounded-lg bg-brand-500 text-brand-50 hover:bg-brand-600 active:scale-[0.98] shadow-xs transition-all"
                       >
@@ -630,7 +878,10 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                         disabled={isPending}
                         className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
                       >
-                        <FilePenLine aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+                        <FilePenLine
+                          aria-hidden="true"
+                          className="mr-1 h-3.5 w-3.5"
+                        />
                         Edit setup plan...
                       </Button>
                     )}
@@ -639,13 +890,16 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                         variant="outline"
                         size="sm"
                         onClick={() => {
-                          setRetryNoteError(null)
-                          setRetryNoteDialogOpen(true)
+                          setRetryNoteError(null);
+                          setRetryNoteDialogOpen(true);
                         }}
                         disabled={isPending}
                         className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
                       >
-                        <MessageSquarePlus aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+                        <MessageSquarePlus
+                          aria-hidden="true"
+                          className="mr-1 h-3.5 w-3.5"
+                        />
                         Retry with extra note...
                       </Button>
                     )}
@@ -662,26 +916,34 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                     )}
                   </div>
                   {actionError && (
-                    <p role="alert" className="text-right text-[11px] leading-snug text-destructive">
+                    <p
+                      role="alert"
+                      className="text-right text-[11px] leading-snug text-destructive"
+                    >
                       {actionError}
                     </p>
                   )}
                   {canContinue && (
                     <p className="text-right text-[11px] leading-snug text-muted-foreground">
-                      Continue keeps the current OpenCode session and sends only &quot;continue please&quot; after the temporary interruption clears.
+                      Continue keeps the current OpenCode session and sends only
+                      &quot;continue please&quot; after the temporary
+                      interruption clears.
                     </p>
                   )}
                 </div>
               )}
               {isLiveCodingError && <LiveCodingBeadContext ticket={ticket} />}
-              <ErrorTechnicalDetails occurrence={visibleOccurrence} primaryErrorMessage={primaryErrorMessage} />
+              <ErrorTechnicalDetails
+                occurrence={visibleOccurrence}
+                primaryErrorMessage={primaryErrorMessage}
+              />
             </div>
           </CardContent>
         </Card>
       </div>
 
       <CollapsiblePhaseLogSection
-        phase={visibleOccurrence?.blockedFromStatus ?? 'BLOCKED_ERROR'}
+        phase={visibleOccurrence?.blockedFromStatus ?? "BLOCKED_ERROR"}
         logs={errorLogs}
         ticket={ticket}
         defaultExpanded={false}
@@ -691,25 +953,27 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
       <Dialog
         open={retryNoteDialogOpen}
         onOpenChange={(open) => {
-          if (!isRetryNotePending) setRetryNoteDialogOpen(open)
+          if (!isRetryNotePending) setRetryNoteDialogOpen(open);
         }}
       >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {isSetupRuntimeError ? 'Retry workspace setup with an extra note' : 'Retry implementation with an extra note'}
+              {isSetupRuntimeError
+                ? "Retry workspace setup with an extra note"
+                : "Retry implementation with an extra note"}
             </DialogTitle>
             <DialogDescription id="retry-note-description">
               {isSetupRuntimeError
-                ? 'Send guidance to the current workspace setup session. LoopTroop sends only this note and runs one extra attempt beyond the configured retry limit.'
-                : 'Add guidance for the next fresh implementation attempt. The note will be appended to User Retry Notes; nothing already there will be replaced.'}
+                ? "Send guidance to the current workspace setup session. LoopTroop sends only this note and runs one extra attempt beyond the configured retry limit."
+                : "Add guidance for the next fresh implementation attempt. The note will be appended to User Retry Notes; nothing already there will be replaced."}
             </DialogDescription>
           </DialogHeader>
           <form
             className="space-y-4"
             onSubmit={(event) => {
-              event.preventDefault()
-              handleRetryWithNote()
+              event.preventDefault();
+              handleRetryWithNote();
             }}
           >
             <div className="space-y-1.5">
@@ -720,29 +984,45 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                 id="retry-note"
                 value={retryNote}
                 onChange={(event) => {
-                  setRetryNote(event.target.value.slice(0, MAX_RETRY_NOTE_LENGTH))
+                  setRetryNote(
+                    event.target.value.slice(0, MAX_RETRY_NOTE_LENGTH),
+                  );
                 }}
                 maxLength={MAX_RETRY_NOTE_LENGTH}
                 required
                 disabled={isRetryNotePending}
-                aria-describedby={`retry-note-description retry-note-count${retryNoteError ? ' retry-note-error' : ''}`}
-                aria-invalid={Boolean(retryNoteError || (retryNote.length > 0 && retryNoteIsBlank))}
+                aria-describedby={`retry-note-description retry-note-count${retryNoteError ? " retry-note-error" : ""}`}
+                aria-invalid={Boolean(
+                  retryNoteError || (retryNote.length > 0 && retryNoteIsBlank),
+                )}
                 className="min-h-36 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 placeholder="Add context, constraints, or a different approach for the next attempt..."
               />
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  {retryNote.length > 0 && retryNoteIsBlank && !retryNoteError && (
-                    <p role="alert" className="text-xs text-destructive">Enter an extra note before retrying.</p>
-                  )}
+                  {retryNote.length > 0 &&
+                    retryNoteIsBlank &&
+                    !retryNoteError && (
+                      <p role="alert" className="text-xs text-destructive">
+                        Enter an extra note before retrying.
+                      </p>
+                    )}
                   {retryNoteError && (
-                    <p id="retry-note-error" role="alert" className="text-xs text-destructive">
+                    <p
+                      id="retry-note-error"
+                      role="alert"
+                      className="text-xs text-destructive"
+                    >
                       {retryNoteError}
                     </p>
                   )}
                 </div>
-                <p id="retry-note-count" className="shrink-0 text-xs text-muted-foreground">
-                  {retryNote.length.toLocaleString()} / {MAX_RETRY_NOTE_LENGTH.toLocaleString()} characters
+                <p
+                  id="retry-note-count"
+                  className="shrink-0 text-xs text-muted-foreground"
+                >
+                  {retryNote.length.toLocaleString()} /{" "}
+                  {MAX_RETRY_NOTE_LENGTH.toLocaleString()} characters
                 </p>
               </div>
             </div>
@@ -755,7 +1035,10 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={isRetryNotePending || retryNoteIsBlank}>
+              <Button
+                type="submit"
+                disabled={isRetryNotePending || retryNoteIsBlank}
+              >
                 Add note and retry
               </Button>
             </div>
@@ -765,14 +1048,16 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
       <Dialog
         open={editSetupPlanDialogOpen}
         onOpenChange={(open) => {
-          if (!isPending) setEditSetupPlanDialogOpen(open)
+          if (!isPending) setEditSetupPlanDialogOpen(open);
         }}
       >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Edit workspace setup plan?</DialogTitle>
             <DialogDescription>
-              The failed setup attempt will remain in the ticket history. After you confirm, the ticket will return to setup plan review, where you can edit or regenerate the plan before approving it again.
+              The failed setup attempt will remain in the ticket history. After
+              you confirm, the ticket will return to setup plan review, where
+              you can edit or regenerate the plan before approving it again.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">
@@ -784,13 +1069,21 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
             >
               Cancel
             </Button>
-            <Button type="button" onClick={handleEditExecutionSetupPlan} disabled={isPending}>
+            <Button
+              type="button"
+              onClick={handleEditExecutionSetupPlan}
+              disabled={isPending}
+            >
               Edit setup plan
             </Button>
           </div>
         </DialogContent>
       </Dialog>
-      <CancelTicketDialog ticketId={ticket.id} open={cancelDialogOpen} onOpenChange={setCancelDialogOpen} />
+      <CancelTicketDialog
+        ticketId={ticket.id}
+        open={cancelDialogOpen}
+        onOpenChange={setCancelDialogOpen}
+      />
     </div>
-  )
+  );
 }

@@ -17,7 +17,7 @@ import { Menu, X } from 'lucide-react'
 import { clearErrorTicketSeen, getErrorTicketSignature, markErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { clearNeedsInputSeen, getNeedsInputSignature, markNeedsInputSeen } from '@/lib/needsInputSeen'
 import { MAX_RAW_OUTPUT_LENGTH } from '@/lib/constants'
-import { WORKFLOW_PHASE_IDS } from '@shared/workflowMeta'
+import { WORKFLOW_PHASE_IDS, isWorkflowPhaseId } from '@shared/workflowMeta'
 import { getActiveErrorOccurrence, getTicketErrorOccurrences } from '@/lib/errorOccurrences'
 import { dispatchInterviewBatchEvent, parseInterviewBatchEventDetail } from '@/lib/interviewBatchEvents'
 import { INTERVIEW_APPROVAL_FOCUS_EVENT } from '@/lib/interviewDocument'
@@ -306,16 +306,6 @@ export function TicketDashboard() {
       return livePhase
     }
 
-    if (livePhase.phase === 'BLOCKED_ERROR' && dbStatus !== 'BLOCKED_ERROR') {
-      return {
-        ...livePhase,
-        phase: dbStatus,
-        workflowRevision: typeof dbRevision === 'number' ? dbRevision : livePhase.workflowRevision,
-        previousStatus: snapshotPreviousStatus ?? livePhase.previousStatus,
-        reviewCutoffStatus: snapshotReviewCutoffStatus ?? livePhase.reviewCutoffStatus,
-      }
-    }
-
     const liveIdx = WORKFLOW_PHASE_IDS.indexOf(livePhase.phase)
     const dbIdx = WORKFLOW_PHASE_IDS.indexOf(dbStatus)
     if (liveIdx >= 0 && dbIdx >= 0 && dbIdx > liveIdx) {
@@ -448,7 +438,7 @@ export function TicketDashboard() {
       }
       return current
     })
-    if (status !== 'BLOCKED_ERROR') {
+    if (previousStatus === 'BLOCKED_ERROR' && status !== 'BLOCKED_ERROR') {
       setErrorSelection((current) => {
         if (current.ticketId === ticketId && current.occurrenceId !== null) {
           return { ticketId: null, occurrenceId: null }
@@ -458,20 +448,32 @@ export function TicketDashboard() {
     }
   }, [ticket?.status, ticketId, snapshotPreviousStatus, snapshotReviewCutoffStatus])
 
+  const prevCurrentStatusRef = useRef<string>(currentStatus)
+  useEffect(() => {
+    const prev = prevCurrentStatusRef.current
+    prevCurrentStatusRef.current = currentStatus
+    if (prev === 'BLOCKED_ERROR' && currentStatus !== 'BLOCKED_ERROR') {
+      setErrorSelection((current) => {
+        if (current.ticketId === ticketId && current.occurrenceId !== null) {
+          return { ticketId: null, occurrenceId: null }
+        }
+        return current
+      })
+      setPhaseSelection((current) => {
+        if (current.ticketId === ticketId && (current.phase === 'BLOCKED_ERROR' || current.phase === currentStatus)) {
+          return { ticketId, phase: null }
+        }
+        return current
+      })
+    }
+  }, [currentStatus, ticketId])
+
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<WorkspacePhaseNavigateDetail>).detail
       if (!detail?.ticketId || detail.ticketId !== ticketId || !detail.phase) return
+      if (!isWorkflowPhaseId(detail.phase)) return
 
-      setLivePhase((current) => {
-        if (current.ticketId === ticketId && current.phase === 'BLOCKED_ERROR' && detail.phase !== 'BLOCKED_ERROR') {
-          return {
-            ...current,
-            phase: detail.phase,
-          }
-        }
-        return current
-      })
       setPhaseSelection({
         ticketId,
         phase: detail.phase === currentStatus ? null : detail.phase,

@@ -52,28 +52,8 @@ import {
 import { CancelTicketDialog } from "@/components/ticket/CancelTicketDialog";
 import { sanitizeErrorForDisplay } from "@shared/errorDisplay";
 import { normalizeBlockedErrorDiagnostics } from "@shared/errorDiagnostics";
-import { requestWorkspacePhaseNavigation } from "@/lib/workspaceNavigation";
-import type { TicketActionResponse } from "@/hooks/useTickets";
 
 const MAX_RETRY_NOTE_LENGTH = 20_000;
-
-function resolveTargetResumeStatus(
-  action: WorkflowAction,
-  ticket: Ticket,
-  occurrence?: TicketErrorOccurrence | null,
-  result?: TicketActionResponse,
-): string | undefined {
-  if (action === "edit_execution_setup_plan") {
-    return result?.status ?? result?.state ?? "WAITING_EXECUTION_SETUP_APPROVAL";
-  }
-  return (
-    result?.status ??
-    result?.state ??
-    occurrence?.blockedFromStatus ??
-    ticket.previousStatus ??
-    undefined
-  );
-}
 
 interface ErrorViewProps {
   ticket: Ticket;
@@ -761,20 +741,6 @@ export function ErrorView({
     performAction(
       { id: ticket.id, action },
       {
-        onSuccess: (result) => {
-          const targetStatus = resolveTargetResumeStatus(
-            action,
-            ticket,
-            visibleOccurrence,
-            result,
-          );
-          if (targetStatus) {
-            requestWorkspacePhaseNavigation({
-              ticketId: ticket.id,
-              phase: targetStatus,
-            });
-          }
-        },
         onError: (error: unknown) => {
           setActionError(
             error instanceof Error
@@ -802,23 +768,11 @@ export function ErrorView({
         payload: { kind: "retry_note", note: retryNote },
       },
       {
-        onSuccess: (result) => {
+        onSuccess: () => {
           setRetryNoteSubmitting(false);
           setRetryNoteDialogOpen(false);
           setRetryNote("");
           setRetryNoteError(null);
-          const targetStatus = resolveTargetResumeStatus(
-            "retry",
-            ticket,
-            visibleOccurrence,
-            result,
-          );
-          if (targetStatus) {
-            requestWorkspacePhaseNavigation({
-              ticketId: ticket.id,
-              phase: targetStatus,
-            });
-          }
         },
         onError: (error: unknown) => {
           setRetryNoteSubmitting(false);
@@ -836,20 +790,8 @@ export function ErrorView({
     performAction(
       { id: ticket.id, action: "edit_execution_setup_plan" },
       {
-        onSuccess: (result) => {
+        onSuccess: () => {
           setEditSetupPlanDialogOpen(false);
-          const targetStatus = resolveTargetResumeStatus(
-            "edit_execution_setup_plan",
-            ticket,
-            visibleOccurrence,
-            result,
-          );
-          if (targetStatus) {
-            requestWorkspacePhaseNavigation({
-              ticketId: ticket.id,
-              phase: targetStatus,
-            });
-          }
         },
         onError: (error: unknown) => {
           setActionError(

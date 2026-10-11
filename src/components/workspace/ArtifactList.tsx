@@ -1,10 +1,21 @@
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
+import { isCouncilMemberOutcome } from '@shared/councilMembers'
 import {
   getCouncilStatusLabel,
   type CouncilMemberArtifactChip,
+  type CouncilOutcome,
 } from './councilArtifacts'
 import { CouncilStatusIcon } from './CouncilStatusIcon'
+
+const DETAIL_TONES: Record<CouncilOutcome, string> = {
+  pending: 'text-blue-400',
+  completed: 'text-blue-400',
+  failed: 'text-red-400',
+  invalid_output: 'text-red-400',
+  timed_out: 'text-amber-400',
+  stopped: 'text-slate-400',
+}
 
 export interface ArtifactListProps {
   memberArtifacts: CouncilMemberArtifactChip[]
@@ -18,11 +29,7 @@ export function ArtifactList({ memberArtifacts, compactInterviewArtifacts, compa
   return (
     <>
       {memberArtifacts.map((artifact: CouncilMemberArtifactChip) => {
-        const detailTone = artifact.outcome === 'failed' || artifact.outcome === 'invalid_output'
-          ? 'text-red-400'
-          : artifact.outcome === 'timed_out'
-            ? 'text-amber-400'
-            : 'text-blue-400'
+        const detailTone = isCouncilMemberOutcome(artifact.outcome) ? DETAIL_TONES[artifact.outcome] : 'text-blue-400'
         const cardClass = compact
           ? 'min-w-[85px] max-w-[110px] px-2 py-1 h-auto flex-none items-start gap-1 rounded-lg shadow-2xs'
           : compactInterviewArtifacts

@@ -8,7 +8,10 @@ import {
   XCircle,
   Clock,
   AlertTriangle,
+  CircleStop,
+  type LucideIcon,
 } from 'lucide-react'
+import { isCouncilMemberOutcome } from '@shared/councilMembers'
 import type { CouncilAction, CouncilOutcome } from './councilArtifacts'
 
 interface CouncilStatusIconProps {
@@ -17,19 +20,25 @@ interface CouncilStatusIconProps {
   className?: string
 }
 
+/**
+ * A map rather than an if-chain: an outcome missing here would otherwise fall
+ * through to the animated "still working" icon, which is what a stopped model
+ * showed before it had an entry.
+ */
+const SETTLED_OUTCOME_ICONS: Record<Exclude<CouncilOutcome, 'pending'>, { Icon: LucideIcon; tone: string }> = {
+  failed: { Icon: AlertTriangle, tone: 'text-red-500 animate-wobble-throb' },
+  timed_out: { Icon: Clock, tone: 'text-amber-500' },
+  invalid_output: { Icon: XCircle, tone: 'text-red-500' },
+  completed: { Icon: CheckCircle2, tone: 'text-green-500' },
+  // A person's decision, not a fault: neutral and still.
+  stopped: { Icon: CircleStop, tone: 'text-slate-500 dark:text-slate-400' },
+}
+
 export function CouncilStatusIcon({ outcome, action, className }: CouncilStatusIconProps) {
   // 1. Terminal/Finished Outcomes
-  if (outcome === 'failed') {
-    return <AlertTriangle className={cn('h-3.5 w-3.5 text-red-500 animate-wobble-throb shrink-0', className)} />
-  }
-  if (outcome === 'timed_out') {
-    return <Clock className={cn('h-3.5 w-3.5 text-amber-500 shrink-0', className)} />
-  }
-  if (outcome === 'invalid_output') {
-    return <XCircle className={cn('h-3.5 w-3.5 text-red-500 shrink-0', className)} />
-  }
-  if (outcome === 'completed') {
-    return <CheckCircle2 className={cn('h-3.5 w-3.5 text-green-500 shrink-0', className)} />
+  if (isCouncilMemberOutcome(outcome) && outcome !== 'pending') {
+    const { Icon, tone } = SETTLED_OUTCOME_ICONS[outcome]
+    return <Icon className={cn('h-3.5 w-3.5 shrink-0', tone, className)} />
   }
 
   // 2. Pending Actions / Fallbacks

@@ -15,7 +15,9 @@ import {
   mergeVoteArtifactContent,
 } from './artifactCompanionUtils'
 import { isRecord } from '@shared/typeGuards'
+import { isCouncilMemberControlPhase, isCouncilMemberOutcome } from '@shared/councilMembers'
 import { getArtifactSourcePhases } from './phaseArtifactTypes'
+import { CouncilMemberControlContext, type CouncilMemberControlScope } from './councilMemberControl'
 
 import type { Ticket } from '@/hooks/useTickets'
 import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
@@ -84,9 +86,7 @@ function deriveVoteSummary(phase: string, artifacts: TicketArtifact[]): VoteSumm
   if (voterIds.length === 0) return null
   const completedCount = voterIds.filter((voterId) => {
     const outcome = voterOutcomes[voterId]
-    if (outcome === 'completed' || outcome === 'failed' || outcome === 'timed_out' || outcome === 'invalid_output' || outcome === 'pending') {
-      return outcome === 'completed'
-    }
+    if (isCouncilMemberOutcome(outcome)) return outcome === 'completed'
     return votes.some((vote) => vote.voterId === voterId)
   }).length
   const totalsByDraft = new Map<string, number>()
@@ -171,6 +171,14 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
     () => (isLiveVoting ? deriveVoteSummary(phase, phaseArtifacts) : null),
     [isLiveVoting, phase, phaseArtifacts],
   )
+  // Stop and Retry act on the round running now, so only while the ticket is
+  // in this step and the version shown is the current one.
+  const memberControlScope = useMemo<CouncilMemberControlScope | null>(
+    () => (ticket.status === phase && archivedAttemptNumber == null && isCouncilMemberControlPhase(phase)
+      ? { ticketId: ticket.id, phase }
+      : null),
+    [archivedAttemptNumber, phase, ticket.id, ticket.status],
+  )
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -219,14 +227,16 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
             it — they would be shown as the live version, which may not be the
             one the reader selected. The notice above says why they are gone. */}
         {isPhaseVersionUnknown ? null : (
-          <PhaseArtifactsPanel
-            phase={phase}
-            isCompleted={false}
-            ticketId={ticket.id}
-            councilMemberCount={councilMemberCount}
-            councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
-            artifactState={artifactState}
-          />
+          <CouncilMemberControlContext.Provider value={memberControlScope}>
+            <PhaseArtifactsPanel
+              phase={phase}
+              isCompleted={false}
+              ticketId={ticket.id}
+              councilMemberCount={councilMemberCount}
+              councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
+              artifactState={artifactState}
+            />
+          </CouncilMemberControlContext.Provider>
         )}
       </div>
 

@@ -2,11 +2,11 @@ import type { LogEntry } from '@/context/logUtils'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { buildReadableRawDisplayContent } from '../rawDisplayContent'
 import { normalizeRawAttempts, tryParseStructuredContent } from '../phaseArtifactTypes'
+import { isFailedCouncilOutcome } from '../artifactCompanionUtils'
 import type {
   ArtifactRawAttemptData,
   ArtifactStructuredOutputData,
   CouncilDraftData,
-  CouncilOutcome,
   CouncilVoterDetailData,
 } from '../phaseArtifactTypes'
 import type { RawContentSource, RawContentVariant } from './rawContentSources'
@@ -352,7 +352,7 @@ export function buildRejectedRawVariant(
 
 export function getValidatedDraftContent(draft: CouncilDraftData): string | undefined {
   if (typeof draft.normalizedResponse === 'string') return draft.normalizedResponse
-  if (isFailedCouncilDraftOutcome(draft.outcome)) return undefined
+  if (isFailedCouncilOutcome(draft.outcome)) return undefined
   if (typeof draft.content === 'string') return draft.content
   return undefined
 }
@@ -633,8 +633,4 @@ export function getRejectedVoteRawResponse(
 ): string | undefined {
   if (!hasStructuredRetryMetadata(detail?.structuredOutput)) return undefined
   return findRejectedRawOutput(histories.get(voterId), detail?.rawResponse)
-}
-
-export function isFailedCouncilDraftOutcome(outcome?: CouncilOutcome): boolean {
-  return outcome === 'invalid_output' || outcome === 'failed' || outcome === 'timed_out'
 }

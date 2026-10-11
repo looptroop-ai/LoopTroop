@@ -158,6 +158,14 @@ describe('readOpenCodeNativeLogs', () => {
     expect(readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })).toHaveLength(1)
   })
 
+  it('retains the original native line including structured error fields', () => {
+    const dir = makeLogDir()
+    const line = 'time="2026-05-22T15:16:04.000Z" session.id=ses-1 msg="request failed" error={"statusCode":401,"message":"token expired"}'
+    writeLog(dir, `${line}\n`)
+
+    expect(readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })[0]?.data.rawLine).toBe(line)
+  })
+
   it('complete reads include old and oversized files beyond diagnostic defaults', () => {
     const dir = makeLogDir()
     const now = Date.now() / 1000

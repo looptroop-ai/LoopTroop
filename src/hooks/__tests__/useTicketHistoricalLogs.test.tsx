@@ -31,6 +31,56 @@ function historyRequestUrl(input: RequestInfo | URL): URL {
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('isolates occurrence caches and keeps full structured DEBUG records across older pages', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = historyRequestUrl(input)
+      const occurrence = url.searchParams.get('errorOccurrenceId')
+      if (url.pathname.endsWith('/export')) return Promise.resolve(new Response(`export-${occurrence}`))
+      const older = url.searchParams.has('before')
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: `${occurrence}-${older ? 'old' : 'new'}`, content: `${occurrence}-${older ? 'old' : 'new'}`, data: { nested: { statusCode: 401, message: 'complete provider response' } } }],
+        modelIds: [`provider/model-${occurrence}`],
+        olderCursor: older ? null : `cursor-${occurrence}`,
+        hasOlder: !older,
+      })
+    })
+    const client = createTestQueryClient()
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: HistoricalLogScope }) => useTicketHistoricalLogs('ticket-1', scope),
+      {
+        initialProps: { scope: { scope: 'phase', view: 'debug', errorOccurrenceId: '1', limit: 3 } },
+        wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+      },
+    )
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['1-new']))
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, '/api/tickets/ticket-1/logs?scope=phase&view=debug&limit=3&errorOccurrenceId=1', expect.any(Object))
+    expect(result.current.entries[0]?.record).toMatchObject({ data: { nested: { statusCode: 401, message: 'complete provider response' } } })
+    await act(async () => { await result.current.fetchOlder() })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['1-old', '1-new']))
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, '/api/tickets/ticket-1/logs?scope=phase&view=debug&limit=250&errorOccurrenceId=1&before=cursor-1', expect.any(Object))
+
+    rerender({ scope: { scope: 'phase', view: 'debug', errorOccurrenceId: '2' } })
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['2-new']))
+    expect(result.current.modelIds).toEqual(['provider/model-2'])
+    expect(fetchSpy).toHaveBeenNthCalledWith(3, '/api/tickets/ticket-1/logs?scope=phase&view=debug&limit=20&errorOccurrenceId=2', expect.any(Object))
+    expect(await result.current.exportLogs()).toBe('export-2')
+    expect(fetchSpy).toHaveBeenNthCalledWith(4, '/api/tickets/ticket-1/logs/export?scope=phase&view=debug&errorOccurrenceId=2', expect.any(Object))
+  })
+
+  it('keeps three original same-time debug records with distinct persisted identities', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({
+      entries: [1, 2, 3].map(attempt => ({
+        timestamp: '2026-01-01T00:00:00.000Z', phase: 'CODING', type: 'debug', source: 'debug',
+        entryId: `persisted:debug:offset:${attempt}:0`, content: 'request failed', data: { attempt },
+      })),
+      hasOlder: false,
+    }))
+    const { result } = renderHistoricalLogs({ scope: 'phase', view: 'debug', errorOccurrenceId: '1', limit: 3 })
+
+    await waitFor(() => expect(result.current.entries).toHaveLength(3))
+    expect(result.current.entries.map(entry => (entry.record?.data as { attempt: number }).attempt)).toEqual([1, 2, 3])
+  })
+
   it('publishes a completed automatic drain after StrictMode replays the mount effect', async () => {
     let page = 0
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {

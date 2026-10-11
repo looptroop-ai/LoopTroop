@@ -22,6 +22,8 @@ export interface HistoricalLogScope {
   view: HistoricalLogView
   modelId?: string
   beadId?: string
+  errorOccurrenceId?: string
+  limit?: number
 }
 
 export interface HistoricalLogPage {
@@ -347,23 +349,27 @@ function getQuery(ticketId: string, scope: HistoricalLogScope, before?: string):
   const params = new URLSearchParams({
     scope: scope.scope,
     view: scope.view,
-    limit: String(before ? OLDER_LOG_PAGE_LIMIT : INITIAL_LOG_PAGE_LIMIT),
+    limit: String(before ? OLDER_LOG_PAGE_LIMIT : scope.limit ?? INITIAL_LOG_PAGE_LIMIT),
   })
   if (scope.phase) params.set('phase', scope.phase)
   if (typeof scope.phaseAttempt === 'number') params.set('phaseAttempt', String(scope.phaseAttempt))
   if (scope.modelId) params.set('modelId', scope.modelId)
   if (scope.beadId) params.set('beadId', scope.beadId)
+  if (scope.errorOccurrenceId) params.set('errorOccurrenceId', scope.errorOccurrenceId)
   if (before) params.set('before', before)
   return `${apiTicketPath(ticketId, 'logs')}?${params.toString()}`
 }
 
-function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogPage {
+function normalizePage(payload: unknown, fallbackPhase?: string, preserveRecord = false): HistoricalLogPage {
   const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
   const records = Array.isArray(data.entries) ? data.entries : []
   return {
     entries: records
       .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
-      .map(entry => normalizeLogRecord(entry, fallbackPhase ?? String(entry.phase ?? entry.status ?? 'unknown'))),
+      .map(entry => ({
+        ...normalizeLogRecord(entry, fallbackPhase ?? String(entry.phase ?? entry.status ?? 'unknown')),
+        ...(preserveRecord ? { record: entry } : {}),
+      })),
     olderCursor: typeof data.olderCursor === 'string' ? data.olderCursor : null,
     hasOlder: data.hasOlder === true,
     totalEntries: normalizeCount(data.totalEntries),
@@ -381,7 +387,7 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
  */
 export function useTicketHistoricalLogs(ticketId: string | undefined, scope: HistoricalLogScope, enabled = true) {
   const queryClient = useQueryClient()
-  const modelQueryKey = ['ticket-log-models', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.beadId ?? '']
+  const modelQueryKey = ['ticket-log-models', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.beadId ?? '', scope.errorOccurrenceId ?? '']
   // Share the catalog across filter queries and remounts. Only a fresh response
   // updates it; reading or paging a cached filter cannot replay older metadata.
   const modelCatalog = useQuery<ModelCatalog, Error, string[] | null>({
@@ -390,8 +396,8 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     select: catalog => catalog.modelIds,
   })
   const queryKey = useMemo(() => [
-    'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '',
-  ], [scope.beadId, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
+    'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '', scope.errorOccurrenceId ?? '', scope.limit ?? INITIAL_LOG_PAGE_LIMIT,
+  ], [scope.beadId, scope.errorOccurrenceId, scope.limit, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
   const queryScopeKey = JSON.stringify(queryKey)
 
   const query = useInfiniteQuery({
@@ -413,7 +419,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
       const response = await fetch(getQuery(ticketId!, scope, pageParam ?? undefined), { signal })
       await throwIfHistoricalCursorExpired(response)
       await throwIfNotOk(response, 'Unable to load logs')
-      const page = normalizePage(await response.json(), scope.phase)
+      const page = normalizePage(await response.json(), scope.phase, scope.view === 'debug')
       if (pageParam === null && page.modelIds !== null && !signal.aborted) {
         queryClient.setQueryData<ModelCatalog>(modelQueryKey, previous => previous && revision > previous.appliedRevision
           ? { ...previous, modelIds: page.modelIds, appliedRevision: revision }
@@ -463,6 +469,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     if (typeof scope.phaseAttempt === 'number') params.set('phaseAttempt', String(scope.phaseAttempt))
     if (scope.modelId) params.set('modelId', scope.modelId)
     if (scope.beadId) params.set('beadId', scope.beadId)
+    if (scope.errorOccurrenceId) params.set('errorOccurrenceId', scope.errorOccurrenceId)
     const response = await fetch(`${apiTicketPath(ticketId, 'logs', 'export')}?${params.toString()}`, { signal })
     await throwIfNotOk(response, 'Unable to export logs')
     return response.text()

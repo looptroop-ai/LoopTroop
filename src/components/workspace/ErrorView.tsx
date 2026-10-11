@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useTicketAction } from "@/hooks/useTickets";
+import { useTicketHistoricalLogs } from "@/hooks/useTicketHistoricalLogs";
 import { useLogs } from "@/context/useLogContext";
 import type { LogEntry } from "@/context/LogContext";
 import { CollapsiblePhaseLogSection } from "./CollapsiblePhaseLogSection";
@@ -51,7 +52,10 @@ import {
 } from "@/components/ui/tooltip";
 import { CancelTicketDialog } from "@/components/ticket/CancelTicketDialog";
 import { sanitizeErrorForDisplay } from "@shared/errorDisplay";
-import { normalizeBlockedErrorDiagnostics } from "@shared/errorDiagnostics";
+import {
+  normalizeBlockedErrorDiagnostics,
+  sanitizeDiagnosticText,
+} from "@shared/errorDiagnostics";
 
 const MAX_RETRY_NOTE_LENGTH = 20_000;
 
@@ -144,6 +148,8 @@ function buildDiagnosticRows(
     { label: "Source", value: formatDiagnosticKind(diagnostics.source) },
   ];
 
+  if (diagnostics.errorName)
+    rows.push({ label: "Error type", value: diagnostics.errorName });
   if (diagnostics.modelId)
     rows.push({ label: "Model", value: diagnostics.modelId });
   if (diagnostics.providerId)
@@ -278,6 +284,8 @@ function explainBlockedError(
   blockedFromStatus: string | undefined,
   errorCodes: string[],
   availableActions: WorkflowAction[],
+  errorMessage: string,
+  diagnostics: TicketErrorOccurrence["diagnostics"],
 ): BlockedErrorExplanation | null {
   const codes = new Set(errorCodes);
   const canRetry = availableActions.includes("retry");
@@ -288,6 +296,31 @@ function explainBlockedError(
     : canRetry
       ? "Retry the failed workflow step after reviewing the technical details."
       : null;
+
+  const authenticationMessage = [
+    errorMessage,
+    diagnostics?.summary,
+    diagnostics?.providerErrorMessage,
+  ].filter(Boolean).join("\n");
+  const expiredLogin = /\b(?:authentication|access|refresh|auth)\s+token\s+(?:has\s+(?:been\s+)?)?expired\b|\btoken_expired\b/i.test(authenticationMessage);
+  const invalidatedLogin = /\bauthentication\s+token\s+(?:has\s+(?:been\s+)?)?invalidated\b/i.test(authenticationMessage);
+  if (codes.has(OPENCODE_PROVIDER_AUTH_FAILED) ||
+    ((expiredLogin || invalidatedLogin) && (!diagnostics || diagnostics.kind === "opencode_provider"))) {
+    const providerId = diagnostics?.providerId;
+    const providerName = providerId === "openai" ? "OpenAI" : providerId;
+    const provider = providerName || "The model provider";
+    return {
+      title: expiredLogin
+        ? `${providerName || "Model provider"} login expired`
+        : "Provider authentication failed",
+      description: expiredLogin
+        ? `${provider} rejected the model request because its authentication token expired.${blockedFromStatus === "PRE_FLIGHT_CHECK" ? " Checking Readiness stopped before implementation could start." : " This workflow step could not continue."}`
+        : `${provider} rejected the credentials used for the model request, so this workflow step could not continue.`,
+      recommendation: canRetry || canContinue
+        ? `Refresh or reconnect the provider login used by OpenCode, then ${canContinue ? "Continue the preserved session" : "Retry the failed step"}.`
+        : null,
+    };
+  }
 
   if (codes.has(BEAD_FINALIZATION_FAILED)) {
     return {
@@ -319,10 +352,7 @@ function explainBlockedError(
         : retryRecommendation,
     };
   }
-  if (
-    codes.has(OPENCODE_PROVIDER_AUTH_FAILED) ||
-    codes.has(OPENCODE_PROVIDER_ERROR)
-  ) {
+  if (codes.has(OPENCODE_PROVIDER_ERROR)) {
     return {
       title: "Provider or environment unavailable",
       description:
@@ -397,30 +427,62 @@ function withContentKeys<T>(items: T[], getIdentity: (item: T) => string) {
 }
 
 function ErrorTechnicalDetails({
+  ticket,
   occurrence,
   primaryErrorMessage,
 }: {
+  ticket: Ticket;
   occurrence: TicketErrorOccurrence | null;
   primaryErrorMessage: string;
 }) {
-  if (!occurrence) return null;
-  const diagnostics = normalizeBlockedErrorDiagnostics(occurrence.diagnostics);
+  const [expanded, setExpanded] = useState(false);
+  const diagnostics = normalizeBlockedErrorDiagnostics(occurrence?.diagnostics);
   const diagnosticRows = diagnostics
     ? buildDiagnosticRows(diagnostics, primaryErrorMessage)
     : [];
   const responseBodyPreview = diagnostics?.responseBodyPreview ?? "";
-  const displayErrorCodes = occurrence.errorCodes
-    .map((code) => sanitizeErrorForDisplay(code))
+  const displayErrorCodes = (occurrence?.errorCodes ?? [])
+    .map((code) => sanitizeErrorForDisplay(sanitizeDiagnosticText(code)))
     .filter((code) => code.length > 0);
+  const phase = occurrence?.blockedFromStatus ??
+    (ticket.previousStatus !== "BLOCKED_ERROR" ? ticket.previousStatus : null);
+  const syntheticOccurrence = !ticket.errorOccurrences?.length && occurrence?.id.startsWith("synthetic-");
+  const contextRows = [
+    { label: "Ticket", value: ticket.id },
+    { label: "Phase", value: phase ? `${getErrorPhaseLabel(phase)} (${phase})` : "Not recorded" },
+    ...(occurrence ? [
+      { label: "Occurrence", value: occurrence.id },
+      { label: "Failure time", value: syntheticOccurrence ? "Not recorded" : occurrence.occurredAt },
+      ...(syntheticOccurrence ? [{ label: "Ticket last updated", value: occurrence.occurredAt }] : []),
+    ] : [{ label: "Failure time", value: "Not recorded" }]),
+  ].map(({ label, value }) => ({ label, value: sanitizeDiagnosticText(value) }));
+  const recordedError = sanitizeDiagnosticText(occurrence?.errorMessage || primaryErrorMessage);
 
   return (
     <details
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
       className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]"
     >
       <summary className="cursor-pointer font-medium text-foreground">
         Technical details
       </summary>
       <div className="mt-2 space-y-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+          {contextRows.map((row) => (
+            <div key={row.label} className="min-w-0">
+              <span className="text-muted-foreground">{row.label}: </span>
+              <span className="font-mono text-foreground [overflow-wrap:anywhere]">{row.value}</span>
+            </div>
+          ))}
+        </div>
+        <pre
+          role="region"
+          aria-label="Recorded error"
+          tabIndex={0}
+          className="max-h-48 overflow-y-auto rounded border border-border p-2 font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
+        >
+          {`Recorded error:\n${recordedError}`}
+        </pre>
         {occurrence && (
           <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
             <span>Error {occurrence.occurrenceNumber}</span>
@@ -431,6 +493,7 @@ function ErrorTechnicalDetails({
               })}
             >
               <Clock3 aria-hidden="true" className="h-3.5 w-3.5" />
+              {syntheticOccurrence ? "Ticket updated " : ""}
               {formatTimestamp(occurrence.occurredAt, {
                 includeMilliseconds: false,
               })}
@@ -479,6 +542,16 @@ function ErrorTechnicalDetails({
                 </div>
               ))}
             </div>
+            {diagnostics.stackTrace && (
+              <pre
+                role="region"
+                aria-label="Error stack"
+                tabIndex={0}
+                className="max-h-48 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
+              >
+                {diagnostics.stackTrace}
+              </pre>
+            )}
             {responseBodyPreview && (
               <div className="space-y-1">
                 <div className="text-muted-foreground/80">
@@ -496,8 +569,111 @@ function ErrorTechnicalDetails({
             )}
           </div>
         )}
+        {!diagnostics && (
+          <p className="text-muted-foreground">
+            Additional diagnostic metadata was not recorded for this failure.
+          </p>
+        )}
+        <FailureDebugRecords
+          ticket={ticket}
+          occurrence={occurrence}
+          phase={phase}
+          enabled={expanded}
+        />
       </div>
     </details>
+  );
+}
+
+function FailureDebugRecords({
+  ticket,
+  occurrence,
+  phase,
+  enabled,
+}: {
+  ticket: Ticket;
+  occurrence: TicketErrorOccurrence | null;
+  phase: string | null | undefined;
+  enabled: boolean;
+}) {
+  const persistedOccurrence = occurrence && /^[1-9]\d*$/.test(occurrence.id)
+    && Number.isSafeInteger(Number(occurrence.id));
+  const endTime = readTimestamp(occurrence?.occurredAt);
+  const canMatchLogs = Boolean(persistedOccurrence || (phase && endTime !== null));
+  const history = useTicketHistoricalLogs(ticket.id, {
+    scope: "phase",
+    view: "debug",
+    limit: 5,
+    ...(persistedOccurrence ? { errorOccurrenceId: occurrence.id } : { phase: phase ?? undefined }),
+  }, enabled && canMatchLogs);
+  const occurrences = getTicketErrorOccurrences(ticket);
+  const occurrenceIndex = occurrences.findIndex((item) => item.id === occurrence?.id);
+  const previousOccurrence = occurrenceIndex >= 0 ? occurrences[occurrenceIndex + 1] : null;
+  const entries = (persistedOccurrence ? history.entries : filterLogsWithinWindow(history.entries, {
+    startTime: readTimestamp(previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt),
+    endTime,
+    includeStart: false,
+  })).slice(-5).reverse();
+  const records = entries.map((entry) => ({ entry, content: sanitizeDiagnosticText(JSON.stringify(entry.record ?? {
+    timestamp: entry.timestamp,
+    type: entry.type,
+    phase: entry.status,
+    phaseAttempt: entry.phaseAttempt,
+    source: entry.source,
+    kind: entry.kind,
+    modelId: entry.modelId,
+    sessionId: entry.sessionId,
+    message: entry.line,
+  }, null, 2)) }));
+
+  return (
+    <div className="space-y-1.5">
+      <h4 className="font-medium text-foreground">Debug records from this failure (last 5, newest first)</h4>
+      {!canMatchLogs ? (
+        <p className="text-muted-foreground">
+          The failure phase or time was not recorded, so matching debug records are unavailable.
+        </p>
+      ) : (
+        <>
+          {!persistedOccurrence && (
+            <p className="text-muted-foreground">
+              A recorded occurrence is unavailable. These records are matched by phase and time.
+            </p>
+          )}
+          {history.isLoading && <p role="status">Loading failure debug records…</p>}
+          {records.length > 0 && (
+            <div role="region" aria-label="Failure debug records" className="space-y-1.5">
+              {records.map(({ entry, content }, index) => (
+                <details key={entry.id} className="rounded border border-border px-2 py-1.5">
+                  <summary className="cursor-pointer text-foreground">
+                    {`Debug record ${index + 1} · ${entry.timestamp ? formatTimestampString(entry.timestamp) : "Time not recorded"}`}
+                  </summary>
+                  <pre
+                    tabIndex={0}
+                    className="mt-2 max-h-80 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
+                  >
+                    {content}
+                  </pre>
+                </details>
+              ))}
+            </div>
+          )}
+          {!history.isLoading && !history.isError && entries.length === 0 && (
+            <p className="text-muted-foreground">No debug records were found for this failure window.</p>
+          )}
+          {history.isError && (
+            <div className="space-y-1">
+              <p role="alert" className="text-destructive">
+                {sanitizeDiagnosticText(history.error instanceof Error ? history.error.message : "Unable to load failure debug records.")}
+              </p>
+              <Button size="sm" variant="outline" onClick={() => void history.retryHistoricalLogs()}>
+                Retry loading debug records
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -716,13 +892,22 @@ export function ErrorView({
     (isLiveError || !visibleOccurrence ? ticket.errorMessage : null) ||
     "";
   const primaryErrorMessage =
-    sanitizeErrorForDisplay(rawPrimaryErrorMessage) ||
+    sanitizeErrorForDisplay(sanitizeDiagnosticText(rawPrimaryErrorMessage)) ||
     diagnosticSummary ||
     "No error details were captured. Check the server logs.";
+  const failedCheckName = diagnostics?.failedChecks?.find((check) =>
+    primaryErrorMessage.startsWith(`${check.name}: `),
+  )?.name;
+  const checkPrefix = failedCheckName ? `${failedCheckName}: ` : "";
+  const probePrefix = primaryErrorMessage.slice(checkPrefix.length)
+    .match(/^(?:(?:Pre-flight check failed|Execution-mode probe failed):\s*)+/)?.[0] ?? "";
+  const errorContextPrefix = checkPrefix + probePrefix;
   const errorExplanation = explainBlockedError(
     visibleOccurrence?.blockedFromStatus ?? ticket.previousStatus ?? undefined,
     visibleOccurrence?.errorCodes ?? [],
     isLiveError ? ticket.availableActions : [],
+    primaryErrorMessage,
+    diagnostics,
   );
   const statusLabelOptions = isLiveCodingError
     ? {
@@ -851,8 +1036,9 @@ export function ErrorView({
           <CardContent className="space-y-3 pb-3">
             <div className="rounded-md border border-border bg-muted/40 p-3 space-y-3">
               <div className="space-y-2">
-                <p className="text-sm font-medium leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
-                  {primaryErrorMessage}
+                <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
+                  {errorContextPrefix}
+                  <strong className="font-medium">{primaryErrorMessage.slice(errorContextPrefix.length)}</strong>
                 </p>
                 {hasDiagnosticSummary && (
                   <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
@@ -980,6 +1166,7 @@ export function ErrorView({
               {isLiveCodingError && <LiveCodingBeadContext ticket={ticket} />}
               <ErrorTechnicalDetails
                 key={JSON.stringify([ticket.id, technicalDetailsOccurrenceId])}
+                ticket={ticket}
                 occurrence={visibleOccurrence}
                 primaryErrorMessage={primaryErrorMessage}
               />

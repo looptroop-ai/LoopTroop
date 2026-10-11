@@ -325,7 +325,7 @@ function parseNativeLogLine(
       message: content,
       content,
       sessionId: rawSessionId,
-      data: { level, service: service ?? null, ocNativeLog: true },
+      data: { level, service: service ?? null, ocNativeLog: true, rawLine: line },
     },
   }
 }

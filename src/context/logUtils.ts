@@ -12,6 +12,8 @@ export interface LogEntry {
   entryId: string
   fingerprint?: string
   line: string
+  /** Sanitized original record for failure debug details. */
+  record?: Record<string, unknown>
   source: string
   status: string
   phaseAttempt?: number

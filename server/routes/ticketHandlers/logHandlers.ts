@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { and, desc, eq, lte } from 'drizzle-orm'
 import { getTicketParam } from './routeUtils'
 import {
   exportLogEntries,
@@ -8,7 +9,9 @@ import {
   queryLogPage,
 } from '../../log/projection'
 import type { LogView } from '../../log/view'
-import { getTicketByRef } from '../../storage/tickets'
+import { getTicketByRef, getTicketContext, type PublicTicket } from '../../storage/tickets'
+import { ticketStatusHistory } from '../../db/schema'
+import { sanitizeDiagnosticText, sanitizeDiagnosticValue } from '@shared/errorDiagnostics'
 
 const LOG_VIEWS = new Set<LogView>(['overview', 'system', 'command', 'ai', 'error', 'debug'])
 
@@ -27,6 +30,10 @@ function parseQuery(c: Context, allowCursor: boolean) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) return { error: 'Invalid limit parameter: must be an integer from 1 to 500' } as const
   const before = allowCursor ? c.req.query('before') : undefined
   if (allowCursor && !isValidLogCursor(before)) return { error: 'Invalid before cursor' } as const
+  const errorOccurrenceId = c.req.query('errorOccurrenceId')
+  if (errorOccurrenceId !== undefined && (!/^\d+$/.test(errorOccurrenceId) || !Number.isSafeInteger(Number(errorOccurrenceId)) || Number(errorOccurrenceId) < 1)) {
+    return { error: 'Invalid errorOccurrenceId parameter: must be a positive integer' } as const
+  }
   return {
     scope,
     view: view as LogView,
@@ -36,14 +43,48 @@ function parseQuery(c: Context, allowCursor: boolean) {
     beadId: c.req.query('beadId'),
     before,
     limit,
+    errorOccurrenceId,
   } as const
+}
+
+function resolveErrorOccurrenceQuery(ticketId: string, ticket: PublicTicket, query: Exclude<ReturnType<typeof parseQuery>, { error: string }>) {
+  if (query.errorOccurrenceId === undefined) return query
+  const occurrence = ticket.errorOccurrences.find(candidate => candidate.id === Number(query.errorOccurrenceId))
+  const context = getTicketContext(ticketId)
+  if (!occurrence || !context) return null
+  const phaseEntry = context.projectDb.select({ changedAt: ticketStatusHistory.changedAt })
+    .from(ticketStatusHistory)
+    .where(and(
+      eq(ticketStatusHistory.ticketId, context.localTicketId),
+      eq(ticketStatusHistory.newStatus, occurrence.blockedFromStatus),
+      lte(ticketStatusHistory.changedAt, occurrence.occurredAt),
+    ))
+    .orderBy(desc(ticketStatusHistory.id))
+    .get()
+  const previousOccurrence = ticket.errorOccurrences
+    .filter(candidate => candidate.occurrenceNumber < occurrence.occurrenceNumber)
+    .sort((left, right) => right.occurrenceNumber - left.occurrenceNumber)[0]
+  const startedAt = [phaseEntry?.changedAt, previousOccurrence?.resolvedAt].filter((time): time is string => Boolean(time)).sort().at(-1) ?? ticket.createdAt
+  return {
+    ...query,
+    scope: 'phase' as const,
+    phase: occurrence.blockedFromStatus,
+    phaseAttempt: undefined,
+    modelId: undefined,
+    beadId: undefined,
+    startedAt,
+    endedAt: occurrence.occurredAt,
+  }
 }
 
 export async function handleGetTicketLogs(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
-  const query = parseQuery(c, true)
-  if ('error' in query) return c.json({ error: query.error }, 400)
+  const ticket = getTicketByRef(ticketId)
+  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  const parsedQuery = parseQuery(c, true)
+  if ('error' in parsedQuery) return c.json({ error: parsedQuery.error }, 400)
+  const query = resolveErrorOccurrenceQuery(ticketId, ticket, parsedQuery)
+  if (!query) return c.json({ error: 'Error occurrence not found' }, 404)
   let page
   try {
     page = await queryLogPage(ticketId, query)
@@ -58,14 +99,25 @@ export async function handleGetTicketLogs(c: Context) {
     throw error
   }
   if (!page) return c.json({ error: 'Ticket not found' }, 404)
-  return c.json({ ...page, boundary: { phase: query.phase ?? null, phaseAttempt: query.phaseAttempt ?? null } })
+  return c.json(sanitizeDiagnosticValue({ ...page, boundary: {
+    phase: query.phase ?? null,
+    phaseAttempt: query.phaseAttempt ?? null,
+    ...(query.errorOccurrenceId !== undefined && 'startedAt' in query ? {
+      errorOccurrenceId: query.errorOccurrenceId,
+      startedAt: query.startedAt,
+      endedAt: query.endedAt,
+    } : {}),
+  } }))
 }
 
 export async function handleExportTicketLogs(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
-  const query = parseQuery(c, false)
-  if ('error' in query) return c.json({ error: query.error }, 400)
+  const ticket = getTicketByRef(ticketId)
+  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  const parsedQuery = parseQuery(c, false)
+  if ('error' in parsedQuery) return c.json({ error: parsedQuery.error }, 400)
+  const query = resolveErrorOccurrenceQuery(ticketId, ticket, parsedQuery)
+  if (!query) return c.json({ error: 'Error occurrence not found' }, 404)
   let entries
   try {
     entries = await exportLogEntries(ticketId, query)
@@ -87,5 +139,5 @@ export async function handleExportTicketLogs(c: Context) {
       : typeof entry.message === 'string' ? entry.message : ''
     return timestamp ? `[${timestamp}] ${content}` : content
   }).join('\n')
-  return c.text(text, 200, { 'Content-Type': 'text/plain; charset=utf-8' })
+  return c.text(sanitizeDiagnosticText(text), 200, { 'Content-Type': 'text/plain; charset=utf-8' })
 }

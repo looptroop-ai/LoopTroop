@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { assert, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
 import type { LogContextValue, LogEntry } from "@/context/logUtils";
@@ -21,6 +21,11 @@ const logSectionMock = vi.hoisted(() =>
 );
 const mockUseTicketAction = vi.hoisted(() => vi.fn());
 const mockUseCancelTicket = vi.hoisted(() => vi.fn());
+const mockUseTicketHistoricalLogs = vi.hoisted(() => vi.fn());
+
+vi.mock("@/hooks/useTicketHistoricalLogs", () => ({
+  useTicketHistoricalLogs: (...args: unknown[]) => mockUseTicketHistoricalLogs(...args),
+}));
 
 vi.mock("../CollapsiblePhaseLogSection", () => ({
   CollapsiblePhaseLogSection: logSectionMock,
@@ -81,6 +86,13 @@ describe("ErrorView", () => {
   beforeEach(() => {
     logSectionMock.mockClear();
     mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    mockUseTicketHistoricalLogs.mockReset();
+    mockUseTicketHistoricalLogs.mockReturnValue({
+      entries: [],
+      isLoading: false,
+      isError: false,
+      retryHistoricalLogs: vi.fn(),
+    });
     mockUseCancelTicket.mockReturnValue({
       mutate: vi.fn(),
       mutateAsync: vi.fn(),
@@ -95,7 +107,7 @@ describe("ErrorView", () => {
     [
       OPENCODE_PROVIDER_AUTH_FAILED,
       "CODING",
-      "Provider or environment unavailable",
+      "Provider authentication failed",
     ],
     [BEAD_RETRY_BUDGET_EXHAUSTED, "CODING", "Implementation retries exhausted"],
     [BEAD_FINALIZATION_FAILED, "CODING", "Git finalization failed"],
@@ -220,7 +232,7 @@ describe("ErrorView", () => {
     expect(screen.queryByText("Error (reason)")).not.toBeInTheDocument();
   });
 
-  it("omits an empty technical-details disclosure", () => {
+  it("provides technical details when a saved occurrence is unavailable", () => {
     const ticket = makeTicket({
       status: "CANCELED",
       previousStatus: "BLOCKED_ERROR",
@@ -230,7 +242,172 @@ describe("ErrorView", () => {
     renderWithProviders(<ErrorView ticket={ticket} readOnly />);
 
     expect(screen.getByText("Request failed.")).toBeVisible();
-    expect(screen.queryByText("Technical details")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(screen.getByRole("region", { name: "Recorded error" })).toHaveTextContent("Request failed.");
+    expect(screen.getByText("Failure time:").nextSibling).toHaveTextContent("Not recorded");
+    expect(screen.getByText(/matching debug records are unavailable/)).toBeVisible();
+  });
+
+  it("explains an expired OpenAI login without a duplicate readiness-check list", () => {
+    const ticket = makeLiveErrorTicket({
+      blockedFromStatus: "PRE_FLIGHT_CHECK",
+      errorMessage: "Execution capability probe: Execution-mode probe failed: Your authentication token has expired. Please try refreshing it.",
+      diagnostics: {
+        kind: "opencode_provider",
+        source: "provider",
+        summary: "Your authentication token has expired. Please try refreshing it.",
+        providerId: "openai",
+        modelId: "openai/gpt-5.4",
+        failedChecks: [{
+          name: "Execution capability probe",
+          category: "connectivity",
+          message: "The model probe failed authentication.",
+          details: "OpenCode was reachable, but the probe request was rejected.",
+        }],
+      },
+    });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    expect(screen.getByRole("heading", { name: "OpenAI login expired" })).toBeVisible();
+    expect(screen.getByText(/OpenAI rejected the model request because its authentication token expired/)).toHaveTextContent("Checking Readiness stopped before implementation could start.");
+    expect(screen.getByText("Refresh or reconnect the provider login used by OpenCode, then Retry the failed step.")).toBeVisible();
+    const actionableCause = screen.getByText("Your authentication token has expired. Please try refreshing it.", { selector: "strong" });
+    expect(actionableCause).toBeVisible();
+    expect(actionableCause.parentElement).toHaveTextContent("Execution capability probe: Execution-mode probe failed: Your authentication token has expired. Please try refreshing it.");
+    expect(actionableCause).not.toHaveTextContent("Execution-mode probe failed");
+    expect(actionableCause.parentElement).not.toHaveClass("font-medium");
+    expect(screen.queryByText(/Failed readiness checks?:/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(screen.getByText("Checking Readiness (PRE_FLIGHT_CHECK)")).toBeVisible();
+    expect(screen.queryByText("Failed readiness checks")).not.toBeInTheDocument();
+    expect(screen.queryByText("OpenCode was reachable, but the probe request was rejected.")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Recorded error" })).toHaveTextContent("Execution capability probe: Execution-mode probe failed:");
+  });
+
+  it("does not describe rejected credentials as an expired login without evidence", () => {
+    const ticket = makeLiveErrorTicket({
+      errorMessage: "API key is invalid.",
+      diagnostics: {
+        kind: "opencode_provider",
+        source: "provider",
+        summary: "API key is invalid.",
+        providerId: "anthropic",
+      },
+    });
+    const occurrence = ticket.errorOccurrences?.[0];
+    assert(occurrence);
+    occurrence.errorCodes = [OPENCODE_PROVIDER_AUTH_FAILED];
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    expect(screen.getByRole("heading", { name: "Provider authentication failed" })).toBeVisible();
+    expect(screen.getByText(/anthropic rejected the credentials used for the model request/)).toBeVisible();
+    expect(screen.queryByText(/login expired/)).not.toBeInTheDocument();
+  });
+
+  it("does not suggest reconnecting the model provider for OpenCode server authentication failures", () => {
+    const ticket = makeLiveErrorTicket({
+      blockedFromStatus: "PRE_FLIGHT_CHECK",
+      errorMessage: "OpenCode server authentication token has expired.",
+      diagnostics: {
+        kind: "opencode_session",
+        source: "opencode",
+        operation: "Checking OpenCode server health",
+        summary: "OpenCode rejected the server connection credentials.",
+        statusCode: 401,
+        failedChecks: [{ name: "OpenCode connectivity", category: "connectivity", message: "The OpenCode server rejected LoopTroop's connection credentials." }],
+      },
+    });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    expect(screen.getByText("OpenCode server authentication token has expired.")).toBeVisible();
+    expect(screen.queryByText("Failed readiness check: OpenCode connectivity")).not.toBeInTheDocument();
+    expect(screen.queryByText(/reconnect the provider login/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /login expired|Provider authentication failed/ })).not.toBeInTheDocument();
+  });
+
+  it("preserves full sanitized error and stack details for a non-OpenCode failure", () => {
+    const message = ["Git failed: cannot acquire index.lock", "retry context", "retry context", "Authorization: Bearer privatevalue123"].join("\n");
+    const stackTrace = "Error: cannot acquire index.lock\n    at commitWorktree (git.ts:12:3)\napi_key=sk-privatevalue123";
+    const ticket = makeLiveErrorTicket({
+      blockedFromStatus: "INTEGRATING",
+      errorMessage: message,
+      diagnostics: { kind: "runtime", source: "system", summary: "Git commit failed", errorName: "Error", stackTrace },
+    });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    fireEvent.click(screen.getByText("Technical details"));
+    const recordedError = screen.getByRole("region", { name: "Recorded error" });
+    expect(recordedError.textContent).toContain("retry context\nretry context");
+    expect(recordedError.textContent).toContain("Authorization: [redacted]");
+    expect(screen.getByText("Error type:")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Error stack" })).toHaveTextContent("at commitWorktree (git.ts:12:3)");
+    expect(document.body.textContent).not.toContain("privatevalue123");
+    expect(document.body.textContent).not.toContain("sk-privatevalue123");
+  });
+
+  it("loads five newest original debug records, each collapsed by default", async () => {
+    const ticket = makeLiveErrorTicket({ id: "42" });
+    const entries = Array.from({ length: 6 }, (_, index) => ({
+      id: `debug-${index}`,
+      entryId: `debug-${index}`,
+      line: `flattened ${index}`,
+      source: "debug",
+      status: "CODING",
+      audience: "debug" as const,
+      kind: "transport",
+      streaming: false,
+      op: "append" as const,
+      timestamp: `2025-12-31T23:59:5${index}.000Z`,
+      record: { timestamp: `2025-12-31T23:59:5${index}.000Z`, message: `captured detail ${index}`, data: { modelId: "openai/model", api_key: "sk-privatevalue123", response: "request rejected" } },
+    }));
+    mockUseTicketHistoricalLogs.mockReturnValue({ entries, isLoading: false, isError: false });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    expect(mockUseTicketHistoricalLogs).toHaveBeenLastCalledWith(ticket.id, { scope: "phase", view: "debug", limit: 5, errorOccurrenceId: "42" }, false);
+    expect(screen.getByRole("region", { name: "Failure debug records", hidden: true })).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
+    await waitFor(() => expect(mockUseTicketHistoricalLogs).toHaveBeenLastCalledWith(ticket.id, { scope: "phase", view: "debug", limit: 5, errorOccurrenceId: "42" }, true));
+    const records = screen.getByRole("region", { name: "Failure debug records" });
+    expect(records).toBeVisible();
+    expect(records.textContent).not.toContain("captured detail 0");
+    expect(records.textContent).toContain("captured detail 1");
+    expect(records.textContent).toContain('"api_key": "[redacted]"');
+    expect(records.textContent).toContain('"response": "request rejected"');
+    const debugDetails = [...records.querySelectorAll("details")];
+    expect(debugDetails).toHaveLength(5);
+    debugDetails.forEach((details, index) => {
+      expect(details).not.toHaveAttribute("open");
+      expect(details.querySelector("pre")).not.toBeVisible();
+      expect(details).toHaveTextContent(`captured detail ${5 - index}`);
+    });
+    fireEvent.click(debugDetails[0]!.querySelector("summary")!);
+    expect(debugDetails[0]!.querySelector("pre")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Load older/ })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("sk-privatevalue123");
+  });
+
+  it("keeps synthetic debug records inside the selected failure time", () => {
+    const ticket = makeTicket({ status: "BLOCKED_ERROR", previousStatus: "PRE_FLIGHT_CHECK", errorMessage: "Pre-flight check failed", updatedAt: "2026-01-01T00:00:00.000Z" });
+    const entries = [
+      { timestamp: "2025-12-31T23:59:59.000Z", line: "matching probe failure" },
+      { timestamp: "2026-01-01T00:00:01.000Z", line: "later retry" },
+      { line: "undated other attempt" },
+    ].map((entry, index) => ({ ...entry, id: `${index}`, entryId: `${index}`, source: "debug", status: "PRE_FLIGHT_CHECK", audience: "debug" as const, kind: "transport", streaming: false, op: "append" as const }));
+    mockUseTicketHistoricalLogs.mockReturnValue({ entries, isLoading: false, isError: false });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    fireEvent.click(screen.getByText("Technical details"));
+    const records = screen.getByRole("region", { name: "Failure debug records" });
+    expect(records.textContent).toContain("matching probe failure");
+    expect(records.textContent).not.toContain("later retry");
+    expect(records.textContent).not.toContain("undated other attempt");
+    expect(screen.getByText(/These records are matched by phase and time/)).toBeVisible();
   });
 
   it.each([
@@ -1038,14 +1215,14 @@ describe("ErrorView", () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />);
 
-    const displayedError = screen.getByText(/Experimental warning/);
+    const displayedError = screen.getByText(/Experimental warning/, { selector: "strong" }).closest("p");
     expect(displayedError).toHaveTextContent(
       "Experimental warning FAIL src/example.test.ts",
     );
     expect(
       displayedError.textContent?.match(/Experimental warning/g),
     ).toHaveLength(1);
-    expect(screen.queryByText(/───/)).not.toBeInTheDocument();
+    expect(displayedError.textContent).not.toContain("───");
   });
 
   it("opens an accessible extra-note dialog and requires non-whitespace text", () => {

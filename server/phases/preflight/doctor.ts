@@ -22,6 +22,8 @@ import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../opencode/permiss
 import { resolveOpenCodePermissions } from '../../opencode/toolPolicy'
 import { parseModelRef, type Session, type SessionErrorStreamEvent, type StreamEvent } from '../../opencode/types'
 import { summarizeModelErrorForLog } from '../../opencode/errorDetails'
+import { attachOpenCodeBlockedErrorDiagnostics, buildOpenCodeBlockedErrorDiagnostics } from '../../opencode/blockedErrorDiagnostics'
+import { sanitizeDiagnosticText } from '@shared/errorDiagnostics'
 import { createOpenCodeSessionWithRetry } from '../../opencode/sessionCreation'
 import {
   buildGeneratedNoiseWarning,
@@ -85,12 +87,25 @@ async function runExecutionCapabilityProbe(
     throw new Error('No main implementer model configured')
   }
 
-  const session = await raceWithCancel(
-    createOpenCodeSessionWithRetry(adapter, worktreePath, signal, {
-      permission: OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS,
-    }),
-    signal,
-  )
+  let session: Session
+  try {
+    session = await raceWithCancel(
+      createOpenCodeSessionWithRetry(adapter, worktreePath, signal, {
+        permission: OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS,
+      }),
+      signal,
+    )
+  } catch (error) {
+    throwIfCancelled(error, signal)
+    const probeError = error instanceof Error ? error : new Error(summarizeModelErrorForLog(error).message, { cause: error })
+    const operation = (probeError as Error & { openCodeOperation?: string }).openCodeOperation
+      ?? 'creating the execution capability probe session'
+    Object.assign(probeError, { openCodeOperation: operation })
+    throw attachOpenCodeBlockedErrorDiagnostics(
+      probeError,
+      buildOpenCodeBlockedErrorDiagnostics({ error: probeError, modelId }),
+    )
+  }
   let sessionErrorEvent: SessionErrorStreamEvent | undefined
   const handleStreamEvent = (event: StreamEvent) => {
     if (event.type === 'session_error') {
@@ -105,7 +120,23 @@ async function runExecutionCapabilityProbe(
   const throwSessionErrorIfPresent = () => {
     if (!sessionErrorEvent) return
     const summary = summarizeModelErrorForLog(sessionErrorEvent.details ?? sessionErrorEvent.error, sessionErrorEvent.error)
-    throw new Error(summary.message)
+    const error = Object.assign(new Error(summary.message, { cause: sessionErrorEvent.details ?? sessionErrorEvent.error }), {
+      openCodeOperation: 'sending the execution capability probe prompt',
+    })
+    throw attachOpenCodeBlockedErrorDiagnostics(
+      error,
+      buildOpenCodeBlockedErrorDiagnostics({
+        error,
+        modelId,
+        sessionId: session.id,
+        attemptMeta: {
+          errorSource: 'session_error',
+          error: sessionErrorEvent.error,
+          errorDetails: sessionErrorEvent.details,
+          sessionErrored: true,
+        },
+      }),
+    )
   }
   let probeError: unknown
   try {
@@ -139,7 +170,9 @@ async function runExecutionCapabilityProbe(
     }
   }
 
+  let abortError: unknown
   const stopped = await adapter.abortSession(session.id).catch((error) => {
+    abortError = error
     console.warn(`[preflight] Failed to abort capability-probe session ${session.id}:`, error)
     return false
   })
@@ -152,11 +185,20 @@ async function runExecutionCapabilityProbe(
   if (!stopped) {
     console.warn(`[preflight] Could not confirm abort of capability-probe session ${session.id}`)
     if (probeError === undefined) {
-      probeError = new Error(`Could not confirm abort of capability-probe session ${session.id}`)
+      probeError = Object.assign(new Error(`Could not confirm abort of capability-probe session ${session.id}`, {
+        cause: abortError,
+      }), { openCodeOperation: 'stopping the execution capability probe session' })
     }
   }
   if (probeError !== undefined) {
-    throw probeError
+    const error = probeError instanceof Error ? probeError : new Error(summarizeModelErrorForLog(probeError).message, { cause: probeError })
+    const operation = (error as Error & { openCodeOperation?: string }).openCodeOperation
+      ?? 'running the execution capability probe'
+    Object.assign(error, { openCodeOperation: operation })
+    throw attachOpenCodeBlockedErrorDiagnostics(
+      error,
+      buildOpenCodeBlockedErrorDiagnostics({ error, modelId, sessionId: session.id }),
+    )
   }
 }
 
@@ -176,19 +218,40 @@ export async function runPreFlightChecks(
     throwIfAborted(signal, ticketId)
     const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
+    const healthDiagnostics = health.available ? null : buildOpenCodeBlockedErrorDiagnostics({
+      error: health.error ?? 'OpenCode is unreachable',
+    }).diagnostics
     checks.push({
       name: 'OpenCode Connectivity',
       category: 'connectivity',
       result: health.available ? 'pass' : 'fail',
-      message: health.available ? 'OpenCode is reachable' : `OpenCode unreachable: ${health.error}`,
+      message: health.available ? 'OpenCode is reachable' : `OpenCode unreachable: ${health.error ?? 'OpenCode did not report a failure reason'}`,
+      ...(health.available ? {} : {
+        details: sanitizeDiagnosticText(JSON.stringify(health, null, 2)),
+        diagnostics: healthDiagnostics ? {
+          ...healthDiagnostics,
+          ...(health.failureKind === 'authentication' ? {
+            kind: 'opencode_session' as const,
+            source: 'opencode' as const,
+            operation: 'checking OpenCode server health',
+          } : {}),
+        } : null,
+      }),
     })
   } catch (err) {
     throwIfCancelled(err, signal, ticketId)
+    const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: err })
     checks.push({
       name: 'OpenCode Connectivity',
       category: 'connectivity',
       result: 'fail',
       message: `OpenCode check failed: ${err instanceof Error ? err.message : 'Unknown'}`,
+      diagnostics: diagnosticResult.diagnostics ? {
+        ...diagnosticResult.diagnostics,
+        kind: diagnosticResult.diagnostics.kind === 'opencode_provider' ? 'opencode_session' : diagnosticResult.diagnostics.kind,
+        source: 'opencode',
+        operation: diagnosticResult.diagnostics.operation ?? 'checking OpenCode server health',
+      } : null,
     })
   }
 
@@ -294,12 +357,13 @@ export async function runPreFlightChecks(
             message: 'Worktree is in detached HEAD state',
           })
         }
-      } catch {
+      } catch (err) {
         checks.push({
           name: 'Git Worktree',
           category: 'git',
           result: 'fail',
-          message: 'Failed to inspect git worktree branch',
+          message: `Failed to inspect git worktree branch: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          details: err instanceof Error ? sanitizeDiagnosticText(err.stack ?? err.message) : undefined,
         })
       }
     }
@@ -337,6 +401,7 @@ export async function runPreFlightChecks(
           category: 'git',
           result: 'fail',
           message: `Failed to inspect worktree cleanliness: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          details: err instanceof Error ? sanitizeDiagnosticText(err.stack ?? err.message) : undefined,
         })
       }
     }
@@ -381,17 +446,28 @@ export async function runPreFlightChecks(
     })
 
     // 13. GitHub repository access
-    const repoAccess = ghInstalled && authStatus.ok
-      ? await deps.getGitHubRepoAccess(paths.worktreePath)
-      : { ok: false as const, error: 'GitHub auth is not ready' }
-    checks.push({
-      name: 'GitHub Repo Access',
-      category: 'connectivity',
-      result: repoAccess.ok ? 'pass' : 'fail',
-      message: repoAccess.ok
-        ? `GitHub repository access verified: ${repoAccess.repo.slug}`
-        : `GitHub repository access failed: ${repoAccess.error}`,
-    })
+    try {
+      const repoAccess = ghInstalled && authStatus.ok
+        ? await deps.getGitHubRepoAccess(paths.worktreePath)
+        : { ok: false as const, error: 'GitHub auth is not ready' }
+      checks.push({
+        name: 'GitHub Repo Access',
+        category: 'connectivity',
+        result: repoAccess.ok ? 'pass' : 'fail',
+        message: repoAccess.ok
+          ? `GitHub repository access verified: ${repoAccess.repo.slug}`
+          : `GitHub repository access failed: ${repoAccess.error}`,
+      })
+    } catch (err) {
+      throwIfCancelled(err, signal, ticketId)
+      checks.push({
+        name: 'GitHub Repo Access',
+        category: 'connectivity',
+        result: 'fail',
+        message: `GitHub repository access failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        details: err instanceof Error ? sanitizeDiagnosticText(err.stack ?? err.message) : undefined,
+      })
+    }
   } else {
     checks.push({
       name: 'GitHub Remote',
@@ -452,11 +528,21 @@ export async function runPreFlightChecks(
       }
     } catch (err) {
       throwIfCancelled(err, signal, ticketId)
+      const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({
+        error: err,
+        modelId: preFlightContext.lockedMainImplementer,
+      })
       checks.push({
         name: 'Main Implementer Model',
         category: 'config',
         result: 'fail',
         message: `Failed to verify model availability: ${err instanceof Error ? err.message : 'Unknown'}`,
+        diagnostics: diagnosticResult.diagnostics ? {
+          ...diagnosticResult.diagnostics,
+          kind: diagnosticResult.diagnostics.kind === 'opencode_provider' ? 'opencode_session' : diagnosticResult.diagnostics.kind,
+          source: 'opencode',
+          operation: diagnosticResult.diagnostics.operation ?? 'listing models available in OpenCode',
+        } : null,
       })
     }
   } else {
@@ -482,11 +568,17 @@ export async function runPreFlightChecks(
       })
     } catch (err) {
       throwIfCancelled(err, signal, ticketId)
+      const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({
+        error: err,
+        modelId: preFlightContext.lockedMainImplementer,
+      })
       checks.push({
         name: 'OpenCode Execution Capability',
         category: 'connectivity',
         result: 'fail',
-        message: `Execution-mode probe failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        message: `Execution-mode probe failed: ${diagnosticResult.diagnostics?.summary ?? (err instanceof Error ? err.message : 'Unknown error')}`,
+        diagnostics: diagnosticResult.diagnostics,
+        codes: diagnosticResult.errorCodes,
       })
     }
   } else {

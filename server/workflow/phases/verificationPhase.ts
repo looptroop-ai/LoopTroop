@@ -179,7 +179,7 @@ import {
   mergeErrorCodes,
 } from "../../opencode/blockedErrorDiagnostics";
 import { getErrorMessage } from "@shared/typeGuards";
-import { sanitizeDiagnosticText } from "@shared/errorDiagnostics";
+import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText } from "@shared/errorDiagnostics";
 import {
   resolveStoredWorkflowPhase,
   type WorkflowPhaseId,
@@ -5214,7 +5214,6 @@ export async function handlePreFlight(
         undefined,
         {
           onOpenCodeStreamEvent: ({ session, modelId, event }) => {
-            if (event.type !== "session_error") return;
             emitOpenCodeStreamEvent(
               ticketId,
               context.externalId,
@@ -5246,6 +5245,7 @@ export async function handlePreFlight(
           isFail ? "error" : "info",
           `${icon} ${check.name}: ${check.message}`,
           {
+            check,
             source: "system",
             audience: "all",
             kind: isFail ? "error" : "milestone",
@@ -5260,6 +5260,22 @@ export async function handlePreFlight(
       });
 
       if (!report.passed) {
+        const errors = report.criticalFailures.map(
+          (check) => `${check.name}: ${check.message}`,
+        );
+        const failedChecks = report.criticalFailures.map((check) => ({
+          name: check.name,
+          category: check.category,
+          message: check.message,
+          details: [check.details, check.diagnostics ? JSON.stringify(check.diagnostics, null, 2) : undefined].filter(Boolean).join("\n\n") || undefined,
+        }));
+        const underlyingDiagnostics = report.criticalFailures.find(
+          (check) => check.diagnostics?.kind === "opencode_provider",
+        )?.diagnostics ?? report.criticalFailures.find((check) => check.diagnostics)?.diagnostics;
+        const diagnostics = normalizeBlockedErrorDiagnostics({
+          ...(underlyingDiagnostics ?? { kind: "runtime", source: "system", summary: errors.join("\n") }),
+          failedChecks,
+        });
         emitPhaseLog(
           ticketId,
           context.externalId,
@@ -5267,7 +5283,9 @@ export async function handlePreFlight(
           "error",
           "Pre-flight checks failed.",
           {
-            failures: report.criticalFailures.map((check) => check.message),
+            failures: errors,
+            checks: report.checks,
+            diagnostics,
             source: "system",
             audience: "all",
             kind: "error",
@@ -5275,7 +5293,12 @@ export async function handlePreFlight(
         );
         sendEvent({
           type: "CHECKS_FAILED",
-          errors: report.criticalFailures.map((check) => check.message),
+          errors,
+          codes: report.criticalFailures.reduce(
+            (codes, check) => mergeErrorCodes(codes, check.codes ?? []),
+            [] as string[],
+          ),
+          diagnostics,
         });
         return;
       }

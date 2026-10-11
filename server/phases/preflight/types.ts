@@ -1,3 +1,5 @@
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+
 export type CheckResult = 'pass' | 'fail' | 'warning'
 
 export interface DiagnosticCheck {
@@ -6,6 +8,8 @@ export interface DiagnosticCheck {
   result: CheckResult
   message: string
   details?: string
+  diagnostics?: BlockedErrorDiagnostics | null
+  codes?: string[]
 }
 
 export interface PreFlightReport {

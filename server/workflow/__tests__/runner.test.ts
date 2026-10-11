@@ -182,7 +182,7 @@ describe('attachWorkflowRunner', () => {
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR'))
     expect(sendEvent).toHaveBeenCalledExactlyOnceWith({
       type: 'ERROR', message: error.message, codes: [code],
-      diagnostics: { kind: 'runtime', source: 'opencode', summary: error.message },
+      diagnostics: { kind: 'runtime', source: 'opencode', summary: error.message, errorName: error.name, stackTrace: expect.stringContaining(error.message) },
     })
     expect(actor.getSnapshot().context.error).toBe(error.message)
     expect(actor.getSnapshot().context.errorCodes).toEqual([code])
@@ -332,7 +332,7 @@ describe('attachWorkflowRunner', () => {
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR'))
     expect(sendEvent).toHaveBeenCalledExactlyOnceWith({
       type: 'ERROR', message: error.message,
-      diagnostics: { kind: 'runtime', source: 'opencode', summary: error.message },
+      diagnostics: { kind: 'runtime', source: 'opencode', summary: error.message, errorName: error.name, stackTrace: expect.stringContaining(error.message) },
     })
     actor.stop()
   })

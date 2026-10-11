@@ -92,7 +92,7 @@ afterAll(() => {
 
 describe('handlePreFlight', () => {
   it('persists passing diagnostics and streams probe errors', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const warning: DiagnosticCheck = {
       name: 'Optional configuration',
       category: 'config',
@@ -125,6 +125,15 @@ describe('handlePreFlight', () => {
       options.onOpenCodeStreamEvent?.({
         session: { id: 'preflight-session' },
         modelId: TEST.implementer,
+        event: {
+          type: 'debug_event', sessionId: 'preflight-session', eventName: 'provider.request.failed',
+          summary: 'Authentication token expired during readiness probe.', severity: 'error',
+          details: { code: 'token_expired', statusCode: 401 },
+        },
+      })
+      options.onOpenCodeStreamEvent?.({
+        session: { id: 'preflight-session' },
+        modelId: TEST.implementer,
         event: { type: 'session_error', sessionId: 'preflight-session', error: 'Probe failed.' },
       })
       return report
@@ -135,6 +144,13 @@ describe('handlePreFlight', () => {
 
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')!.content)).toEqual(report)
     expect(sendEvent).toHaveBeenCalledWith({ type: 'CHECKS_PASSED' })
+    const entries = readFileSync(paths.debugLogPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: expect.stringContaining('opencode.provider.request.failed'),
+        data: expect.objectContaining({ code: 'token_expired', statusCode: 401 }),
+      }),
+    ]))
   })
 
   it('emits critical failures without advancing bead progress', async () => {
@@ -157,7 +173,57 @@ describe('handlePreFlight', () => {
     await handlePreFlight(ticket.id, context, sendEvent, new AbortController().signal)
 
     expect(getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')?.content).toBe(JSON.stringify(report))
-    expect(sendEvent).toHaveBeenCalledWith({ type: 'CHECKS_FAILED', errors: ['OpenCode is unreachable.'] })
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'CHECKS_FAILED',
+      errors: ['OpenCode: OpenCode is unreachable.'],
+      codes: [],
+      diagnostics: {
+        kind: 'runtime',
+        source: 'system',
+        summary: 'OpenCode: OpenCode is unreachable.',
+        failedChecks: [{ name: 'OpenCode', category: 'connectivity', message: 'OpenCode is unreachable.' }],
+      },
+    })
+  })
+
+  it('retains every failed check and the provider cause when readiness has several failures', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    const diagnostics: BlockedErrorDiagnostics = {
+      kind: 'opencode_provider',
+      source: 'provider',
+      summary: 'Your authentication token has expired. Please try refreshing it. (HTTP 401)',
+      modelId: 'openai/gpt-5.4',
+      sessionId: 'ses-readiness',
+      providerId: 'openai',
+      statusCode: 401,
+      providerErrorType: 'authentication_error',
+      responseBodyPreview: '{"error":{"code":"token_expired"}}',
+    }
+    const failures: [DiagnosticCheck, DiagnosticCheck] = [
+      { name: 'GitHub Auth', category: 'connectivity', result: 'fail', message: 'GitHub auth failed: gh login is missing.' },
+      {
+        name: 'OpenCode Execution Capability', category: 'connectivity', result: 'fail',
+        message: 'Execution-mode probe failed: Your authentication token has expired. Please try refreshing it. (HTTP 401)',
+        codes: ['OPENCODE_PROVIDER_AUTH_FAILED'], diagnostics,
+      },
+    ]
+    runPreFlightChecksMock.mockResolvedValueOnce({ passed: false, checks: failures, criticalFailures: failures, warnings: [] } satisfies PreFlightReport)
+
+    const sendEvent = vi.fn()
+    await handlePreFlight(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'CHECKS_FAILED',
+      errors: failures.map((check) => `${check.name}: ${check.message}`),
+      codes: ['OPENCODE_PROVIDER_AUTH_FAILED'],
+      diagnostics: {
+        ...diagnostics,
+        failedChecks: [
+          { name: 'GitHub Auth', category: 'connectivity', message: failures[0].message },
+          { name: 'OpenCode Execution Capability', category: 'connectivity', message: failures[1].message, details: JSON.stringify(diagnostics, null, 2) },
+        ],
+      },
+    })
   })
 })
 

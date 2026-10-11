@@ -5,6 +5,7 @@ import type { DoctorDeps } from '../doctor'
 import { runPreFlightChecks } from '../doctor'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
+import { OPENCODE_PROVIDER_AUTH_FAILED } from '@shared/errorCodes'
 import { TEST } from '../../../test/factories'
 import { createShellCommandSpec } from '@shared/commandSpec'
 import type { WorktreeChangeEntry, WorktreeChangeSummary } from '../../../git/worktreeChanges'
@@ -272,6 +273,20 @@ describe('Pre-Flight Doctor', () => {
     expect(modelCheck?.message).toContain('not available')
   })
 
+  it('keeps model-catalog authentication failures attributed to the OpenCode server', async () => {
+    deps.fetchConnectedModelIds = async () => { throw new Error('OpenCode server authentication failed (HTTP 401)') }
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    const modelCheck = report.criticalFailures.find((check) => check.name === 'Main Implementer Model')
+    expect(modelCheck?.diagnostics).toMatchObject({
+      kind: 'opencode_session', source: 'opencode', modelId: 'model-a',
+      operation: 'listing models available in OpenCode',
+      stackTrace: expect.stringContaining('OpenCode server authentication failed'),
+    })
+    expect(modelCheck?.codes).toBeUndefined()
+  })
+
   it('does not fail for missing council members (only main implementer checked)', async () => {
     const beads = [makeBead()]
     deps.fetchConnectedModelIds = async () => ['model-a']
@@ -359,6 +374,64 @@ describe('Pre-Flight Doctor', () => {
     expect(gitCheck?.message).toContain('detached HEAD')
   })
 
+  it.each([
+    { name: 'Git Worktree', fail: (doctorDeps: DoctorDeps) => { doctorDeps.getCurrentBranch = () => { throw new Error('Git could not read HEAD') } } },
+    { name: 'GitHub Repo Access', fail: (doctorDeps: DoctorDeps) => { doctorDeps.getGitHubRepoAccess = async () => { throw new Error('Origin remote does not resolve to github.com') } } },
+  ])('keeps the failed $name step and its error stack in the doctor report', async ({ name, fail }) => {
+    fail(deps)
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    const check = report.criticalFailures.find((check) => check.name === name)
+    expect(check).toBeDefined()
+    expect(check?.message).toContain(name === 'Git Worktree' ? 'Git could not read HEAD' : 'Origin remote does not resolve to github.com')
+    expect(check?.details).toContain('Error:')
+    expect(check?.details).toContain('doctor.test.ts')
+  })
+
+  it('keeps connectivity transport details instead of discarding the caught cause', async () => {
+    vi.spyOn(adapter, 'checkHealth').mockRejectedValueOnce(new Error('fetch failed', {
+      cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+    }))
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    expect(report.criticalFailures.find((check) => check.name === 'OpenCode Connectivity')?.diagnostics).toMatchObject({
+      kind: 'transport',
+      transportCode: 'ECONNRESET',
+      causeMessage: 'socket hang up',
+      stackTrace: expect.stringContaining('Error: fetch failed'),
+    })
+  })
+
+  it('retains an unavailable server health report for technical details', async () => {
+    vi.spyOn(adapter, 'checkHealth').mockResolvedValueOnce({ available: false, failureKind: 'network', error: 'Connection refused' })
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    const connectivityCheck = report.criticalFailures.find((check) => check.name === 'OpenCode Connectivity')
+    expect(JSON.parse(connectivityCheck?.details ?? '{}')).toEqual({ available: false, failureKind: 'network', error: 'Connection refused' })
+    expect(connectivityCheck?.diagnostics?.summary).toContain('Connection refused')
+  })
+
+  it.each(['returned', 'thrown'] as const)('distinguishes %s OpenCode server authentication from a model-provider login failure', async (failureType) => {
+    const healthCheck = vi.spyOn(adapter, 'checkHealth')
+    if (failureType === 'thrown') {
+      healthCheck.mockRejectedValueOnce(new Error('OpenCode server authentication failed (HTTP 401)'))
+    } else {
+      healthCheck.mockResolvedValueOnce({
+        available: false, failureKind: 'authentication', error: 'OpenCode server authentication failed (HTTP 401)', credentialsSent: false,
+      })
+    }
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    expect(report.criticalFailures.find((check) => check.name === 'OpenCode Connectivity')?.diagnostics).toMatchObject({
+      kind: 'opencode_session', source: 'opencode', operation: 'checking OpenCode server health',
+    })
+    expect(report.criticalFailures.find((check) => check.name === 'OpenCode Connectivity')?.codes).toBeUndefined()
+  })
+
   it('reports relevant files as warning when missing', async () => {
     const beads = [makeBead()]
     deps.fileExists = (p) => typeof p === 'string' && !p.includes('relevant-files')
@@ -409,6 +482,24 @@ describe('Pre-Flight Doctor', () => {
     expect(capabilityCheck?.message).toContain('Could not confirm abort of capability-probe session')
   })
 
+  it('keeps the stop exception when capability-probe cleanup fails', async () => {
+    vi.spyOn(adapter, 'abortSession').mockRejectedValueOnce(new Error('fetch failed', {
+      cause: Object.assign(new Error('Connection reset while stopping the probe'), { code: 'ECONNRESET' }),
+    }))
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    expect(report.criticalFailures.find((check) => check.name === 'OpenCode Execution Capability')).toMatchObject({
+      message: expect.stringContaining('Could not confirm abort of capability-probe session mock-session-1'),
+      diagnostics: {
+        sessionId: 'mock-session-1',
+        operation: 'stopping the execution capability probe session',
+        transportCode: 'ECONNRESET',
+        causeMessage: 'Connection reset while stopping the probe',
+      },
+    })
+  })
+
   it('reports rich provider errors from the execution capability probe stream', async () => {
     const beads = [makeBead()]
     const events: unknown[] = []
@@ -442,6 +533,19 @@ describe('Pre-Flight Doctor', () => {
     expect(capabilityCheck).toBeDefined()
     expect(capabilityCheck?.message).toContain('Your authentication token has been invalidated')
     expect(capabilityCheck?.message).toContain('HTTP 401')
+    expect(capabilityCheck?.codes).toEqual([OPENCODE_PROVIDER_AUTH_FAILED])
+    expect(capabilityCheck?.diagnostics).toMatchObject({
+      kind: 'opencode_provider',
+      source: 'provider',
+      modelId: 'model-a',
+      sessionId: 'mock-session-1',
+      statusCode: 401,
+      isRetryable: false,
+      providerErrorType: 'invalid_request_error',
+      providerErrorMessage: 'Your authentication token has been invalidated. Please try signing in again.',
+      operation: 'sending the execution capability probe prompt',
+      responseBodyPreview: expect.stringContaining('token_invalidated'),
+    })
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         modelId: 'model-a',
@@ -449,6 +553,84 @@ describe('Pre-Flight Doctor', () => {
         event: expect.objectContaining({ type: 'session_error' }),
       }),
     ]))
+  })
+
+  it('retains expired-login details when the capability prompt throws before streaming', async () => {
+    const abortSession = vi.spyOn(adapter, 'abortSession')
+    vi.spyOn(adapter, 'promptSession').mockRejectedValueOnce(Object.assign(new Error('Provider request failed'), {
+      openCodeOperation: 'sending prompt to OpenCode',
+      modelErrorDetails: {
+        name: 'APIError',
+        providerId: 'openai',
+        providerModelId: 'gpt-5.4',
+        data: {
+          message: 'Your authentication token has expired. Please try refreshing it.',
+          statusCode: 401,
+          isRetryable: false,
+          responseBody: JSON.stringify({ error: { type: 'authentication_error', code: 'token_expired', message: 'Your authentication token has expired. Please try refreshing it.' } }),
+        },
+      },
+    }))
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], {
+      ...defaultContext,
+      lockedMainImplementer: 'openai/gpt-5.4',
+    }, undefined, { ...deps, fetchConnectedModelIds: async () => ['openai/gpt-5.4'] })
+
+    expect(report.checks.find((check) => check.name === 'OpenCode Connectivity')?.result).toBe('pass')
+    expect(report.checks.find((check) => check.name === 'Main Implementer Model')?.result).toBe('pass')
+    expect(report.criticalFailures).toHaveLength(1)
+    expect(report.criticalFailures[0]).toMatchObject({
+      name: 'OpenCode Execution Capability',
+      message: expect.stringContaining('Your authentication token has expired'),
+      codes: [OPENCODE_PROVIDER_AUTH_FAILED],
+      diagnostics: {
+        kind: 'opencode_provider',
+        source: 'provider',
+        modelId: 'openai/gpt-5.4',
+        sessionId: 'mock-session-1',
+        providerId: 'openai',
+        providerModelId: 'gpt-5.4',
+        statusCode: 401,
+        operation: 'sending prompt to OpenCode',
+        responseBodyPreview: expect.stringContaining('token_expired'),
+      },
+    })
+    expect(abortSession).toHaveBeenCalledWith('mock-session-1')
+  })
+
+  it('retains the provider cause when capability session creation exhausts its retries', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(adapter, 'createSession').mockRejectedValue(Object.assign(new Error('Your authentication token has expired. Please try refreshing it.'), {
+        openCodeOperation: 'creating an OpenCode session',
+        modelErrorDetails: {
+          providerId: 'openai',
+          data: {
+            statusCode: 401,
+            isRetryable: false,
+            responseBody: JSON.stringify({ error: { type: 'authentication_error', code: 'token_expired', message: 'Your authentication token has expired. Please try refreshing it.' } }),
+          },
+        },
+      }))
+      const reportPromise = runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+      await vi.runAllTimersAsync()
+      const report = await reportPromise
+
+      expect(report.criticalFailures.find((check) => check.name === 'OpenCode Execution Capability')).toMatchObject({
+        codes: [OPENCODE_PROVIDER_AUTH_FAILED],
+        diagnostics: {
+          modelId: 'model-a',
+          providerId: 'openai',
+          statusCode: 401,
+          operation: 'creating an OpenCode session',
+          responseBodyPreview: expect.stringContaining('token_expired'),
+        },
+      })
+      expect(adapter.promptCalls).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('hands its cancellation signal to the probes it waits on', async () => {

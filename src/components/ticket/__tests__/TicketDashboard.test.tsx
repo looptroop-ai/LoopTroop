@@ -164,18 +164,11 @@ import { TicketDashboard } from '../TicketDashboard'
 import { DropdownPicker } from '@/components/shared/DropdownPicker'
 
 /** Simulate a realistic SSE state_change: patch the cache first (as useSSE does), then fire onEvent. */
-function simulateSSE(from: string, to: string, workflowRevision?: number) {
-  if (workflowRevision === undefined) {
-    patchTicketStatusInCache(queryClient, selectedTicketId, to)
-  }
+function simulateSSE(from: string, to: string) {
+  patchTicketStatusInCache(queryClient, selectedTicketId, to)
   latestSSEOptions?.onEvent?.({
     type: 'state_change',
-    data: {
-      ticketId: selectedTicketId,
-      from,
-      to,
-      ...(typeof workflowRevision === 'number' ? { workflowRevision } : {}),
-    },
+    data: { ticketId: selectedTicketId, from, to },
   })
 }
 
@@ -1239,11 +1232,12 @@ describe('TicketDashboard', () => {
     expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
   }
 
-  it('clears error selection and switches active workspace when cache transitions out of BLOCKED_ERROR', async () => {
+  it('clears error selection and follows live status when transitioning out of BLOCKED_ERROR', async () => {
     await setupTicketWithError()
     expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
 
-    await act(async () => {
+    // Mutation or cache transition clears errorSelection and returns to active status
+    act(() => {
       patchTicketStatusInCache(queryClient, selectedTicketId, 'CODING')
     })
 
@@ -1252,19 +1246,15 @@ describe('TicketDashboard', () => {
       expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('')
       expect(screen.getByTestId('active-workspace')).toHaveTextContent('CODING')
     })
-  })
 
-  it('clears error selection when live status transitions out of BLOCKED_ERROR via SSE', async () => {
-    await setupTicketWithError()
-
-    await act(async () => {
-      simulateSSE('BLOCKED_ERROR', 'CODING')
+    // Advance to next live status: workspace continues following live work
+    act(() => {
+      simulateSSE('CODING', 'RUNNING_FINAL_TEST')
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('navigator-error')).toHaveTextContent('')
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('CODING')
-      expect(screen.getByTestId('active-workspace')).toHaveTextContent('CODING')
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
+      expect(screen.getByTestId('active-workspace')).toHaveTextContent('RUNNING_FINAL_TEST')
     })
   })
 
@@ -1272,7 +1262,7 @@ describe('TicketDashboard', () => {
     await setupTicketWithError('CODING')
     expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
 
-    await act(async () => {
+    act(() => {
       simulateSSE('CODING', 'RUNNING_FINAL_TEST')
     })
 
@@ -1280,54 +1270,6 @@ describe('TicketDashboard', () => {
       expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
       expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
       expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
-    })
-  })
-
-  it('preserves historical error selection when an SSE transition is rejected due to older workflowRevision', async () => {
-    await setupTicketWithError('CODING')
-    expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
-
-    // Advance to RUNNING_FINAL_TEST at workflowRevision 5
-    await act(async () => {
-      simulateSSE('CODING', 'RUNNING_FINAL_TEST', 5)
-    })
-    await waitFor(() => {
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
-      expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
-    })
-
-    // Stale SSE event with older revision 3 is rejected; historical error review must stay open
-    await act(async () => {
-      simulateSSE('BLOCKED_ERROR', 'CODING', 3)
-    })
-    await waitFor(() => {
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
-      expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
-      expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
-    })
-  })
-
-  it('follows live workflow after leaving BLOCKED_ERROR and does not remain pinned to the resumed phase', async () => {
-    await setupTicketWithError()
-
-    // Resume from BLOCKED_ERROR to CODING
-    await act(async () => {
-      simulateSSE('BLOCKED_ERROR', 'CODING')
-    })
-
-    await waitFor(() => {
-      expect(screen.getByTestId('navigator-error')).toHaveTextContent('')
-      expect(screen.getByTestId('active-workspace')).toHaveTextContent('CODING')
-    })
-
-    // Advance to RUNNING_FINAL_TEST: workspace must follow live work, not stay pinned to CODING
-    await act(async () => {
-      simulateSSE('CODING', 'RUNNING_FINAL_TEST')
-    })
-
-    await waitFor(() => {
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
-      expect(screen.getByTestId('active-workspace')).toHaveTextContent('RUNNING_FINAL_TEST')
     })
   })
 

@@ -36,6 +36,9 @@ export interface BlockedErrorDiagnostics {
   kind: BlockedErrorDiagnosticKind
   source: BlockedErrorDiagnosticSource
   summary: string
+  errorName?: string
+  stackTrace?: string
+  failedChecks?: Array<{ name: string; category: string; message: string; details?: string }>
   modelId?: string
   sessionId?: string
   operation?: string
@@ -110,6 +113,19 @@ export function sanitizeDiagnosticText(value: string): string {
     .replace(AUTHORIZATION_TOKEN_PATTERN, `$1${REDACTED}`)
 }
 
+/** Preserve structured evidence while redacting credentials before it leaves the server. */
+export function sanitizeDiagnosticValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return sanitizeDiagnosticText(value)
+  if (value === null || typeof value !== 'object') return value
+  if (depth >= 100) return '[details omitted: nesting limit]'
+  if (Array.isArray(value)) return value.map(item => sanitizeDiagnosticValue(item, depth + 1))
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    const cleanKey = stripTerminalFormatting(key)
+    const sensitive = /(?:authorization|api[-_\s]?key|password|secret|cookie|token|private[-_\s]?key|access[-_\s]?key|credentials?)$|^(?:auth|access|refresh)$/i.test(cleanKey)
+    return [cleanKey, sensitive ? REDACTED : sanitizeDiagnosticValue(item, depth + 1)]
+  }))
+}
+
 function cleanString(value: unknown, maxLength = 1000): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = sanitizeDiagnosticText(value).trim()
@@ -143,6 +159,19 @@ export function normalizeBlockedErrorDiagnostics(value: unknown): BlockedErrorDi
   if (!summary) return null
 
   const modelId = cleanString(value.modelId, 240)
+  const errorName = cleanString(value.errorName, 240)
+  const stackTrace = cleanString(value.stackTrace, 12000)
+  const failedChecks = Array.isArray(value.failedChecks)
+    ? value.failedChecks.flatMap((check) => {
+      if (!isRecord(check)) return []
+      const name = cleanString(check.name, 240)
+      const category = cleanString(check.category, 240)
+      const message = cleanString(check.message)
+      if (!name || !category || !message) return []
+      const details = cleanString(check.details, 12000)
+      return [{ name, category, message, ...(details ? { details } : {}) }]
+    })
+    : []
   const sessionId = cleanString(value.sessionId, 240)
   const operation = cleanString(value.operation, 240)
   const transportCode = cleanString(value.transportCode, 240)
@@ -160,6 +189,9 @@ export function normalizeBlockedErrorDiagnostics(value: unknown): BlockedErrorDi
     kind: cleanKind(value.kind) ?? 'unknown',
     source: cleanSource(value.source) ?? 'system',
     summary,
+    ...(errorName ? { errorName } : {}),
+    ...(stackTrace ? { stackTrace } : {}),
+    ...(failedChecks.length > 0 ? { failedChecks } : {}),
     ...(modelId ? { modelId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(operation ? { operation } : {}),

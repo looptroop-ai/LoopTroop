@@ -1111,12 +1111,28 @@ describe('ticket error occurrences', () => {
         operation: 'Waiting for the session to become idle',
         transportCode: 'ECONNRESET',
         causeMessage: 'socket closed; Authorization: Bearer privatevalue123',
+        errorName: 'TypeError',
+        stackTrace: 'TypeError: fetch failed\n    at probe (doctor.ts:1)\naccess_token=privatevalue456',
+        failedChecks: [{
+          name: 'OpenCode Execution Capability',
+          category: 'connectivity',
+          message: 'Execution-mode probe failed: fetch failed',
+          details: 'refresh_token=privatevalue789',
+        }],
       },
     })
     const expectedDiagnostics = {
       operation: 'Waiting for the session to become idle',
       transportCode: 'ECONNRESET',
       causeMessage: 'socket closed; Authorization: [redacted]',
+      errorName: 'TypeError',
+      stackTrace: 'TypeError: fetch failed\n    at probe (doctor.ts:1)\naccess_token=[redacted]',
+      failedChecks: [{
+        name: 'OpenCode Execution Capability',
+        category: 'connectivity',
+        message: 'Execution-mode probe failed: fetch failed',
+        details: 'refresh_token=[redacted]',
+      }],
     }
 
     expect(occurrence?.diagnostics).toMatchObject(expectedDiagnostics)

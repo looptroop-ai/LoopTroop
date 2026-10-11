@@ -45,6 +45,17 @@ function readErrorProperty(error: unknown, key: string): unknown {
   return isRecord(error) ? error[key] : undefined
 }
 
+function getErrorChain(error: unknown): unknown[] {
+  const chain: unknown[] = []
+  const seen = new Set<unknown>()
+  while (error !== undefined && !seen.has(error) && chain.length < 8) {
+    chain.push(error)
+    seen.add(error)
+    error = readErrorProperty(error, 'cause')
+  }
+  return chain
+}
+
 function normalizeErrorCodes(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return Array.from(new Set(
@@ -202,12 +213,13 @@ function resolveErrorCodes(info: ModelErrorInfo | undefined, summaryMessage: str
   return []
 }
 
-function resolveDetails(input: BuildOpenCodeBlockedErrorDiagnosticsInput): unknown {
+function resolveDetails(input: BuildOpenCodeBlockedErrorDiagnosticsInput, errorChain: unknown[]): unknown {
   return input.responseMeta?.sessionErrorDetails
     ?? input.responseMeta?.latestAssistantErrorInfo
     ?? input.attemptMeta?.errorDetails
-    ?? readErrorProperty(input.error, 'modelErrorDetails')
-    ?? readErrorProperty(input.error, 'details')
+    ?? errorChain.map((error) => readErrorProperty(error, 'modelErrorDetails') ?? readErrorProperty(error, 'details'))
+      .find((details) => details !== undefined && details !== null)
+    ?? errorChain.find((error) => hasProviderSignal(extractModelErrorInfo(error)))
     ?? input.error
 }
 
@@ -222,11 +234,23 @@ function resolveFallbackMessage(input: BuildOpenCodeBlockedErrorDiagnosticsInput
 export function buildOpenCodeBlockedErrorDiagnostics(
   input: BuildOpenCodeBlockedErrorDiagnosticsInput,
 ): OpenCodeBlockedErrorDiagnosticsResult {
-  const attachedDiagnostics = normalizeBlockedErrorDiagnostics(readErrorProperty(input.error, 'blockedErrorDiagnostics'))
+  const errorChain = getErrorChain(input.error)
+  const attachedDiagnostics = errorChain.map((error) => normalizeBlockedErrorDiagnostics(readErrorProperty(error, 'blockedErrorDiagnostics')))
+    .find((diagnostics) => diagnostics !== null)
+  const carriedErrorCodes = normalizeErrorCodes(errorChain.flatMap((error) => normalizeErrorCodes(readErrorProperty(error, 'blockedErrorCodes'))))
+  const actualErrors = errorChain.filter((error): error is Error => error instanceof Error)
+  const errorName = actualErrors[0]?.name
+  const stackTrace = actualErrors.map((error, index) => error.stack ? `${index > 0 ? 'Caused by: ' : ''}${error.stack}` : '')
+    .filter(Boolean).join('\n')
+  const operation = errorChain.map((error) => readErrorProperty(error, 'openCodeOperation'))
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim()
   if (attachedDiagnostics) {
     return {
       diagnostics: normalizeBlockedErrorDiagnostics({
         ...attachedDiagnostics,
+        errorName: attachedDiagnostics.errorName ?? errorName,
+        stackTrace: attachedDiagnostics.stackTrace ?? stackTrace,
+        operation: attachedDiagnostics.operation ?? operation,
         modelId: attachedDiagnostics.modelId ?? input.modelId,
         sessionId: attachedDiagnostics.sessionId ?? input.sessionId,
         finishReason: attachedDiagnostics.finishReason ?? input.responseMeta?.latestStepFinishReason,
@@ -236,7 +260,7 @@ export function buildOpenCodeBlockedErrorDiagnostics(
         cacheReadTokens: attachedDiagnostics.cacheReadTokens ?? input.responseMeta?.latestStepFinishTokens?.cache?.read,
         cacheWriteTokens: attachedDiagnostics.cacheWriteTokens ?? input.responseMeta?.latestStepFinishTokens?.cache?.write,
       }),
-      errorCodes: normalizeErrorCodes(readErrorProperty(input.error, 'blockedErrorCodes')),
+      errorCodes: carriedErrorCodes,
     }
   }
 
@@ -269,7 +293,7 @@ export function buildOpenCodeBlockedErrorDiagnostics(
     })
   }
 
-  const details = resolveDetails(input)
+  const details = resolveDetails(input, errorChain)
   const fallbackMessage = resolveFallbackMessage(input)
   const summary = summarizeModelErrorForLog(details, fallbackMessage)
   const summaryMessage = normalizeMessage(summary.message)
@@ -293,8 +317,6 @@ export function buildOpenCodeBlockedErrorDiagnostics(
     responseMeta: input.responseMeta,
     attemptMeta: input.attemptMeta,
   })
-  const operationValue = readErrorProperty(input.error, 'openCodeOperation')
-  const operation = cleanOptionalMessage(typeof operationValue === 'string' ? operationValue : undefined)
   const connectionFailure = kind === 'transport'
     && (causeDetails.transportCode !== undefined
       || /\b(connection (?:error|reset)|socket reset|econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|network (?:error|failure|failed)|fetch failed|failed to (?:fetch|connect)|could not (?:reach|connect)|(?:network|opencode)(?: is)? unreachable)\b/i.test(summaryMessage))
@@ -302,6 +324,8 @@ export function buildOpenCodeBlockedErrorDiagnostics(
     kind,
     source: kind === 'opencode_provider' ? 'provider' : 'opencode',
     summary: connectionFailure ? buildCommunicationSummary(summaryMessage, operation, causeDetails) : summaryMessage,
+    errorName: errorName ?? info?.name,
+    stackTrace,
     operation,
     ...causeDetails,
     modelId: input.modelId,
@@ -325,7 +349,7 @@ export function buildOpenCodeBlockedErrorDiagnostics(
 
   return {
     diagnostics,
-    errorCodes: resolveErrorCodes(info, summaryMessage),
+    errorCodes: mergeErrorCodes(carriedErrorCodes, resolveErrorCodes(info, summaryMessage)),
   }
 }
 

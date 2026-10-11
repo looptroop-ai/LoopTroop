@@ -11,6 +11,107 @@ import {
 import { isContinuableBlockedError } from '../sessionContinuation'
 
 describe('OpenCode blocked error diagnostics', () => {
+  it('captures the error type and sanitized stack for runtime failures', () => {
+    const error = new TypeError('Unexpected response shape')
+    error.stack = 'TypeError: Unexpected response shape\n    at decode (https://user:password@example.test/decoder?token=private-token:10:2)\napiKey=sk-private-diagnostic-key'
+
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error })
+
+    expect(result.diagnostics).toMatchObject({
+      kind: 'runtime',
+      errorName: 'TypeError',
+      stackTrace: expect.stringContaining('at decode (https://example.test/decoder'),
+    })
+    expect(result.diagnostics?.stackTrace).not.toContain('private-token')
+    expect(result.diagnostics?.stackTrace).not.toContain('sk-private-diagnostic-key')
+    expect(result.diagnostics?.stackTrace).toContain('[redacted]')
+    expect(result.errorCodes).toEqual([])
+  })
+
+  it('recovers structured provider evidence through multiple wrappers without replacing the reported operation', () => {
+    const providerError = Object.assign(new Error('Provider request failed'), {
+      name: 'APIError',
+      data: {
+        statusCode: 401,
+        isRetryable: false,
+        responseBody: JSON.stringify({ error: {
+          type: 'invalid_request_error',
+          message: 'Your authentication token has expired. Please try refreshing it.',
+        } }),
+      },
+    })
+    const sessionError = Object.assign(new Error('Failed to create OpenCode session', { cause: providerError }), {
+      openCodeOperation: 'creating an OpenCode session',
+    })
+    const error = new Error('Failed after two attempts', { cause: sessionError })
+
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'openai/model-a' })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_AUTH_FAILED])
+    expect(result.diagnostics).toMatchObject({
+      kind: 'opencode_provider',
+      source: 'provider',
+      operation: 'creating an OpenCode session',
+      modelId: 'openai/model-a',
+      statusCode: 401,
+      isRetryable: false,
+      providerErrorType: 'invalid_request_error',
+      providerErrorMessage: 'Your authentication token has expired. Please try refreshing it.',
+      responseBodyPreview: expect.stringContaining('invalid_request_error'),
+      errorName: 'Error',
+      stackTrace: expect.stringContaining('Caused by: APIError: Provider request failed'),
+    })
+    expect(result.diagnostics?.summary).toContain('Your authentication token has expired')
+    expect(result.diagnostics?.sessionId).toBeUndefined()
+  })
+
+  it('preserves attached diagnostics and codes through a wrapper while adding its captured stack', () => {
+    const cause = attachOpenCodeBlockedErrorDiagnostics(new Error('actual failure'), {
+      diagnostics: {
+        kind: 'opencode_provider', source: 'provider', summary: 'Account exhausted',
+        modelId: 'actual/model', sessionId: 'failed-session', operation: 'waiting for the accepted prompt to finish',
+        statusCode: 429,
+      },
+      errorCodes: [OPENCODE_PROVIDER_ERROR],
+    })
+    const error = Object.assign(new Error('workflow wrapper', { cause }), {
+      blockedErrorCodes: [OPENCODE_PROVIDER_ERROR, 'PHASE_FAILED'],
+    })
+
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'fallback/model', sessionId: 'older-session' })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_ERROR, 'PHASE_FAILED'])
+    expect(result.diagnostics).toMatchObject({
+      summary: 'Account exhausted', modelId: 'actual/model', sessionId: 'failed-session', statusCode: 429,
+      operation: 'waiting for the accepted prompt to finish', errorName: 'Error',
+      stackTrace: expect.stringContaining('Caused by: Error: actual failure'),
+    })
+  })
+
+  it('keeps stack and cause capture bounded when causes are circular', () => {
+    const error = new Error('Unexpected response shape')
+    const cause = new TypeError('decoder failed', { cause: error })
+    error.cause = cause
+
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics).toMatchObject({ kind: 'runtime', errorName: 'Error' })
+    expect(result.diagnostics?.stackTrace?.match(/Caused by:/g)).toHaveLength(1)
+  })
+
+  it('limits provider discovery and stack capture to eight cause-chain entries', () => {
+    let error: Error = Object.assign(new Error('Deep provider failure'), { statusCode: 401 })
+    for (let depth = 0; depth < 8; depth += 1) error = new Error('Unexpected response shape', { cause: error })
+
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics?.kind).toBe('runtime')
+    expect(result.diagnostics?.statusCode).toBeUndefined()
+    expect(result.diagnostics?.stackTrace?.match(/Caused by:/g)).toHaveLength(7)
+  })
+
   it('explains an unreported connection cause without inventing a timeout or retry policy', () => {
     const result = buildOpenCodeBlockedErrorDiagnostics({
       error: Object.assign(new Error('Failed to prompt OpenCode session: fetch failed', {

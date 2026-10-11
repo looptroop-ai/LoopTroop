@@ -1,7 +1,67 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText } from '../errorDiagnostics'
+import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText, sanitizeDiagnosticValue } from '../errorDiagnostics'
 
 describe('shared blocked error diagnostics', () => {
+  it('preserves full structured log evidence and repeated lines while redacting nested credentials', () => {
+    const value = {
+      message: `Your authentication token has expired.\n${'diagnostic line\n'.repeat(1000)}`,
+      data: {
+        error: { statusCode: 401, isRetryable: false, message: 'Reconnect the provider.' },
+        headers: { '\u001b[31mAuthorization\u001b[0m': 'opaque-value', 'x-api-key': ['opaque-key'] },
+        auth: { access: 'opaque-access', refresh: 'opaque-refresh' },
+        credentials: { password: 'opaque-password' },
+        parts: [{ sessionId: 'ses-real', inputTokens: 10 }, { sessionId: 'ses-real', inputTokens: 10 }],
+        output: 'Connect https://user:pass@example.com/api?key=opaque-query#private',
+      },
+    }
+    const clean = sanitizeDiagnosticValue(value)
+    expect(clean).toEqual({
+      message: value.message,
+      data: {
+        error: value.data.error,
+        headers: { Authorization: '[redacted]', 'x-api-key': '[redacted]' },
+        auth: '[redacted]',
+        credentials: '[redacted]',
+        parts: value.data.parts,
+        output: 'Connect https://example.com/api',
+      },
+    })
+    expect(sanitizeDiagnosticValue(clean)).toEqual(clean)
+    expect(value.data.headers['x-api-key']).toEqual(['opaque-key'])
+  })
+
+  it('stops cyclic or excessive nesting with an explicit evidence marker', () => {
+    const value: { cause?: unknown } = {}
+    value.cause = value
+    const clean = JSON.stringify(sanitizeDiagnosticValue(value))
+    expect(clean).toContain('[details omitted: nesting limit]')
+  })
+
+  it('retains sanitized stack traces and all named doctor failures through repeated normalization', () => {
+    const value = {
+      summary: 'Readiness failed.',
+      errorName: 'ProviderError',
+      stackTrace: `ProviderError: access_token=opaque-secret\n${'    at probe (doctor.ts:1)\n'.repeat(1000)}`,
+      failedChecks: [
+        { name: 'OpenCode Execution Capability', category: 'connectivity', message: 'Your authentication token has expired.' },
+        { name: 'GitHub Auth', category: 'git', message: 'Authorization: Bearer opaque-auth', details: 'refresh_token=opaque-refresh' },
+        null,
+        { name: 'invalid' },
+      ],
+    }
+    const clean = normalizeBlockedErrorDiagnostics(value)
+    expect(clean).toMatchObject({
+      errorName: 'ProviderError',
+      failedChecks: [
+        value.failedChecks[0],
+        { name: 'GitHub Auth', category: 'git', message: 'Authorization: [redacted]', details: 'refresh_token=[redacted]' },
+      ],
+    })
+    expect(clean?.stackTrace).not.toContain('opaque-secret')
+    expect(clean?.stackTrace?.length).toBeLessThanOrEqual(12000)
+    expect(normalizeBlockedErrorDiagnostics(clean)).toEqual(clean)
+  })
+
   it('keeps bounded, sanitized connection context through repeated normalization', () => {
     const diagnostics = normalizeBlockedErrorDiagnostics({
       kind: 'transport',

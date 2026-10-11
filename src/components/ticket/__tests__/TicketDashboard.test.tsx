@@ -164,11 +164,18 @@ import { TicketDashboard } from '../TicketDashboard'
 import { DropdownPicker } from '@/components/shared/DropdownPicker'
 
 /** Simulate a realistic SSE state_change: patch the cache first (as useSSE does), then fire onEvent. */
-function simulateSSE(from: string, to: string) {
-  patchTicketStatusInCache(queryClient, selectedTicketId, to)
+function simulateSSE(from: string, to: string, workflowRevision?: number) {
+  if (workflowRevision === undefined) {
+    patchTicketStatusInCache(queryClient, selectedTicketId, to)
+  }
   latestSSEOptions?.onEvent?.({
     type: 'state_change',
-    data: { ticketId: selectedTicketId, from, to },
+    data: {
+      ticketId: selectedTicketId,
+      from,
+      to,
+      ...(typeof workflowRevision === 'number' ? { workflowRevision } : {}),
+    },
   })
 }
 
@@ -1200,22 +1207,23 @@ describe('TicketDashboard', () => {
     })
   })
 
-  it('clears error selection and switches active workspace when cache transitions out of BLOCKED_ERROR', async () => {
+  async function setupTicketWithError(status: string = 'BLOCKED_ERROR', previousStatus?: string) {
+    const isBlocked = status === 'BLOCKED_ERROR'
     const ticket = makeTicket({
       id: selectedTicketId,
-      status: 'BLOCKED_ERROR',
-      previousStatus: 'CODING',
+      status,
+      previousStatus: previousStatus ?? (isBlocked ? 'CODING' : undefined),
       errorOccurrences: [
         {
           id: 'error-1',
           occurrenceNumber: 1,
-          blockedFromStatus: 'CODING',
-          errorMessage: 'Coding failed',
+          blockedFromStatus: isBlocked ? 'CODING' : 'PREPARING_EXECUTION_ENV',
+          errorMessage: isBlocked ? 'Coding failed' : 'Setup failed previously',
           errorCodes: [],
           occurredAt: '2026-01-01T00:00:00.000Z',
-          resolvedAt: null,
-          resolutionStatus: null,
-          resumedToStatus: null,
+          resolvedAt: isBlocked ? null : '2026-01-01T00:01:00.000Z',
+          resolutionStatus: isBlocked ? null : 'RETRIED',
+          resumedToStatus: isBlocked ? null : 'CODING',
         },
       ],
     })
@@ -1224,11 +1232,15 @@ describe('TicketDashboard', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('BLOCKED_ERROR')
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent(status)
     })
 
     fireEvent.click(screen.getByText('Select error'))
     expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+  }
+
+  it('clears error selection and switches active workspace when cache transitions out of BLOCKED_ERROR', async () => {
+    await setupTicketWithError()
     expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
 
     await act(async () => {
@@ -1243,34 +1255,7 @@ describe('TicketDashboard', () => {
   })
 
   it('clears error selection when live status transitions out of BLOCKED_ERROR via SSE', async () => {
-    const ticket = makeTicket({
-      id: selectedTicketId,
-      status: 'BLOCKED_ERROR',
-      previousStatus: 'CODING',
-      errorOccurrences: [
-        {
-          id: 'error-1',
-          occurrenceNumber: 1,
-          blockedFromStatus: 'CODING',
-          errorMessage: 'Coding failed',
-          errorCodes: [],
-          occurredAt: '2026-01-01T00:00:00.000Z',
-          resolvedAt: null,
-          resolutionStatus: null,
-          resumedToStatus: null,
-        },
-      ],
-    })
-    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
-
-    renderDashboard()
-
-    await waitFor(() => {
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('BLOCKED_ERROR')
-    })
-
-    fireEvent.click(screen.getByText('Select error'))
-    expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+    await setupTicketWithError()
 
     await act(async () => {
       simulateSSE('BLOCKED_ERROR', 'CODING')
@@ -1284,33 +1269,7 @@ describe('TicketDashboard', () => {
   })
 
   it('preserves historical error selection during unrelated live status transitions', async () => {
-    const ticket = makeTicket({
-      id: selectedTicketId,
-      status: 'CODING',
-      errorOccurrences: [
-        {
-          id: 'error-1',
-          occurrenceNumber: 1,
-          blockedFromStatus: 'PREPARING_EXECUTION_ENV',
-          errorMessage: 'Setup failed previously',
-          errorCodes: [],
-          occurredAt: '2026-01-01T00:00:00.000Z',
-          resolvedAt: '2026-01-01T00:01:00.000Z',
-          resolutionStatus: 'RETRIED',
-          resumedToStatus: 'CODING',
-        },
-      ],
-    })
-    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
-
-    renderDashboard()
-
-    await waitFor(() => {
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('CODING')
-    })
-
-    fireEvent.click(screen.getByText('Select error'))
-    expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+    await setupTicketWithError('CODING')
     expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
 
     await act(async () => {
@@ -1324,35 +1283,32 @@ describe('TicketDashboard', () => {
     })
   })
 
-  it('follows live workflow after leaving BLOCKED_ERROR and does not remain pinned to the resumed phase', async () => {
-    const ticket = makeTicket({
-      id: selectedTicketId,
-      status: 'BLOCKED_ERROR',
-      previousStatus: 'CODING',
-      errorOccurrences: [
-        {
-          id: 'error-1',
-          occurrenceNumber: 1,
-          blockedFromStatus: 'CODING',
-          errorMessage: 'Coding failed',
-          errorCodes: [],
-          occurredAt: '2026-01-01T00:00:00.000Z',
-          resolvedAt: null,
-          resolutionStatus: null,
-          resumedToStatus: null,
-        },
-      ],
+  it('preserves historical error selection when an SSE transition is rejected due to older workflowRevision', async () => {
+    await setupTicketWithError('CODING')
+    expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
+
+    // Advance to RUNNING_FINAL_TEST at workflowRevision 5
+    await act(async () => {
+      simulateSSE('CODING', 'RUNNING_FINAL_TEST', 5)
     })
-    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
-
-    renderDashboard()
-
     await waitFor(() => {
-      expect(screen.getByTestId('navigator-current')).toHaveTextContent('BLOCKED_ERROR')
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
+      expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
     })
 
-    fireEvent.click(screen.getByText('Select error'))
-    expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+    // Stale SSE event with older revision 3 is rejected; historical error review must stay open
+    await act(async () => {
+      simulateSSE('BLOCKED_ERROR', 'CODING', 3)
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
+      expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+      expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
+    })
+  })
+
+  it('follows live workflow after leaving BLOCKED_ERROR and does not remain pinned to the resumed phase', async () => {
+    await setupTicketWithError()
 
     // Resume from BLOCKED_ERROR to CODING
     await act(async () => {
@@ -1385,7 +1341,7 @@ describe('TicketDashboard', () => {
       expect(screen.getByTestId('navigator-current')).toHaveTextContent('CODING')
     })
 
-    await act(async () => {
+    act(() => {
       window.dispatchEvent(new CustomEvent(WORKSPACE_PHASE_NAVIGATE_EVENT, {
         detail: {
           ticketId: selectedTicketId,

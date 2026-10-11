@@ -433,19 +433,8 @@ export function TicketDashboard() {
       if (current.ticketId === ticketId && current.phase === status) {
         return { ticketId, phase: null }
       }
-      if (status !== 'BLOCKED_ERROR' && current.ticketId === ticketId && current.phase === 'BLOCKED_ERROR') {
-        return { ticketId, phase: null }
-      }
       return current
     })
-    if (previousStatus === 'BLOCKED_ERROR' && status !== 'BLOCKED_ERROR') {
-      setErrorSelection((current) => {
-        if (current.ticketId === ticketId && current.occurrenceId !== null) {
-          return { ticketId: null, occurrenceId: null }
-        }
-        return current
-      })
-    }
   }, [ticket?.status, ticketId, snapshotPreviousStatus, snapshotReviewCutoffStatus])
 
   const prevCurrentStatusRef = useRef<string>(currentStatus)

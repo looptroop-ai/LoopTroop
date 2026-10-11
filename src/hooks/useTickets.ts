@@ -249,7 +249,7 @@ interface CreateTicketInput {
   aiQuestionWindowOverride?: number | null
 }
 
-interface TicketActionResponse {
+export interface TicketActionResponse {
   message: string
   ticketId: string
   status?: string

@@ -306,6 +306,16 @@ export function TicketDashboard() {
       return livePhase
     }
 
+    if (livePhase.phase === 'BLOCKED_ERROR' && dbStatus !== 'BLOCKED_ERROR') {
+      return {
+        ...livePhase,
+        phase: dbStatus,
+        workflowRevision: typeof dbRevision === 'number' ? dbRevision : livePhase.workflowRevision,
+        previousStatus: snapshotPreviousStatus ?? livePhase.previousStatus,
+        reviewCutoffStatus: snapshotReviewCutoffStatus ?? livePhase.reviewCutoffStatus,
+      }
+    }
+
     const liveIdx = WORKFLOW_PHASE_IDS.indexOf(livePhase.phase)
     const dbIdx = WORKFLOW_PHASE_IDS.indexOf(dbStatus)
     if (liveIdx >= 0 && dbIdx >= 0 && dbIdx > liveIdx) {
@@ -438,6 +448,14 @@ export function TicketDashboard() {
       }
       return current
     })
+    if (status !== 'BLOCKED_ERROR') {
+      setErrorSelection((current) => {
+        if (current.ticketId === ticketId && current.occurrenceId !== null) {
+          return { ticketId: null, occurrenceId: null }
+        }
+        return current
+      })
+    }
   }, [ticket?.status, ticketId, snapshotPreviousStatus, snapshotReviewCutoffStatus])
 
   useEffect(() => {
@@ -445,6 +463,15 @@ export function TicketDashboard() {
       const detail = (event as CustomEvent<WorkspacePhaseNavigateDetail>).detail
       if (!detail?.ticketId || detail.ticketId !== ticketId || !detail.phase) return
 
+      setLivePhase((current) => {
+        if (current.ticketId === ticketId && current.phase === 'BLOCKED_ERROR' && detail.phase !== 'BLOCKED_ERROR') {
+          return {
+            ...current,
+            phase: detail.phase,
+          }
+        }
+        return current
+      })
       setPhaseSelection({
         ticketId,
         phase: detail.phase === currentStatus ? null : detail.phase,

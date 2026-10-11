@@ -1199,6 +1199,95 @@ describe('TicketDashboard', () => {
       anchorId: 'interview-group-phase-foundation',
     })
   })
+
+  it('clears error selection and switches active workspace on workspace navigation', async () => {
+    const ticket = makeTicket({
+      id: selectedTicketId,
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'CODING',
+      errorOccurrences: [
+        {
+          id: 'error-1',
+          occurrenceNumber: 1,
+          blockedFromStatus: 'CODING',
+          errorMessage: 'Coding failed',
+          errorCodes: [],
+          occurredAt: '2026-01-01T00:00:00.000Z',
+          resolvedAt: null,
+          resolutionStatus: null,
+          resumedToStatus: null,
+        },
+      ],
+    })
+    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
+
+    renderDashboard()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('BLOCKED_ERROR')
+    })
+
+    fireEvent.click(screen.getByText('Select error'))
+    expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+    expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(WORKSPACE_PHASE_NAVIGATE_EVENT, {
+        detail: {
+          ticketId: selectedTicketId,
+          phase: 'CODING',
+        },
+      }))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-error')).toHaveTextContent('')
+      expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('')
+      expect(screen.getByTestId('active-workspace')).toHaveTextContent('CODING')
+    })
+  })
+
+  it('clears error selection when live status transitions out of BLOCKED_ERROR', async () => {
+    const ticket = makeTicket({
+      id: selectedTicketId,
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'CODING',
+      errorOccurrences: [
+        {
+          id: 'error-1',
+          occurrenceNumber: 1,
+          blockedFromStatus: 'CODING',
+          errorMessage: 'Coding failed',
+          errorCodes: [],
+          occurredAt: '2026-01-01T00:00:00.000Z',
+          resolvedAt: null,
+          resolutionStatus: null,
+          resumedToStatus: null,
+        },
+      ],
+    })
+    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
+
+    renderDashboard()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('BLOCKED_ERROR')
+    })
+
+    fireEvent.click(screen.getByText('Select error'))
+    expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+
+    await act(async () => {
+      simulateSSE('BLOCKED_ERROR', 'CODING')
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-error')).toHaveTextContent('')
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('CODING')
+      expect(screen.getByTestId('active-workspace')).toHaveTextContent('CODING')
+    })
+  })
+
   describe('Escape', () => {
     /**
      * Escape belongs to whatever is open on top. Every nested overlay in this view

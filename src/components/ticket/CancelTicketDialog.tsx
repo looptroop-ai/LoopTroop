@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useCancelTicket } from '@/hooks/useTickets'
 import { SkipReasonField } from '@/components/workspace/SkipReasonField'
+import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
 
 interface CancelTicketDialogProps {
   ticketId: string
@@ -41,6 +42,12 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
           ...(deleteTicket ? {} : { reason }),
         },
       })
+      if (!deleteTicket) {
+        requestWorkspacePhaseNavigation({
+          ticketId,
+          phase: 'CANCELED',
+        })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to cancel the ticket')
       return

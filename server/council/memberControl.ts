@@ -357,14 +357,22 @@ export function openCouncilRound<T>(options: CouncilRoundOptions<T>): CouncilRou
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 
+/** What the routes may do with a live round, whatever its members return. */
+interface CouncilRoundHandle {
+  readonly isClosed: boolean
+  stop(memberId: string): Promise<MemberOutcome>
+  retry(memberId: string, part?: CouncilMemberRetryPart): Promise<void>
+  close(): void
+}
+
 /** `ticketId` + status → the round running there. One status runs one round at a time. */
-const rounds = new Map<string, CouncilRound<unknown>>()
+const rounds = new Map<string, CouncilRoundHandle>()
 
 function roundKey(ticketId: string, phase: WorkflowPhaseId): string {
   return `${ticketId}\u0000${phase}`
 }
 
-function registerRound(ticketId: string, phase: WorkflowPhaseId, round: CouncilRound<unknown>): void {
+function registerRound(ticketId: string, phase: WorkflowPhaseId, round: CouncilRoundHandle): void {
   const key = roundKey(ticketId, phase)
   const previous = rounds.get(key)
   // A replaced round is one whose handler already left without closing it. It
@@ -375,12 +383,12 @@ function registerRound(ticketId: string, phase: WorkflowPhaseId, round: CouncilR
   rounds.set(key, round)
 }
 
-function unregisterRound(ticketId: string, phase: WorkflowPhaseId, round: CouncilRound<unknown>): void {
+function unregisterRound(ticketId: string, phase: WorkflowPhaseId, round: CouncilRoundHandle): void {
   const key = roundKey(ticketId, phase)
   if (rounds.get(key) === round) rounds.delete(key)
 }
 
-function requireRound(ticketId: string, phase: WorkflowPhaseId): CouncilRound<unknown> {
+function requireRound(ticketId: string, phase: WorkflowPhaseId): CouncilRoundHandle {
   const round = rounds.get(roundKey(ticketId, phase))
   if (!round) {
     throw new CouncilMemberControlError('STEP_NOT_RUNNING', 'This step is no longer running.')

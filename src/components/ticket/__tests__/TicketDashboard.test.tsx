@@ -1200,7 +1200,7 @@ describe('TicketDashboard', () => {
     })
   })
 
-  async function setupTicketWithError(status: string = 'BLOCKED_ERROR', previousStatus?: string) {
+  async function setupTicketWithError(status = 'BLOCKED_ERROR', previousStatus?: string) {
     const isBlocked = status === 'BLOCKED_ERROR'
     const ticket = makeTicket({
       id: selectedTicketId,

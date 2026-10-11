@@ -15,6 +15,13 @@ import { buildMinimalContext, clearContextCache, type TicketState } from '../../
 import type { OpenCodeToolPolicy } from '../../opencode/toolPolicy'
 import type { Message, PromptPart, Session, StreamEvent } from '../../opencode/types'
 import { SessionManager } from '../../opencode/sessionManager'
+import { stopCutShortCouncilSession } from '../../council/sessionStop'
+import {
+  CouncilMemberInterruptedError,
+  openCouncilRound,
+  type CouncilMemberAttempt,
+} from '../../council/memberControl'
+import { COUNCIL_MEMBER_STOPPED_ERROR, type CouncilMemberRetryPart } from '@shared/councilMembers'
 import { buildPromptFromTemplate, PROM10a, PROM10b, PROM11, PROM12 } from '../../prompts/index'
 import type { OpenCodePromptDispatchEvent } from '../../workflow/runOpenCodePrompt'
 import { formatPromptText, runOpenCodePrompt, runOpenCodeSessionPrompt } from '../../workflow/runOpenCodePrompt'
@@ -84,6 +91,12 @@ async function stopPrdSession(
     if (signal?.aborted) throw new CancelledError()
     throw new Error(`Could not confirm abort of OpenCode session ${sessionId}`)
   }
+}
+
+/** What one member's attempt leaves: its Full Answers and its PRD draft. */
+interface PrdMemberResult {
+  fullAnswers: DraftResult
+  prd: DraftResult
 }
 
 export interface PrdDraftPhaseResult extends DraftPhaseResult {
@@ -359,6 +372,23 @@ function buildCompletedDraft(
 }
 
 function buildSkippedPrdDraftAfterFullAnswers(memberId: string, fullAnswersOutcome: MemberOutcome): DraftResult {
+  if (fullAnswersOutcome === 'stopped') {
+    return buildFailedDraft(
+      memberId,
+      'stopped',
+      0,
+      'PRD draft not started because the model was stopped during Full Answers',
+      '',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'full_answers_invalid',
+    )
+  }
+
   if (fullAnswersOutcome === 'timed_out') {
     return buildFailedDraft(
       memberId,
@@ -426,6 +456,8 @@ async function executeStructuredStep(
     activeSession?: Session
     /** The phase-attempt budget. Spans both PROM10a and PROM10b. */
     budget: WorkBudget
+    /** A restarted member opens new sessions rather than resuming abandoned ones. */
+    forceFresh?: boolean
     toolPolicy: OpenCodeToolPolicy
     maxStructuredRetries?: number
     validateStep: (content: string) => StepValidationResult
@@ -476,6 +508,7 @@ async function executeStructuredStep(
         memberId: member.modelId,
         step: options.step,
         keepActive: true,
+        ...(options.forceFresh ? { forceFresh: true } : {}),
       }
     : undefined
 
@@ -681,12 +714,14 @@ export async function draftPRD(
 
   // One budget for the whole phase attempt. PROM10a's session is completed and
   // PROM10b runs in a fresh one, so a session-keyed clock could not span them —
-  // and a question asked in the first step has to credit the second.
-  const budget = createWorkBudget({
+  // and a question asked in the first step has to credit the second. A member a
+  // person restarts gets a fresh one of its own with the full timeout.
+  const createBudget = () => createWorkBudget({
     ...(options.ticketId ? { ticketId: options.ticketId } : {}),
     ...(options.draftTimeoutMs > 0 ? { totalMs: options.draftTimeoutMs } : {}),
     scope: 'phase_attempt',
   })
+  const budget = createBudget()
   let deadlineReached = false
   const canonicalInterviewResult = normalizeInterviewDocumentOutput(canonicalInterview, {
     ticketId: options.ticketExternalId ?? options.ticketId ?? '',
@@ -700,69 +735,163 @@ export async function draftPRD(
       .map((question) => question.id)
     : []
   const shouldResolveGaps = skippedQuestionIds.length > 0
+  const phaseAttempt = options.phaseAttempt ?? 1
 
-  const results = await Promise.all(members.map(async (member) => {
+  /**
+   * A member's finished Full Answers, kept across a restart of its PRD draft.
+   *
+   * A restart from the PRD draft chip keeps them; one from the Full Answers chip,
+   * or one while Full Answers was still unfinished, redoes both parts.
+   */
+  const keptFullAnswers = new Map<string, { result: DraftResult; resolvedInterviewContent: string }>()
+  const keepsFullAnswers = (memberId: string, part: CouncilMemberRetryPart | undefined) => (
+    part !== 'full_answers' && keptFullAnswers.has(memberId)
+  )
+
+  const round = openCouncilRound<PrdMemberResult>({
+    ticketId: options.ticketId,
+    phase: 'DRAFTING_PRD',
+    memberIds: members.map((member) => member.modelId),
+    signal,
+    outcomeOf: (result) => result.prd.outcome,
+    onRestart: (memberId, restart) => {
+      if (!keepsFullAnswers(memberId, restart.part)) {
+        keptFullAnswers.delete(memberId)
+        onFullAnswersProgress?.({ memberId, status: 'restarted' })
+      }
+      onDraftProgress?.({ memberId, status: 'restarted' })
+    },
+  })
+
+  const draftMember = async (member: CouncilMember, attempt: CouncilMemberAttempt): Promise<PrdMemberResult> => {
     const memberStart = Date.now()
+    const attemptBudget = attempt.number === 1 ? budget : createBudget()
+    const memberSignal = signal ? AbortSignal.any([signal, attempt.signal]) : attempt.signal
     const sessionManager = options.ticketId ? new SessionManager(adapter) : null
+    const kept = keepsFullAnswers(member.modelId, attempt.retryPart)
+      ? keptFullAnswers.get(member.modelId)
+      : undefined
     let currentSession: Session | undefined
-    let fullAnswersResult: DraftResult | null = null
+    let fullAnswersResult: DraftResult | null = kept?.result ?? null
     let prdResult: DraftResult | null = null
+    // Where the member is, and the session it most recently opened there, so a
+    // stop can find what to close while a step is still running.
+    let currentStep: PrdDraftSubstep = kept ? 'prd_draft' : 'full_answers'
+    let stepSessionId: string | undefined
+    let resolveSessionReady: () => void = () => {}
+    let sessionReady = new Promise<void>((resolve) => {
+      resolveSessionReady = resolve
+    })
+    let resolveExecutionSettled: () => void = () => {}
+    const executionSettled = new Promise<void>((resolve) => {
+      resolveExecutionSettled = resolve
+    })
 
-    const emitFailedResult = (error: unknown, step: 'full_answers' | 'prd_draft') => {
-      if (signal?.aborted || error instanceof CancelledError || (isAbortError(error) && signal?.aborted)) {
+    const enterStep = (step: PrdDraftSubstep) => {
+      currentStep = step
+      stepSessionId = undefined
+      sessionReady = new Promise<void>((resolve) => {
+        resolveSessionReady = resolve
+      })
+    }
+
+    /** Past a stop or restart, nothing this attempt does may reach the artifacts. */
+    const throwIfInterrupted = () => {
+      const interruption = attempt.interruption()
+      if (interruption) throw new CouncilMemberInterruptedError(interruption)
+    }
+
+    const noteSessionCreated = (sessionId: string) => {
+      stepSessionId = sessionId
+      resolveSessionReady()
+      // Thrown so the prompt runner stops the session it just opened: the
+      // member's turn ended while it was being created.
+      if (attempt.interruption()) {
+        throw new Error(`OpenCode session ${sessionId} was created after the member's council turn ended`)
+      }
+    }
+
+    const stopCutShortSession = async () => {
+      const ownership = { phaseAttempt, memberId: member.modelId, step: currentStep }
+      return stopCutShortCouncilSession({
+        adapter,
+        sessionManager,
+        role: 'drafter',
+        // Each step's session stays open after its prompt returns, so there is
+        // always something to look for.
+        promptReturned: false,
+        findSessionId: () => stepSessionId ?? (
+          options.ticketId
+            ? sessionManager?.getOwnedActiveSession(options.ticketId, 'DRAFTING_PRD', ownership)?.sessionId
+            : undefined
+        ),
+        sessionReady,
+        executionSettled,
+        hasUnresolvedOwnership: () => Boolean(
+          options.ticketId
+          && sessionManager?.hasUnresolvedSessionOwnershipForScope(options.ticketId, 'DRAFTING_PRD', ownership),
+        ),
+      })
+    }
+
+    const emitFailedResult = (error: unknown, step: PrdDraftSubstep, stoppedByPerson = false) => {
+      if (!stoppedByPerson && (signal?.aborted || error instanceof CancelledError || (isAbortError(error) && signal?.aborted))) {
         throw new CancelledError()
       }
 
       const duration = Date.now() - memberStart
-      const timedOut = isPhaseDeadlineError(error) || (error instanceof Error && error.message === 'Timeout')
+      const timedOut = !stoppedByPerson
+        && (isPhaseDeadlineError(error) || (error instanceof Error && error.message === 'Timeout'))
       if (timedOut) deadlineReached = true
       const timedOutDuration = options.draftTimeoutMs
       const structuredError = error instanceof StructuredStepError ? error : null
       const errorContent = structuredError?.content ?? ''
       const errorRawAttempts = structuredError?.rawAttempts
 
-      const failed = timedOut
-        ? buildFailedDraft(
-            member.modelId,
-            'timed_out',
-            timedOutDuration,
-            `AI response timeout reached after ${options.draftTimeoutMs}ms`,
-            '',
-            structuredError?.questionCount,
-            structuredError?.draftMetrics,
-            structuredError?.structuredOutput,
-            errorContent || undefined,
-            undefined,
-            errorRawAttempts,
-          )
-        : (() => {
-            const {
-              outcome,
-              errorDetail,
-              failureClass,
-            } = classifyDraftFailure(error, {
-              content: errorContent,
-              failureClass: structuredError?.structuredOutput.failureClass,
-            })
-            const structuredOutput = structuredError?.structuredOutput ?? (
-              failureClass
-                ? buildStructuredOutput(undefined, undefined, 0, failureClass)
-                : undefined
-            )
-            return buildFailedDraft(
+      const failed = stoppedByPerson
+        ? buildFailedDraft(member.modelId, 'stopped', duration, COUNCIL_MEMBER_STOPPED_ERROR)
+        : timedOut
+          ? buildFailedDraft(
               member.modelId,
-              outcome,
-              duration,
-              errorDetail,
+              'timed_out',
+              timedOutDuration,
+              `AI response timeout reached after ${options.draftTimeoutMs}ms`,
               '',
               structuredError?.questionCount,
               structuredError?.draftMetrics,
-              structuredOutput,
+              structuredError?.structuredOutput,
               errorContent || undefined,
               undefined,
               errorRawAttempts,
             )
-          })()
+          : (() => {
+              const {
+                outcome,
+                errorDetail,
+                failureClass,
+              } = classifyDraftFailure(error, {
+                content: errorContent,
+                failureClass: structuredError?.structuredOutput.failureClass,
+              })
+              const structuredOutput = structuredError?.structuredOutput ?? (
+                failureClass
+                  ? buildStructuredOutput(undefined, undefined, 0, failureClass)
+                  : undefined
+              )
+              return buildFailedDraft(
+                member.modelId,
+                outcome,
+                duration,
+                errorDetail,
+                '',
+                structuredError?.questionCount,
+                structuredError?.draftMetrics,
+                structuredOutput,
+                errorContent || undefined,
+                undefined,
+                errorRawAttempts,
+              )
+            })()
 
       onStepEvent?.({
         memberId: member.modelId,
@@ -825,10 +954,13 @@ export async function draftPRD(
       }
     }
 
-    try {
+    const pipeline = (async (): Promise<PrdMemberResult> => {
       let resolvedInterviewContent: string
 
-      if (shouldResolveGaps) {
+      if (kept) {
+        fullAnswersResult = kept.result
+        resolvedInterviewContent = kept.resolvedInterviewContent
+      } else if (shouldResolveGaps) {
         onStepEvent?.({ memberId: member.modelId, step: 'full_answers', status: 'started' })
         const skipReasonSideChannel = canonicalInterviewResult?.ok
           ? buildSkipReasonSideChannel(canonicalInterviewResult.value)
@@ -851,12 +983,13 @@ export async function draftPRD(
 
         const fullAnswersStep = await executeStructuredStep(adapter, member, projectPath, gapResolutionParts, {
           step: 'full_answers',
-          signal,
+          signal: memberSignal,
           ticketId: options.ticketId,
           phaseAttempt: options.phaseAttempt,
           timeoutMs: options.draftTimeoutMs,
           activeSession: currentSession,
-          budget,
+          budget: attemptBudget,
+          forceFresh: attempt.number > 1,
           toolPolicy: PROM10a.toolPolicy,
           maxStructuredRetries: options.maxStructuredRetries,
           validateStep: (content) => {
@@ -883,6 +1016,7 @@ export async function draftPRD(
           onOpenCodeStreamEvent,
           onOpenCodePromptDispatched,
           onSessionCreated: (sessionId) => {
+            noteSessionCreated(sessionId)
             onFullAnswersProgress?.({
               memberId: member.modelId,
               status: 'session_created',
@@ -891,6 +1025,7 @@ export async function draftPRD(
           },
         })
 
+        throwIfInterrupted()
         currentSession = fullAnswersStep.session
         resolvedInterviewContent = fullAnswersStep.content
         fullAnswersResult = buildCompletedDraft(
@@ -904,6 +1039,7 @@ export async function draftPRD(
           fullAnswersStep.normalizedResponse,
           fullAnswersStep.rawAttempts,
         )
+        keptFullAnswers.set(member.modelId, { result: fullAnswersResult, resolvedInterviewContent })
         onFullAnswersProgress?.({
           memberId: member.modelId,
           status: 'finished',
@@ -948,6 +1084,7 @@ export async function draftPRD(
             autoRetryCount: 0,
           },
         )
+        keptFullAnswers.set(member.modelId, { result: fullAnswersResult, resolvedInterviewContent })
         onStepEvent?.({
           memberId: member.modelId,
           step: 'full_answers',
@@ -965,6 +1102,8 @@ export async function draftPRD(
         })
       }
 
+      throwIfInterrupted()
+      enterStep('prd_draft')
       onStepEvent?.({ memberId: member.modelId, step: 'prd_draft', status: 'started' })
       const prdPromptParts = buildPromptParts(
         PROM10b,
@@ -977,12 +1116,13 @@ export async function draftPRD(
 
       const prdStep = await executeStructuredStep(adapter, member, projectPath, prdPromptParts, {
         step: 'prd_draft',
-        signal,
+        signal: memberSignal,
         ticketId: options.ticketId,
         phaseAttempt: options.phaseAttempt,
         timeoutMs: options.draftTimeoutMs,
         activeSession: currentSession,
-        budget,
+        budget: attemptBudget,
+        forceFresh: attempt.number > 1,
         toolPolicy: PROM10b.toolPolicy,
         maxStructuredRetries: options.maxStructuredRetries,
         validateStep: (content) => {
@@ -1002,6 +1142,7 @@ export async function draftPRD(
         onOpenCodeStreamEvent,
         onOpenCodePromptDispatched,
         onSessionCreated: (sessionId) => {
+          noteSessionCreated(sessionId)
           onDraftProgress?.({
             memberId: member.modelId,
             status: 'session_created',
@@ -1010,6 +1151,7 @@ export async function draftPRD(
         },
       })
 
+      throwIfInterrupted()
       currentSession = prdStep.session
       prdResult = buildCompletedDraft(
         member.modelId,
@@ -1052,7 +1194,38 @@ export async function draftPRD(
         fullAnswers: fullAnswersResult,
         prd: prdResult,
       }
+    })()
+      .finally(() => {
+        resolveExecutionSettled()
+      })
+
+    try {
+      return await Promise.race([pipeline, attempt.interrupted])
     } catch (error) {
+      // A person's stop or restart wins over whatever reached the race first,
+      // unless the whole ticket is being canceled.
+      const interruption = signal?.aborted ? null : attempt.interruption()
+      if (interruption) {
+        const stop = await stopCutShortSession()
+        if (!stop.stopped) {
+          throw new Error(stop.sessionId
+            ? `Could not confirm abort of OpenCode session ${stop.sessionId}`
+            : 'Could not confirm abort of an OpenCode session that was still being created')
+        }
+        if (interruption === 'retry') {
+          // Nothing is recorded: the round starts this member over at once.
+          return {
+            fullAnswers: fullAnswersResult ?? buildFailedDraft(member.modelId, 'stopped', 0, COUNCIL_MEMBER_STOPPED_ERROR),
+            prd: buildFailedDraft(member.modelId, 'stopped', 0, COUNCIL_MEMBER_STOPPED_ERROR),
+          }
+        }
+        emitFailedResult(error, fullAnswersResult ? 'prd_draft' : 'full_answers', true)
+        return {
+          fullAnswers: fullAnswersResult!,
+          prd: prdResult!,
+        }
+      }
+
       if (currentSession) {
         await stopPrdSession(adapter, sessionManager, currentSession.id, signal)
       }
@@ -1063,10 +1236,23 @@ export async function draftPRD(
         fullAnswers: fullAnswersResult!,
         prd: prdResult!,
       }
+    } finally {
+      if (attemptBudget !== budget) attemptBudget.release()
     }
-  }))
+  }
 
+  const settled = await Promise.allSettled(
+    members.map((member) => round.run(member.modelId, (attempt) => draftMember(member, attempt))),
+  )
+  round.close()
   budget.release()
+  if (signal?.aborted) {
+    throw new CancelledError()
+  }
+  const results = settled.map((result) => {
+    if (result.status === 'rejected') throw result.reason
+    return result.value
+  })
   const fullAnswers = results.map((result) => result.fullAnswers)
   const drafts = results.map((result) => result.prd)
 

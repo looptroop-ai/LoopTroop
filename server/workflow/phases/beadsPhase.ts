@@ -40,6 +40,8 @@ import {
   emitOpenCodeStreamEvent,
   emitOpenCodePromptLog,
   emitDraftProgressInfoLog,
+  applyDraftProgress,
+  applyVoteProgress,
   createOpenCodeStreamState,
   resolveCouncilRuntimeSettings,
   resolveStructuredRetryRuntimeSettings,
@@ -300,7 +302,7 @@ export async function handleBeadsDraft(
   const startedAt = Date.now()
   const streamStates = new Map<string, OpenCodeStreamState>()
   const liveDrafts = createPendingDrafts(members)
-  upsertCouncilDraftArtifact(ticketId, phase, 'beads_drafts', liveDrafts)
+  upsertCouncilDraftArtifact(ticketId, phase, 'beads_drafts', liveDrafts, undefined, false, councilSettings.minQuorum)
   const result = await draftBeads(
     adapter,
     members,
@@ -354,23 +356,7 @@ export async function handleBeadsDraft(
     },
     (entry) => {
       emitDraftProgressInfoLog(ticketId, context.externalId, phase, 'Beads', entry)
-      if (entry.status !== 'finished' || !entry.outcome) return
-      const draftIndex = liveDrafts.findIndex(draft => draft.memberId === entry.memberId)
-      if (draftIndex < 0) return
-      liveDrafts[draftIndex] = {
-        ...liveDrafts[draftIndex]!,
-        content: entry.content ?? liveDrafts[draftIndex]!.content,
-        outcome: entry.outcome,
-        duration: entry.duration ?? liveDrafts[draftIndex]!.duration,
-        error: entry.error,
-        questionCount: entry.questionCount,
-        draftMetrics: entry.draftMetrics,
-        structuredOutput: entry.structuredOutput,
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-        ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
-      }
+      if (!applyDraftProgress(liveDrafts, entry)) return
       if (entry.structuredOutput?.repairWarnings.length) {
         emitPhaseLog(
           ticketId,
@@ -391,7 +377,7 @@ export async function handleBeadsDraft(
           { source: 'system', modelId: entry.memberId },
         )
       }
-      upsertCouncilDraftArtifact(ticketId, phase, 'beads_drafts', liveDrafts)
+      upsertCouncilDraftArtifact(ticketId, phase, 'beads_drafts', liveDrafts, undefined, false, councilSettings.minQuorum)
     },
   )
 
@@ -422,7 +408,7 @@ export async function handleBeadsDraft(
     nextStatus,
   )
 
-  upsertCouncilDraftArtifact(ticketId, phase, 'beads_drafts', result.drafts, result.memberOutcomes, true)
+  upsertCouncilDraftArtifact(ticketId, phase, 'beads_drafts', result.drafts, result.memberOutcomes, true, councilSettings.minQuorum)
   emitPhaseLog(
     ticketId,
     context.externalId,
@@ -511,7 +497,7 @@ export async function handleBeadsVote(
 
   emitPhaseLog(ticketId, context.externalId, 'COUNCIL_VOTING_BEADS', 'info',
     `Beads voting started with ${members.length} council members on ${intermediate.drafts.filter(d => d.outcome === 'completed').length} drafts.`)
-  upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_BEADS', 'beads_votes', intermediate.drafts, [], liveVoterOutcomes, [...liveVoterDetails.values()])
+  upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_BEADS', 'beads_votes', intermediate.drafts, [], liveVoterOutcomes, [...liveVoterDetails.values()], undefined, undefined, undefined, false, councilSettings.minQuorum)
 
   if (signal.aborted) throw new CancelledError(ticketId)
   const voteRun = await conductVoting(
@@ -561,17 +547,8 @@ export async function handleBeadsVote(
       )
     },
     (entry) => {
-      liveVoterOutcomes[entry.memberId] = entry.outcome
-      if (entry.votes.length > 0) liveVotes.push(...entry.votes)
-      liveVoterDetails.set(entry.memberId, {
-        voterId: entry.memberId,
-        ...(entry.error ? { error: entry.error } : {}),
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.structuredOutput ? { structuredOutput: entry.structuredOutput } : {}),
-        ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-      })
-      upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_BEADS', 'beads_votes', intermediate.drafts, liveVotes, liveVoterOutcomes, [...liveVoterDetails.values()])
+      applyVoteProgress({ votes: liveVotes, voterOutcomes: liveVoterOutcomes, voterDetails: liveVoterDetails }, entry)
+      upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_BEADS', 'beads_votes', intermediate.drafts, liveVotes, liveVoterOutcomes, [...liveVoterDetails.values()], undefined, undefined, undefined, false, councilSettings.minQuorum)
     },
     ({ anonymizedDrafts, rubric }) => buildBeadsVotePrompt(voteTicketState, anonymizedDrafts, rubric),
     {
@@ -608,6 +585,7 @@ export async function handleBeadsVote(
       undefined,
       undefined,
       true,
+      councilSettings.minQuorum,
     )
     throw buildCouncilQuorumErrorWithDiagnostics(
       `Beads voting quorum not met: ${voteQuorum.message}`,
@@ -637,6 +615,7 @@ export async function handleBeadsVote(
     winnerId,
     totalScore,
     true,
+    councilSettings.minQuorum,
   )
   emitPhaseLog(ticketId, context.externalId, 'COUNCIL_VOTING_BEADS', 'info',
     `Beads voting selected winner: ${winnerId} (score: ${totalScore}).`, { source: 'system', modelId: winnerId })

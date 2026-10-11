@@ -199,12 +199,36 @@ export class CouncilRound<T> {
     }
   }
 
-  /** Stops a working member and resolves with how its turn ended. */
-  async stop(memberId: string): Promise<MemberOutcome> {
+  /**
+   * Throws what `stop` or `retry` would refuse with, without doing either.
+   *
+   * Lets a caller tidy up first (refuse the member's open questions) only when
+   * the action itself is going to happen. State can still move before the
+   * action runs; the action checks again.
+   */
+  check(memberId: string, action: CouncilMemberInterruption): void {
     const slot = this.requireLiveSlot(memberId)
+    if (action === 'retry' && slot.state === 'settled') {
+      if (!slot.resume) {
+        throw new CouncilMemberControlError('MEMBER_BUSY', 'That model is already being stopped or restarted.')
+      }
+      return
+    }
     if (slot.state === 'settled') {
       throw new CouncilMemberControlError('MEMBER_FINISHED', 'That model already finished its turn in this step.')
     }
+    this.requireInterruptibleAttempt(slot)
+  }
+
+  /** Whether the member is mid-attempt, so a session of its own may be open. */
+  isWorking(memberId: string): boolean {
+    return this.slots.get(memberId)?.attempt != null
+  }
+
+  /** Stops a working member and resolves with how its turn ended. */
+  async stop(memberId: string): Promise<MemberOutcome> {
+    this.check(memberId, 'stop')
+    const slot = this.slots.get(memberId)!
     const control = this.requireInterruptibleAttempt(slot)
     this.interrupt(control, 'stop')
     await control.done
@@ -360,6 +384,8 @@ export function openCouncilRound<T>(options: CouncilRoundOptions<T>): CouncilRou
 /** What the routes may do with a live round, whatever its members return. */
 interface CouncilRoundHandle {
   readonly isClosed: boolean
+  check(memberId: string, action: CouncilMemberInterruption): void
+  isWorking(memberId: string): boolean
   stop(memberId: string): Promise<MemberOutcome>
   retry(memberId: string, part?: CouncilMemberRetryPart): Promise<void>
   close(): void
@@ -400,11 +426,26 @@ export function hasLiveCouncilRound(ticketId: string, phase: WorkflowPhaseId): b
   return rounds.has(roundKey(ticketId, phase))
 }
 
-export function stopCouncilMember(ticketId: string, phase: WorkflowPhaseId, memberId: string): Promise<MemberOutcome> {
+/**
+ * Throws what a stop or retry of this member would refuse with right now, and
+ * says whether the member is mid-attempt (so it may have open questions).
+ */
+export function checkCouncilMemberControl(
+  ticketId: string,
+  phase: WorkflowPhaseId,
+  memberId: string,
+  action: CouncilMemberInterruption,
+): { working: boolean } {
+  const round = requireRound(ticketId, phase)
+  round.check(memberId, action)
+  return { working: round.isWorking(memberId) }
+}
+
+export async function stopCouncilMember(ticketId: string, phase: WorkflowPhaseId, memberId: string): Promise<MemberOutcome> {
   return requireRound(ticketId, phase).stop(memberId)
 }
 
-export function retryCouncilMember(
+export async function retryCouncilMember(
   ticketId: string,
   phase: WorkflowPhaseId,
   memberId: string,

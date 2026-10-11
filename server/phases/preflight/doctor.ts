@@ -101,9 +101,17 @@ async function runExecutionCapabilityProbe(
     const operation = (probeError as Error & { openCodeOperation?: string }).openCodeOperation
       ?? 'creating the execution capability probe session'
     Object.assign(probeError, { openCodeOperation: operation })
+    const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: probeError, modelId })
     throw attachOpenCodeBlockedErrorDiagnostics(
       probeError,
-      buildOpenCodeBlockedErrorDiagnostics({ error: probeError, modelId }),
+      {
+        diagnostics: diagnosticResult.diagnostics ? {
+          ...diagnosticResult.diagnostics,
+          kind: diagnosticResult.diagnostics.kind === 'opencode_provider' ? 'opencode_session' : diagnosticResult.diagnostics.kind,
+          source: 'opencode',
+        } : null,
+        errorCodes: [],
+      },
     )
   }
   let sessionErrorEvent: SessionErrorStreamEvent | undefined

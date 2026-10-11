@@ -1216,6 +1216,7 @@ describe("ErrorView", () => {
     renderWithProviders(<ErrorView ticket={ticket} />);
 
     const displayedError = screen.getByText(/Experimental warning/, { selector: "strong" }).closest("p");
+    assert(displayedError);
     expect(displayedError).toHaveTextContent(
       "Experimental warning FAIL src/example.test.ts",
     );

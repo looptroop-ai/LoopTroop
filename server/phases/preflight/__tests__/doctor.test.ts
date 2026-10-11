@@ -599,32 +599,35 @@ describe('Pre-Flight Doctor', () => {
     expect(abortSession).toHaveBeenCalledWith('mock-session-1')
   })
 
-  it('retains the provider cause when capability session creation exhausts its retries', async () => {
+  it('retains server authentication details when capability session creation exhausts its retries', async () => {
     vi.useFakeTimers()
     try {
-      vi.spyOn(adapter, 'createSession').mockRejectedValue(Object.assign(new Error('Your authentication token has expired. Please try refreshing it.'), {
+      vi.spyOn(adapter, 'createSession').mockRejectedValue(Object.assign(new Error('OpenCode server authentication failed. The server password is missing or incorrect.'), {
         openCodeOperation: 'creating an OpenCode session',
         modelErrorDetails: {
-          providerId: 'openai',
           data: {
             statusCode: 401,
             isRetryable: false,
-            responseBody: JSON.stringify({ error: { type: 'authentication_error', code: 'token_expired', message: 'Your authentication token has expired. Please try refreshing it.' } }),
+            responseBody: JSON.stringify({ error: { type: 'authentication_error', code: 'server_authentication_required', message: 'OpenCode server authentication failed. The server password is missing or incorrect.' } }),
           },
         },
       }))
-      const reportPromise = runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+      const reportPromise = runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], {
+        ...defaultContext, lockedMainImplementer: 'openai/gpt-5.4',
+      }, undefined, { ...deps, fetchConnectedModelIds: async () => ['openai/gpt-5.4'] })
       await vi.runAllTimersAsync()
       const report = await reportPromise
 
       expect(report.criticalFailures.find((check) => check.name === 'OpenCode Execution Capability')).toMatchObject({
-        codes: [OPENCODE_PROVIDER_AUTH_FAILED],
+        codes: [],
         diagnostics: {
-          modelId: 'model-a',
-          providerId: 'openai',
+          kind: 'opencode_session',
+          source: 'opencode',
+          modelId: 'openai/gpt-5.4',
           statusCode: 401,
           operation: 'creating an OpenCode session',
-          responseBodyPreview: expect.stringContaining('token_expired'),
+          responseBodyPreview: expect.stringContaining('server_authentication_required'),
+          stackTrace: expect.stringContaining('Failed to create OpenCode session after'),
         },
       })
       expect(adapter.promptCalls).toHaveLength(0)

@@ -11,6 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
+- You can stop or retry one council model while the others keep drafting or voting, instead of waiting for a slow model's timeout.
 - Error page recovery actions (Retry, Continue, Retry with extra note, Edit setup plan, and Cancel) automatically return the workspace to the resumed workflow status or canceled view and clear active error selection.
 - OpenCode v2 scans and prompts tolerate private bookkeeping events safely and avoid automatic title calls that can block a finished response; OpenCode v1 remains supported.
 - Ticket errors show the actual failure first, with model and session diagnostics in technical details collapsed by default below recovery actions.
@@ -30,6 +31,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 
+- Added **Stop** and **Retry** for a single council model in Council Drafting Questions, Voting on Questions, Council Drafting Specs, Voting on Specs, Council Drafting Blueprint, and Voting on Blueprint. During drafting they are small buttons in the top-right corner of the window a model's chip opens; during voting they are icons on each voter's badge in the Voter Status row of Voting Details. Both always ask for confirmation.
+  - Stop closes that model's OpenCode session and the step continues with the others. The model shows as **Stopped**, keeps nothing it wrote, and does not count toward Min Council Quorum. When the stop leaves too few models to reach the quorum, the confirmation says the step will fail; you can still go ahead. If it was the last model working, the step moves on right away. A stop lasts for that step only, so the model still votes in the next one.
+  - Retry restarts that one model with a full AI response timeout of its own, so the step can run longer than usual. It is offered while at least one model is still working: on a model still working, on one that ended without a usable result, and on one that finished fine, whose draft or vote is then thrown away for good.
+  - In Council Drafting Specs, Retry from the Part 1 chip redoes Full Answers and the PRD draft; Retry from the Part 2 chip keeps Full Answers that passed validation and redoes only the PRD draft.
+  - A model waiting on an AI question has that question refused first, recorded in the skip trail as refused by you with the new resolution `member_stopped` or `member_restarted`. Each stop and retry is written to the phase log.
+  - New endpoints `POST /api/tickets/:id/council/members/stop` and `/retry`.
 - Added **Skip all** when more than one AI question is pending. It skips every request pending when confirmed, across all model tabs, including questions that arrive while you enter the optional reason. The same reason is recorded for each request; each rejection can succeed or fail independently. Bulk confirmation is disabled while any answer or skip is being submitted, and Back remains available.
 
 ### Changed
@@ -55,6 +62,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
+- The Council Drafting Questions details no longer say LoopTroop stops the round early when too many drafts fail. The quorum is checked once every model has finished.
 - After Retry, Continue, Retry with extra note, Edit setup plan, or non-deleting Cancel on an error page, the workspace follows the ticket to its resumed status (or Canceled view) instead of staying on the resolved error. Error selection is cleared when leaving BLOCKED_ERROR without disrupting historical error reviews during other workflow transitions.
 - OpenCode communication failures preserve the original error cause instead of reducing it to `fetch failed`, including exhausted session-creation retries and nested AI retry errors. Error messages name the failed operation and reported error, then point to captured connection details or say when no exact connection cause was reported. Collapsed Technical details includes the operation and available bounded, sanitized connection diagnostics without guessing a timeout or model rejection. Non-connection codes stay separate from Connection code, and terminal session failures retain their known operation.
 - Interview batch parsing repairs known field-tag formatting only after all ordinary parsing candidates fail. The repair requires an explicit `INTERVIEW_BATCH` wrapper and all five known root fields, converts existing scalar values and YAML containers, and corrects the observed stray terminal questions closer while preserving literal XML inside question text. Existing validation and normalization still apply. Ambiguous, conflicting, truncated, or unknown structures are rejected without inventing content, including conflicting question and option aliases. Rejected field-tag repairs name the structural problem in retry and error messages. Shortened fallbacks from the same tagged batch cannot discard its emitted final-batch flag or commentary, including when tags are indented; a malformed earlier wrapper cannot swallow later independent output. Complete ordinary candidates keep their existing priority. Malformed field tags with long whitespace no longer cause excessive backtracking during guard checks. Accepted correction notices name the repair rule and affected fields; short before/after excerpts remain in structured log-entry data. Successful structured retries are also recorded. Other parsers retain their existing repair rules.

@@ -194,7 +194,8 @@ const WORKFLOW_PHASE_DETAILS = {
     steps: [
       "Shared context: Every council member gets the same ticket details and relevant-files artifact.",
       "Independent drafting: Each model proposes its own questions, ordering, and reasoning. It may inspect a small part of the repository read-only if the provided context does not prove a repository fact.",
-      "Progress tracking: LoopTroop streams progress and watches quorum so it can stop early if too many drafts fail.",
+      "Progress tracking: LoopTroop streams each model's progress and checks quorum once every model has finished.",
+      "Stop or retry one model: While drafting runs, open a model's chip and use Stop or Retry in the top-right corner of its window. Both ask for confirmation. Stop closes that model's OpenCode session and the other models carry on. Retry starts that model over.",
       "Validation and retries: Drafts are validated against the expected schema. Malformed attempts stay diagnostic-only and retries run in fresh sessions.",
       "Artifact persistence: Accepted drafts are stored for the vote, along with model identity, progress, and raw attempt history.",
     ],
@@ -206,12 +207,18 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       "Quorum Met → Voting on Questions: The workflow advances once enough valid drafts exist to score.",
       "Quorum Failure → Blocked Error: If too few valid drafts survive, the ticket pauses for recovery.",
+      "Last Model Stopped → Voting on Questions: Stopping the last model still drafting ends the step at once instead of waiting for the AI response timeout. The step advances if enough valid drafts exist.",
+      "Stop Below Quorum → Blocked Error: If you confirm a stop after the warning that quorum can no longer be reached, the step fails when the round ends, like any quorum failure. Retry from Blocked Error runs the whole step again.",
+      "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted model's session ended, the step fails rather than risk two copies of the model running.",
       "Cancel → Canceled: User cancellation stops the active drafting work.",
     ],
     notes: [
       "This is the first multi-model phase in the workflow.",
       "Council members do not see each other's drafts while this phase is running.",
       "Malformed output stays diagnostic-only. It does not appear as a usable draft.",
+      "A model you stop shows as Stopped, does not count toward Min Council Quorum, and keeps nothing it wrote. The stop lasts for this step only, so the model still votes in Voting on Questions.",
+      "Retry is offered while at least one model is still working: on a model still drafting, on one that ended without a usable draft (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished draft is thrown away for good, and if the new run fails, the model counts as failed. The retried model gets a full AI response timeout of its own, so the step can run longer than usual.",
+      "Every Stop and Retry is written to the phase log.",
       "Context available: Relevant Files and Ticket Details, with focused read-only repository inspection only when needed.",
     ],
     equivalents: [
@@ -227,6 +234,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Random order: Each voter sees the drafts in a different order to reduce position bias.",
       "Independent scoring: Every council member scores every draft against the interview rubric and writes a short justification.",
       "Validation and retries: Vote payloads are validated, and malformed votes are retried in fresh sessions while rejected attempts stay in Raw diagnostics.",
+      "Stop or retry one voter: While voting runs, open Voting Details and use the Stop or Retry icon on a voter's badge in the Voter Status row. Both ask for confirmation. Stop closes that voter's OpenCode session and the other voters carry on. Retry has that voter score the drafts again.",
       "Winner selection: The resolver totals the scores, applies tie-break rules when needed, and records the winning draft plus the audit trail.",
     ],
     outputs: [
@@ -237,12 +245,18 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       "Winner Selected → Refining Interview: The chosen draft moves into normalization.",
       "Voting Failure → Blocked Error: If the vote cannot produce a valid winner, the ticket pauses for recovery.",
+      "Last Voter Stopped → Refining Interview: Stopping the last voter still scoring ends the vote at once instead of waiting for the AI response timeout. The winner is chosen if enough valid votes exist.",
+      "Stop Below Quorum → Blocked Error: If you confirm a stop after the warning that quorum can no longer be reached, the vote fails when the round ends, like any quorum failure. Retry from Blocked Error runs the whole vote again.",
+      "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted voter's session ended, the vote fails rather than risk two copies of the model running.",
     ],
     notes: [
       "Anonymization and random ordering reduce bias.",
       "Context available: Relevant Files, Ticket Details, and anonymized competing drafts.",
       "Voting Raw views show the validated drafts that were actually scored.",
       "The same rubric is used for every voter so the scores stay comparable.",
+      "A voter you stop shows as Stopped and does not count toward Min Council Quorum. The stop lasts for this step only.",
+      "Retry is offered while at least one voter is still working: on a voter still scoring, on one that ended without usable scores (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished vote is thrown away for good, and if the new run fails, the voter counts as failed. The retried voter gets a full AI response timeout of its own, so the step can run longer than usual.",
+      "Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the voting step of the Interview phase. The same pattern repeats later for PRD drafts and beads blueprints.",
@@ -395,6 +409,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Why per-model answers matter: Different models may make different reasonable assumptions. Keeping Full Answers per model lets the vote compare a PRD together with the assumptions that produced it.",
       "Part 2, PRD drafting: Each model uses its own completed answer set, plus relevant files and ticket details, to write a full PRD with requirements, acceptance criteria, edge cases, test intent, and implementation guidance.",
       "Draft gating: If a model cannot produce a valid Full Answers artifact, its PRD draft does not start. The workflow records that row as invalid with diagnostics instead of pretending a usable PRD exists.",
+      "Stop or retry one model: While drafting runs, each model has a Part 1 chip and a Part 2 chip. Open either one and use Stop or Retry in the top-right corner of its window. Both ask for confirmation. Stop from either chip stops the model while the others carry on. Retry from the Part 1 chip redoes both parts. Retry from the Part 2 chip keeps Part 1 answers that passed validation and redoes only the PRD draft; without them it redoes both parts.",
       "Validation and retries: LoopTroop validates both Full Answers and PRD drafts, keeps accepted bodies for the vote, and records rejected attempts and diagnostics in Raw history. Structured retries run in fresh sessions.",
     ],
     outputs: [
@@ -405,12 +420,18 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       "Quorum Met → Voting on Specs: The workflow advances once enough valid PRDs exist to score.",
       "Quorum Failure → Blocked Error: If too few valid drafts survive, the ticket pauses for recovery.",
+      "Last Model Stopped → Voting on Specs: Stopping the last model still drafting ends the step at once instead of waiting for the AI response timeout. The step advances if enough valid PRDs exist.",
+      "Stop Below Quorum → Blocked Error: If you confirm a stop after the warning that quorum can no longer be reached, the step fails when the round ends, like any quorum failure. Retry from Blocked Error runs the whole step again.",
+      "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted model's session ended, the step fails rather than risk two copies of the model running.",
     ],
     notes: [
       "This phase has two internal parts with different context slices: Interview Results for Full Answers, then Full Answers for PRD drafting.",
       "Malformed Full Answers or PRD text stays diagnostic-only. Safe parser repairs fix formatting, not meaning.",
       "This is the stage that turns interview intent into a formal implementation specification.",
       "The vote later selects both a PRD approach and the assumptions behind it.",
+      "A model you stop shows as Stopped, does not count toward Min Council Quorum, and keeps nothing it wrote. A model stopped during Part 1 never starts its PRD draft. The stop lasts for this step only, so the model still votes in Voting on Specs.",
+      "Retry is offered while at least one model is still working: on a model still drafting, on one that ended without a usable result (failed, invalid output, timed out, or stopped), and on one that finished fine. Retrying a finished model throws away its PRD draft for good, and its Full Answers too when you retry from Part 1. If the new run fails, the model counts as failed. The retried model gets a full AI response timeout of its own, so the step can run longer than usual.",
+      "If the model was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the drafting step of the PRD phase. Interview and beads use the same multi-model pattern later, but PRD drafting is the only one with a separate Full Answers stage first.",
@@ -426,6 +447,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Independent scoring: Every council member scores every draft with the PRD rubric and writes a short justification.",
       "Validation and retries: Vote payloads are validated, and malformed votes are retried in fresh sessions while rejected attempts stay in Raw diagnostics.",
       "Weighted rubric: The score emphasizes requirement completeness, acceptance criteria quality, edge cases, test intent, and overall coherence.",
+      "Stop or retry one voter: While voting runs, open Voting Details and use the Stop or Retry icon on a voter's badge in the Voter Status row. Both ask for confirmation. Stop closes that voter's OpenCode session and the other voters carry on. Retry has that voter score the drafts again.",
       "Winner selection: The resolver totals the weighted scores, applies tie-break rules when needed, and records the winner plus the audit trail.",
     ],
     outputs: [
@@ -436,12 +458,18 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       "Winner Selected → Refining Specs: The chosen draft moves into refinement.",
       "Voting Failure → Blocked Error: If the vote cannot produce a valid winner, the ticket pauses for recovery.",
+      "Last Voter Stopped → Refining Specs: Stopping the last voter still scoring ends the vote at once instead of waiting for the AI response timeout. The winner is chosen if enough valid votes exist.",
+      "Stop Below Quorum → Blocked Error: If you confirm a stop after the warning that quorum can no longer be reached, the vote fails when the round ends, like any quorum failure. Retry from Blocked Error runs the whole vote again.",
+      "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted voter's session ended, the vote fails rather than risk two copies of the model running.",
     ],
     notes: [
       "Context available: Relevant Files, Ticket Details, Interview Results, and anonymized competing drafts.",
       "The winner is not the final PRD. It still goes through refinement and coverage.",
       "Voting Raw views show the validated drafts that were actually scored.",
       "The rubric is weighted, so some categories matter more than others in the final score.",
+      "A voter you stop shows as Stopped and does not count toward Min Council Quorum. The stop lasts for this step only.",
+      "Retry is offered while at least one voter is still working: on a voter still scoring, on one that ended without usable scores (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished vote is thrown away for good, and if the new run fails, the voter counts as failed. The retried voter gets a full AI response timeout of its own, so the step can run longer than usual.",
+      "If the voter was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the voting step of the PRD phase. Interview and beads use the same pattern with different rubrics.",
@@ -561,6 +589,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Independent blueprint drafting: Every model proposes its own semantic bead breakdown, including task descriptions, acceptance criteria, dependencies, and explicit structured verification commands. A planned command stays data for the executor and never turns a bare command string into a shell invocation.",
       "Decomposition strategy: Models decide how much work belongs in each bead and how those beads should depend on each other. Different models may arrive at very different task shapes.",
       "Validation and metrics: LoopTroop validates the blueprint structure, records task and graph metrics, keeps accepted drafts for the vote, and stores rejected attempts and diagnostics in Raw history.",
+      "Stop or retry one model: While drafting runs, open a model's chip and use Stop or Retry in the top-right corner of its window. Both ask for confirmation. Stop closes that model's OpenCode session and the other models carry on. Retry starts that model over.",
     ],
     outputs: [
       "Competing semantic bead blueprints from the council members.",
@@ -570,12 +599,18 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       "Quorum Met → Voting on Blueprint: The workflow advances once enough valid blueprints exist to score.",
       "Quorum Failure → Blocked Error: If too few valid blueprints survive, the ticket pauses for recovery.",
+      "Last Model Stopped → Voting on Blueprint: Stopping the last model still drafting ends the step at once instead of waiting for the AI response timeout. The step advances if enough valid blueprints exist.",
+      "Stop Below Quorum → Blocked Error: If you confirm a stop after the warning that quorum can no longer be reached, the step fails when the round ends, like any quorum failure. Retry from Blocked Error runs the whole step again.",
+      "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted model's session ended, the step fails rather than risk two copies of the model running.",
     ],
     notes: [
       "Context available: Relevant Files, Ticket Details, and PRD, with focused read-only repository inspection only when needed.",
       "These blueprints stay semantic. Exact file targets and runtime metadata are added later during expansion.",
       "Malformed blueprint output stays diagnostic-only. It does not appear as a usable draft.",
       "Different models often spot different natural task boundaries, which is why the workflow drafts several plans before voting.",
+      "A model you stop shows as Stopped, does not count toward Min Council Quorum, and keeps nothing it wrote. The stop lasts for this step only, so the model still votes in Voting on Blueprint.",
+      "Retry is offered while at least one model is still working: on a model still drafting, on one that ended without a usable blueprint (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished blueprint is thrown away for good, and if the new run fails, the model counts as failed. The retried model gets a full AI response timeout of its own, so the step can run longer than usual.",
+      "If the model was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the drafting step of the beads phase. Interview and PRD use the same multi-model pattern, but they draft question sets or specs instead of task graphs.",
@@ -590,6 +625,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Random order: Each voter sees the blueprints in a different order to reduce position bias.",
       "Independent scoring: Every council member scores every blueprint with the architecture rubric and writes a short justification.",
       "Validation and retries: Vote payloads are validated, and malformed votes are retried in fresh sessions while rejected attempts stay in Raw diagnostics.",
+      "Stop or retry one voter: While voting runs, open Voting Details and use the Stop or Retry icon on a voter's badge in the Voter Status row. Both ask for confirmation. Stop closes that voter's OpenCode session and the other voters carry on. Retry has that voter score the blueprints again.",
       "Winner selection: The resolver totals the scores, applies tie-break rules when needed, and records the winner plus the audit trail.",
     ],
     outputs: [
@@ -600,12 +636,18 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       "Winner Selected → Refining Blueprint: The chosen blueprint moves into refinement.",
       "Voting Failure → Blocked Error: If the vote cannot produce a valid winner, the ticket pauses for recovery.",
+      "Last Voter Stopped → Refining Blueprint: Stopping the last voter still scoring ends the vote at once instead of waiting for the AI response timeout. The winner is chosen if enough valid votes exist.",
+      "Stop Below Quorum → Blocked Error: If you confirm a stop after the warning that quorum can no longer be reached, the vote fails when the round ends, like any quorum failure. Retry from Blocked Error runs the whole vote again.",
+      "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted voter's session ended, the vote fails rather than risk two copies of the model running.",
     ],
     notes: [
       "Context available: Relevant Files, Ticket Details, PRD, and anonymized competing drafts. The vote preserves structured command and dependency fields instead of flattening them into prose.",
       "This rubric is more architecture-focused than the interview and PRD voting rubrics.",
       "Voting Raw views show the validated blueprints that were actually scored.",
       "The winning blueprint is not the final plan. It still goes through refinement, coverage, and expansion.",
+      "A voter you stop shows as Stopped and does not count toward Min Council Quorum. The stop lasts for this step only.",
+      "Retry is offered while at least one voter is still working: on a voter still scoring, on one that ended without usable scores (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished vote is thrown away for good, and if the new run fails, the voter counts as failed. The retried voter gets a full AI response timeout of its own, so the step can run longer than usual.",
+      "If the voter was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the voting step of the beads phase. Interview and PRD use the same pattern with different rubrics.",
@@ -1330,7 +1372,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_DELIBERATING",
     label: "Council Drafting Questions",
     description:
-      "Each council model is drafting interview questions on its own so the workflow can compare different approaches before choosing one. Models work in parallel from the same context, and only valid drafts move forward to voting.",
+      "Each council model is drafting interview questions on its own so the workflow can compare different approaches before choosing one. Models work in parallel from the same context, and only valid drafts move forward to voting. You can stop or retry one model from its chip while the others keep working.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_DELIBERATING,
     kanbanPhase: "in_progress",
     groupId: "interview",
@@ -1343,7 +1385,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_VOTING_INTERVIEW",
     label: "Voting on Questions",
     description:
-      "The council is scoring the interview drafts and choosing the strongest question set. Drafts are anonymized so the vote stays about quality, not authorship, and the winner becomes the basis for the interactive interview.",
+      "The council is scoring the interview drafts and choosing the strongest question set. Drafts are anonymized so the vote stays about quality, not authorship, and the winner becomes the basis for the interactive interview. You can stop or retry one voter from its badge in Voting Details while the others keep scoring.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_INTERVIEW,
     kanbanPhase: "in_progress",
     groupId: "interview",
@@ -1410,7 +1452,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "DRAFTING_PRD",
     label: "Council Drafting Specs",
     description:
-      "The council is filling skipped answers where needed and drafting competing PRDs. Each model works from its own completed answer set so the vote can compare both assumptions and specs. Invalid Full Answers stay diagnostic-only instead of turning into broken drafts.",
+      "The council is filling skipped answers where needed and drafting competing PRDs. Each model works from its own completed answer set so the vote can compare both assumptions and specs. Invalid Full Answers stay diagnostic-only instead of turning into broken drafts. You can stop or retry one model from its Part 1 or Part 2 chip while the others keep working.",
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_PRD,
     kanbanPhase: "in_progress",
     groupId: "prd",
@@ -1424,7 +1466,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_VOTING_PRD",
     label: "Voting on Specs",
     description:
-      "The council is scoring the PRD drafts and choosing the best starting point. The winner is the baseline for refinement, not the final approved spec, and the weighted rubric focuses on completeness, clarity, and testable requirements.",
+      "The council is scoring the PRD drafts and choosing the best starting point. The winner is the baseline for refinement, not the final approved spec, and the weighted rubric focuses on completeness, clarity, and testable requirements. You can stop or retry one voter from its badge in Voting Details while the others keep scoring.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_PRD,
     kanbanPhase: "in_progress",
     groupId: "prd",
@@ -1482,7 +1524,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "DRAFTING_BEADS",
     label: "Council Drafting Blueprint",
     description:
-      "The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and explicit structured verification commands. These drafts stay at the planning level, so exact file targets and runtime metadata are added later.",
+      "The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and explicit structured verification commands. These drafts stay at the planning level, so exact file targets and runtime metadata are added later. You can stop or retry one model from its chip while the others keep working.",
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_BEADS,
     kanbanPhase: "in_progress",
     groupId: "beads",
@@ -1495,7 +1537,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_VOTING_BEADS",
     label: "Voting on Blueprint",
     description:
-      "The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage. The vote focuses on decomposition quality, dependency logic, feasibility, and testability.",
+      "The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage. The vote focuses on decomposition quality, dependency logic, feasibility, and testability. You can stop or retry one voter from its badge in Voting Details while the others keep scoring.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_BEADS,
     kanbanPhase: "in_progress",
     groupId: "beads",

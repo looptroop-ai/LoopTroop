@@ -44,8 +44,8 @@ export interface InitializeTicketResult {
 export class TicketInitializationError extends Error {
   code: string
 
-  constructor(code: string, message: string) {
-    super(message)
+  constructor(code: string, message: string, options?: ErrorOptions) {
+    super(message, options)
     this.name = 'TicketInitializationError'
     this.code = code
   }
@@ -69,7 +69,7 @@ export function getTicketDir(projectRoot: string, externalId: string): string {
 
 function runGit(args: string[], cwd: string, code: string, message: string): string {
   const result = runGitSync(cwd, args)
-  if (!result.ok) throw new TicketInitializationError(code, `${message}: ${result.errorDetail}`)
+  if (!result.ok) throw new TicketInitializationError(code, `${message}: ${result.errorDetail}`, { cause: result.spawnError })
   return result.stdout
 }
 
@@ -97,10 +97,11 @@ function ensureGitRepo(projectFolder: string) {
 function ensureBaseBranch(projectFolder: string, baseBranch: string): string {
   try {
     return resolveBaseBranchRef(projectFolder, baseBranch)
-  } catch {
+  } catch (error) {
     throw new TicketInitializationError(
       'INIT_BASE_BRANCH_MISSING',
       `Project repository does not have the detected base branch "${baseBranch}": ${projectFolder}`,
+      { cause: error },
     )
   }
 }
@@ -119,6 +120,7 @@ function ensureLoopTroopGitExclude(projectFolder: string, mode: IgnoreMode) {
     throw new TicketInitializationError(
       'INIT_LOOPTROOP_EXCLUDE_FAILED',
       `Failed to install the LoopTroop Git ignore rules: ${getErrorMessage(err)}`,
+      { cause: err },
     )
   }
 }
@@ -148,6 +150,7 @@ function ensureWorktreePathsIgnored(worktreePath: string, mode: IgnoreMode) {
     throw new TicketInitializationError(
       'INIT_LOOPTROOP_EXCLUDE_FAILED',
       `Failed to ignore LoopTroop runtime paths in the ticket worktree: ${getErrorMessage(err)}`,
+      { cause: err },
     )
   }
 }
@@ -162,6 +165,7 @@ function getTrackedLoopTroopPaths(projectFolder: string): string[] {
     throw new TicketInitializationError(
       'INIT_LOOPTROOP_TRACKED_CHECK_FAILED',
       `Failed to inspect tracked LoopTroop runtime paths: ${result.errorDetail}`,
+      { cause: result.spawnError },
     )
   }
   return parseGitPathListZ(result.stdout)
@@ -307,7 +311,7 @@ async function materializeWorktree(
     try {
       await runGitMutationOrThrow(projectFolder, args)
     } catch (error) {
-      throw new TicketInitializationError('INIT_WORKTREE_CREATE_FAILED', `Failed to create ticket worktree: ${getErrorMessage(error)}`)
+      throw new TicketInitializationError('INIT_WORKTREE_CREATE_FAILED', `Failed to create ticket worktree: ${getErrorMessage(error)}`, { cause: error })
     }
     return
   }
@@ -330,7 +334,7 @@ async function materializeWorktree(
     try {
       await runGitMutationOrThrow(projectFolder, args)
     } catch (error) {
-      throw new TicketInitializationError('INIT_WORKTREE_CREATE_FAILED', `Failed to create ticket worktree: ${getErrorMessage(error)}`)
+      throw new TicketInitializationError('INIT_WORKTREE_CREATE_FAILED', `Failed to create ticket worktree: ${getErrorMessage(error)}`, { cause: error })
     }
     preserved.restore()
   } catch (err) {

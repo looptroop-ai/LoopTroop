@@ -9,7 +9,7 @@ import {
   type BlockedErrorDiagnosticKind,
 } from '@shared/errorDiagnostics'
 import type { OpenCodeResponseMeta } from './assistantMessageAnalysis'
-import type { StepFinishMessagePart } from './types'
+import { parseModelRef, type StepFinishMessagePart } from './types'
 import type { ModelErrorInfo } from './errorDetails'
 import { extractModelErrorInfo, summarizeModelErrorForLog } from './errorDetails'
 import { isRecord } from '@shared/typeGuards'
@@ -98,10 +98,11 @@ function isAuthLikeFailure(info: ModelErrorInfo | undefined, message: string): b
     .filter(Boolean)
     .join('\n')
     .toLowerCase()
+    .replace(/_/g, ' ')
 
   return info?.statusCode === 401
-    || info?.statusCode === 403
-    || /\b(auth|authentication|authenticated|unauthorized|forbidden|credential|api key|token|signing in|sign in)\b/.test(haystack)
+    || /\b(auth|authentication|authenticated|authorization|unauthorized|credentials?|api[ -]?key|signing in|sign in)\b/.test(haystack)
+    || /\btoken\s+(?:(?:has|have)\s+(?:been\s+)?|(?:is|was)\s+)?(?:expired|invalidated|revoked)\b|\b(?:expired|invalidated|revoked)\s+token\b/.test(haystack)
 }
 
 function isProviderLikeFailure(info: ModelErrorInfo | undefined, message: string): boolean {
@@ -118,7 +119,7 @@ function isProviderLikeFailure(info: ModelErrorInfo | undefined, message: string
 
   return hasProviderSignal(info)
     || isAuthLikeFailure(info, message)
-    || /\b(rate[_ -]?(?:limit|limited)|too many requests|usage limit|limit (?:has been )?reached|resource exhausted|overloaded|overload|capacity|service unavailable|temporarily unavailable|quota|credits?|modelerror|model error|invalid_request_error|provider)\b/.test(haystack)
+    || /\b(rate[_ -]?(?:limit|limited)|too many requests|usage limit|limit (?:has been )?reached|resource exhausted|overloaded|overload|capacity|service unavailable|temporarily unavailable|quota|credits?|modelerror|model error|invalid_request_error|provider|forbidden)\b/.test(haystack)
 }
 
 function parseHttpStatus(message: string): number | undefined {
@@ -158,11 +159,14 @@ export function buildOutputTruncatedBlockedErrorDiagnostics(input: {
 }): OpenCodeBlockedErrorDiagnosticsResult {
   const finishReason = input.finishReason?.trim() || 'length'
   const tokens = input.tokens
+  const model = parseModelRef(input.modelId)
   const diagnostics = normalizeBlockedErrorDiagnostics({
     kind: 'model_output_truncated',
     source: 'opencode',
     summary: buildOutputTruncatedSummary(finishReason, tokens),
     modelId: input.modelId,
+    providerId: model?.providerID,
+    providerModelId: model?.modelID,
     sessionId: input.sessionId,
     finishReason,
     isRetryable: false,
@@ -244,6 +248,7 @@ export function buildOpenCodeBlockedErrorDiagnostics(
     .filter(Boolean).join('\n')
   const operation = errorChain.map((error) => readErrorProperty(error, 'openCodeOperation'))
     .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim()
+  const model = parseModelRef(attachedDiagnostics?.modelId ?? input.modelId)
   if (attachedDiagnostics) {
     return {
       diagnostics: normalizeBlockedErrorDiagnostics({
@@ -252,6 +257,9 @@ export function buildOpenCodeBlockedErrorDiagnostics(
         stackTrace: attachedDiagnostics.stackTrace ?? stackTrace,
         operation: attachedDiagnostics.operation ?? operation,
         modelId: attachedDiagnostics.modelId ?? input.modelId,
+        providerId: attachedDiagnostics.providerId ?? model?.providerID,
+        providerModelId: attachedDiagnostics.providerModelId
+          ?? (!attachedDiagnostics.providerId || attachedDiagnostics.providerId === model?.providerID ? model?.modelID : undefined),
         sessionId: attachedDiagnostics.sessionId ?? input.sessionId,
         finishReason: attachedDiagnostics.finishReason ?? input.responseMeta?.latestStepFinishReason,
         inputTokens: attachedDiagnostics.inputTokens ?? input.responseMeta?.latestStepFinishTokens?.input,
@@ -330,8 +338,9 @@ export function buildOpenCodeBlockedErrorDiagnostics(
     ...causeDetails,
     modelId: input.modelId,
     sessionId: input.sessionId,
-    providerId: info?.providerId,
-    providerModelId: info?.providerModelId,
+    providerId: info?.providerId ?? model?.providerID,
+    providerModelId: info?.providerModelId
+      ?? (!info?.providerId || info.providerId === model?.providerID ? model?.modelID : undefined),
     statusCode,
     requestModel: info?.requestModel,
     isRetryable: info?.isRetryable,
@@ -349,7 +358,7 @@ export function buildOpenCodeBlockedErrorDiagnostics(
 
   return {
     diagnostics,
-    errorCodes: mergeErrorCodes(carriedErrorCodes, resolveErrorCodes(info, summaryMessage)),
+    errorCodes: mergeErrorCodes(carriedErrorCodes, resolveErrorCodes(infoWithStatus, summaryMessage)),
   }
 }
 

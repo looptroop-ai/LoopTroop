@@ -129,7 +129,7 @@ export type TicketEvent =
       lockedAiQuestionWindow?: number | null;
       lockedAiQuestionWindowSource?: SettingSource | null;
     }
-  | { type: "INIT_FAILED"; message: string; codes?: string[] }
+  | { type: "INIT_FAILED"; message: string; codes?: string[]; diagnostics?: BlockedErrorDiagnostics | null }
   | { type: "QUESTIONS_READY"; result: Record<string, unknown> }
   | { type: "WINNER_SELECTED"; winner: string }
   | { type: "READY" }
@@ -155,7 +155,12 @@ export type TicketEvent =
   | { type: "EXECUTION_SETUP_EVIDENCE_CHANGED" }
   | { type: "EXECUTION_SETUP_READY" }
   | { type: "EXECUTION_SETUP_FAILED"; errors?: string[] }
-  | { type: "CHECKS_FAILED"; errors: string[] }
+  | {
+      type: "CHECKS_FAILED";
+      errors: string[];
+      codes?: string[];
+      diagnostics?: BlockedErrorDiagnostics | null;
+    }
   | { type: "BEAD_COMPLETE" }
   | {
       type: "BEAD_ERROR";

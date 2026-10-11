@@ -253,6 +253,35 @@ describe("ticketMachine execution setup flow", () => {
     expect(actor.getSnapshot().context.errorDiagnostics).toBeNull();
   });
 
+  it("records and clears provider diagnostics and cause codes for failed readiness checks", () => {
+    const actor = createRestoredActor({ status: "PRE_FLIGHT_CHECK" });
+    const diagnostics = {
+      kind: "opencode_provider" as const,
+      source: "provider" as const,
+      summary: "Your authentication token has expired. Please try refreshing it. (HTTP 401)",
+      modelId: "openai/gpt-5.4",
+      sessionId: "ses-readiness",
+      statusCode: 401,
+      failedChecks: [{ name: "OpenCode Execution Capability", category: "connectivity", message: "Your authentication token has expired." }],
+    };
+    actor.start();
+    actor.send({
+      type: "CHECKS_FAILED",
+      errors: ["OpenCode Execution Capability: Your authentication token has expired."],
+      codes: ["OPENCODE_PROVIDER_AUTH_FAILED", "PREFLIGHT_FAILED"],
+      diagnostics,
+    });
+
+    expect(actor.getSnapshot().value).toBe("BLOCKED_ERROR");
+    expect(actor.getSnapshot().context.error).toBe("OpenCode Execution Capability: Your authentication token has expired.");
+    expect(actor.getSnapshot().context.errorCodes).toEqual(["PREFLIGHT_FAILED", "OPENCODE_PROVIDER_AUTH_FAILED"]);
+    expect(actor.getSnapshot().context.errorDiagnostics).toEqual(diagnostics);
+    actor.send({ type: "RETRY" });
+    expect(actor.getSnapshot().value).toBe("PRE_FLIGHT_CHECK");
+    expect(actor.getSnapshot().context.errorDiagnostics).toBeNull();
+    actor.stop();
+  });
+
   it("records and clears structured diagnostics for blocked BEAD_ERROR events", () => {
     const actor = createRestoredActor({
       title: "Diagnostic bead error",

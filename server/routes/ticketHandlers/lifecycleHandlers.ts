@@ -68,6 +68,8 @@ import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
 import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
 import { isExecutionBandStatus } from '../../workflow/executionBand'
 import { getErrorMessage } from '@shared/typeGuards'
+import { normalizeBlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+import { buildOpenCodeBlockedErrorDiagnostics } from '../../opencode/blockedErrorDiagnostics'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { broadcaster } from '../../sse/broadcaster'
 import {
@@ -224,10 +226,18 @@ export async function handleStartTicket(c: Context) {
     }
     const initErr = err instanceof TicketInitializationError
       ? err
-      : new TicketInitializationError('INIT_UNKNOWN', getErrorMessage(err))
+      : new TicketInitializationError('INIT_UNKNOWN', getErrorMessage(err), { cause: err })
+    const diagnostics = normalizeBlockedErrorDiagnostics({
+      ...buildOpenCodeBlockedErrorDiagnostics({ error: initErr }).diagnostics,
+      kind: 'runtime',
+      source: 'system',
+      summary: initErr.message,
+      operation: 'initializing the ticket workspace',
+    })
     emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workspace Init: ${initErr.message}`, {
       code: initErr.code,
       error: initErr.message,
+      diagnostics,
     })
 
     try {
@@ -236,6 +246,7 @@ export async function handleStartTicket(c: Context) {
         type: 'INIT_FAILED',
         message: initErr.message,
         codes: [initErr.code],
+        diagnostics,
       })
     } catch (sendErr) {
       const sendErrDetails = getErrorMessage(sendErr)

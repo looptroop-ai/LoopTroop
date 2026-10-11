@@ -1,5 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { createActor } from 'xstate'
+import { ticketMachine } from '../../machines/ticketMachine'
+import type { BlockedErrorDiagnostics } from '../../../shared/errorDiagnostics'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { initializeDatabase } from '../../db/init'
@@ -84,6 +87,7 @@ interface PersistedLogEvent {
   type?: string
   message?: string
   content?: string
+  data?: { diagnostics?: BlockedErrorDiagnostics }
 }
 
 function setupStartTicketApp() {
@@ -570,28 +574,19 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
-  it('freezes the saved project Git hook policy at start', async () => {
+  it.each(['observe_only', 'use_native_hooks'] as const)('freezes the saved project Git hook policy at start: %s', async (policy) => {
     sqlite.exec(`
       INSERT INTO profiles (main_implementer, council_members, git_hook_policy)
       VALUES ('openai/codex-mini-latest', '["openai/codex-mini-latest"]', 'observe_only');
     `)
-    const inherited = setupStartTicketApp()
-    expect((await inherited.app.request(`/api/tickets/${inherited.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
-    expect(getTicketByRef(inherited.ticket.id)).toMatchObject({
-      lockedGitHookPolicy: 'observe_only',
+    const { app, project, ticket } = setupStartTicketApp()
+    if (policy === 'use_native_hooks') updateProject(project.id, { gitHookPolicy: policy })
+    expect((await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })).status).toBe(200)
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      lockedGitHookPolicy: policy,
       lockedGitHookPolicySource: 'project',
     })
-
-    const projectOverride = setupStartTicketApp()
-    updateProject(projectOverride.project.id, { gitHookPolicy: 'use_native_hooks' })
-    expect((await projectOverride.app.request(`/api/tickets/${projectOverride.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
-    expect(getTicketByRef(projectOverride.ticket.id)).toMatchObject({
-      lockedGitHookPolicy: 'use_native_hooks',
-      lockedGitHookPolicySource: 'project',
-    })
-
-    broadcaster.clearTicket(inherited.ticket.id)
-    broadcaster.clearTicket(projectOverride.ticket.id)
+    broadcaster.clearTicket(ticket.id)
   })
 
   it('writes a DRAFT error log when model validation fails and leaves the ticket in DRAFT', async () => {
@@ -621,9 +616,10 @@ describe('ticketRouter POST /tickets/:id/start', () => {
 
   it('writes a DRAFT initialization error log before blocking the ticket', async () => {
     const { app, ticket } = setupStartTicketApp()
+    const cause = new TypeError('Git checkout failed')
 
     vi.mocked(initializeTicket).mockImplementationOnce(() => {
-      throw new TicketInitializationError('INIT_TEST', 'Worktree initialization exploded.')
+      throw new TicketInitializationError('INIT_TEST', 'Worktree initialization exploded.', { cause })
     })
 
     const response = await app.request(`/api/tickets/${ticket.id}/start`, {
@@ -638,6 +634,21 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       details: 'Worktree initialization exploded.',
     })
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+    const event = vi.mocked(sendTicketEvent).mock.calls.find(([, event]) => event.type === 'INIT_FAILED')?.[1]
+    if (!event || event.type !== 'INIT_FAILED') throw new Error('Expected initialization failure event')
+    expect(event.diagnostics).toMatchObject({
+      kind: 'runtime', source: 'system', operation: 'initializing the ticket workspace',
+      errorName: 'TicketInitializationError', stackTrace: expect.stringContaining('Caused by: TypeError: Git checkout failed'),
+    })
+    expect(readPersistedLogEvents(ticket.id).find((entry) => entry.type === 'error')?.data?.diagnostics)
+      .toEqual(event.diagnostics)
+    const actor = createActor(ticketMachine, { input: { ticketId: ticket.id, projectId: ticket.projectId, externalId: ticket.externalId } })
+    actor.start()
+    actor.send(event)
+    expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR')
+    expect(actor.getSnapshot().context.errorDiagnostics).toEqual(event.diagnostics)
+    expect(actor.getSnapshot().context.errorCodes).toEqual(['INIT_TEST'])
+    actor.stop()
 
     expect(getDraftLogMessages(ticket.id)).toEqual([
       'Start requested.',
@@ -647,6 +658,30 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       '✗ Workspace Init: Worktree initialization exploded.',
     ])
 
+    broadcaster.clearTicket(ticket.id)
+  })
+
+  it('retains and sanitizes an unexpected initialization error without adding provider advice codes', async () => {
+    const { app, ticket } = setupStartTicketApp()
+    const cause = new TypeError('Authentication cache is read-only')
+    cause.stack = 'TypeError: Authentication cache is read-only\n    at createDirectory (workspace.ts:22:4)\napiKey=sk-private-initialization-key'
+    vi.mocked(initializeTicket).mockRejectedValueOnce(cause)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'BLOCKED_ERROR', codes: ['INIT_UNKNOWN'] })
+    const event = vi.mocked(sendTicketEvent).mock.calls.find(([, event]) => event.type === 'INIT_FAILED')?.[1]
+    if (!event || event.type !== 'INIT_FAILED') throw new Error('Expected initialization failure event')
+    expect(event.codes).toEqual(['INIT_UNKNOWN'])
+    expect(event.diagnostics).toMatchObject({
+      kind: 'runtime', source: 'system', summary: 'Authentication cache is read-only',
+      stackTrace: expect.stringContaining('Caused by: TypeError: Authentication cache is read-only'),
+    })
+    const log = readPersistedLogEvents(ticket.id).find((entry) => entry.type === 'error')
+    expect(log?.data?.diagnostics).toEqual(event.diagnostics)
+    expect(JSON.stringify(log)).not.toContain('sk-private-initialization-key')
+    expect(event.diagnostics?.stackTrace).toContain('[redacted]')
     broadcaster.clearTicket(ticket.id)
   })
 

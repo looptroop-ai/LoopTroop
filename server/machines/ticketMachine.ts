@@ -92,7 +92,8 @@ export const ticketMachine = setup({
       errorCodes: ({ event }) => {
         if (event.type === "ERROR") return event.codes ?? [];
         if (event.type === "INIT_FAILED") return event.codes ?? [];
-        if (event.type === "CHECKS_FAILED") return ["PREFLIGHT_FAILED"];
+        if (event.type === "CHECKS_FAILED")
+          return Array.from(new Set(["PREFLIGHT_FAILED", ...(event.codes ?? [])]));
         if (event.type === "EXECUTION_SETUP_FAILED")
           return ["EXECUTION_SETUP_FAILED"];
         if (event.type === "BEAD_ERROR") return event.codes ?? [];
@@ -101,6 +102,8 @@ export const ticketMachine = setup({
       },
       errorDiagnostics: ({ event }) => {
         if (event.type === "ERROR") return event.diagnostics ?? null;
+        if (event.type === "INIT_FAILED") return event.diagnostics ?? null;
+        if (event.type === "CHECKS_FAILED") return event.diagnostics ?? null;
         if (event.type === "BEAD_ERROR") return event.diagnostics ?? null;
         return null;
       },

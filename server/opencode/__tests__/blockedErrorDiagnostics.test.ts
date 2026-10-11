@@ -279,6 +279,91 @@ describe('OpenCode blocked error diagnostics', () => {
     } })).toEqual({ diagnostics: null, errorCodes: [] })
   })
 
+  it.each([
+    'Input token limit exceeded',
+    'Output token limit exceeded',
+    'Maximum token capacity exceeded',
+    'Invalid token count in model response',
+  ])('does not misdiagnose a token usage or validation failure as authentication: %s', (message) => {
+    const plain = buildOpenCodeBlockedErrorDiagnostics({ error: new Error(message) })
+    const provider = buildOpenCodeBlockedErrorDiagnostics({ error: {
+      statusCode: 400, responseErrorMessage: message,
+    } })
+
+    expect(plain.errorCodes).not.toContain(OPENCODE_PROVIDER_AUTH_FAILED)
+    expect(provider.errorCodes).toEqual([OPENCODE_PROVIDER_ERROR])
+    expect(provider.diagnostics).toMatchObject({ kind: 'opencode_provider', providerErrorMessage: message })
+  })
+
+  it.each([
+    'Token has expired',
+    'Token has been invalidated',
+    'Token was revoked',
+    'expired_token',
+    'token_invalidated',
+    'revoked_token',
+    'Credentials rejected',
+    'invalid_api_key',
+    'API-key is invalid',
+    'Request failed (HTTP 401)',
+    'Your authentication token has expired (HTTP 403)',
+  ])('retains explicit authentication failures: %s', (message) => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: new Error(message) })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_AUTH_FAILED])
+    expect(result.diagnostics?.kind).toBe('opencode_provider')
+  })
+
+  it.each(['Request failed (HTTP 403)', 'HTTP 403: content policy blocked this request', 'HTTP 403: Forbidden'])('does not assume a denied provider request means credentials expired: %s', (message) => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: new Error(message) })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_ERROR])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_provider', statusCode: 403 })
+  })
+
+  it('identifies the configured provider when an expired-login event has only a message', () => {
+    const message = 'Your authentication token has expired. Please try refreshing it.'
+    const result = buildOpenCodeBlockedErrorDiagnostics({
+      modelId: 'openai/gpt-6-luna-fast',
+      sessionId: 'ses-readiness',
+      attemptMeta: { errorSource: 'session_error', error: message, errorDetails: { message } },
+    })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_AUTH_FAILED])
+    expect(result.diagnostics).toMatchObject({
+      modelId: 'openai/gpt-6-luna-fast', providerId: 'openai', providerModelId: 'gpt-6-luna-fast',
+      sessionId: 'ses-readiness', summary: message,
+    })
+  })
+
+  it('fills missing attached provider identities from the actual failed model rather than caller fallback', () => {
+    const error = attachOpenCodeBlockedErrorDiagnostics(new Error('Provider login expired'), {
+      diagnostics: { kind: 'opencode_provider', source: 'provider', summary: 'Token expired', modelId: 'openai/actual-model' },
+      errorCodes: [OPENCODE_PROVIDER_AUTH_FAILED],
+    })
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'fallback/other-model' })
+
+    expect(result.diagnostics).toMatchObject({ modelId: 'openai/actual-model', providerId: 'openai', providerModelId: 'actual-model' })
+  })
+
+  it('does not invent provider identity from an unqualified model alias', () => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: new Error('Token expired'), modelId: 'model-alias' })
+
+    expect(result.diagnostics?.providerId).toBeUndefined()
+    expect(result.diagnostics?.providerModelId).toBeUndefined()
+  })
+
+  it('does not fill a reported provider model from a different configured provider', () => {
+    const error = attachOpenCodeBlockedErrorDiagnostics(new Error('Provider failure'), {
+      diagnostics: { kind: 'opencode_provider', source: 'provider', summary: 'Provider failure', providerId: 'actual-provider' },
+      errorCodes: [OPENCODE_PROVIDER_ERROR],
+    })
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'fallback/other-model' })
+
+    expect(result.diagnostics?.providerId).toBe('actual-provider')
+    expect(result.diagnostics?.providerModelId).toBeUndefined()
+  })
+
   it('classifies provider auth failures from structured OpenCode error details', () => {
     const result = buildOpenCodeBlockedErrorDiagnostics({
       modelId: 'openai/gpt-5.3-codex',
@@ -353,6 +438,7 @@ describe('OpenCode blocked error diagnostics', () => {
 
   it('carries OpenCode log-correlated provider identity into blocked diagnostics', () => {
     const result = buildOpenCodeBlockedErrorDiagnostics({
+      modelId: 'configured/model-alias',
       error: Object.assign(new Error('Provider returned error'), {
         modelErrorDetails: {
           name: 'AI_APICallError',
@@ -473,6 +559,8 @@ describe('OpenCode blocked error diagnostics', () => {
       kind: 'model_output_truncated',
       source: 'opencode',
       modelId: 'opencode-go/deepseek-v4-flash',
+      providerId: 'opencode-go',
+      providerModelId: 'deepseek-v4-flash',
       sessionId: 'ses-length',
       finishReason: 'length',
       inputTokens: 13252,

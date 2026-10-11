@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { appendLogEvent } from '../../log/executionLog'
@@ -9,6 +9,7 @@ import { createTicket, getTicketPaths } from '../../storage/tickets'
 import { TEST } from '../../test/factories'
 import { createTestRepoManager, resetTestDb } from '../../test/integration'
 import { TicketInitializationError, initializeTicket } from '../initialize'
+import * as gitCommands from '../../git/runCommand'
 
 let activeWorktreePath: string | null = null
 let unsafeAppendCount = 0
@@ -60,6 +61,26 @@ describe('initializeTicket', () => {
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
+  })
+
+  it.each([true, false])('retains the actual Git mutation error when a reserved skeleton exists: %s', async (hasSkeleton) => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: TEST.projectName, shortname: TEST.shortname })
+    const ticket = createTicket({ projectId: project.id, title: 'Capture worktree creation failure' })
+    const paths = getTicketPaths(ticket.id)
+    if (!paths) throw new Error('Expected ticket paths before initialization')
+    if (!hasSkeleton) rmSync(paths.worktreePath, { recursive: true, force: true })
+    const cause = new TypeError('Git checkout failed')
+    const mutation = vi.spyOn(gitCommands, 'runGitMutationOrThrow').mockRejectedValueOnce(cause)
+
+    try {
+      await expect(initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId }))
+        .rejects.toMatchObject({ name: 'TicketInitializationError', code: 'INIT_WORKTREE_CREATE_FAILED', cause })
+      expect(mutation).toHaveBeenCalledOnce()
+      if (hasSkeleton) expect(existsSync(join(paths.ticketDir, 'meta', 'ticket.meta.json'))).toBe(true)
+    } finally {
+      mutation.mockRestore()
+    }
   })
 
   it('materializes a reserved ticket skeleton when command logs are persisted during initialization', async () => {

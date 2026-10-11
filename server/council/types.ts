@@ -1,6 +1,7 @@
 import type { StructuredFailureClass } from '../lib/structuredOutputRetry'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
+import type { CouncilMemberOutcome } from '@shared/councilMembers'
 
 /** Thrown when a ticket is canceled to distinguish from real errors. */
 export class CancelledError extends Error {
@@ -22,7 +23,7 @@ export function throwIfAborted(signal?: AbortSignal, ticketId?: number | string)
 export const MAX_VOTE_CATEGORY_SCORE = 20
 export const MAX_VOTE_TOTAL_SCORE = 100
 
-export type MemberOutcome = 'pending' | 'completed' | 'timed_out' | 'invalid_output' | 'failed'
+export type MemberOutcome = CouncilMemberOutcome
 
 export type RawAttemptOutcome = 'rejected' | 'accepted'
 
@@ -89,7 +90,11 @@ export interface DraftResult {
 
 export interface DraftProgressEvent {
   memberId: string
-  status: 'session_created' | 'finished'
+  /**
+   * `restarted`: a person restarted this member. Whatever it reported before is
+   * void, and it is pending again until its next `finished`.
+   */
+  status: 'session_created' | 'finished' | 'restarted'
   sessionId?: string
   outcome?: MemberOutcome
   duration?: number

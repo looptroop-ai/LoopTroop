@@ -930,6 +930,21 @@ export function wasMemberAnswered(
   return answeredByStep.get(stepKey(ticketId, phase, phaseAttempt))?.has(memberId) ?? false
 }
 
+/**
+ * Drops a member's answered mark when a person restarts it.
+ *
+ * The restarted draft is written without the answer the old one was given, so
+ * the vote must not be told it followed the operator.
+ */
+export function forgetMemberAnswered(
+  ticketId: string,
+  phase: string,
+  phaseAttempt: number,
+  memberId: string,
+): void {
+  answeredByStep.get(stepKey(ticketId, phase, phaseAttempt))?.delete(memberId)
+}
+
 /** A person pressed Skip. The reason is optional and goes on the receipt. */
 export function markRequestSkipped(
   ticketId: string,

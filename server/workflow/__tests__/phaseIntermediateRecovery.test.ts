@@ -171,6 +171,27 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     expect(tryRecoverPhaseIntermediate(ticket.id, context, 'interview', true)).toBe(false)
   })
 
+  it('keeps a stopped member stopped when the drafts are recovered', async () => {
+    // Read back as pending, a stopped member would look like it was still
+    // drafting to the vote that resumes after a restart.
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COUNCIL_DELIBERATING',
+      artifactType: 'interview_drafts',
+      content: JSON.stringify({
+        isFinal: true,
+        drafts: [
+          { memberId: WINNER_ID, outcome: 'completed', content: 'questions: []' },
+          { memberId: LOSER_ID, outcome: 'stopped' },
+        ],
+      }),
+    })
+
+    expect(tryRecoverPhaseIntermediate(ticket.id, context, 'interview', false)).toBe(true)
+    expect(phaseIntermediate.get(`${ticket.id}:interview`)?.drafts.map((draft) => draft.outcome))
+      .toEqual(['completed', 'stopped'])
+  })
+
   it('still recovers drafts when votes are not needed', async () => {
     const { ticket, context } = await createInitializedTestTicket(repoManager)
     seedInterviewDrafts(ticket.id)

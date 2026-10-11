@@ -37,6 +37,49 @@ describe('shared blocked error diagnostics', () => {
     expect(clean).toContain('[details omitted: nesting limit]')
   })
 
+  it.each([1, 2, 3])('redacts credentials in raw native records encoded %s extra times without changing evidence', (depth) => {
+    const original = {
+      apiKey: 'opaque-test-secret "embedded quote" \\ path\nmore evidence',
+      refreshToken: 'opaque-test-refresh',
+      headers: { authorization: 'opaque-test-auth', cookie: 'opaque-test-cookie' },
+      sessionId: 'ses-test',
+      modelId: 'model-test',
+      statusCode: 401,
+      evidence: ['repeated line', 'repeated line'],
+    }
+    let encoded = JSON.stringify(original, null, 2)
+    let redacted = JSON.stringify({
+      ...original,
+      apiKey: '[redacted]',
+      refreshToken: '[redacted]',
+      headers: { authorization: '[redacted]', cookie: '[redacted]' },
+    }, null, 2)
+    for (let layer = 0; layer < depth; layer += 1) {
+      encoded = JSON.stringify(encoded)
+      redacted = JSON.stringify(redacted)
+    }
+    const prefix = 'ERROR sessionID=ses-test modelID=model-test marker=last-5 error='
+    const suffix = '\nRepeated evidence\nRepeated evidence'
+    const record = { data: { rawLine: `${prefix}${encoded}${suffix}` } }
+
+    const clean = sanitizeDiagnosticValue(record)
+    expect(clean).toEqual({ data: { rawLine: `${prefix}${redacted}${suffix}` } })
+    expect(sanitizeDiagnosticValue(clean)).toEqual(clean)
+    expect(record.data.rawLine).toContain('opaque-test-secret')
+  })
+
+  it.each([
+    String.raw`apiKey=\"opaque-test-secret\" statusCode=401`,
+    String.raw`{\"apiKey\":\"opaque-test-secret`,
+    String.raw`{\"authorization\":\"opaque-test-secret` + '\\',
+  ])('redacts escaped credentials with unquoted keys or clipped values: %s', (rawLine) => {
+    const clean = sanitizeDiagnosticText(rawLine)
+    expect(clean).not.toContain('opaque-test-secret')
+    expect(clean).toContain('[redacted]')
+    expect(sanitizeDiagnosticText(clean)).toBe(clean)
+    if (rawLine.includes('statusCode')) expect(clean).toContain('statusCode=401')
+  })
+
   it('retains sanitized stack traces and all named doctor failures through repeated normalization', () => {
     const value = {
       summary: 'Readiness failed.',

@@ -68,6 +68,8 @@ const REDACTED = '[redacted]'
 const DIAGNOSTIC_URL_PATTERN = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi
 const URL_USERINFO_PATTERN = /^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i
 const CREDENTIAL_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?(?:authorization|x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|cookie|set[-_\s]?cookie|token|client[-_\s]?secret|private[-_\s]?key|access[-_\s]?key|secret[-_\s]?key)\b["']?\s*(?:headers?(?:[ \t]+value)?\s*)?[:=]\s*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)\s+)?[^"',\s}&]+)/gi
+// Native records can encode JSON repeatedly; embedded quotes have a different escape depth.
+const ESCAPED_CREDENTIAL_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?(?:authorization|x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret|cookie|token|private[-_\s]?key|access[-_\s]?key|credentials?)\b(?:\\+["']|["'])?(?:\s|\\+[nrt])*[:=](?:\s|\\+[nrt])*(\\+)(["']))([\s\S]*?)((?<!\\)\2\3|$)/gi
 const AUTHORIZATION_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?authorization\b["']?\s*(?:headers?(?:[ \t]+value)?\s*)?[:=]\s*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:[A-Za-z][\w.-]*\s+)?[^"',\s}&]+)/gi
 const COOKIE_VALUE_PATTERN = /((?<![a-z0-9_-])[a-z0-9_-]*?(?:set[-_\s]?cookie|cookie)\b["']?\s*(?:headers?(?:[ \t]+value)?\s*)?[:=]\s*)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|[^\n]+)/gi
 const CREDENTIAL_WORD_PATTERN = /(\b(?:x[-_\s]?api[-_\s]?key|api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|password|secret)\b[ \t]+(?:(?:headers?(?:[ \t]+value)?|provided|code)(?:[ \t]*[:=]\s*|[ \t]+(?:(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)|(?:is|was|has)[ \t]+(?:not[ \t]+)?)?)("(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|(?:(?:Bearer|Basic)\s+)?[^"',\s}&]+)/gi
@@ -104,6 +106,7 @@ export function sanitizeDiagnosticText(value: string): string {
   return stripTerminalFormatting(value)
     .replace(DIAGNOSTIC_URL_PATTERN, sanitizeDiagnosticUrl)
     .replace(PREFIXED_CREDENTIAL_PATTERN, REDACTED)
+    .replace(ESCAPED_CREDENTIAL_VALUE_PATTERN, (_match, prefix, _escapes, _quote, _value, closing) => `${prefix}${REDACTED}${closing}`)
     .replace(AUTHORIZATION_VALUE_PATTERN, redactCredentialValue)
     .replace(COOKIE_VALUE_PATTERN, redactCredentialValue)
     .replace(CREDENTIAL_VALUE_PATTERN, redactCredentialValue)

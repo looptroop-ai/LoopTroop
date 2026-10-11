@@ -89,10 +89,28 @@ export interface SkipQuestionContext {
   elapsed_active_ms: number
   /** The other requests the same expiry covered. One clock, many requests. */
   sibling_request_ids: string[]
-  expiry_reason: 'window_elapsed' | 'user_skipped' | 'ticket_canceled' | 'session_lost' | 'daemon_restart'
+  expiry_reason: SkipExpiryReason
   /** Set when the refusal cost a council round its quorum. */
   quorum_impact: string | null
 }
+
+/**
+ * Why an AI question was refused without an answer.
+ *
+ * `member_stopped` and `member_restarted`: a person stopped or restarted the
+ * council model that asked it, so nothing was left to answer.
+ */
+export const SKIP_EXPIRY_REASONS = [
+  'window_elapsed',
+  'user_skipped',
+  'ticket_canceled',
+  'session_lost',
+  'daemon_restart',
+  'member_stopped',
+  'member_restarted',
+] as const
+
+export type SkipExpiryReason = (typeof SKIP_EXPIRY_REASONS)[number]
 
 export const SKIP_RECEIPT_SCHEMA_VERSION = 2
 

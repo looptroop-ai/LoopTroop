@@ -32,7 +32,7 @@ import {
   isCouncilQuorumPhase,
   type AiQuestionTimerState,
 } from '@shared/aiQuestions'
-import type { SkipActor, SkipQuestionContext } from '@shared/skipReceipt'
+import type { SkipActor, SkipExpiryReason, SkipQuestionContext } from '@shared/skipReceipt'
 import { deriveSkipActionId, writeSkipReceipts } from './skipReceipts'
 import { getTicketWaitingMs, resumeTicketWork, suspendTicketWork } from './workBudget'
 import { closeQuestionWait, openQuestionWait } from '../storage/questionWaits'
@@ -45,13 +45,7 @@ const REJECT_RETRY_DELAY_MS = 500
 export const QUESTION_REQUEST_ARTIFACT_PREFIX = 'opencode_question:'
 export const QUESTION_TIMER_ARTIFACT_PREFIX = 'opencode_question_timer:'
 
-export type QuestionResolution =
-  | 'replied'
-  | 'user_skipped'
-  | 'window_elapsed'
-  | 'ticket_canceled'
-  | 'session_lost'
-  | 'daemon_restart'
+export type QuestionResolution = 'replied' | SkipExpiryReason
 
 /** What a request is doing right now. Only `pending` can be claimed. */
 type RequestState = 'pending' | 'resolving' | 'resolved'
@@ -1085,6 +1079,36 @@ export async function clearTicketWindows(
   // without an open question used to leak its entries for the process lifetime.
   forgetTicketMemory(ticketId)
   return true
+}
+
+/**
+ * Refuses the open questions of one council member whose session a person is
+ * about to stop, because they stopped or restarted that member.
+ *
+ * Called before the stop, like `clearTicketWindows` before a cancel: the session
+ * ending first would file each question under `session_lost`, which is true but
+ * hides that a person decided it. Resolves false when a refusal could not be
+ * confirmed; the session stop that follows still ends the model's wait.
+ */
+export async function clearSessionWindows(
+  ticketId: string,
+  sessionId: string,
+  resolution: Extract<QuestionResolution, 'member_stopped' | 'member_restarted'>,
+  reason: string,
+): Promise<boolean> {
+  const timers = timersByTicket.get(ticketId)
+  let allFinished = true
+  for (const timer of [...(timers?.values() ?? [])]) {
+    const doomed = pendingRequests(timer)
+      .filter((record) => record.sessionId === sessionId)
+      .map((record) => claim(timer, requestKey(record.sessionId, record.requestId)))
+      .filter((record): record is QuestionRequestRecord => record !== null)
+    const siblingIds = doomed.map((record) => record.requestId)
+    for (const record of doomed) {
+      if (!await rejectRecord(timer, record, 'user', resolution, reason, siblingIds)) allFinished = false
+    }
+  }
+  return allFinished
 }
 
 /**

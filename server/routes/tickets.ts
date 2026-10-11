@@ -31,6 +31,8 @@ import {
   handleReplyOpenCodeQuestion,
   handleRejectOpenCodeQuestion,
   handleStopOpenCodeQuestionTimer,
+  handleStopCouncilMember,
+  handleRetryCouncilMember,
   handleDevEvent,
   handleGetInterview,
   handleGetExecutionSetupPlan,
@@ -101,6 +103,8 @@ ticketRouter.get('/tickets/:id/opencode/questions', (c) => handleListOpenCodeQue
 ticketRouter.post('/tickets/:id/opencode/questions/:requestId/reply', (c) => handleReplyOpenCodeQuestion(c))
 ticketRouter.post('/tickets/:id/opencode/questions/:requestId/reject', (c) => handleRejectOpenCodeQuestion(c))
 ticketRouter.post('/tickets/:id/opencode/question-timer/stop', (c) => handleStopOpenCodeQuestionTimer(c))
+ticketRouter.post('/tickets/:id/council/members/stop', async (c) => handleStopCouncilMember(c))
+ticketRouter.post('/tickets/:id/council/members/retry', async (c) => handleRetryCouncilMember(c))
 ticketRouter.post('/tickets/:id/dev-event', async (c) => handleDevEvent(c))
 ticketRouter.get('/tickets/:id/interview', (c) => handleGetInterview(c))
 ticketRouter.get('/tickets/:id/artifacts', (c) => handleGetArtifacts(c))

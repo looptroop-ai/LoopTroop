@@ -11,6 +11,7 @@ import {
   armOrResetTimer,
   attachRequest,
   claimRequestForReply,
+  clearSessionWindows,
   clearTicketWindows,
   getPendingQuestionSummary,
   getTicketQuestionState,
@@ -261,6 +262,28 @@ describe('question windows', () => {
     expect(events.every((event) => event.skippedBy === 'system')).toBe(true)
     const summary = events.find((event) => event.isActionSummary)
     expect(summary?.questionContext?.expiry_reason).toBe('ticket_canceled')
+  })
+
+  it('refuses only a stopped member\'s questions, under the person who stopped it', async () => {
+    const ticket = makeTicket()
+    ask(ticket.id, { phase: 'DRAFTING_PRD' })
+    ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b', memberId: 'openai/gpt', phase: 'DRAFTING_PRD' })
+
+    await expect(clearSessionWindows(
+      ticket.id,
+      'ses_a',
+      'member_stopped',
+      'You stopped this model while its question was open.',
+    )).resolves.toBe(true)
+
+    expect(getTicketQuestionState(ticket.id).requests.map((request) => request.requestId)).toEqual(['req_b'])
+    expect(adapter.questionRejections.map((rejection) => rejection.requestId)).toEqual(['req_a'])
+    const summary = listSkipEvents(ticket.id)
+      .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
+    expect(summary?.skippedBy).toBe('user')
+    expect(summary?.questionContext?.expiry_reason).toBe('member_stopped')
+    // The other member is still waiting on a person, so the clocks stay held.
+    expect(isTicketWorkSuspended(ticket.id)).toBe(true)
   })
 
   it('refuses every request on the clock when the wait runs out', async () => {

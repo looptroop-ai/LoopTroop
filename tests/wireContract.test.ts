@@ -124,6 +124,8 @@ const EXPECTED_ROUTES = [
   'POST /api/tickets/:id/cancel',
   'POST /api/tickets/:id/close-unmerged',
   'POST /api/tickets/:id/continue',
+  'POST /api/tickets/:id/council/members/retry',
+  'POST /api/tickets/:id/council/members/stop',
   'POST /api/tickets/:id/coverage/fix-gaps',
   'POST /api/tickets/:id/dev-event',
   'POST /api/tickets/:id/edit-execution-setup-plan',

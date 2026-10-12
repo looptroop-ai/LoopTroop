@@ -225,6 +225,29 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe(previousStatus)
   })
 
+  it.each([401, 403])('continues the existing session after fixing an OpenCode server HTTP %s login failure', async (statusCode) => {
+    const { app, ticket } = setupContinueTicketApp()
+    const previousStatus = 'PREPARING_EXECUTION_ENV'
+    ensureActivePhaseAttempt(ticket.id, previousStatus)
+    const errorMessage = 'OpenCode server authentication failed: configured password rejected'
+    recordTicketErrorOccurrence(ticket.id, {
+      blockedFromStatus: previousStatus, errorMessage, errorCodes: [],
+      diagnostics: { kind: 'opencode_session', source: 'opencode', summary: errorMessage, sessionId: 'ses-continue', statusCode },
+    })
+    patchTicket(ticket.id, { status: 'BLOCKED_ERROR', xstateSnapshot: JSON.stringify({ context: { previousStatus } }), errorMessage })
+    insertActiveOpenCodeSession(ticket.id, previousStatus)
+    expect(getTicketByRef(ticket.id)?.availableActions).toContain('continue')
+
+    const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(getSessionMock).toHaveBeenCalledWith('ses-continue')
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'CONTINUE' })
+    expect(hasPendingSessionContinuationForTicketPhase(ticket.id, previousStatus)).toBe(true)
+    expect(getTicketByRef(ticket.id)?.status).toBe(previousStatus)
+    expect(listPhaseAttempts(ticket.id, previousStatus)).toEqual([expect.objectContaining({ attemptNumber: 1, state: 'active' })])
+  })
+
   it('rejects continue when no matching active OpenCode session row is preserved', async () => {
     const { app, ticket } = setupContinueTicketApp()
     const previousStatus = 'PREPARING_EXECUTION_ENV'

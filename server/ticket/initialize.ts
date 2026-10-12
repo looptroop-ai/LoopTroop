@@ -100,7 +100,7 @@ function ensureBaseBranch(projectFolder: string, baseBranch: string): string {
   } catch (error) {
     throw new TicketInitializationError(
       'INIT_BASE_BRANCH_MISSING',
-      `Project repository does not have the detected base branch "${baseBranch}": ${projectFolder}`,
+      `Project repository does not have the detected base branch "${baseBranch}": ${projectFolder}. ${getErrorMessage(error)}`,
       { cause: error },
     )
   }

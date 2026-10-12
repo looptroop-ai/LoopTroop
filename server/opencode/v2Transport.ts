@@ -53,6 +53,7 @@ const LIST_PAGE_SIZE = 100;
 const MESSAGE_PAGE_SIZE = 100;
 
 export class V2OpenCodeHttpError extends Error {
+  readonly openCodeErrorSource = "opencode_server";
   constructor(
     readonly status: number,
     readonly body: unknown,

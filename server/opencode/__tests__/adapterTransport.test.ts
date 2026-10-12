@@ -3,7 +3,7 @@ import { OpenCodeSDKAdapter } from '../adapter'
 import type { OpenCodePromptRequest, OpenCodeTransport, OpenCodeTransportEventEnvelope, PromptDispatch } from '../transport'
 import type { Message, StreamEvent } from '../types'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
-import { V2OpenCodeTransport } from '../v2Transport'
+import { V2OpenCodeHttpError, V2OpenCodeTransport } from '../v2Transport'
 import { OpenCodePromptReceiptUnavailableError } from '../transport'
 import { buildOpenCodeBlockedErrorDiagnostics } from '../blockedErrorDiagnostics'
 
@@ -248,6 +248,47 @@ describe('OpenCode adapter transport orchestration', () => {
     const outerDiagnostics = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'winner/model' })
     expect(outerDiagnostics.diagnostics?.modelId).toBe('winner/model')
     expect(outerDiagnostics.diagnostics?.sessionId).toBeUndefined()
+  })
+
+  it.each([401, 403])('keeps a real session-create HTTP %s failure attributed to the OpenCode server', async (status) => {
+    const transport = new V2OpenCodeTransport('http://127.0.0.1:4096', {
+      fetch: vi.fn(async () => new Response(JSON.stringify({ message: 'Configured server password rejected' }), {
+        status, headers: { 'content-type': 'application/json' },
+      })),
+    })
+
+    const error = await createAdapter(transport).createSession('/workspace').catch((failure: unknown) => failure)
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: new Error('Coding could not start', { cause: error }), modelId: 'openai/model-a' })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_session', source: 'opencode', statusCode: status, operation: 'creating an OpenCode session', modelId: 'openai/model-a' })
+    expect(result.diagnostics?.providerId).toBeUndefined()
+    expect(result.diagnostics?.providerModelId).toBeUndefined()
+  })
+
+  it('keeps HTTP failures during prompt dispatch attributed to the OpenCode server', async () => {
+    const failure = new V2OpenCodeHttpError(401, { message: 'Configured server password rejected' })
+    const { transport } = createV2Transport({ dispatchPrompt: vi.fn(async () => { throw failure }) })
+
+    const error = await createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }], undefined, { modelRef: 'openai/model-a' })
+      .catch((failure: unknown) => failure)
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_session', source: 'opencode', statusCode: 401, sessionId: 'session-1', modelId: 'openai/model-a' })
+    expect(result.diagnostics?.providerId).toBeUndefined()
+  })
+
+  it('keeps pre-prompt HTTP idle-wait failures attributed to the server without a transport marker', async () => {
+    const { transport } = createV2Transport({ waitForIdle: vi.fn(async () => { throw Object.assign(new Error('OpenCode idle check failed with HTTP 401'), { statusCode: 401 }) }) })
+
+    const error = await createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }], undefined, { modelRef: 'openai/model-a' })
+      .catch((failure: unknown) => failure)
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_session', source: 'opencode', operation: 'waiting for the session to become idle before sending the prompt', statusCode: 401 })
+    expect(result.diagnostics?.providerId).toBeUndefined()
   })
 
   it('accepts a stock v2 live turn through the HTTP transport when post-snapshot history is empty', async () => {

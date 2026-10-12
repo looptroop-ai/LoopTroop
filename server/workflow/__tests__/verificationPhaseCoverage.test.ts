@@ -198,6 +198,7 @@ describe('handlePreFlight', () => {
       statusCode: 401,
       providerErrorType: 'authentication_error',
       responseBodyPreview: '{"error":{"code":"token_expired"}}',
+      stackTrace: 'Error: provider login expired\n    at executionProbe',
     }
     const failures: [DiagnosticCheck, DiagnosticCheck] = [
       { name: 'GitHub Auth', category: 'connectivity', result: 'fail', message: 'GitHub auth failed: gh login is missing.' },
@@ -220,10 +221,80 @@ describe('handlePreFlight', () => {
         ...diagnostics,
         failedChecks: [
           { name: 'GitHub Auth', category: 'connectivity', message: failures[0].message },
-          { name: 'OpenCode Execution Capability', category: 'connectivity', message: failures[1].message, details: JSON.stringify(diagnostics, null, 2) },
+          { name: 'OpenCode Execution Capability', category: 'connectivity', message: failures[1].message },
         ],
       },
     })
+  })
+
+  it('keeps the failed execution probe context when an earlier server health check also fails', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    const probeDiagnostics: BlockedErrorDiagnostics = {
+      kind: 'transport', source: 'opencode', summary: 'Socket closed while sending the probe.',
+      modelId: TEST.implementer, sessionId: 'ses-failed-probe',
+      operation: 'sending the execution capability probe prompt', transportCode: 'ECONNRESET',
+    }
+    const failures: DiagnosticCheck[] = [
+      {
+        name: 'OpenCode Connectivity', category: 'connectivity', result: 'fail',
+        message: 'OpenCode unreachable: HTTP 500',
+        diagnostics: {
+          kind: 'opencode_session', source: 'opencode', summary: 'OpenCode server returned HTTP 500.',
+          statusCode: 500, operation: 'checking OpenCode server health',
+        },
+      },
+      {
+        name: 'OpenCode Execution Capability', category: 'connectivity', result: 'fail',
+        message: 'Execution-mode probe failed: Socket closed while sending the probe.',
+        diagnostics: probeDiagnostics,
+      },
+    ]
+    runPreFlightChecksMock.mockResolvedValueOnce({ passed: false, checks: failures, criticalFailures: failures, warnings: [] } satisfies PreFlightReport)
+
+    const sendEvent = vi.fn()
+    await handlePreFlight(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'CHECKS_FAILED',
+      errors: failures.map((check) => `${check.name}: ${check.message}`),
+      codes: [],
+      diagnostics: {
+        ...probeDiagnostics,
+        failedChecks: failures.map(({ name, category, message }) => ({ name, category, message })),
+      },
+    })
+  })
+
+  it('redacts the complete readiness report before persisting or emitting failure evidence', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const failure: DiagnosticCheck = {
+      name: 'OpenCode Connectivity', category: 'connectivity', result: 'fail',
+      message: 'OpenCode unreachable: Authorization: Bearer readiness-auth-secret',
+      details: 'Cookie: session=readiness-cookie-secret\nFailure URL: https://doctor.example/check?signature=readiness-url-secret#readiness-fragment-secret',
+      diagnostics: {
+        kind: 'opencode_session', source: 'opencode', summary: 'HTTP 401: Authorization: Bearer readiness-auth-secret',
+        stackTrace: 'Error: password="readiness-password-secret"\n    at serverHealth',
+        responseBodyPreview: '{"apiKey":"readiness-key-secret","reason":"Server password rejected"}',
+      },
+    }
+    runPreFlightChecksMock.mockResolvedValueOnce({ passed: false, checks: [failure], criticalFailures: [failure], warnings: [] } satisfies PreFlightReport)
+
+    const sendEvent = vi.fn()
+    await handlePreFlight(ticket.id, context, sendEvent, new AbortController().signal)
+
+    const artifact = getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')!
+    const persistedLog = readFileSync(paths.executionLogPath, 'utf-8')
+    const emittedFailure = JSON.stringify(sendEvent.mock.calls)
+    for (const evidence of [artifact.content, persistedLog, emittedFailure]) {
+      expect(evidence).toContain('[redacted]')
+      for (const secret of ['auth', 'cookie', 'url', 'fragment', 'password', 'key']) {
+        expect(evidence).not.toContain(`readiness-${secret}-secret`)
+      }
+    }
+    const savedReport = JSON.parse(artifact.content) as PreFlightReport
+    expect(savedReport.checks[0]?.name).toBe('OpenCode Connectivity')
+    expect(savedReport.checks[0]?.diagnostics?.responseBodyPreview).toContain('Server password rejected')
+    expect(failure.message).toContain('readiness-auth-secret')
   })
 })
 

@@ -212,11 +212,9 @@ describe("ErrorView", () => {
 
     renderWithProviders(<ErrorView ticket={ticket} />);
 
-    expect(
-      screen.getByText(
-        "No error details were captured. Check the server logs.",
-      ),
-    ).toBeVisible();
+    const fallback = screen.getByText("No error details were captured. Check the server logs.");
+    expect(fallback).toBeVisible();
+    expect(fallback.closest("strong")).toBeNull();
   });
 
   it("uses a real heading when the failed phase is unavailable", () => {
@@ -328,6 +326,87 @@ describe("ErrorView", () => {
     expect(screen.queryByRole("heading", { name: /login expired|Provider authentication failed/ })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["RUNNING_FINAL_TEST", "Final Testing failed", FINAL_TEST_FAILED],
+    ["PREPARING_EXECUTION_ENV", "Workspace setup failed", "EXECUTION_SETUP_FAILED"],
+    ["CODING", "Git finalization failed", BEAD_FINALIZATION_FAILED],
+  ])("keeps %s attribution when its output mentions an expired token", (phase, title, code) => {
+    const ticket = makeLiveErrorTicket({
+      blockedFromStatus: phase,
+      errorMessage: "Command failed: access token has expired.",
+    });
+    const occurrence = ticket.errorOccurrences?.[0];
+    assert(occurrence);
+    occurrence.errorCodes = [code];
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    expect(screen.getByRole("heading", { name: title })).toBeVisible();
+    expect(screen.queryByText(/reconnect the provider login/)).not.toBeInTheDocument();
+  });
+
+  it.each(["opencode_session", "transport"] as const)("ignores stale provider codes for a %s failure", (kind) => {
+    const ticket = makeLiveErrorTicket({
+      errorMessage: "OpenCode authentication token has expired (HTTP 401).",
+      diagnostics: { kind, source: "opencode", summary: "OpenCode server rejected the connection", statusCode: 401 },
+    });
+    const occurrence = ticket.errorOccurrences?.[0];
+    assert(occurrence);
+    occurrence.errorCodes = [OPENCODE_PROVIDER_AUTH_FAILED, OPENCODE_PROVIDER_ERROR];
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    expect(screen.queryByRole("heading", { name: /login expired|Provider authentication failed|Provider or environment unavailable/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/reconnect the provider login/)).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("emphasizes each readiness cause while keeping metadata regular (provider message contains HTTP: %s)", (providerMessageContainsHttp) => {
+    const providerMessage = "Your authentication token has expired. Please try refreshing it.";
+    const message = `GitHub Auth: GitHub auth failed: gh login is required.\nOpenCode Execution Capability: Execution-mode probe failed: authentication_error: ${providerMessage} (HTTP 401)`;
+    const ticket = makeLiveErrorTicket({
+      blockedFromStatus: "PRE_FLIGHT_CHECK",
+      errorMessage: message,
+      diagnostics: {
+        kind: "opencode_provider", source: "provider", summary: providerMessage,
+        providerErrorMessage: providerMessageContainsHttp ? `${providerMessage} (HTTP 401)` : providerMessage, providerErrorType: "authentication_error", statusCode: 401,
+        failedChecks: [
+          { name: "GitHub Auth", category: "connectivity", message: "GitHub auth failed: gh login is required." },
+          { name: "OpenCode Execution Capability", category: "connectivity", message: `Execution-mode probe failed: authentication_error: ${providerMessage} (HTTP 401)` },
+        ],
+      },
+    });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    const githubCause = screen.getByText("gh login is required.", { selector: "strong" });
+    const providerCause = screen.getByText(providerMessage, { selector: "strong" });
+    expect(githubCause).toBeVisible();
+    expect(providerCause).toBeVisible();
+    const displayedMessage = providerCause.closest("p");
+    assert(displayedMessage);
+    expect(displayedMessage.textContent).toBe(message);
+    expect(providerCause).not.toHaveTextContent(/OpenCode Execution Capability|Execution-mode probe failed|authentication_error|HTTP 401/);
+    expect(screen.getByRole("heading", { name: "Several readiness checks failed" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /login expired/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed readiness checks")).not.toBeInTheDocument();
+  });
+
+  it("does not bold an invented provider message or an empty generic failure", () => {
+    const ticket = makeLiveErrorTicket({
+      errorMessage: "Execution-mode probe failed",
+      diagnostics: { kind: "opencode_provider", source: "provider", summary: "Execution-mode probe failed", providerErrorMessage: "A different provider message" },
+    });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    const message = screen.getByText("Execution-mode probe failed");
+    expect(message).toBeVisible();
+    const displayedMessage = message.closest("p");
+    assert(displayedMessage);
+    expect(displayedMessage.querySelector("strong")).toBeNull();
+    expect(displayedMessage).not.toHaveTextContent("A different provider message");
+  });
+
   it("preserves full sanitized error and stack details for a non-OpenCode failure", () => {
     const message = ["Git failed: cannot acquire index.lock", "retry context", "retry context", "Authorization: Bearer privatevalue123"].join("\n");
     const stackTrace = "Error: cannot acquire index.lock\n    at commitWorktree (git.ts:12:3)\napi_key=sk-privatevalue123";
@@ -385,14 +464,19 @@ describe("ErrorView", () => {
       expect(details.querySelector("pre")).not.toBeVisible();
       expect(details).toHaveTextContent(`captured detail ${5 - index}`);
     });
-    fireEvent.click(debugDetails[0]!.querySelector("summary")!);
-    expect(debugDetails[0]!.querySelector("pre")).toBeVisible();
+    const newestRecord = debugDetails[0];
+    assert(newestRecord);
+    const newestSummary = newestRecord.querySelector("summary");
+    assert(newestSummary);
+    fireEvent.click(newestSummary);
+    expect(newestRecord.querySelector("pre")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Debug record 1 details" })).toHaveAttribute("tabindex", "0");
     expect(screen.queryByRole("button", { name: /Load older/ })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("sk-privatevalue123");
   });
 
-  it("keeps synthetic debug records inside the selected failure time", () => {
-    const ticket = makeTicket({ status: "BLOCKED_ERROR", previousStatus: "PRE_FLIGHT_CHECK", errorMessage: "Pre-flight check failed", updatedAt: "2026-01-01T00:00:00.000Z" });
+  it("keeps synthetic debug records inside the selected failure time", async () => {
+    const ticket = makeTicket({ status: "BLOCKED_ERROR", previousStatus: "PRE_FLIGHT_CHECK", errorMessage: "Pre-flight check failed", createdAt: "2025-12-31T23:59:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" });
     const entries = [
       { timestamp: "2025-12-31T23:59:59.000Z", line: "matching probe failure" },
       { timestamp: "2026-01-01T00:00:01.000Z", line: "later retry" },
@@ -408,6 +492,29 @@ describe("ErrorView", () => {
     expect(records.textContent).not.toContain("later retry");
     expect(records.textContent).not.toContain("undated other attempt");
     expect(screen.getByText(/These records are matched by phase and time/)).toBeVisible();
+    await waitFor(() => expect(mockUseTicketHistoricalLogs).toHaveBeenLastCalledWith(ticket.id, {
+      scope: "phase", view: "debug", limit: 5, phase: "PRE_FLIGHT_CHECK", startedAt: "2025-12-31T23:59:00.000Z", endedAt: "2026-01-01T00:00:00.000Z",
+    }, true));
+  });
+
+  it("labels an invalid debug timestamp explicitly and keeps records from separate attempts distinct", () => {
+    const ticket = makeLiveErrorTicket({ id: "42" });
+    const entries = [1, 2].map((phaseAttempt) => ({
+      id: "same-entry", entryId: "same-entry", phaseAttempt, timestamp: "invalid-time", line: `attempt ${phaseAttempt}`,
+      source: "debug", status: "CODING", audience: "debug" as const, kind: "transport", streaming: false, op: "append" as const,
+    }));
+    mockUseTicketHistoricalLogs.mockReturnValue({ entries, isLoading: false, isError: false });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    fireEvent.click(screen.getByText("Technical details"));
+    const records = screen.getByRole("region", { name: "Failure debug records" });
+    expect(records.querySelectorAll("details")).toHaveLength(2);
+    expect(within(records).getByText("Debug record 1 · Time not recorded")).toBeVisible();
+    expect(within(records).getByText("Debug record 2 · Time not recorded")).toBeVisible();
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 
   it.each([

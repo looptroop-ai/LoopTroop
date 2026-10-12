@@ -22,6 +22,7 @@ import { useTicketAction } from "@/hooks/useTickets";
 import { useTicketHistoricalLogs } from "@/hooks/useTicketHistoricalLogs";
 import { useLogs } from "@/context/useLogContext";
 import type { LogEntry } from "@/context/LogContext";
+import { getLogEntryIdentity } from "@/context/logUtils";
 import { CollapsiblePhaseLogSection } from "./CollapsiblePhaseLogSection";
 import type { Ticket } from "@/hooks/useTickets";
 import { formatTimestamp, formatTimestampString } from "./logFormat";
@@ -237,6 +238,39 @@ function normalizeErrorText(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function splitErrorCause(
+  message: string,
+  diagnostics: TicketErrorOccurrence["diagnostics"],
+) {
+  const checkName = diagnostics?.failedChecks?.find((check) =>
+    message.startsWith(`${check.name}: `),
+  )?.name;
+  let prefix = checkName ? `${checkName}: ` : "";
+  let cause = message.slice(prefix.length);
+  const wrapper = cause.match(/^(?:(?:Pre-flight check failed|Execution-mode probe failed|OpenCode unreachable|OpenCode check failed|GitHub auth failed|GitHub repository access failed|Failed to verify model availability|Failed to inspect git worktree branch|Failed to inspect worktree cleanliness):\s*)+/)?.[0] ?? "";
+  prefix += wrapper;
+  cause = cause.slice(wrapper.length);
+  let suffix = "";
+  const providerMessage = sanitizeErrorForDisplay(sanitizeDiagnosticText(diagnostics?.providerErrorMessage ?? ""));
+  if (providerMessage && cause.includes(providerMessage)) {
+    const start = cause.indexOf(providerMessage);
+    prefix += cause.slice(0, start);
+    suffix = cause.slice(start + providerMessage.length);
+    cause = providerMessage;
+  } else if (diagnostics?.providerErrorType && cause.startsWith(`${diagnostics.providerErrorType}: `)) {
+    const typePrefix = `${diagnostics.providerErrorType}: `;
+    prefix += typePrefix;
+    cause = cause.slice(typePrefix.length);
+  }
+  const httpSuffix = cause.match(/\s+\(HTTP\s+\d{3}\)\s*$/)?.[0] ?? "";
+  cause = cause.slice(0, cause.length - httpSuffix.length);
+  suffix = httpSuffix + suffix;
+  if (/^(?:No error details were captured\. Check the server logs\.|Pre-flight check failed|Execution-mode probe failed)\.?$/i.test(cause.trim())) {
+    return { prefix: prefix + cause, cause: "", suffix };
+  }
+  return { prefix, cause, suffix };
+}
+
 function getErrorPhaseLabel(
   status: string,
   options: StatusLabelOptions = {},
@@ -297,15 +331,24 @@ function explainBlockedError(
       ? "Retry the failed workflow step after reviewing the technical details."
       : null;
 
+  if (blockedFromStatus === "PRE_FLIGHT_CHECK" && (diagnostics?.failedChecks?.length ?? 0) > 1) {
+    return {
+      title: "Several readiness checks failed",
+      description: "Checking Readiness found more than one problem. Review each reported failure before retrying.",
+      recommendation: canRetry ? "Resolve each reported readiness failure, then Retry the failed step." : null,
+    };
+  }
+
   const authenticationMessage = [
     errorMessage,
     diagnostics?.summary,
     diagnostics?.providerErrorMessage,
   ].filter(Boolean).join("\n");
-  const expiredLogin = /\b(?:authentication|access|refresh|auth)\s+token\s+(?:has\s+(?:been\s+)?)?expired\b|\btoken_expired\b/i.test(authenticationMessage);
-  const invalidatedLogin = /\bauthentication\s+token\s+(?:has\s+(?:been\s+)?)?invalidated\b/i.test(authenticationMessage);
-  if (codes.has(OPENCODE_PROVIDER_AUTH_FAILED) ||
-    ((expiredLogin || invalidatedLogin) && (!diagnostics || diagnostics.kind === "opencode_provider"))) {
+  const expiredLogin = /\b(?:(?:authentication|access|refresh|auth)\s+)?token\s+(?:has\s+(?:been\s+)?)?expired\b|\bexpired\s+token\b|\btoken_expired\b/i.test(authenticationMessage);
+  const invalidatedLogin = /\b(?:(?:authentication|access|refresh|auth)\s+)?token\s+(?:has\s+(?:been\s+)?)?invalidated\b|\binvalidated\s+token\b/i.test(authenticationMessage);
+  const isProviderFailure = !diagnostics || diagnostics.kind === "opencode_provider";
+  if (isProviderFailure && (codes.has(OPENCODE_PROVIDER_AUTH_FAILED) ||
+    ((expiredLogin || invalidatedLogin) && diagnostics?.kind === "opencode_provider"))) {
     const providerId = diagnostics?.providerId;
     const providerName = providerId === "openai" ? "OpenAI" : providerId;
     const provider = providerName || "The model provider";
@@ -352,7 +395,7 @@ function explainBlockedError(
         : retryRecommendation,
     };
   }
-  if (codes.has(OPENCODE_PROVIDER_ERROR)) {
+  if (isProviderFailure && codes.has(OPENCODE_PROVIDER_ERROR)) {
     return {
       title: "Provider or environment unavailable",
       description:
@@ -478,7 +521,7 @@ function ErrorTechnicalDetails({
         <pre
           role="region"
           aria-label="Recorded error"
-          tabIndex={0}
+          tabIndex={0 /* NOSONAR: Keyboard users must be able to scroll this region. */}
           className="max-h-48 overflow-y-auto rounded border border-border p-2 font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
         >
           {`Recorded error:\n${recordedError}`}
@@ -546,7 +589,7 @@ function ErrorTechnicalDetails({
               <pre
                 role="region"
                 aria-label="Error stack"
-                tabIndex={0}
+                tabIndex={0 /* NOSONAR: Keyboard users must be able to scroll this region. */}
                 className="max-h-48 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
               >
                 {diagnostics.stackTrace}
@@ -560,7 +603,7 @@ function ErrorTechnicalDetails({
                 <pre
                   role="region"
                   aria-label="Provider response preview"
-                  tabIndex={0}
+                  tabIndex={0 /* NOSONAR: Keyboard users must be able to scroll this region. */}
                   className="max-h-48 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
                 >
                   {responseBodyPreview}
@@ -599,20 +642,25 @@ function FailureDebugRecords({
   const persistedOccurrence = occurrence && /^[1-9]\d*$/.test(occurrence.id)
     && Number.isSafeInteger(Number(occurrence.id));
   const endTime = readTimestamp(occurrence?.occurredAt);
+  const occurrences = getTicketErrorOccurrences(ticket);
+  const occurrenceIndex = occurrences.findIndex((item) => item.id === occurrence?.id);
+  const previousOccurrence = occurrenceIndex >= 0 ? occurrences[occurrenceIndex + 1] : null;
+  const startTime = readTimestamp(previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt)
+    ?? readTimestamp(ticket.createdAt);
   const canMatchLogs = Boolean(persistedOccurrence || (phase && endTime !== null));
   const history = useTicketHistoricalLogs(ticket.id, {
     scope: "phase",
     view: "debug",
     limit: 5,
-    ...(persistedOccurrence ? { errorOccurrenceId: occurrence.id } : { phase: phase ?? undefined }),
+    ...(persistedOccurrence ? { errorOccurrenceId: occurrence.id } : {
+      phase: phase ?? undefined,
+      ...(startTime !== null ? { startedAt: new Date(startTime).toISOString() } : {}),
+      ...(endTime !== null ? { endedAt: new Date(endTime).toISOString() } : {}),
+    }),
   }, enabled && canMatchLogs);
-  const occurrences = getTicketErrorOccurrences(ticket);
-  const occurrenceIndex = occurrences.findIndex((item) => item.id === occurrence?.id);
-  const previousOccurrence = occurrenceIndex >= 0 ? occurrences[occurrenceIndex + 1] : null;
   const entries = (persistedOccurrence ? history.entries : filterLogsWithinWindow(history.entries, {
-    startTime: readTimestamp(previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt),
+    startTime,
     endTime,
-    includeStart: false,
   })).slice(-5).reverse();
   const records = entries.map((entry) => ({ entry, content: sanitizeDiagnosticText(JSON.stringify(entry.record ?? {
     timestamp: entry.timestamp,
@@ -644,12 +692,14 @@ function FailureDebugRecords({
           {records.length > 0 && (
             <div role="region" aria-label="Failure debug records" className="space-y-1.5">
               {records.map(({ entry, content }, index) => (
-                <details key={entry.id} className="rounded border border-border px-2 py-1.5">
+                <details key={getLogEntryIdentity(entry)} className="rounded border border-border px-2 py-1.5">
                   <summary className="cursor-pointer text-foreground">
-                    {`Debug record ${index + 1} · ${entry.timestamp ? formatTimestampString(entry.timestamp) : "Time not recorded"}`}
+                    {`Debug record ${index + 1} · ${entry.timestamp && readTimestamp(entry.timestamp) !== null ? formatTimestampString(entry.timestamp) : "Time not recorded"}`}
                   </summary>
                   <pre
-                    tabIndex={0}
+                    role="region"
+                    aria-label={`Debug record ${index + 1} details`}
+                    tabIndex={0 /* NOSONAR: Keyboard users must be able to scroll this region. */}
                     className="mt-2 max-h-80 overflow-y-auto font-mono text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]"
                   >
                     {content}
@@ -895,13 +945,8 @@ export function ErrorView({
     sanitizeErrorForDisplay(sanitizeDiagnosticText(rawPrimaryErrorMessage)) ||
     diagnosticSummary ||
     "No error details were captured. Check the server logs.";
-  const failedCheckName = diagnostics?.failedChecks?.find((check) =>
-    primaryErrorMessage.startsWith(`${check.name}: `),
-  )?.name;
-  const checkPrefix = failedCheckName ? `${failedCheckName}: ` : "";
-  const probePrefix = primaryErrorMessage.slice(checkPrefix.length)
-    .match(/^(?:(?:Pre-flight check failed|Execution-mode probe failed):\s*)+/)?.[0] ?? "";
-  const errorContextPrefix = checkPrefix + probePrefix;
+  const errorLines = withContentKeys(primaryErrorMessage.split("\n"), (line) => line)
+    .map(({ item, key }) => ({ ...splitErrorCause(item, diagnostics), key }));
   const errorExplanation = explainBlockedError(
     visibleOccurrence?.blockedFromStatus ?? ticket.previousStatus ?? undefined,
     visibleOccurrence?.errorCodes ?? [],
@@ -1037,8 +1082,13 @@ export function ErrorView({
             <div className="rounded-md border border-border bg-muted/40 p-3 space-y-3">
               <div className="space-y-2">
                 <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">
-                  {errorContextPrefix}
-                  <strong className="font-medium">{primaryErrorMessage.slice(errorContextPrefix.length)}</strong>
+                  {errorLines.map(({ prefix, cause, suffix, key }, index) => (
+                    <span key={key}>
+                      {index > 0 ? "\n" : ""}{prefix}
+                      {cause && <strong className="font-medium">{cause}</strong>}
+                      {suffix}
+                    </span>
+                  ))}
                 </p>
                 {hasDiagnosticSummary && (
                   <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">

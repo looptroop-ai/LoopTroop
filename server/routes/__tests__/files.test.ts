@@ -13,7 +13,7 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
 import * as fileReader from '../../io/readFile'
 import { cleanupTicketResources } from '../../phases/cleanup/cleaner'
-const { readOpenCodeNativeLogsMock } = vi.hoisted(() => ({ readOpenCodeNativeLogsMock: vi.fn(() => []) }))
+const { readOpenCodeNativeLogsMock } = vi.hoisted(() => ({ readOpenCodeNativeLogsMock: vi.fn<(sessionIds: string[]) => unknown[]>(() => []) }))
 
 // The native entries come from OpenCode's own log directory, which a fixture
 // repository has no way to populate; what matters here is what the route does
@@ -304,6 +304,36 @@ describe('filesRouter GET /files/:ticketId/logs', () => {
     // Appended raw, the out-of-phase native row came back on every scoped
     // request for the ticket's sessions.
     expect(payload.map((entry) => entry.content)).toEqual(['ai entry', 'native coding row'])
+  })
+
+  it('returns redacted native evidence on channel=all without changing ordinary log text or source files', async () => {
+    const { ticket, paths, repoDir } = createProjectTicket()
+    writeJsonl(paths.aiLogPath, [{
+      timestamp: '2026-09-25T07:46:42.000Z',
+      sessionId: 'ses-native', phase: 'CODING', status: 'CODING',
+      message: 'ordinary text https://example.com/search?q=keep',
+      content: 'ordinary text https://example.com/search?q=keep',
+    }])
+    const logDir = join(repoDir, 'native-logs')
+    mkdirSync(logDir)
+    const nativePath = join(logDir, 'native.log')
+    const line = 'timestamp=2026-09-25T07:46:43.645Z level=ERROR service=llm session.id=ses-native message="request failed" error={"apiKey":"opaque-native-secret","url":"https://api.example.com/request?api_key=opaque-url-secret","statusCode":401,"message":"login expired"}\n'
+    writeFileSync(nativePath, line)
+    const actual = await vi.importActual<typeof import('../../opencode/logDiagnostics')>('../../opencode/logDiagnostics')
+    readOpenCodeNativeLogsMock.mockImplementation(sessionIds => actual.readOpenCodeNativeLogs(sessionIds, { logDirs: [logDir] }))
+
+    const response = await app.request(`/api/files/${encodeURIComponent(ticket.id)}/logs?channel=all`)
+    expect(response.status).toBe(200)
+    const payload = await response.json() as Array<{ timestamp: string; content: string; data?: { rawLine?: string } }>
+    const native = payload.find(entry => entry.data?.rawLine)
+    expect(native?.timestamp).toBe('2026-09-25T07:46:43.645Z')
+    expect(native?.data?.rawLine).toContain('"apiKey":"[redacted]"')
+    expect(native?.data?.rawLine).toContain('"statusCode":401')
+    expect(native?.content).toBe('[DEBUG] [ERROR] [opencode:llm] request failed')
+    expect(JSON.stringify(payload)).not.toContain('opaque-native-secret')
+    expect(JSON.stringify(payload)).not.toContain('opaque-url-secret')
+    expect(payload.map(entry => entry.content)).toContain('ordinary text https://example.com/search?q=keep')
+    expect(readFileSync(nativePath, 'utf8')).toBe(line)
   })
 
   it('puts a native entry with an unreadable timestamp last rather than first', async () => {

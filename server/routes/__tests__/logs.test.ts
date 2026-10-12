@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync, statSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
@@ -12,6 +13,7 @@ import { ticketRouter } from '../tickets'
 import { health } from '../health'
 import { createTestRepoManager, createUninitializedTestTicket, resetTestDb } from '../../test/integration'
 import { createTicket, getTicketPaths, recordTicketErrorOccurrence, resolveLatestTicketErrorOccurrence } from '../../storage/tickets'
+import * as ticketStorage from '../../storage/tickets'
 import { getTicketContext } from '../../storage/ticketQueries'
 import { ticketStatusHistory } from '../../db/schema'
 import type {
@@ -88,7 +90,8 @@ afterAll(() => {
 describe('ticket log projection API', () => {
   it('pages each error occurrence within its own phase run even when retries share attempt 1', async () => {
     const { ticket } = createLogTestTicket()
-    const context = getTicketContext(ticket.id)!
+    const context = getTicketContext(ticket.id)
+    assert(context)
     const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
     context.projectDb.insert(ticketStatusHistory).values([
       { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: time(0) },
@@ -97,9 +100,11 @@ describe('ticket log projection API', () => {
       { ticketId: context.localTicketId, newStatus: 'BLOCKED_ERROR', changedAt: time(30) },
       { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: time(40) },
     ]).run()
-    const first = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'first failure', occurredAt: time(10) })!
+    const first = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'first failure', occurredAt: time(10) })
+    assert(first)
     resolveLatestTicketErrorOccurrence(ticket.id, { resolutionStatus: 'RETRIED', resumedToStatus: 'CODING', resolvedAt: time(20) })
-    const second = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'second failure', occurredAt: time(30) })!
+    const second = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'second failure', occurredAt: time(30) })
+    assert(second)
     for (const second of [0, 9, 10, 19, 20, 25, 30, 31]) {
       appendLogEvent(ticket.id, 'debug', 'CODING', `coding-${second}`, { timestamp: time(second), phaseAttempt: 1 }, 'debug', 'CODING')
     }
@@ -125,7 +130,8 @@ describe('ticket log projection API', () => {
   it('rejects invalid and another ticket’s error occurrence IDs', async () => {
     const { ticket, project } = createLogTestTicket()
     const otherTicket = createTicket({ projectId: project.id, title: 'other ticket' })
-    const otherOccurrence = recordTicketErrorOccurrence(otherTicket.id, { blockedFromStatus: 'CODING', errorMessage: 'other error' })!
+    const otherOccurrence = recordTicketErrorOccurrence(otherTicket.id, { blockedFromStatus: 'CODING', errorMessage: 'other error' })
+    assert(otherOccurrence)
     const baseUrl = `/api/tickets/${encodeURIComponent(ticket.id)}/logs`
     for (const id of ['0', '-1', 'NaN', '1.5', '9007199254740992', '']) {
       expect((await app.request(`${baseUrl}?errorOccurrenceId=${id}`)).status).toBe(400)
@@ -134,13 +140,136 @@ describe('ticket log projection API', () => {
     expect((await app.request(`${baseUrl}/export?errorOccurrenceId=${otherOccurrence.id}`)).status).toBe(404)
   })
 
+  it('selects the latest five records inside an explicit failure window before applying the limit', async () => {
+    const { ticket } = createLogTestTicket()
+    const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
+    for (let second = 0; second <= 15; second += 1) {
+      appendLogEvent(ticket.id, 'debug', 'CODING', `record-${second}`, { timestamp: time(second), secretKey: 'private-evidence' }, 'debug', 'CODING')
+    }
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&phase=CODING&limit=5&startedAt=${time(1)}&endedAt=${time(8)}`)
+    expect(response.status).toBe(200)
+    const body = await response.json() as { entries: Array<{ content: string }>; totalEntries: number; boundary: unknown }
+    expect(body.entries.map(entry => entry.content)).toEqual([4, 5, 6, 7, 8].map(second => `record-${second}`))
+    expect(body.totalEntries).toBe(8)
+    expect(body.boundary).toEqual({ phase: 'CODING', phaseAttempt: null, startedAt: time(1), endedAt: time(8) })
+    expect(JSON.stringify(body)).not.toContain('private-evidence')
+  })
+
+  it('rejects invalid and reversed time bounds and normalizes valid offsets', async () => {
+    const { ticket } = createLogTestTicket()
+    const baseUrl = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug`
+    for (const name of ['startedAt', 'endedAt']) {
+      for (const value of ['', 'yesterday', '2026-01-01', '2026-02-30T00:00:00Z']) {
+        expect((await app.request(`${baseUrl}&${name}=${encodeURIComponent(value)}`)).status).toBe(400)
+      }
+    }
+    expect((await app.request(`${baseUrl}&startedAt=2026-01-01T00:00:02Z&endedAt=2026-01-01T00:00:01Z`)).status).toBe(400)
+    const response = await app.request(`${baseUrl}&startedAt=${encodeURIComponent('2026-01-01T02:00:01+02:00')}&endedAt=2026-01-01T00:00:02Z`)
+    expect(response.status).toBe(200)
+    expect((await response.json() as { boundary: unknown }).boundary).toEqual({
+      phase: null, phaseAttempt: null, startedAt: '2026-01-01T00:00:01.000Z', endedAt: '2026-01-01T00:00:02.000Z',
+    })
+  })
+
+  it.each(['resolved', 'unresolved'])('starts after the %s predecessor using chronological timestamp order', async (predecessorState) => {
+    const { ticket } = createLogTestTicket()
+    const context = getTicketContext(ticket.id)
+    assert(context)
+    context.projectDb.insert(ticketStatusHistory).values({ ticketId: context.localTicketId, newStatus: 'CODING', changedAt: '2026-01-01T00:00:20Z' }).run()
+    const predecessor = recordTicketErrorOccurrence(ticket.id, {
+      blockedFromStatus: 'CODING', errorMessage: 'earlier failure',
+      occurredAt: predecessorState === 'resolved' ? '2026-01-01T00:00:10.000Z' : '2026-01-01T00:00:20.500Z',
+    })
+    assert(predecessor)
+    if (predecessorState === 'resolved') {
+      resolveLatestTicketErrorOccurrence(ticket.id, { resolutionStatus: 'RETRIED', resumedToStatus: 'CODING', resolvedAt: '2026-01-01T02:00:20.500+02:00' })
+    }
+    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'current failure', occurredAt: '2026-01-01T00:00:30.000Z' })
+    assert(occurrence)
+    for (const milliseconds of [250, 500, 750]) {
+      appendLogEvent(ticket.id, 'debug', 'CODING', `record-${milliseconds}`, { timestamp: `2026-01-01T00:00:20.${milliseconds}Z` }, 'debug', 'CODING')
+    }
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&errorOccurrenceId=${occurrence.id}`)
+    const body = await response.json() as { entries: Array<{ content: string }>; boundary: { startedAt: string } }
+    expect(body.boundary.startedAt).toBe('2026-01-01T00:00:20.500Z')
+    expect(body.entries.map(entry => entry.content)).toEqual(['record-500', 'record-750'])
+  })
+
+  it('reports ticket-context unavailability separately from an unknown occurrence', async () => {
+    const { ticket } = createLogTestTicket()
+    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure' })
+    assert(occurrence)
+    const contextSpy = vi.spyOn(ticketStorage, 'getTicketContext').mockReturnValue(undefined)
+    try {
+      expect((await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?errorOccurrenceId=${occurrence.id}`)).status).toBe(500)
+      expect((await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs/export?errorOccurrenceId=${occurrence.id}`)).status).toBe(500)
+    } finally {
+      contextSpy.mockRestore()
+    }
+  })
+
+  it('leaves ordinary log contents, exports and pagination metadata unchanged', async () => {
+    const { ticket } = createLogTestTicket()
+    const content = 'See https://example.com/search?q=loop&page=2#section; token: abc123; const password = "example";'
+    for (let second = 1; second <= 3; second += 1) {
+      appendLogEvent(ticket.id, 'debug', 'CODING', content, {
+        timestamp: `2026-01-01T00:00:0${second}.000Z`, inputToken: 3, nextPageToken: 'opaque-page-token',
+      }, 'debug', 'CODING')
+    }
+    const page = await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', view: 'debug', limit: 2 })
+    assert(page)
+    const baseUrl = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&phase=CODING&limit=2`
+    const body = await (await app.request(baseUrl)).json() as { entries: Array<{ content: string; data: unknown }>; olderCursor: string }
+    expect(body.entries.map(entry => entry.content)).toEqual([content, content])
+    const firstEntry = body.entries[0]
+    assert(firstEntry)
+    expect(firstEntry.data).toMatchObject({ inputToken: 3, nextPageToken: 'opaque-page-token' })
+    expect(body.olderCursor).toBe(page.olderCursor)
+    const exported = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs/export?view=debug&phase=CODING`)
+    expect(await exported.text()).toBe([1, 2, 3].map(second => `[2026-01-01T00:00:0${second}.000Z] ${content}`).join('\n'))
+  })
+
+  it('rejects a cursor reused for another occurrence instead of replaying its native session set', async () => {
+    const { ticket, repoDir } = createLogTestTicket()
+    const context = getTicketContext(ticket.id)
+    assert(context)
+    const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
+    context.projectDb.insert(ticketStatusHistory).values([
+      { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: time(0) },
+      { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: time(20) },
+    ]).run()
+    const first = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'first failure', occurredAt: time(10) })
+    assert(first)
+    resolveLatestTicketErrorOccurrence(ticket.id, { resolutionStatus: 'RETRIED', resumedToStatus: 'CODING', resolvedAt: time(20) })
+    const second = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'second failure', occurredAt: time(30) })
+    assert(second)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'first session owner', { timestamp: time(1), sessionId: 'first-session' }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'second session owner', { timestamp: time(21), sessionId: 'second-session' }, 'system', 'CODING')
+    const nativePath = await writeNativeFixture(repoDir, 'window-cursor.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
+    readOpenCodeNativeLogFileMock.mockResolvedValue([9, 29].map(second => ({
+      timestamp: time(second), type: 'debug', source: 'debug', audience: 'debug', kind: 'session', op: 'append',
+      phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native', message: `native-${second}`, content: `native-${second}`,
+      sessionId: second === 9 ? 'first-session' : 'second-session', data: {}, nativeIdentity: `window-cursor.log:${second}`,
+    })))
+    const baseUrl = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&limit=1`
+    const firstPage = await (await app.request(`${baseUrl}&errorOccurrenceId=${first.id}`)).json() as { olderCursor: string }
+    assert(firstPage.olderCursor)
+    const replay = await app.request(`${baseUrl}&errorOccurrenceId=${second.id}&before=${encodeURIComponent(firstPage.olderCursor)}`)
+    expect(replay.status).toBe(409)
+    expect(await replay.json()).toMatchObject({ code: 'LOG_CURSOR_EXPIRED' })
+    const fresh = await (await app.request(`${baseUrl}&errorOccurrenceId=${second.id}`)).json() as { entries: Array<{ content: string }> }
+    expect(fresh.entries.map(entry => entry.content)).toEqual(['native-29'])
+  })
+
   it('keeps the latest same-time anonymous debug records across offset digit widths', async () => {
     const { ticket } = createLogTestTicket()
     const timestamp = new Date().toISOString()
     for (let attempt = 1; attempt <= 12; attempt += 1) {
       appendLogEvent(ticket.id, 'debug', 'CODING', 'request failed', { timestamp, attempt }, 'debug', 'CODING')
     }
-    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: timestamp })!
+    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: timestamp })
+    assert(occurrence)
     const url = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&errorOccurrenceId=${occurrence.id}&limit=5`
     const response = await app.request(url)
     const body = await response.json() as { entries: Array<{ entryId: string; data: { attempt: number } }> }
@@ -155,7 +284,8 @@ describe('ticket log projection API', () => {
     const timestamp = new Date(Date.parse(startedAt) + 1).toISOString()
     appendLogEvent(ticket.id, 'info', 'CODING', 'session owner', { timestamp: startedAt, sessionId: 'native-session' }, 'system', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', 'other session owner', { timestamp: startedAt, sessionId: 'other-native-session' }, 'system', 'CODING')
-    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: timestamp })!
+    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: timestamp })
+    assert(occurrence)
     const nativePath = await writeNativeFixture(repoDir, 'same-time-native.log', 2)
     listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
     readOpenCodeNativeLogFileMock.mockResolvedValue(Array.from({ length: 12 }, (_, index) => ({
@@ -172,10 +302,12 @@ describe('ticket log projection API', () => {
 
   it('keeps complete structured diagnostics and bounds native rows from a reused debug session', async () => {
     const { ticket, repoDir } = createLogTestTicket()
-    const context = getTicketContext(ticket.id)!
+    const context = getTicketContext(ticket.id)
+    assert(context)
     const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
     context.projectDb.insert(ticketStatusHistory).values({ ticketId: context.localTicketId, newStatus: 'CODING', changedAt: time(20) }).run()
-    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: time(30) })!
+    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: time(30) })
+    assert(occurrence)
     const longEvidence = 'provider evidence '.repeat(200)
     appendLogEvent(ticket.id, 'debug', 'CODING', 'request failure', {
       timestamp: time(22), sessionId: 'reused-session', modelId: 'provider/model',
@@ -1450,7 +1582,7 @@ describe('ticket log projection API', () => {
 
   it('rejects cursor fields with array values before binding them to SQLite', async () => {
     const { ticket } = createLogTestTicket()
-    const valid = { ordinal: 1, timestamp: '', mirrorKey: 'entry:a', mirrorOccurrence: 0 }
+    const valid = { scopeKey: 'scope', ordinal: 1, timestamp: '', mirrorKey: 'entry:a', mirrorOccurrence: 0 }
     for (const cursor of [
       { ordinal: 1, timestamp: '', channel: ['ai'] },
       ...Object.keys(valid).map(key => ({ ...valid, [key]: ['invalid'] })),

@@ -402,6 +402,7 @@ export interface LogPageQuery {
 }
 
 interface LogCursor {
+  scopeKey: string
   ordinal: number
   timestamp: string
   mirrorKey: string
@@ -430,7 +431,8 @@ function decodeCursor(cursor?: string): LogCursor | null {
   if (!cursor) return null
   try {
     const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Partial<LogCursor>
-    return typeof value.ordinal === 'number' && Number.isSafeInteger(value.ordinal) && value.ordinal >= 0
+    return typeof value.scopeKey === 'string'
+      && typeof value.ordinal === 'number' && Number.isSafeInteger(value.ordinal) && value.ordinal >= 0
       && typeof value.timestamp === 'string' && typeof value.mirrorKey === 'string'
       && typeof value.mirrorOccurrence === 'number' && Number.isSafeInteger(value.mirrorOccurrence) && value.mirrorOccurrence >= 0
       && (value.nativeSnapshot === undefined || typeof value.nativeSnapshot === 'string')
@@ -1426,6 +1428,7 @@ async function queryDebugPage(
   before: LogCursor | null,
   clauses: string[],
   params: SQLInputValue[],
+  scopeKey: string,
 ) {
   const { sqlite, statements } = storage
   const scopeClauses = [...clauses]
@@ -1562,6 +1565,7 @@ async function queryDebugPage(
   return {
     entries: visiblePage.toReversed().map(row => row.entry),
     olderCursor: hasOlder && oldest ? Buffer.from(JSON.stringify({
+      scopeKey,
       ordinal: oldest.ordinal,
       timestamp: oldest.timestamp,
       mirrorKey: oldest.sortKey,
@@ -1583,6 +1587,11 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (!storage) return null
   const { context, sqlite } = storage
   const before = decodeCursor(query.before)
+  const scopeKey = createHash('sha256').update(JSON.stringify([
+    ticketId, query.scope, query.view, query.phase, query.phaseAttempt,
+    query.modelId, query.beadId, query.startedAt, query.endedAt,
+  ])).digest('hex')
+  if (before && before.scopeKey !== scopeKey) throw new HistoricalLogCursorExpiredError()
   const shouldIncludeTotals = query.includeTotals !== false && before === null
   const clauses = ['ticket_id = ?']
   const params: SQLInputValue[] = [context.localTicketId]
@@ -1591,7 +1600,7 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (query.beadId) { clauses.push('bead_id = ?'); params.push(query.beadId) }
   if (query.startedAt) { clauses.push('timestamp >= ?'); params.push(query.startedAt) }
   if (query.endedAt) { clauses.push('timestamp <= ?'); params.push(query.endedAt) }
-  if (query.view === 'debug') return queryDebugPage(storage, query, before, clauses, params)
+  if (query.view === 'debug') return queryDebugPage(storage, query, before, clauses, params, scopeKey)
   let modelIds: string[] | undefined
   if (shouldIncludeTotals) {
     // Tabs describe the whole scope, even when the selected view or model has
@@ -1706,6 +1715,7 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
       return entry
     }),
     olderCursor: hasOlder && oldest ? Buffer.from(JSON.stringify({
+      scopeKey,
       ordinal: oldest.ordinal, timestamp: oldest.sort_timestamp,
       mirrorKey: oldest.mirror_key, mirrorOccurrence: oldest.mirror_occurrence,
     })).toString('base64url') : null,

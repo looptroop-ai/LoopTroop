@@ -17,7 +17,7 @@ import { Menu, X } from 'lucide-react'
 import { clearErrorTicketSeen, getErrorTicketSignature, markErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { clearNeedsInputSeen, getNeedsInputSignature, markNeedsInputSeen } from '@/lib/needsInputSeen'
 import { MAX_RAW_OUTPUT_LENGTH } from '@/lib/constants'
-import { WORKFLOW_PHASE_IDS } from '@shared/workflowMeta'
+import { WORKFLOW_PHASE_IDS, isWorkflowPhaseId } from '@shared/workflowMeta'
 import { getActiveErrorOccurrence, getTicketErrorOccurrences } from '@/lib/errorOccurrences'
 import { dispatchInterviewBatchEvent, parseInterviewBatchEventDetail } from '@/lib/interviewBatchEvents'
 import { INTERVIEW_APPROVAL_FOCUS_EVENT } from '@/lib/interviewDocument'
@@ -433,17 +433,35 @@ export function TicketDashboard() {
       if (current.ticketId === ticketId && current.phase === status) {
         return { ticketId, phase: null }
       }
-      if (status !== 'BLOCKED_ERROR' && current.ticketId === ticketId && current.phase === 'BLOCKED_ERROR') {
-        return { ticketId, phase: null }
-      }
       return current
     })
   }, [ticket?.status, ticketId, snapshotPreviousStatus, snapshotReviewCutoffStatus])
+
+  const prevCurrentStatusRef = useRef<string>(currentStatus)
+  useEffect(() => {
+    const prev = prevCurrentStatusRef.current
+    prevCurrentStatusRef.current = currentStatus
+    if (prev === 'BLOCKED_ERROR' && currentStatus !== 'BLOCKED_ERROR') {
+      setErrorSelection((current) => {
+        if (current.ticketId === ticketId && current.occurrenceId !== null) {
+          return { ticketId: null, occurrenceId: null }
+        }
+        return current
+      })
+      setPhaseSelection((current) => {
+        if (current.ticketId === ticketId && (current.phase === 'BLOCKED_ERROR' || current.phase === currentStatus)) {
+          return { ticketId, phase: null }
+        }
+        return current
+      })
+    }
+  }, [currentStatus, ticketId])
 
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<WorkspacePhaseNavigateDetail>).detail
       if (!detail?.ticketId || detail.ticketId !== ticketId || !detail.phase) return
+      if (!isWorkflowPhaseId(detail.phase)) return
 
       setPhaseSelection({
         ticketId,

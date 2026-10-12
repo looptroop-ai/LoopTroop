@@ -63,6 +63,7 @@ import { isMockOpenCodeMode } from "../../opencode/factory";
 import { existsSync } from "fs";
 import { resolve } from "path";
 import { runPreFlightChecks } from "../../phases/preflight/doctor";
+import type { PreFlightReport } from "../../phases/preflight/types";
 import type { FinalTestGenerationResult } from "../../phases/finalTest/generator";
 import { executeFinalTestWithRetries } from "../../phases/finalTest/executor";
 import { parseFinalTestCommands } from "../../phases/finalTest/parser";
@@ -179,7 +180,7 @@ import {
   mergeErrorCodes,
 } from "../../opencode/blockedErrorDiagnostics";
 import { getErrorMessage } from "@shared/typeGuards";
-import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText } from "@shared/errorDiagnostics";
+import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText, sanitizeDiagnosticValue } from "@shared/errorDiagnostics";
 import {
   resolveStoredWorkflowPhase,
   type WorkflowPhaseId,
@@ -5205,7 +5206,7 @@ export async function handlePreFlight(
         maxIterations: context.maxIterations,
       };
       const preFlightStreamState = createOpenCodeStreamState();
-      const report = await runPreFlightChecks(
+      const report = sanitizeDiagnosticValue(await runPreFlightChecks(
         adapter,
         ticketId,
         beads,
@@ -5225,7 +5226,7 @@ export async function handlePreFlight(
             );
           },
         },
-      );
+      )) as PreFlightReport;
       throwIfAborted(signal, ticketId);
 
       // Emit individual per-check SYS log entries so each diagnostic result
@@ -5267,9 +5268,10 @@ export async function handlePreFlight(
           name: check.name,
           category: check.category,
           message: check.message,
-          details: [check.details, check.diagnostics ? JSON.stringify(check.diagnostics, null, 2) : undefined].filter(Boolean).join("\n\n") || undefined,
         }));
         const underlyingDiagnostics = report.criticalFailures.find(
+          (check) => check.name === "OpenCode Execution Capability" && check.diagnostics,
+        )?.diagnostics ?? report.criticalFailures.find(
           (check) => check.diagnostics?.kind === "opencode_provider",
         )?.diagnostics ?? report.criticalFailures.find((check) => check.diagnostics)?.diagnostics;
         const diagnostics = normalizeBlockedErrorDiagnostics({

@@ -1,7 +1,7 @@
 import { StrictMode, type ReactNode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { CancelledError, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, assert, describe, expect, it, vi } from 'vitest'
 import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
 import { foldHistoricalLogPages, useTicketHistoricalLogs, type HistoricalLogPage, type HistoricalLogScope } from '../useTicketHistoricalLogs'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
@@ -79,6 +79,55 @@ describe('useTicketHistoricalLogs', () => {
 
     await waitFor(() => expect(result.current.entries).toHaveLength(3))
     expect(result.current.entries.map(entry => (entry.record?.data as { attempt: number }).attempt)).toEqual([1, 2, 3])
+  })
+
+  it('requests the fallback failure window before limiting records and isolates its cache and export', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = historyRequestUrl(input)
+      const endedAt = url.searchParams.get('endedAt')
+      if (url.pathname.endsWith('/export')) return Promise.resolve(new Response(`export-${endedAt}`))
+      return createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: `failure-${endedAt}`, content: 'in-window failure', data: { detail: endedAt } }],
+        modelIds: [`model-${endedAt}`], hasOlder: false,
+      })
+    })
+    const client = createTestQueryClient()
+    const startedAt = '2026-01-01T00:00:00.000Z'
+    const endedAt = '2026-01-01T00:01:00.000Z'
+    const scope: HistoricalLogScope = { scope: 'phase', phase: 'CODING', view: 'debug', startedAt, endedAt, limit: 5 }
+    const { result, rerender } = renderHook(
+      ({ currentScope }: { currentScope: HistoricalLogScope }) => useTicketHistoricalLogs('ticket-1', currentScope),
+      { initialProps: { currentScope: scope }, wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> },
+    )
+
+    await waitFor(() => expect(result.current.entries).toHaveLength(1))
+    const firstRequest = fetchSpy.mock.calls[0]
+    assert(firstRequest)
+    const requested = historyRequestUrl(firstRequest[0])
+    expect(requested.searchParams.get('startedAt')).toBe(startedAt)
+    expect(requested.searchParams.get('endedAt')).toBe(endedAt)
+    expect(requested.searchParams.get('limit')).toBe('5')
+    expect(result.current.entries[0]?.record).toMatchObject({ data: { detail: endedAt } })
+    const secondEnd = '2026-01-01T00:02:00.000Z'
+    rerender({ currentScope: { ...scope, endedAt: secondEnd } })
+    await waitFor(() => expect(result.current.entries[0]?.entryId).toBe(`failure-${secondEnd}`))
+    expect(result.current.modelIds).toEqual([`model-${secondEnd}`])
+    expect(await result.current.exportLogs()).toBe(`export-${secondEnd}`)
+    const exportRequest = fetchSpy.mock.calls.at(-1)
+    assert(exportRequest)
+    const exportUrl = historyRequestUrl(exportRequest[0])
+    expect(exportUrl.searchParams.get('startedAt')).toBe(startedAt)
+    expect(exportUrl.searchParams.get('endedAt')).toBe(secondEnd)
+  })
+
+  it('does not retain a second raw record for the ordinary Debug view', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({
+      entries: [{ phase: 'CODING', entryId: 'debug-line', content: 'ordinary debug line', data: { full: 'raw payload' } }], hasOlder: false,
+    }))
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'debug' })
+
+    await waitFor(() => expect(result.current.entries).toHaveLength(1))
+    expect(result.current.entries[0]).not.toHaveProperty('record')
   })
 
   it('publishes a completed automatic drain after StrictMode replays the mount effect', async () => {

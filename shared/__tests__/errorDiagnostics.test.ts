@@ -80,6 +80,86 @@ describe('shared blocked error diagnostics', () => {
     if (rawLine.includes('statusCode')) expect(clean).toContain('statusCode=401')
   })
 
+  it.each(['secretKey', 'secret_key', 'secret-key', 'client-secret', 'set-cookie', 'credentials', 'ssh_key', 'signing_key', 'passphrase', 'jwt', 'bearer'])('redacts %s consistently in structured and repeatedly encoded evidence', (key) => {
+    const original = { [key]: 'opaque-review-secret', statusCode: 401, message: 'Keep this.' }
+    const expected = { ...original, [key]: '[redacted]' }
+    expect(sanitizeDiagnosticValue(original)).toEqual(expected)
+    let encoded = JSON.stringify(original)
+    let redacted = JSON.stringify(expected)
+    for (let depth = 0; depth < 4; depth += 1) {
+      expect(sanitizeDiagnosticText(encoded)).toBe(redacted)
+      expect(sanitizeDiagnosticText(redacted)).toBe(redacted)
+      encoded = JSON.stringify(encoded)
+      redacted = JSON.stringify(redacted)
+    }
+    expect(sanitizeDiagnosticText(`${key}=opaque-review-secret statusCode=401`)).toBe(`${key}=[redacted] statusCode=401`)
+  })
+
+  it.each([1, 2, 3])('retains neighboring evidence when encoded secrets end in backslashes at depth %s', (depth) => {
+    const original = { apiKey: 'opaque-secret\\', password: 'other-secret\\\\', next: 'KEEP' }
+    const expected = { ...original, apiKey: '[redacted]', password: '[redacted]' }
+    let encoded = JSON.stringify(original)
+    let redacted = JSON.stringify(expected)
+    for (let layer = 0; layer < depth; layer += 1) {
+      encoded = JSON.stringify(encoded)
+      redacted = JSON.stringify(redacted)
+    }
+    expect(sanitizeDiagnosticText(encoded)).toBe(redacted)
+    expect(sanitizeDiagnosticText(redacted)).toBe(redacted)
+  })
+
+  it('stops an unclosed escaped credential at its native record boundary', () => {
+    const first = String.raw`ERROR error={\"apiKey\":\"opaque-review-secret`
+    const remaining = '\nERROR sessionID=ses-next statusCode=401 evidence=KEEP\nRepeated evidence\nRepeated evidence'
+    expect(sanitizeDiagnosticText(`${first}${remaining}`)).toBe(`${String.raw`ERROR error={\"apiKey\":\"`}[redacted]${remaining}`)
+  })
+
+  it.each([0, 1, 2, 3])('keeps encoded JSON delimiters when removing URL credentials at depth %s', (depth) => {
+    const original = {
+      requestUrl: 'https://user:opaque-password@host.example/path?api_key=opaque-secret#opaque-fragment',
+      backslashQuery: 'https://host.example/path?api_key=opaque-secret\\',
+      statusCode: 401,
+      evidence: 'Keep this.',
+    }
+    const expected = { ...original, requestUrl: 'https://host.example/path', backslashQuery: 'https://host.example/path' }
+    let encoded = JSON.stringify(original)
+    let redacted = JSON.stringify(expected)
+    for (let layer = 0; layer < depth; layer += 1) {
+      encoded = JSON.stringify(encoded)
+      redacted = JSON.stringify(redacted)
+    }
+    expect(sanitizeDiagnosticText(`ERROR error=${encoded}\nKeep this record.`)).toBe(`ERROR error=${redacted}\nKeep this record.`)
+    expect(sanitizeDiagnosticText(redacted)).toBe(redacted)
+  })
+
+  it.each(['credentials=opaque-review-secret statusCode=401', 'credentials: opaque-review-secret', 'credentials provided: opaque-review-secret'])('redacts plain credential containers: %s', (value) => {
+    expect(sanitizeDiagnosticText(value)).not.toContain('opaque-review-secret')
+    expect(sanitizeDiagnosticText(value)).toContain('[redacted]')
+  })
+
+  it('preserves pagination, process identity, credential flags and token usage metadata', () => {
+    const value = {
+      nextPageToken: 'opaque-pagination-cursor',
+      startToken: 'opaque-process-identity',
+      hasCredentials: false,
+      isToken: true,
+      tokenUsage: { inputTokens: 12, outputTokens: 14 },
+      inputToken: 12,
+      outputToken: 14,
+      reasoningToken: 6,
+      cacheReadToken: 8,
+      cacheWriteToken: 9,
+      sessionToken: 'opaque-review-secret',
+      hasPassword: 'opaque-review-password',
+    }
+    const expected = { ...value, sessionToken: '[redacted]', hasPassword: '[redacted]' }
+    expect(sanitizeDiagnosticValue(value)).toEqual(expected)
+    expect(JSON.parse(sanitizeDiagnosticText(JSON.stringify(value)))).toEqual(expected)
+    expect(sanitizeDiagnosticText('nextPageToken=cursor startToken=identity hasCredentials=false hasCookie=false input_tokens=12')).toBe('nextPageToken=cursor startToken=identity hasCredentials=false hasCookie=false input_tokens=12')
+    expect(sanitizeDiagnosticText('inputToken=12 outputToken=14 reasoningToken=6 cacheReadToken=8 cacheWriteToken=9')).toBe('inputToken=12 outputToken=14 reasoningToken=6 cacheReadToken=8 cacheWriteToken=9')
+    expect(sanitizeDiagnosticValue({ inputToken: 'opaque-review-secret', outputToken: '14', accessToken: 12 })).toEqual({ inputToken: '[redacted]', outputToken: '[redacted]', accessToken: '[redacted]' })
+  })
+
   it('retains sanitized stack traces and all named doctor failures through repeated normalization', () => {
     const value = {
       summary: 'Readiness failed.',
@@ -288,6 +368,10 @@ describe('shared blocked error diagnostics', () => {
     expect(normalizeBlockedErrorDiagnostics({ summary })?.summary).toBe(summary)
   })
 
+  it('retains rejected-password prose beside an explicit credential value', () => {
+    expect(JSON.parse(sanitizeDiagnosticText(JSON.stringify({ apiKey: 'opaque-secret', reason: 'Server password rejected' })))).toEqual({ apiKey: '[redacted]', reason: 'Server password rejected' })
+  })
+
   it.each(['Authorization privatevalue123', 'Authorization is privatevalue123'])('redacts legacy authorization word forms: %s', (summary) => {
     expect(normalizeBlockedErrorDiagnostics({ summary })?.summary).not.toContain('privatevalue123')
     expect(normalizeBlockedErrorDiagnostics({ summary })?.summary).toContain('[redacted]')
@@ -349,6 +433,11 @@ describe('shared blocked error diagnostics', () => {
     })
 
     expect(JSON.parse(diagnostics?.responseBodyPreview ?? '')).toEqual({ cookie: '[redacted]', message: 'Keep this.' })
+  })
+
+  it('keeps neighboring logfmt fields after an unquoted cookie field', () => {
+    expect(sanitizeDiagnosticText('cookie=session=opaque-review-secret statusCode=401 sessionID=ses-real duration=22ms')).toBe('cookie=[redacted] statusCode=401 sessionID=ses-real duration=22ms')
+    expect(sanitizeDiagnosticText('Cookie: session=opaque-review-secret; other=opaque-review-other\nKeep evidence.')).toBe('Cookie: [redacted]\nKeep evidence.')
   })
 
   it.each([

@@ -100,18 +100,10 @@ async function runExecutionCapabilityProbe(
     const probeError = error instanceof Error ? error : new Error(summarizeModelErrorForLog(error).message, { cause: error })
     const operation = (probeError as Error & { openCodeOperation?: string }).openCodeOperation
       ?? 'creating the execution capability probe session'
-    Object.assign(probeError, { openCodeOperation: operation })
-    const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: probeError, modelId })
+    Object.assign(probeError, { openCodeOperation: operation, openCodeErrorSource: 'opencode_server' })
     throw attachOpenCodeBlockedErrorDiagnostics(
       probeError,
-      {
-        diagnostics: diagnosticResult.diagnostics ? {
-          ...diagnosticResult.diagnostics,
-          kind: diagnosticResult.diagnostics.kind === 'opencode_provider' ? 'opencode_session' : diagnosticResult.diagnostics.kind,
-          source: 'opencode',
-        } : null,
-        errorCodes: [],
-      },
+      buildOpenCodeBlockedErrorDiagnostics({ error: probeError, modelId, errorSource: 'opencode_server' }),
     )
   }
   let sessionErrorEvent: SessionErrorStreamEvent | undefined
@@ -228,6 +220,7 @@ export async function runPreFlightChecks(
     throwIfAborted(signal, ticketId)
     const healthDiagnostics = health.available ? null : buildOpenCodeBlockedErrorDiagnostics({
       error: health.error ?? 'OpenCode is unreachable',
+      errorSource: 'opencode_server',
     }).diagnostics
     checks.push({
       name: 'OpenCode Connectivity',
@@ -238,17 +231,13 @@ export async function runPreFlightChecks(
         details: sanitizeDiagnosticText(JSON.stringify(health, null, 2)),
         diagnostics: healthDiagnostics ? {
           ...healthDiagnostics,
-          ...(health.failureKind === 'authentication' ? {
-            kind: 'opencode_session' as const,
-            source: 'opencode' as const,
-            operation: 'checking OpenCode server health',
-          } : {}),
+          operation: 'checking OpenCode server health',
         } : null,
       }),
     })
   } catch (err) {
     throwIfCancelled(err, signal, ticketId)
-    const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: err })
+    const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: err, errorSource: 'opencode_server' })
     checks.push({
       name: 'OpenCode Connectivity',
       category: 'connectivity',
@@ -256,8 +245,6 @@ export async function runPreFlightChecks(
       message: `OpenCode check failed: ${err instanceof Error ? err.message : 'Unknown'}`,
       diagnostics: diagnosticResult.diagnostics ? {
         ...diagnosticResult.diagnostics,
-        kind: diagnosticResult.diagnostics.kind === 'opencode_provider' ? 'opencode_session' : diagnosticResult.diagnostics.kind,
-        source: 'opencode',
         operation: diagnosticResult.diagnostics.operation ?? 'checking OpenCode server health',
       } : null,
     })
@@ -539,6 +526,7 @@ export async function runPreFlightChecks(
       const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({
         error: err,
         modelId: preFlightContext.lockedMainImplementer,
+        errorSource: 'opencode_server',
       })
       checks.push({
         name: 'Main Implementer Model',
@@ -547,8 +535,6 @@ export async function runPreFlightChecks(
         message: `Failed to verify model availability: ${err instanceof Error ? err.message : 'Unknown'}`,
         diagnostics: diagnosticResult.diagnostics ? {
           ...diagnosticResult.diagnostics,
-          kind: diagnosticResult.diagnostics.kind === 'opencode_provider' ? 'opencode_session' : diagnosticResult.diagnostics.kind,
-          source: 'opencode',
           operation: diagnosticResult.diagnostics.operation ?? 'listing models available in OpenCode',
         } : null,
       })

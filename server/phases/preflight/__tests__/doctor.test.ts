@@ -6,6 +6,8 @@ import { runPreFlightChecks } from '../doctor'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
 import { OPENCODE_PROVIDER_AUTH_FAILED } from '@shared/errorCodes'
+import { attachOpenCodeBlockedErrorDiagnostics, buildOpenCodeBlockedErrorDiagnostics } from '../../../opencode/blockedErrorDiagnostics'
+import { CancelledError } from '../../../council/types'
 import { TEST } from '../../../test/factories'
 import { createShellCommandSpec } from '@shared/commandSpec'
 import type { WorktreeChangeEntry, WorktreeChangeSummary } from '../../../git/worktreeChanges'
@@ -432,6 +434,19 @@ describe('Pre-Flight Doctor', () => {
     expect(report.criticalFailures.find((check) => check.name === 'OpenCode Connectivity')?.codes).toBeUndefined()
   })
 
+  it('attributes a non-authentication HTTP health failure to the server', async () => {
+    vi.spyOn(adapter, 'checkHealth').mockResolvedValueOnce({
+      available: false, failureKind: 'network', error: 'OpenCode health request failed (HTTP 500)',
+    })
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+
+    expect(report.criticalFailures.find((check) => check.name === 'OpenCode Connectivity')?.diagnostics).toMatchObject({
+      kind: 'opencode_session', source: 'opencode', statusCode: 500,
+      operation: 'checking OpenCode server health',
+    })
+  })
+
   it('reports relevant files as warning when missing', async () => {
     const beads = [makeBead()]
     deps.fileExists = (p) => typeof p === 'string' && !p.includes('relevant-files')
@@ -602,7 +617,7 @@ describe('Pre-Flight Doctor', () => {
   it('retains server authentication details when capability session creation exhausts its retries', async () => {
     vi.useFakeTimers()
     try {
-      vi.spyOn(adapter, 'createSession').mockRejectedValue(Object.assign(new Error('OpenCode server authentication failed. The server password is missing or incorrect.'), {
+      const sessionError = Object.assign(new Error('OpenCode server authentication failed. The server password is missing or incorrect.'), {
         openCodeOperation: 'creating an OpenCode session',
         modelErrorDetails: {
           data: {
@@ -611,7 +626,10 @@ describe('Pre-Flight Doctor', () => {
             responseBody: JSON.stringify({ error: { type: 'authentication_error', code: 'server_authentication_required', message: 'OpenCode server authentication failed. The server password is missing or incorrect.' } }),
           },
         },
-      }))
+      })
+      const attachedError = attachOpenCodeBlockedErrorDiagnostics(sessionError, buildOpenCodeBlockedErrorDiagnostics({ error: sessionError }))
+      expect(attachedError).toMatchObject({ blockedErrorCodes: [OPENCODE_PROVIDER_AUTH_FAILED] })
+      vi.spyOn(adapter, 'createSession').mockRejectedValue(attachedError)
       const reportPromise = runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], {
         ...defaultContext, lockedMainImplementer: 'openai/gpt-5.4',
       }, undefined, { ...deps, fetchConnectedModelIds: async () => ['openai/gpt-5.4'] })
@@ -627,13 +645,32 @@ describe('Pre-Flight Doctor', () => {
           statusCode: 401,
           operation: 'creating an OpenCode session',
           responseBodyPreview: expect.stringContaining('server_authentication_required'),
-          stackTrace: expect.stringContaining('Failed to create OpenCode session after'),
+          stackTrace: expect.stringContaining('OpenCode server authentication failed'),
         },
       })
+      const diagnostics = report.criticalFailures.find((check) => check.name === 'OpenCode Execution Capability')?.diagnostics
+      expect(diagnostics?.providerId).toBeUndefined()
+      expect(diagnostics?.providerModelId).toBeUndefined()
       expect(adapter.promptCalls).toHaveLength(0)
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('confirms remote probe cleanup before propagating a prompt cancellation', async () => {
+    const controller = new AbortController()
+    vi.spyOn(adapter, 'promptSession').mockImplementationOnce(async () => {
+      await Promise.resolve()
+      controller.abort()
+      throw new CancelledError(TEST.ticketId)
+    })
+    const abortSession = vi.spyOn(adapter, 'abortSession')
+
+    await expect(runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, controller.signal, deps))
+      .rejects.toBeInstanceOf(CancelledError)
+    expect(abortSession).toHaveBeenCalledWith('mock-session-1')
+    expect((adapter as unknown as { forgetSessionDirectory: ReturnType<typeof vi.fn> }).forgetSessionDirectory)
+      .toHaveBeenCalledWith('mock-session-1')
   })
 
   it('hands its cancellation signal to the probes it waits on', async () => {

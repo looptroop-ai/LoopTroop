@@ -40,6 +40,7 @@ import {
 import { WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
 import { createWorkBudget } from '../workBudget'
 import { removeTempDir } from '../../test/tempDir'
+import { V2OpenCodeHttpError } from '../../opencode/v2Transport'
 
 type OpenCodeSDKClient = NonNullable<ConstructorParameters<typeof OpenCodeSDKAdapter>[1]>
 
@@ -1441,6 +1442,29 @@ describe('runOpenCodePrompt', () => {
 
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toHaveLength(0)
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toHaveLength(1)
+  })
+
+  it.each([401, 403])('preserves an owned same-session prompt after an OpenCode server HTTP %s login failure', async (statusCode) => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Same session server login recovery' })
+    patchTicket(ticket.id, { status: 'CODING' })
+    const serverFailure = new V2OpenCodeHttpError(statusCode, { message: 'Configured server password rejected' })
+    const adapter = new TestOpenCodeAdapter(['initial response', serverFailure])
+    const initial = await runOpenCodePrompt({
+      adapter, projectPath: '/tmp/project', parts: [{ type: 'text', content: 'Initial prompt' }],
+      sessionOwnership: { ticketId: ticket.id, phase: 'CODING', keepActive: true },
+    })
+
+    await expect(runOpenCodeSessionPrompt({
+      adapter, session: initial.session, parts: [{ type: 'text', content: 'Follow-up prompt' }],
+      sessionOwnership: { ticketId: ticket.id, phase: 'CODING' },
+    })).rejects.toMatchObject({ blockedErrorCodes: [], blockedErrorDiagnostics: {
+      kind: 'opencode_session', source: 'opencode', statusCode, sessionId: initial.session.id,
+    } })
+
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toHaveLength(1)
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toHaveLength(0)
+    expect(adapter.abortCalls).toEqual([])
   })
 
   it('replaces a pending continuation prompt with the bare PROM54 text in the owned active session', async () => {

@@ -88,6 +88,60 @@ describe('OpenCode blocked error diagnostics', () => {
     })
   })
 
+  it('keeps a server re-attribution authoritative through production-shaped retry wrappers', () => {
+    const responseError = Object.assign(new Error('OpenCode rejected the configured credentials (HTTP 401)'), {
+      statusCode: 401,
+    })
+    const adapterError = attachOpenCodeBlockedErrorDiagnostics(new Error('Failed to create OpenCode session', { cause: responseError }),
+      buildOpenCodeBlockedErrorDiagnostics({ error: responseError }))
+    const retryError = new Error('Could not create OpenCode session after two attempts', { cause: adapterError })
+    const serverResult = buildOpenCodeBlockedErrorDiagnostics({ error: retryError, modelId: 'openai/model-a', errorSource: 'opencode_server' })
+    const doctorError = attachOpenCodeBlockedErrorDiagnostics(retryError, serverResult)
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: new Error('Capability check failed', { cause: doctorError }), modelId: 'openai/model-a' })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_session', source: 'opencode', modelId: 'openai/model-a', statusCode: 401 })
+    expect(result.diagnostics?.providerId).toBeUndefined()
+    expect(result.diagnostics?.providerModelId).toBeUndefined()
+  })
+
+  it('does not resurrect provider codes or identities from inner errors when attached server diagnostics were rewritten', () => {
+    const cause = attachOpenCodeBlockedErrorDiagnostics(new Error('Authentication failed'), {
+      diagnostics: { kind: 'opencode_provider', source: 'provider', summary: 'Authentication failed', providerId: 'openai' },
+      errorCodes: [OPENCODE_PROVIDER_AUTH_FAILED, OPENCODE_PROVIDER_ERROR],
+    })
+    const error = attachOpenCodeBlockedErrorDiagnostics(new Error('Probe failed', { cause }), {
+      diagnostics: { kind: 'opencode_session', source: 'opencode', summary: 'Server password rejected', modelId: 'openai/model-a' },
+      errorCodes: ['PREFLIGHT_FAILED'],
+    })
+
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error })
+
+    expect(result.errorCodes).toEqual(['PREFLIGHT_FAILED'])
+    expect(result.diagnostics?.providerId).toBeUndefined()
+    expect(result.diagnostics?.providerModelId).toBeUndefined()
+  })
+
+  it('keeps explicit error codes even when no diagnostics were captured', () => {
+    const error = attachOpenCodeBlockedErrorDiagnostics(new Error('Failure without details'), { diagnostics: null, errorCodes: [' CHECK_FAILED ', 'CHECK_FAILED'] })
+
+    expect(error).toMatchObject({ blockedErrorCodes: ['CHECK_FAILED'] })
+    expect(buildOpenCodeBlockedErrorDiagnostics({ error }).errorCodes).toEqual(['CHECK_FAILED'])
+  })
+
+  it('recovers inner provider status and authentication evidence instead of selecting outer generic details', () => {
+    const cause = Object.assign(new Error('Provider request failed'), { details: {
+      statusCode: 401, responseErrorMessage: 'Authentication token expired', responseErrorType: 'authentication_error',
+    } })
+    const error = Object.assign(new Error('Workflow failed', { cause }), { modelErrorDetails: { message: 'generic' } })
+
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'openai/model-a' })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_AUTH_FAILED])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_provider', statusCode: 401, providerErrorMessage: 'Authentication token expired' })
+    expect(result.diagnostics?.summary).not.toBe('generic')
+  })
+
   it('keeps stack and cause capture bounded when causes are circular', () => {
     const error = new Error('Unexpected response shape')
     const cause = new TypeError('decoder failed', { cause: error })
@@ -284,6 +338,9 @@ describe('OpenCode blocked error diagnostics', () => {
     'Output token limit exceeded',
     'Maximum token capacity exceeded',
     'Invalid token count in model response',
+    'Invalid token limit',
+    'Invalid token capacity',
+    'Invalid token usage',
   ])('does not misdiagnose a token usage or validation failure as authentication: %s', (message) => {
     const plain = buildOpenCodeBlockedErrorDiagnostics({ error: new Error(message) })
     const provider = buildOpenCodeBlockedErrorDiagnostics({ error: {
@@ -307,6 +364,9 @@ describe('OpenCode blocked error diagnostics', () => {
     'API-key is invalid',
     'Request failed (HTTP 401)',
     'Your authentication token has expired (HTTP 403)',
+    'invalid token',
+    'token_invalid',
+    'Unauthenticated',
   ])('retains explicit authentication failures: %s', (message) => {
     const result = buildOpenCodeBlockedErrorDiagnostics({ error: new Error(message) })
 

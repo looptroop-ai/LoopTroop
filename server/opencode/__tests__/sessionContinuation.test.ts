@@ -9,6 +9,7 @@ import {
   shouldPreserveSessionForContinuation,
 } from '../sessionContinuation'
 import { WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
+import { V2OpenCodeHttpError } from '../v2Transport'
 
 function diagnostics(input: Partial<BlockedErrorDiagnostics>): BlockedErrorDiagnostics {
   return {
@@ -43,6 +44,8 @@ describe('session continuation eligibility', () => {
     ['retryable uncommon 4xx', diagnostics({ summary: 'provider marked this client error retryable', statusCode: 409, isRetryable: true })],
     ['timeout', diagnostics({ kind: 'timeout', source: 'opencode', summary: 'Timeout' })],
     ['transport failure', diagnostics({ kind: 'transport', source: 'opencode', summary: 'fetch failed: connection reset' })],
+    ['OpenCode server HTTP 401', diagnostics({ kind: 'opencode_session', source: 'opencode', summary: 'Server authentication failed: configured password rejected', statusCode: 401, isRetryable: false })],
+    ['OpenCode server HTTP 403', diagnostics({ kind: 'opencode_session', source: 'opencode', summary: 'Server authentication failed: configured password rejected', statusCode: 403, isRetryable: false })],
   ])('accepts %s', (_label, candidate) => {
     expect(isContinuableBlockedError({ diagnostics: candidate, errorCodes: [] })).toBe(true)
   })
@@ -64,6 +67,10 @@ describe('session continuation eligibility', () => {
     ['invalid request', diagnostics({ summary: 'invalid_request: payload is invalid', statusCode: 400 }), []],
     ['billing', diagnostics({ summary: 'billing account disabled', isRetryable: true }), []],
     ['insufficient quota', diagnostics({ summary: 'insufficient_quota: quota exhausted', isRetryable: true }), []],
+    ['server HTTP 400', diagnostics({ kind: 'opencode_session', source: 'opencode', summary: 'invalid_request', statusCode: 400 }), []],
+    ['server HTTP 404', diagnostics({ kind: 'opencode_session', source: 'opencode', summary: 'session not found', statusCode: 404 }), []],
+    ['provider source with session kind', diagnostics({ kind: 'opencode_session', source: 'provider', statusCode: 401 }), []],
+    ['provider auth code with server diagnostics', diagnostics({ kind: 'opencode_session', source: 'opencode', statusCode: 401 }), [OPENCODE_PROVIDER_AUTH_FAILED]],
   ])('rejects %s', (_label, candidate, errorCodes) => {
     expect(isContinuableBlockedError({ diagnostics: candidate, errorCodes })).toBe(false)
   })
@@ -73,6 +80,21 @@ describe('session continuation eligibility', () => {
       diagnostics: diagnostics({ sessionId: undefined, statusCode: 429 }),
       errorCodes: [],
     })).toBe(false)
+  })
+
+  it.each([401, 403])('requires an existing session for an OpenCode server HTTP %s failure', (statusCode) => {
+    expect(isContinuableBlockedError({ diagnostics: diagnostics({ kind: 'opencode_session', source: 'opencode', statusCode, sessionId: undefined }) }))
+      .toBe(false)
+  })
+
+  it.each([401, 403])('preserves an owned session after a real OpenCode server HTTP %s failure but keeps cancellation and ownership guards', (statusCode) => {
+    const error = new V2OpenCodeHttpError(statusCode, { message: 'Configured server password rejected' })
+    const input = { error, sessionId: 'ses-owned', sessionOwnership: { ticketId: 'ticket-1', phase: 'CODING' as const } }
+
+    expect(shouldPreserveSessionForContinuation(input)).toBe(true)
+    expect(shouldPreserveSessionForContinuation({ ...input, sessionId: undefined })).toBe(false)
+    expect(shouldPreserveSessionForContinuation({ ...input, sessionOwnership: undefined })).toBe(false)
+    expect(shouldPreserveSessionForContinuation({ ...input, signal: AbortSignal.abort() })).toBe(false)
   })
 
   it('does not preserve workflow deadline timeouts as continuable OpenCode sessions', () => {

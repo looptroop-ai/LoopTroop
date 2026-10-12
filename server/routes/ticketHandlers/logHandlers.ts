@@ -1,5 +1,6 @@
 import type { Context } from 'hono'
 import { and, desc, eq, lte } from 'drizzle-orm'
+import { z } from 'zod'
 import { getTicketParam } from './routeUtils'
 import {
   exportLogEntries,
@@ -34,6 +35,18 @@ function parseQuery(c: Context, allowCursor: boolean) {
   if (errorOccurrenceId !== undefined && (!/^\d+$/.test(errorOccurrenceId) || !Number.isSafeInteger(Number(errorOccurrenceId)) || Number(errorOccurrenceId) < 1)) {
     return { error: 'Invalid errorOccurrenceId parameter: must be a positive integer' } as const
   }
+  const rawStartedAt = c.req.query('startedAt')
+  const rawEndedAt = c.req.query('endedAt')
+  for (const [name, value] of [['startedAt', rawStartedAt], ['endedAt', rawEndedAt]]) {
+    if (value !== undefined && !z.iso.datetime({ offset: true }).safeParse(value).success) {
+      return { error: `Invalid ${name} parameter: must be an ISO timestamp` } as const
+    }
+  }
+  const startedAt = rawStartedAt === undefined ? undefined : new Date(rawStartedAt).toISOString()
+  const endedAt = rawEndedAt === undefined ? undefined : new Date(rawEndedAt).toISOString()
+  if (startedAt && endedAt && startedAt > endedAt) {
+    return { error: 'Invalid failure window: startedAt must not be after endedAt' } as const
+  }
   return {
     scope,
     view: view as LogView,
@@ -44,14 +57,17 @@ function parseQuery(c: Context, allowCursor: boolean) {
     before,
     limit,
     errorOccurrenceId,
+    startedAt,
+    endedAt,
   } as const
 }
 
 function resolveErrorOccurrenceQuery(ticketId: string, ticket: PublicTicket, query: Exclude<ReturnType<typeof parseQuery>, { error: string }>) {
   if (query.errorOccurrenceId === undefined) return query
   const occurrence = ticket.errorOccurrences.find(candidate => candidate.id === Number(query.errorOccurrenceId))
+  if (!occurrence) return null
   const context = getTicketContext(ticketId)
-  if (!occurrence || !context) return null
+  if (!context) throw new Error('Could not load the ticket context for error occurrence logs')
   const phaseEntry = context.projectDb.select({ changedAt: ticketStatusHistory.changedAt })
     .from(ticketStatusHistory)
     .where(and(
@@ -64,7 +80,9 @@ function resolveErrorOccurrenceQuery(ticketId: string, ticket: PublicTicket, que
   const previousOccurrence = ticket.errorOccurrences
     .filter(candidate => candidate.occurrenceNumber < occurrence.occurrenceNumber)
     .sort((left, right) => right.occurrenceNumber - left.occurrenceNumber)[0]
-  const startedAt = [phaseEntry?.changedAt, previousOccurrence?.resolvedAt].filter((time): time is string => Boolean(time)).sort().at(-1) ?? ticket.createdAt
+  const startedAt = [phaseEntry?.changedAt, previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt]
+    .filter((time): time is string => Boolean(time))
+    .sort((left, right) => Date.parse(left) - Date.parse(right)).at(-1) ?? ticket.createdAt
   return {
     ...query,
     scope: 'phase' as const,
@@ -72,8 +90,8 @@ function resolveErrorOccurrenceQuery(ticketId: string, ticket: PublicTicket, que
     phaseAttempt: undefined,
     modelId: undefined,
     beadId: undefined,
-    startedAt,
-    endedAt: occurrence.occurredAt,
+    startedAt: new Date(startedAt).toISOString(),
+    endedAt: new Date(occurrence.occurredAt).toISOString(),
   }
 }
 
@@ -99,15 +117,19 @@ export async function handleGetTicketLogs(c: Context) {
     throw error
   }
   if (!page) return c.json({ error: 'Ticket not found' }, 404)
-  return c.json(sanitizeDiagnosticValue({ ...page, boundary: {
-    phase: query.phase ?? null,
-    phaseAttempt: query.phaseAttempt ?? null,
-    ...(query.errorOccurrenceId !== undefined && 'startedAt' in query ? {
-      errorOccurrenceId: query.errorOccurrenceId,
-      startedAt: query.startedAt,
-      endedAt: query.endedAt,
-    } : {}),
-  } }))
+  return c.json({
+    ...page,
+    entries: query.startedAt || query.endedAt ? page.entries.map(entry => sanitizeDiagnosticValue(entry)) : page.entries,
+    boundary: {
+      phase: query.phase ?? null,
+      phaseAttempt: query.phaseAttempt ?? null,
+      ...(query.startedAt || query.endedAt ? {
+        ...(query.errorOccurrenceId === undefined ? {} : { errorOccurrenceId: query.errorOccurrenceId }),
+        startedAt: query.startedAt,
+        endedAt: query.endedAt,
+      } : {}),
+    },
+  })
 }
 
 export async function handleExportTicketLogs(c: Context) {
@@ -137,7 +159,8 @@ export async function handleExportTicketLogs(c: Context) {
     const content = typeof entry.content === 'string'
       ? entry.content
       : typeof entry.message === 'string' ? entry.message : ''
-    return timestamp ? `[${timestamp}] ${content}` : content
+    const line = timestamp ? `[${timestamp}] ${content}` : content
+    return query.startedAt || query.endedAt ? sanitizeDiagnosticText(line) : line
   }).join('\n')
-  return c.text(sanitizeDiagnosticText(text), 200, { 'Content-Type': 'text/plain; charset=utf-8' })
+  return c.text(text, 200, { 'Content-Type': 'text/plain; charset=utf-8' })
 }

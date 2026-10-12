@@ -10,6 +10,7 @@ import { TEST } from '../../test/factories'
 import { createTestRepoManager, resetTestDb } from '../../test/integration'
 import { TicketInitializationError, initializeTicket } from '../initialize'
 import * as gitCommands from '../../git/runCommand'
+import * as gitRepository from '../../git/repository'
 
 let activeWorktreePath: string | null = null
 let unsafeAppendCount = 0
@@ -61,6 +62,21 @@ describe('initializeTicket', () => {
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
+  })
+
+  it('includes the actual Git reason when resolving the detected base branch fails', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: TEST.projectName, shortname: TEST.shortname })
+    const ticket = createTicket({ projectId: project.id, title: 'Capture base branch failure' })
+    const cause = new Error('Git could not inspect refs: permission denied')
+    const resolution = vi.spyOn(gitRepository, 'resolveBaseBranchRef').mockImplementationOnce(() => { throw cause })
+
+    try {
+      await expect(initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId }))
+        .rejects.toMatchObject({ code: 'INIT_BASE_BRANCH_MISSING', cause, message: expect.stringContaining(cause.message) })
+    } finally {
+      resolution.mockRestore()
+    }
   })
 
   it.each([true, false])('retains the actual Git mutation error when a reserved skeleton exists: %s', async (hasSkeleton) => {

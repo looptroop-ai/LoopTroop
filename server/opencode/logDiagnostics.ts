@@ -2,6 +2,7 @@ import { createReadStream, existsSync, readdirSync, readFileSync, statSync } fro
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
+import { sanitizeDiagnosticText } from '../../shared/errorDiagnostics'
 import {
   extractModelErrorInfo,
   hasRichModelErrorInfo,
@@ -116,7 +117,8 @@ function readCandidateLogFiles(options: OpenCodeLogDiagnosticOptions): OpenCodeN
 }
 
 function readField(line: string, key: string): string | undefined {
-  const match = line.match(new RegExp(`(?:^|\\s)${key}=([^\\s]+)`))
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = line.match(new RegExp(`(?:^|\\s)${escapedKey}=([^\\s]+)`))
   return match?.[1]
 }
 
@@ -156,7 +158,7 @@ function extractBalancedJsonAfter(line: string, marker: string): string | undefi
 }
 
 function parseLogLineError(line: string, sessionId: string): ModelErrorInfo | undefined {
-  if (!line.includes('service=llm') || !line.includes(`session.id=${sessionId}`)) return undefined
+  if (readField(line, 'service') !== 'llm' || readField(line, 'session.id') !== sessionId) return undefined
 
   const errorJson = extractBalancedJsonAfter(line, ' error=')
   if (!errorJson) return undefined
@@ -301,7 +303,7 @@ function parseNativeLogLine(
 
   // Read like every other field: a quoted timestamp read raw came back with its
   // quotes and threw on `new Date(...).toISOString()`.
-  const time = readLogfmtValue(line, 'time')
+  const time = readLogfmtValue(line, 'time') ?? readLogfmtValue(line, 'timestamp')
   const level = readLogfmtValue(line, 'level') ?? 'INFO'
   const service = readField(line, 'service')
   const msg = readLogfmtValue(line, 'msg') ?? readLogfmtValue(line, 'message') ?? line.trim()
@@ -325,7 +327,7 @@ function parseNativeLogLine(
       message: content,
       content,
       sessionId: rawSessionId,
-      data: { level, service: service ?? null, ocNativeLog: true, rawLine: line },
+      data: { level, service: service ?? null, ocNativeLog: true, rawLine: sanitizeDiagnosticText(line) },
     },
   }
 }

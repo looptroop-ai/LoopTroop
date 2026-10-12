@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { assert, describe, expect, it, vi } from 'vitest'
 import { buildPrdApprovalDraft, type PrdApprovalDraft } from '@/lib/prdDocument'
 import { makePrdDocument } from '@/test/factories'
 import { PrdApprovalEditor } from '../PrdApprovalEditor'
@@ -9,6 +9,12 @@ function listEditor(container: HTMLElement, label: string) {
   const labelElement = within(container).getByText(label, { exact: true })
   const section = labelElement.closest('div.rounded-xl')
   if (!(section instanceof HTMLDivElement)) throw new Error(`Could not find list editor section: ${label}`)
+  return within(section)
+}
+
+function epicEditor(trigger: HTMLElement) {
+  const section = trigger.closest('div.border')
+  assert(section instanceof HTMLDivElement, 'Could not find epic editor section')
   return within(section)
 }
 
@@ -61,7 +67,7 @@ describe('PrdApprovalEditor', () => {
     }))
   })
 
-  it('edits and reorders stories while keeping epic and story fields in the draft', () => {
+  it('edits, reorders, and removes stories while keeping epic and story fields in the draft', () => {
     const onChange = vi.fn()
     const draft = buildPrdApprovalDraft(makePrdDocument())
     render(<ControlledEditor initialDraft={draft} onChange={onChange} />)
@@ -71,9 +77,10 @@ describe('PrdApprovalEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add User Story' }))
 
     fireEvent.change(screen.getByDisplayValue('US-1-2'), { target: { value: 'US-A2' } })
-    const newStory = screen.getByText('Untitled user story').closest('article')!
+    const newStory = screen.getByText('Untitled user story').closest('article')
+    assert(newStory)
     fireEvent.change(within(newStory).getByLabelText('Title'), { target: { value: 'Add a clear flow' } })
-    fireEvent.click(within(screen.getByText('Add a clear flow').closest('article')!).getByRole('button', { name: 'Move Up' }))
+    fireEvent.click(within(newStory).getByRole('button', { name: 'Move Up' }))
 
     expect(screen.getByRole('button', { name: /EPIC-A Test epic 2 stories/ })).toBeInTheDocument()
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -86,7 +93,8 @@ describe('PrdApprovalEditor', () => {
       })],
     }))
 
-    const reorderedStory = screen.getByText('Add a clear flow').closest('article')!
+    const reorderedStory = screen.getByText('Add a clear flow').closest('article')
+    assert(reorderedStory)
     fireEvent.click(within(reorderedStory).getByRole('button', { name: 'Move Down' }))
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       epics: [expect.objectContaining({
@@ -97,38 +105,61 @@ describe('PrdApprovalEditor', () => {
       })],
     }))
 
-    fireEvent.click(within(screen.getByText('Add a clear flow').closest('article')!).getByRole('button', { name: 'Remove' }))
+    const removableStory = screen.getByText('Add a clear flow').closest('article')
+    assert(removableStory)
+    fireEvent.click(within(removableStory).getByRole('button', { name: 'Remove' }))
     expect(screen.queryByText('Add a clear flow')).not.toBeInTheDocument()
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       epics: [expect.objectContaining({ user_stories: [expect.objectContaining({ id: 'US-A1' })] })],
     }))
+  })
+
+  it('adds and edits an epic while showing a fallback ID for an empty value', () => {
+    const onChange = vi.fn()
+    const draft = buildPrdApprovalDraft(makePrdDocument())
+    render(<ControlledEditor initialDraft={draft} onChange={onChange} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Add Epic' }))
     const secondEpicTrigger = screen.getByRole('button', { name: /EPIC-2 Untitled epic 0 stories/ })
     fireEvent.click(secondEpicTrigger)
-    fireEvent.change(within(secondEpicTrigger.closest('div.border')!).getByLabelText('Epic ID'), { target: { value: 'EPIC-B' } })
+    fireEvent.change(epicEditor(secondEpicTrigger).getByLabelText('Epic ID'), { target: { value: 'EPIC-B' } })
     const updatedEpicTrigger = screen.getByRole('button', { name: /EPIC-B Untitled epic 0 stories/ })
     fireEvent.click(updatedEpicTrigger)
-    fireEvent.change(within(updatedEpicTrigger.closest('div.border')!).getByLabelText('Title'), { target: { value: 'Second epic' } })
+    fireEvent.change(epicEditor(updatedEpicTrigger).getByLabelText('Title'), { target: { value: 'Second epic' } })
     const namedEpicTrigger = screen.getByRole('button', { name: /EPIC-B Second epic 0 stories/ })
-    fireEvent.change(within(namedEpicTrigger.closest('div.border')!).getByLabelText('Epic ID'), { target: { value: '' } })
+    fireEvent.change(epicEditor(namedEpicTrigger).getByLabelText('Epic ID'), { target: { value: '' } })
     expect(screen.getByRole('button', { name: /EPIC-2 Second epic 0 stories/ })).toBeInTheDocument()
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      epics: [draft.epics[0], expect.objectContaining({ id: '', title: 'Second epic' })],
+    }))
+  })
+
+  it('reorders and removes epics without changing their stored fields', () => {
+    const onChange = vi.fn()
+    const draft = buildPrdApprovalDraft(makePrdDocument())
+    draft.epics.push({ id: '', title: 'Second epic', objective: '', implementation_steps: [], user_stories: [] })
+    render(<ControlledEditor initialDraft={draft} onChange={onChange} />)
 
     const firstEpicTrigger = screen.getByRole('button', { name: /EPIC-A Test epic 1 story/ })
-    fireEvent.click(within(firstEpicTrigger.closest('div.border')!).getAllByRole('button', { name: 'Move Down' })[0]!)
+    fireEvent.click(firstEpicTrigger)
+    const moveDown = epicEditor(firstEpicTrigger).getAllByRole('button', { name: 'Move Down' })[0]
+    assert(moveDown)
+    fireEvent.click(moveDown)
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       epics: [expect.objectContaining({ id: '' }), expect.objectContaining({ id: 'EPIC-A' })],
     }))
     const movedEpicTrigger = screen.getByRole('button', { name: /EPIC-A Test epic 1 story/ })
     fireEvent.click(movedEpicTrigger)
-    fireEvent.click(within(movedEpicTrigger.closest('div.border')!).getAllByRole('button', { name: 'Move Up' })[0]!)
+    const moveUp = epicEditor(movedEpicTrigger).getAllByRole('button', { name: 'Move Up' })[0]
+    assert(moveUp)
+    fireEvent.click(moveUp)
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       epics: [expect.objectContaining({ id: 'EPIC-A' }), expect.objectContaining({ id: '' })],
     }))
 
     const removableEpicTrigger = screen.getByRole('button', { name: /EPIC-2 Second epic 0 stories/ })
     fireEvent.click(removableEpicTrigger)
-    fireEvent.click(within(removableEpicTrigger.closest('div.border')!).getByRole('button', { name: 'Remove Epic' }))
+    fireEvent.click(epicEditor(removableEpicTrigger).getByRole('button', { name: 'Remove Epic' }))
     expect(screen.queryByText('Second epic')).not.toBeInTheDocument()
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ epics: [expect.objectContaining({ id: 'EPIC-A' })] }))
   })

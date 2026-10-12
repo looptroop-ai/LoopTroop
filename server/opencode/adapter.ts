@@ -333,7 +333,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           : `Failed to create OpenCode session: ${errorMessage}`,
         { cause: err },
       );
-      Object.assign(error, { openCodeOperation: "creating an OpenCode session" });
+      Object.assign(error, { openCodeOperation: "creating an OpenCode session", openCodeErrorSource: "opencode_server" });
       throw attachOpenCodeBlockedErrorDiagnostics(
         error,
         buildOpenCodeBlockedErrorDiagnostics({ error }),
@@ -365,6 +365,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     let streamDrain: Promise<{ ended: boolean; error?: unknown }> | undefined;
     let streamDrainWaited = false;
     let operation = "preparing the prompt";
+    let serverOperation = true;
     this.activePromptSessions.add(sessionId);
 
     try {
@@ -1368,6 +1369,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       operation = transport.protocol === "v1"
         ? "sending the prompt or waiting for its response"
         : "sending the prompt and confirming its receipt";
+      serverOperation = false;
       const dispatchPromise = transport.dispatchPrompt(
         dispatchRequest,
         dispatchSignal,
@@ -1606,6 +1608,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         Object.assign(error, { openCodeOperation: (error as Error & { openCodeOperation?: string }).openCodeOperation ?? operation });
         return attachOpenCodeBlockedErrorDiagnostics(error, buildOpenCodeBlockedErrorDiagnostics({
           error,
+          ...(serverOperation ? { errorSource: "opencode_server" as const } : {}),
           modelId: model ? `${model.providerID}/${model.modelID}` : undefined,
           sessionId,
         }));

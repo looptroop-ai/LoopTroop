@@ -1199,6 +1199,103 @@ describe('TicketDashboard', () => {
       anchorId: 'interview-group-phase-foundation',
     })
   })
+
+  async function setupTicketWithError(status = 'BLOCKED_ERROR', previousStatus?: string) {
+    const isBlocked = status === 'BLOCKED_ERROR'
+    const ticket = makeTicket({
+      id: selectedTicketId,
+      status,
+      previousStatus: previousStatus ?? (isBlocked ? 'CODING' : undefined),
+      errorOccurrences: [
+        {
+          id: 'error-1',
+          occurrenceNumber: 1,
+          blockedFromStatus: isBlocked ? 'CODING' : 'PREPARING_EXECUTION_ENV',
+          errorMessage: isBlocked ? 'Coding failed' : 'Setup failed previously',
+          errorCodes: [],
+          occurredAt: '2026-01-01T00:00:00.000Z',
+          resolvedAt: isBlocked ? null : '2026-01-01T00:01:00.000Z',
+          resolutionStatus: isBlocked ? null : 'RETRIED',
+          resumedToStatus: isBlocked ? null : 'CODING',
+        },
+      ],
+    })
+    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
+
+    renderDashboard()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent(status)
+    })
+
+    fireEvent.click(screen.getByText('Select error'))
+    expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+  }
+
+  it('clears error selection and follows live status when transitioning out of BLOCKED_ERROR', async () => {
+    await setupTicketWithError()
+    expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
+
+    // Mutation or cache transition clears errorSelection and returns to active status
+    act(() => {
+      patchTicketStatusInCache(queryClient, selectedTicketId, 'CODING')
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-error')).toHaveTextContent('')
+      expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('')
+      expect(screen.getByTestId('active-workspace')).toHaveTextContent('CODING')
+    })
+
+    // Advance to next live status: workspace continues following live work
+    act(() => {
+      simulateSSE('CODING', 'RUNNING_FINAL_TEST')
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
+      expect(screen.getByTestId('active-workspace')).toHaveTextContent('RUNNING_FINAL_TEST')
+    })
+  })
+
+  it('preserves historical error selection during unrelated live status transitions', async () => {
+    await setupTicketWithError('CODING')
+    expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
+
+    act(() => {
+      simulateSSE('CODING', 'RUNNING_FINAL_TEST')
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('RUNNING_FINAL_TEST')
+      expect(screen.getByTestId('navigator-error')).toHaveTextContent('error-1')
+      expect(screen.getByTestId('workspace-error-id')).toHaveTextContent('error-1')
+    })
+  })
+
+  it('rejects unknown phase IDs in workspace navigation events', async () => {
+    const ticket = makeTicket({ status: 'CODING', id: selectedTicketId })
+    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
+
+    renderDashboard()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigator-current')).toHaveTextContent('CODING')
+    })
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(WORKSPACE_PHASE_NAVIGATE_EVENT, {
+        detail: {
+          ticketId: selectedTicketId,
+          phase: 'NOT_A_VALID_WORKFLOW_PHASE',
+        },
+      }))
+    })
+
+    expect(screen.getByTestId('navigator-selected')).toHaveTextContent('CODING')
+    expect(screen.getByTestId('active-workspace')).toHaveTextContent('CODING')
+  })
+
   describe('Escape', () => {
     /**
      * Escape belongs to whatever is open on top. Every nested overlay in this view

@@ -105,6 +105,11 @@ function hasContinuableSignal(diagnostics: BlockedErrorDiagnostics): boolean {
 export function isContinuableBlockedError(input: ContinuableBlockedErrorInput): boolean {
   const diagnostics = input.diagnostics ?? null
   if (!diagnostics?.sessionId) return false
+  if (diagnostics.kind === 'opencode_session'
+    && diagnostics.source === 'opencode'
+    && (diagnostics.statusCode === 401 || diagnostics.statusCode === 403)) {
+    return !input.errorCodes?.includes(OPENCODE_PROVIDER_AUTH_FAILED)
+  }
   if (hasNonContinuableSignal(input)) return false
   return hasContinuableSignal(diagnostics)
 }

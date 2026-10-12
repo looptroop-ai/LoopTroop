@@ -951,18 +951,27 @@ export async function handleRetryTicket(c: Context) {
     }
   }
 
-  try {
-    // A council step can fail with a member whose stop OpenCode never
-    // confirmed. Its session row is still active, and the retried round would
-    // reconnect to it instead of starting the model fresh.
-    if (ticket.previousStatus === 'PREPARING_EXECUTION_ENV' || isCouncilMemberControlPhase(ticket.previousStatus)) {
-      const stopped = await abortTicketSessions(ticketId)
-      if (stopped === false) {
-        return c.json({
-          error: 'Retry is not available until the previous OpenCode session stop is confirmed',
-        }, 409)
-      }
+  // A council step can fail with a member whose stop OpenCode never confirmed.
+  // Its session row is still active, and the retried round would reconnect to
+  // it instead of starting the model fresh.
+  if (ticket.previousStatus === 'PREPARING_EXECUTION_ENV' || isCouncilMemberControlPhase(ticket.previousStatus)) {
+    let stopped: boolean
+    try {
+      stopped = await abortTicketSessions(ticketId)
+    } catch (err) {
+      return c.json({
+        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+        details: getErrorMessage(err),
+      }, 409)
     }
+    if (!stopped) {
+      return c.json({
+        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+      }, 409)
+    }
+  }
+
+  try {
     if (!await clearPendingCancellationForRetry(ticketId)) {
       return c.json({
         error: 'Retry is not available until the previous cancellation cleanup is confirmed',

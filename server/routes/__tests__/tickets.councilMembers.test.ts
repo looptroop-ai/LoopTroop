@@ -30,6 +30,7 @@ const MODEL_B = 'test/model-b'
 /** Model B never answers until its prompt is aborted; model A answers at once. */
 class StallingAdapter extends MockOpenCodeAdapter {
   readonly prompted: string[] = []
+  confirmAborts = true
 
   override async promptSession(
     sessionId: string,
@@ -52,7 +53,7 @@ class StallingAdapter extends MockOpenCodeAdapter {
   }
 
   override async abortSession(): Promise<boolean> {
-    return true
+    return this.confirmAborts
   }
 }
 
@@ -121,6 +122,9 @@ describe('council member routes', () => {
     expect((await post(ticket.id, 'stop', { phase: 'COUNCIL_DELIBERATING' })).status).toBe(400)
     expect((await post(ticket.id, 'retry', { phase: 'DRAFTING_PRD', memberId: MODEL_A, part: 'all' })).status).toBe(400)
     expect((await post(ticket.id, 'stop', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_A, force: true })).status).toBe(400)
+    // Only PRD drafting has parts; naming one anywhere else is a client bug.
+    expect((await post(ticket.id, 'retry', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_A, part: 'full_answers' })).status).toBe(400)
+    expect((await post(ticket.id, 'retry', { phase: 'DRAFTING_PRD', memberId: MODEL_A, part: 'full_answers' })).status).toBe(409)
   })
 
   it('answers 409 STEP_NOT_RUNNING when no council round of that status is running', async () => {
@@ -193,11 +197,36 @@ describe('council member routes', () => {
     expect(res.status).toBe(200)
     await run
 
-    expect(adapter.questionRejections.map((rejection) => rejection.requestId)).toEqual(['req_b'])
+    // Closed by the session stop itself, not refused first: refusing would wake
+    // the model for the moment before the stop landed.
+    expect(adapter.questionRejections).toEqual([])
     expect(getTicketQuestionState(ticket.id).requests.map((request) => request.requestId)).toEqual(['req_other'])
     const summary = listSkipEvents(ticket.id)
       .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
     expect(summary?.skippedBy).toBe('user')
     expect(summary?.questionContext?.expiry_reason).toBe('member_stopped')
+  })
+
+  it('answers MEMBER_BUSY to a second action sent while the first is still stopping the model', async () => {
+    const { ticket, run } = await startRound('Two clicks on one model')
+
+    const [first, second] = await Promise.all([
+      post(ticket.id, 'stop', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_B }),
+      post(ticket.id, 'retry', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_B }),
+    ])
+    expect([first.status, second.status].sort()).toEqual([200, 409])
+    const refused = first.status === 409 ? first : second
+    expect(await refused.json()).toMatchObject({ code: 'MEMBER_BUSY' })
+    await run.catch(() => undefined)
+  })
+
+  it('answers 500 STOP_UNCONFIRMED when OpenCode does not confirm the stop, and fails the step', async () => {
+    const { ticket, run, adapter } = await startRound('Unconfirmed stop')
+    adapter.confirmAborts = false
+
+    const res = await post(ticket.id, 'stop', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_B })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toMatchObject({ code: 'STOP_UNCONFIRMED' })
+    await expect(run).rejects.toThrow('Could not confirm abort')
   })
 })

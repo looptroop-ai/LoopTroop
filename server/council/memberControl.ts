@@ -72,40 +72,57 @@ export interface CouncilMemberAttempt {
 }
 
 export interface CouncilMemberRestart {
-  /** The number the new attempt will carry. */
-  attempt: number
   part: CouncilMemberRetryPart | undefined
-  /** How the abandoned attempt stood: `pending` when it was cut off mid-run. */
-  previousOutcome: MemberOutcome
 }
 
 export interface CouncilRoundOptions<T> {
   /** Without a ticket and a status the round still runs, but nothing can reach it. */
-  ticketId?: string | undefined
-  phase?: WorkflowPhaseId | undefined
+  ticketId?: string
+  phase?: WorkflowPhaseId
   memberIds: readonly string[]
   /** The ticket's own signal. Aborting it closes the round. */
-  signal?: AbortSignal | undefined
+  signal?: AbortSignal
   outcomeOf: (result: T) => MemberOutcome
   /** A member's attempt settled and is not being restarted. Record it. */
   onSettled?: (memberId: string, result: T) => void
   /** A member is starting over. Forget what its previous attempt left behind. */
   onRestart?: (memberId: string, restart: CouncilMemberRestart) => void
+  /**
+   * A member left the round on an error rather than an outcome: its stop was
+   * never confirmed, or recording it failed. The round itself fails once the
+   * others settle; this lets the live view stop showing the member as working.
+   */
+  onFailed?: (memberId: string, error: unknown) => void
 }
 
 type ResumeDecision =
   | { kind: 'close' }
   | { kind: 'retry'; part: CouncilMemberRetryPart | undefined }
 
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (error: Error) => void
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve: Deferred<T>['resolve'] = () => undefined
+  let reject: Deferred<T>['reject'] = () => undefined
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 interface AttemptControl {
   view: CouncilMemberAttempt
   readonly controller: AbortController
   interruption: CouncilMemberInterruption | null
   retryPart: CouncilMemberRetryPart | undefined
-  readonly reject: (error: Error) => void
+  readonly interrupted: Deferred<never>
   /** Resolves once the run loop has dealt with this attempt's end. */
-  readonly done: Promise<void>
-  readonly resolveDone: () => void
+  readonly done: Deferred<void>
 }
 
 interface MemberSlot {
@@ -117,6 +134,67 @@ interface MemberSlot {
   outcome: MemberOutcome | null
   failure: unknown
   resume: ((decision: ResumeDecision) => void) | null
+}
+
+function beginAttempt(slot: MemberSlot, part: CouncilMemberRetryPart | undefined): AttemptControl {
+  slot.attempts += 1
+  slot.state = 'running'
+  slot.outcome = null
+  const interrupted = createDeferred<never>()
+  // Handled here so an attempt that finished without racing it does not
+  // surface as an unhandled rejection when it is interrupted later.
+  interrupted.promise.catch(() => undefined)
+  const control: AttemptControl = {
+    view: undefined as unknown as CouncilMemberAttempt,
+    controller: new AbortController(),
+    interruption: null,
+    retryPart: undefined,
+    interrupted,
+    done: createDeferred<void>(),
+  }
+  control.view = {
+    number: slot.attempts,
+    signal: control.controller.signal,
+    interrupted: interrupted.promise,
+    interruption: () => control.interruption,
+    retryPart: part,
+  }
+  slot.attempt = control
+  return control
+}
+
+function interruptAttempt(
+  control: AttemptControl,
+  reason: CouncilMemberInterruption,
+  part?: CouncilMemberRetryPart,
+): void {
+  control.interruption = reason
+  control.retryPart = part
+  // A plain abort, so code below that tells an abort apart by its
+  // `AbortError` name keeps doing so.
+  control.controller.abort()
+  control.interrupted.reject(new CouncilMemberInterruptedError(reason))
+}
+
+function requireInterruptibleAttempt(slot: MemberSlot): AttemptControl {
+  const control = slot.attempt
+  if (!control || control.interruption) {
+    throw new CouncilMemberControlError('MEMBER_BUSY', 'That model is already being stopped or restarted.')
+  }
+  return control
+}
+
+/** The refusal for a member that left the round on an error, kept apart from a canceled ticket. */
+function throwIfMemberDied(slot: MemberSlot): void {
+  if (slot.state !== 'dead') return
+  if (slot.failure instanceof CancelledError) {
+    throw new CouncilMemberControlError('STEP_NOT_RUNNING', 'The ticket was canceled.', { cause: slot.failure })
+  }
+  throw new CouncilMemberControlError(
+    'STOP_UNCONFIRMED',
+    `This model's turn could not be ended cleanly, so the step will stop with an error once the other models finish: ${getErrorMessage(slot.failure)}`,
+    { cause: slot.failure },
+  )
 }
 
 export class CouncilRound<T> {
@@ -151,99 +229,81 @@ export class CouncilRound<T> {
   /**
    * Runs one member until the round closes.
    *
-   * Resolves with the member's last settled result. Rejects when an attempt
-   * throws, and that member is then out of the round for good.
+   * Resolves with the member's last settled result. Rejects when an attempt,
+   * or the recording of its end, throws; that member is then out of the round
+   * for good, and anyone waiting on it is answered rather than left hanging.
    */
   async run(memberId: string, runAttempt: (attempt: CouncilMemberAttempt) => Promise<T>): Promise<T> {
     const slot = this.slots.get(memberId)
     if (!slot) throw new Error(`Council member ${memberId} is not part of this round`)
     let part: CouncilMemberRetryPart | undefined
     for (;;) {
-      const control = this.beginAttempt(slot, part)
+      const control = beginAttempt(slot, part)
       let result: T
       try {
         result = await runAttempt(control.view)
-      } catch (error) {
-        slot.state = 'dead'
-        slot.failure = error
         slot.attempt = null
-        control.resolveDone()
-        this.closeIfIdle()
+        if (control.interruption === 'retry' && !this.closed) {
+          // Started again before `done` resolves, so the person who asked for
+          // the restart is answered only once the new attempt is running.
+          part = control.retryPart
+          this.options.onRestart?.(memberId, { part })
+          control.done.resolve()
+          continue
+        }
+        slot.outcome = this.options.outcomeOf(result)
+        this.options.onSettled?.(memberId, result)
+        slot.state = 'settled'
+        control.done.resolve()
+      } catch (error) {
+        this.failMember(slot, error)
+        control.done.resolve()
         throw error
       }
-      slot.attempt = null
-      if (control.interruption === 'retry' && !this.closed) {
-        // Started again before `done` resolves, so the person who asked for the
-        // restart is answered only once the new attempt is running.
-        part = control.retryPart
-        this.options.onRestart?.(memberId, {
-          attempt: slot.attempts + 1,
-          part,
-          previousOutcome: 'pending',
-        })
-        control.resolveDone()
-        continue
-      }
-      slot.state = 'settled'
-      slot.outcome = this.options.outcomeOf(result)
-      this.options.onSettled?.(memberId, result)
-      control.resolveDone()
       const decision = await this.waitForRetryOrClose(slot)
-      if (decision.kind === 'close') return result
+      // Only a canceled ticket closes a round under a member it is restarting.
+      if (decision.kind === 'close' || this.closed) {
+        slot.state = 'settled'
+        return result
+      }
       part = decision.part
-      this.options.onRestart?.(memberId, {
-        attempt: slot.attempts + 1,
-        part,
-        previousOutcome: slot.outcome,
-      })
+      try {
+        this.options.onRestart?.(memberId, { part })
+      } catch (error) {
+        this.failMember(slot, error)
+        throw error
+      }
     }
   }
 
   /**
-   * Throws what `stop` or `retry` would refuse with, without doing either.
+   * Stops a working member and resolves with how its turn ended.
    *
-   * Lets a caller tidy up first (refuse the member's open questions) only when
-   * the action itself is going to happen. State can still move before the
-   * action runs; the action checks again.
+   * `beforeInterrupt` runs after the checks and right before the interruption,
+   * in the same synchronous step, so nothing can claim or finish the member in
+   * between.
    */
-  check(memberId: string, action: CouncilMemberInterruption): void {
+  async stop(memberId: string, beforeInterrupt?: () => void): Promise<MemberOutcome> {
     const slot = this.requireLiveSlot(memberId)
-    if (action === 'retry' && slot.state === 'settled') {
-      if (!slot.resume) {
-        throw new CouncilMemberControlError('MEMBER_BUSY', 'That model is already being stopped or restarted.')
-      }
-      return
-    }
     if (slot.state === 'settled') {
       throw new CouncilMemberControlError('MEMBER_FINISHED', 'That model already finished its turn in this step.')
     }
-    this.requireInterruptibleAttempt(slot)
-  }
-
-  /** Whether the member is mid-attempt, so a session of its own may be open. */
-  isWorking(memberId: string): boolean {
-    return this.slots.get(memberId)?.attempt != null
-  }
-
-  /** Stops a working member and resolves with how its turn ended. */
-  async stop(memberId: string): Promise<MemberOutcome> {
-    this.check(memberId, 'stop')
-    const slot = this.slots.get(memberId)!
-    const control = this.requireInterruptibleAttempt(slot)
-    this.interrupt(control, 'stop')
-    await control.done
-    this.throwIfDied(slot)
+    const control = requireInterruptibleAttempt(slot)
+    beforeInterrupt?.()
+    interruptAttempt(control, 'stop')
+    await control.done.promise
+    throwIfMemberDied(slot)
     return slot.outcome ?? 'stopped'
   }
 
   /**
    * Starts a member over with a fresh attempt.
    *
-   * A working member is interrupted first, and this resolves once its session
-   * is confirmed stopped and the new attempt is running. A settled member starts
-   * again straight away.
+   * A working member is interrupted first (`beforeInterrupt` runs right before,
+   * as for a stop), and this resolves once its session is confirmed stopped and
+   * the new attempt is running. A settled member starts again straight away.
    */
-  async retry(memberId: string, part?: CouncilMemberRetryPart): Promise<void> {
+  async retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void): Promise<void> {
     const slot = this.requireLiveSlot(memberId)
     if (slot.state === 'settled') {
       const resume = slot.resume
@@ -257,10 +317,11 @@ export class CouncilRound<T> {
       resume({ kind: 'retry', part })
       return
     }
-    const control = this.requireInterruptibleAttempt(slot)
-    this.interrupt(control, 'retry', part)
-    await control.done
-    this.throwIfDied(slot)
+    const control = requireInterruptibleAttempt(slot)
+    beforeInterrupt?.()
+    interruptAttempt(control, 'retry', part)
+    await control.done.promise
+    throwIfMemberDied(slot)
   }
 
   /** Ends the round: every settled member returns its result. Idempotent. */
@@ -278,53 +339,18 @@ export class CouncilRound<T> {
     }
   }
 
-  private beginAttempt(slot: MemberSlot, part: CouncilMemberRetryPart | undefined): AttemptControl {
-    slot.attempts += 1
-    slot.state = 'running'
-    slot.outcome = null
-    const controller = new AbortController()
-    let reject: (error: Error) => void = () => {}
-    const interrupted = new Promise<never>((_resolve, rejectInterrupted) => {
-      reject = rejectInterrupted
-    })
-    // Handled here so an attempt that finished without racing it does not
-    // surface as an unhandled rejection when it is interrupted later.
-    interrupted.catch(() => {})
-    let resolveDone: () => void = () => {}
-    const done = new Promise<void>((resolve) => {
-      resolveDone = resolve
-    })
-    const control: AttemptControl = {
-      view: undefined as unknown as CouncilMemberAttempt,
-      controller,
-      interruption: null,
-      retryPart: undefined,
-      reject,
-      done,
-      resolveDone,
+  private failMember(slot: MemberSlot, error: unknown): void {
+    slot.state = 'dead'
+    slot.failure = error
+    slot.attempt = null
+    if (!(error instanceof CancelledError)) {
+      try {
+        this.options.onFailed?.(slot.memberId, error)
+      } catch (reportError) {
+        console.warn(`[council] Could not record why ${slot.memberId} left the round:`, reportError)
+      }
     }
-    control.view = {
-      number: slot.attempts,
-      signal: controller.signal,
-      interrupted,
-      interruption: () => control.interruption,
-      retryPart: part,
-    }
-    slot.attempt = control
-    return control
-  }
-
-  private interrupt(
-    control: AttemptControl,
-    reason: CouncilMemberInterruption,
-    part?: CouncilMemberRetryPart,
-  ): void {
-    control.interruption = reason
-    control.retryPart = part
-    // A plain abort, so code below that tells an abort apart by its
-    // `AbortError` name keeps doing so.
-    control.controller.abort()
-    control.reject(new CouncilMemberInterruptedError(reason))
+    this.closeIfIdle()
   }
 
   private waitForRetryOrClose(slot: MemberSlot): Promise<ResumeDecision> {
@@ -348,30 +374,11 @@ export class CouncilRound<T> {
     if (!slot) {
       throw new CouncilMemberControlError('UNKNOWN_MEMBER', `${memberId} is not on this step's council.`)
     }
-    if (this.closed || slot.state === 'dead') {
+    throwIfMemberDied(slot)
+    if (this.closed) {
       throw new CouncilMemberControlError('STEP_NOT_RUNNING', 'This step is no longer running.')
     }
     return slot
-  }
-
-  private requireInterruptibleAttempt(slot: MemberSlot): AttemptControl {
-    const control = slot.attempt
-    if (!control || control.interruption) {
-      throw new CouncilMemberControlError('MEMBER_BUSY', 'That model is already being stopped or restarted.')
-    }
-    return control
-  }
-
-  private throwIfDied(slot: MemberSlot): void {
-    if (slot.state !== 'dead') return
-    if (slot.failure instanceof CancelledError) {
-      throw new CouncilMemberControlError('STEP_NOT_RUNNING', 'The ticket was canceled.', { cause: slot.failure })
-    }
-    throw new CouncilMemberControlError(
-      'STOP_UNCONFIRMED',
-      `OpenCode did not confirm that the model stopped, so the step will stop with an error: ${getErrorMessage(slot.failure)}`,
-      { cause: slot.failure },
-    )
   }
 }
 
@@ -384,10 +391,8 @@ export function openCouncilRound<T>(options: CouncilRoundOptions<T>): CouncilRou
 /** What the routes may do with a live round, whatever its members return. */
 interface CouncilRoundHandle {
   readonly isClosed: boolean
-  check(memberId: string, action: CouncilMemberInterruption): void
-  isWorking(memberId: string): boolean
-  stop(memberId: string): Promise<MemberOutcome>
-  retry(memberId: string, part?: CouncilMemberRetryPart): Promise<void>
+  stop(memberId: string, beforeInterrupt?: () => void): Promise<MemberOutcome>
+  retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void): Promise<void>
   close(): void
 }
 
@@ -422,36 +427,36 @@ function requireRound(ticketId: string, phase: WorkflowPhaseId): CouncilRoundHan
   return round
 }
 
+/** Test seam: whether a round of that status is registered for the ticket. */
 export function hasLiveCouncilRound(ticketId: string, phase: WorkflowPhaseId): boolean {
   return rounds.has(roundKey(ticketId, phase))
 }
 
 /**
- * Throws what a stop or retry of this member would refuse with right now, and
- * says whether the member is mid-attempt (so it may have open questions).
+ * Stops one working member of a live round. `beforeInterrupt` runs once the
+ * stop is certain to happen, right before the member is interrupted.
  */
-export function checkCouncilMemberControl(
+export async function stopCouncilMember(
   ticketId: string,
   phase: WorkflowPhaseId,
   memberId: string,
-  action: CouncilMemberInterruption,
-): { working: boolean } {
-  const round = requireRound(ticketId, phase)
-  round.check(memberId, action)
-  return { working: round.isWorking(memberId) }
+  beforeInterrupt?: () => void,
+): Promise<MemberOutcome> {
+  return await requireRound(ticketId, phase).stop(memberId, beforeInterrupt)
 }
 
-export async function stopCouncilMember(ticketId: string, phase: WorkflowPhaseId, memberId: string): Promise<MemberOutcome> {
-  return requireRound(ticketId, phase).stop(memberId)
-}
-
+/**
+ * Restarts one member of a live round. `beforeInterrupt` runs only when a
+ * working member is interrupted, right before it is.
+ */
 export async function retryCouncilMember(
   ticketId: string,
   phase: WorkflowPhaseId,
   memberId: string,
   part?: CouncilMemberRetryPart,
+  beforeInterrupt?: () => void,
 ): Promise<void> {
-  return requireRound(ticketId, phase).retry(memberId, part)
+  await requireRound(ticketId, phase).retry(memberId, part, beforeInterrupt)
 }
 
 /** Test seam. Never called from production paths. */

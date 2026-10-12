@@ -67,6 +67,19 @@ interface QuestionRequestRecord {
   claimId: string | null
   /** Bumped on every transition so a late frame cannot undo a newer one. */
   revision: number
+  /**
+   * Set when a person stops or restarts the council member that asked: the
+   * session stop that follows closes this request in their name rather than as
+   * `session_lost` under `system`.
+   */
+  endedBy?: SessionEndAttribution
+}
+
+/** Who to file a request under when its session is stopped on purpose. */
+export interface SessionEndAttribution {
+  actor: SkipActor
+  resolution: Extract<QuestionResolution, 'member_stopped' | 'member_restarted'>
+  reason: string
 }
 
 let claimSequence = 0
@@ -1082,33 +1095,30 @@ export async function clearTicketWindows(
 }
 
 /**
- * Refuses the open questions of one council member whose session a person is
- * about to stop, because they stopped or restarted that member.
+ * Files one council member's open questions under a person's stop or restart.
  *
- * Called before the stop, like `clearTicketWindows` before a cancel: the session
- * ending first would file each question under `session_lost`, which is true but
- * hides that a person decided it. Resolves false when a refusal could not be
- * confirmed; the session stop that follows still ends the model's wait.
+ * Called right before the member is interrupted. Its session is then stopped,
+ * and the session-ended hook closes these requests under `attribution` instead
+ * of `session_lost`. OpenCode is not told separately: refusing first would wake
+ * the model for the moment before the stop lands, and the stop ends the wait
+ * anyway. Returns how many requests were marked.
  */
-export async function clearSessionWindows(
+export function attributeMemberQuestions(
   ticketId: string,
-  sessionId: string,
-  resolution: Extract<QuestionResolution, 'member_stopped' | 'member_restarted'>,
-  reason: string,
-): Promise<boolean> {
-  const timers = timersByTicket.get(ticketId)
-  let allFinished = true
-  for (const timer of [...(timers?.values() ?? [])]) {
-    const doomed = pendingRequests(timer)
-      .filter((record) => record.sessionId === sessionId)
-      .map((record) => claim(timer, requestKey(record.sessionId, record.requestId)))
-      .filter((record): record is QuestionRequestRecord => record !== null)
-    const siblingIds = doomed.map((record) => record.requestId)
-    for (const record of doomed) {
-      if (!await rejectRecord(timer, record, 'user', resolution, reason, siblingIds)) allFinished = false
+  phase: WorkflowPhaseId,
+  memberId: string,
+  attribution: SessionEndAttribution,
+): number {
+  let marked = 0
+  for (const timer of timersByTicket.get(ticketId)?.values() ?? []) {
+    if (timer.phase !== phase) continue
+    for (const record of pendingRequests(timer)) {
+      if (record.memberId !== memberId) continue
+      record.endedBy = attribution
+      marked += 1
     }
   }
-  return allFinished
+  return marked
 }
 
 /**
@@ -1401,16 +1411,19 @@ onOpenCodeSessionEnded((event) => {
   for (const timer of [...timers.values()]) {
     for (const record of pendingRequests(timer)) {
       if (record.sessionId !== event.sessionId) continue
-      const claimed = claim(timer, requestKey(record.sessionId, record.requestId))
-      if (!claimed) continue
+      // Seized rather than claimed: a reply part-way through cannot finish on
+      // a dead session, and leaving it would strand the request (and the
+      // suspended clocks) if that reply then failed and released its claim.
+      const seized = seizeForTeardown(timer, requestKey(record.sessionId, record.requestId))
+      if (!seized) continue
       writeQuestionReceipt({
         timer,
-        record: claimed,
-        actor: 'system',
-        resolution: 'session_lost',
-        reason: 'The session ended before anyone answered.',
+        record: seized,
+        actor: seized.endedBy?.actor ?? 'system',
+        resolution: seized.endedBy?.resolution ?? 'session_lost',
+        reason: seized.endedBy?.reason ?? 'The session ended before anyone answered.',
       })
-      finish(timer, claimed)
+      finish(timer, seized)
     }
   }
 })

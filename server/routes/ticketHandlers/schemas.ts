@@ -313,7 +313,12 @@ export const councilMemberStopSchema = z.object({
 
 export const councilMemberRetrySchema = councilMemberStopSchema.extend({
   part: z.enum(COUNCIL_MEMBER_RETRY_PARTS).optional(),
-}).strict()
+}).strict().refine(
+  // Only PRD drafting has parts. Accepting one elsewhere would answer 200 for a
+  // request that asked for something no other step can do.
+  (body) => body.part === undefined || body.phase === 'DRAFTING_PRD',
+  { message: '`part` is only accepted for DRAFTING_PRD', path: ['part'] },
+)
 
 export const devEventSchema = z.object({
   type: z.enum([

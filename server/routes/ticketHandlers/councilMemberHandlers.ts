@@ -5,37 +5,38 @@ import type {
   CouncilMemberStopResponse,
 } from '@shared/councilMembers'
 import { getErrorMessage } from '@shared/typeGuards'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import {
-  checkCouncilMemberControl,
   CouncilMemberControlError,
   retryCouncilMember,
   stopCouncilMember,
 } from '../../council/memberControl'
-import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
 import { getTicketContext } from '../../storage/tickets'
-import { clearSessionWindows } from '../../workflow/questionWindows'
+import { attributeMemberQuestions } from '../../workflow/questionWindows'
 import { emitRoutePhaseLog, getTicketParam } from './routeUtils'
 import { councilMemberRetrySchema, councilMemberStopSchema } from './schemas'
 
 /**
- * Refuses the member's open AI questions before its session is stopped.
+ * Files the member's open AI questions under the person's decision.
  *
- * Each refusal is filed under the person, with the reason they caused it. Left
- * to the session stop, the same questions would read as `session_lost`.
+ * Runs inside the stop or retry, after its checks and right before the member
+ * is interrupted, so the question is closed by the same session stop that ends
+ * the model's turn and cannot be answered or refused by anything in between.
  */
-async function refuseMemberQuestions(
+function attributeQuestionsTo(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   memberId: string,
   resolution: 'member_stopped' | 'member_restarted',
-): Promise<void> {
-  const reason = resolution === 'member_stopped'
-    ? 'You stopped this model while its question was open.'
-    : 'You restarted this model while its question was open.'
-  const sessions = listOpenCodeSessionsForTicket(ticketId, ['active'])
-    .filter((session) => session.phase === phase && session.memberId === memberId)
-  for (const session of sessions) {
-    await clearSessionWindows(ticketId, session.sessionId, resolution, reason)
+): () => void {
+  return () => {
+    attributeMemberQuestions(ticketId, phase, memberId, {
+      actor: 'user',
+      resolution,
+      reason: resolution === 'member_stopped'
+        ? 'You stopped this model while its question was open.'
+        : 'You restarted this model while its question was open.',
+    })
   }
 }
 
@@ -62,9 +63,7 @@ export async function handleStopCouncilMember(c: Context) {
   const { phase, memberId } = parsed.data
 
   try {
-    checkCouncilMemberControl(ticketId, phase, memberId, 'stop')
-    await refuseMemberQuestions(ticketId, phase, memberId, 'member_stopped')
-    const outcome = await stopCouncilMember(ticketId, phase, memberId)
+    const outcome = await stopCouncilMember(ticketId, phase, memberId, attributeQuestionsTo(ticketId, phase, memberId, 'member_stopped'))
     emitRoutePhaseLog(
       ticketId,
       phase,
@@ -90,24 +89,13 @@ export async function handleRetryCouncilMember(c: Context) {
     return c.json({ error: 'Invalid council member retry payload', details: parsed.error.flatten() }, 400)
   }
   const { phase, memberId } = parsed.data
-  // Only PRD drafting has parts; everywhere else a retry redoes the whole turn.
   const part = phase === 'DRAFTING_PRD' ? parsed.data.part ?? 'prd_draft' : undefined
 
   try {
-    const { working } = checkCouncilMemberControl(ticketId, phase, memberId, 'retry')
-    if (working) await refuseMemberQuestions(ticketId, phase, memberId, 'member_restarted')
-    await retryCouncilMember(ticketId, phase, memberId, part)
-    emitRoutePhaseLog(
-      ticketId,
-      phase,
-      'info',
-      part === 'full_answers'
-        ? `You restarted ${memberId} from Full Answers, with a full new time limit.`
-        : part === 'prd_draft'
-          ? `You restarted ${memberId}'s PRD draft, with a full new time limit.`
-          : `You restarted ${memberId}, with a full new time limit.`,
-      { modelId: memberId },
-    )
+    await retryCouncilMember(ticketId, phase, memberId, part, attributeQuestionsTo(ticketId, phase, memberId, 'member_restarted'))
+    // Which part restarts is logged by the step itself when the new attempt
+    // begins: a PRD restart from Part 2 redoes both parts when Part 1 is unusable.
+    emitRoutePhaseLog(ticketId, phase, 'info', `You restarted ${memberId}, with a full new time limit.`, { modelId: memberId })
     return c.json({ success: true, phase, memberId } satisfies CouncilMemberRetryResponse)
   } catch (error) {
     return respondWithControlError(c, error)

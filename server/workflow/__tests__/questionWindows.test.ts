@@ -11,7 +11,7 @@ import {
   armOrResetTimer,
   attachRequest,
   claimRequestForReply,
-  clearSessionWindows,
+  attributeMemberQuestions,
   clearTicketWindows,
   getPendingQuestionSummary,
   getTicketQuestionState,
@@ -29,6 +29,7 @@ import { closeQuestionWait } from '../../storage/questionWaits'
 import { questionWaits } from '../../db/schema'
 import type { OpenCodeQuestionInfo } from '../../opencode/types'
 import { MockOpenCodeAdapter, type OpenCodeAdapter } from '../../opencode/adapter'
+import { emitOpenCodeSessionEnded } from '../../opencode/sessionEvents'
 
 const adapter = new MockOpenCodeAdapter()
 // The window machinery reaches for the process-wide adapter, so the mock is
@@ -264,26 +265,46 @@ describe('question windows', () => {
     expect(summary?.questionContext?.expiry_reason).toBe('ticket_canceled')
   })
 
-  it('refuses only a stopped member\'s questions, under the person who stopped it', async () => {
+  it('files a stopped member\'s questions under the person once its session ends', () => {
     const ticket = makeTicket()
     ask(ticket.id, { phase: 'DRAFTING_PRD' })
     ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b', memberId: 'openai/gpt', phase: 'DRAFTING_PRD' })
 
-    await expect(clearSessionWindows(
-      ticket.id,
-      'ses_a',
-      'member_stopped',
-      'You stopped this model while its question was open.',
-    )).resolves.toBe(true)
+    expect(attributeMemberQuestions(ticket.id, 'DRAFTING_PRD', 'anthropic/claude', {
+      actor: 'user',
+      resolution: 'member_stopped',
+      reason: 'You stopped this model while its question was open.',
+    })).toBe(1)
+    // Marked, not refused: the model is not woken before its session stops.
+    expect(adapter.questionRejections).toEqual([])
+    expect(getTicketQuestionState(ticket.id).requests).toHaveLength(2)
+
+    emitOpenCodeSessionEnded({ sessionId: 'ses_a', ticketId: ticket.id, reason: 'aborted' })
 
     expect(getTicketQuestionState(ticket.id).requests.map((request) => request.requestId)).toEqual(['req_b'])
-    expect(adapter.questionRejections.map((rejection) => rejection.requestId)).toEqual(['req_a'])
     const summary = listSkipEvents(ticket.id)
       .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
     expect(summary?.skippedBy).toBe('user')
     expect(summary?.questionContext?.expiry_reason).toBe('member_stopped')
     // The other member is still waiting on a person, so the clocks stay held.
     expect(isTicketWorkSuspended(ticket.id)).toBe(true)
+  })
+
+  it('closes a question whose reply is in flight when its session ends', () => {
+    const ticket = makeTicket()
+    ask(ticket.id, { phase: 'DRAFTING_BEADS' })
+    expect(claimRequestForReply(ticket.id, 'ses_a', 'req_a')).toBeTruthy()
+
+    emitOpenCodeSessionEnded({ sessionId: 'ses_a', ticketId: ticket.id, reason: 'aborted' })
+
+    // Claimed for a reply that can no longer land, the request would otherwise
+    // be stranded with the ticket's clocks held still.
+    expect(getTicketQuestionState(ticket.id).requests).toEqual([])
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+    const summary = listSkipEvents(ticket.id)
+      .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
+    expect(summary?.skippedBy).toBe('system')
+    expect(summary?.questionContext?.expiry_reason).toBe('session_lost')
   })
 
   it('refuses every request on the clock when the wait runs out', async () => {

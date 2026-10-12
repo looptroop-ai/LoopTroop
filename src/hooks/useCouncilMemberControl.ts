@@ -8,6 +8,7 @@ import type {
 } from '@shared/councilMembers'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
+import { getTicketSkipsQueryKey } from './useTicketSkips'
 
 export type CouncilMemberControlAction = 'stop' | 'retry'
 
@@ -47,9 +48,11 @@ export function useCouncilMemberControl() {
     // are what take the stale buttons away. Returned, so the request reads as
     // done only once the chips show its result.
     // The ticket too: stopping the last working model ends the step and moves the ticket on.
+    // And the skip trail: the model's open AI questions close with it.
     onSettled: (_result, _error, variables) => Promise.all([
       queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', variables.ticketId] }),
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] }),
+      queryClient.invalidateQueries({ queryKey: getTicketSkipsQueryKey(variables.ticketId) }),
     ]),
   })
 }

@@ -16,7 +16,7 @@ import {
   getCouncilAction,
   getDraftingRoundMeta,
 } from './councilArtifacts'
-import { CouncilMemberControlContext, getDraftMemberControl } from './councilMemberControl'
+import { CouncilMemberControlContext, getDraftMemberControl, type CouncilMemberControlScope } from './councilMemberControl'
 import { CouncilMemberDialogControls } from './CouncilMemberControls'
 import type { ArtifactDef, CouncilOutcome, ViewingArtifact, ViewingArtifactSelection } from './phaseArtifactTypes'
 import {
@@ -693,6 +693,15 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
   // Stop and Retry exist only under the live council view, for the step it shows.
   const memberControlScope = useContext(CouncilMemberControlContext)
   const liveMemberControlScope = memberControlScope?.phase === phase ? memberControlScope : null
+  // Held while the same member dialog stays open. A stop or retry can end the
+  // step, and the ticket then moves on and takes the live scope with it, but
+  // what the person was told about that request must stay readable until they
+  // close the dialog. Buttons still come only from the live scope.
+  const [heldMemberControlScope, setHeldMemberControlScope] = useState<CouncilMemberControlScope | null>(null)
+  if (liveMemberControlScope && selectedMemberChip && heldMemberControlScope !== liveMemberControlScope) {
+    setHeldMemberControlScope(liveMemberControlScope)
+  }
+  const dialogMemberControlScope = selectedMemberChip ? liveMemberControlScope ?? heldMemberControlScope : null
   const memberControl = useMemo(
     () => (liveMemberControlScope && selectedMemberChip
       ? getDraftMemberControl(phase, selectedMemberChip, memberArtifacts, fullAnswerArtifacts, getDraftingRoundMeta(phase, dbArtifacts))
@@ -842,9 +851,18 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       ) : null}
       {artifactsBody}
 
-      <Dialog open={!!viewingArtifact} onOpenChange={(open) => !open && setViewingSelection(null)}>
+      <Dialog
+        open={!!viewingArtifact}
+        onOpenChange={(open) => {
+          if (open) return
+          setViewingSelection(null)
+          setHeldMemberControlScope(null)
+        }}
+      >
         <DialogContent
-          className={`max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg${memberControl ? ' focus:outline-none' : ''}`}
+          // The dialog can hold focus itself (see focusDialogItself): a ring only
+          // for keyboard focus, never the browser outline after a click.
+          className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onOpenAutoFocus={memberControl ? focusDialogItself : undefined}
         >
           {/* Padded clear of the member controls, which sit over its top right. */}
@@ -857,10 +875,10 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
               {viewingArtifact?.description ?? 'Artifact details for the current council phase.'}
             </DialogDescription>
           </DialogHeader>
-          {liveMemberControlScope && selectedMemberChip ? (
+          {dialogMemberControlScope && selectedMemberChip ? (
             <CouncilMemberDialogControls
               key={selectedMemberChip.key}
-              scope={liveMemberControlScope}
+              scope={dialogMemberControlScope}
               control={memberControl}
             />
           ) : null}

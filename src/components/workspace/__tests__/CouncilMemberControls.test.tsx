@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TEST } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
@@ -442,18 +442,55 @@ describe('member dialog controls in a drafting step', () => {
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('could not be ended cleanly')
   })
 
-  it('sends one request when the confirm button is clicked twice in a row', async () => {
+  it('sends one request when the confirm button is clicked twice before it re-renders', async () => {
     const fetchMock = stubFetch(200, { success: true, phase: 'COUNCIL_DELIBERATING', memberId: A, outcome: 'stopped' })
     renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'pending', [B]: 'pending' })], LIVE_DELIBERATING)
 
     const dialog = openChip('model-a')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model-a' }))
     const confirm = within(dialog).getByRole('button', { name: 'Stop model' })
-    fireEvent.click(confirm)
-    fireEvent.click(confirm)
+    // Both clicks in one act: React renders only afterwards, so the button is
+    // still enabled for the second click and only the send guard stops it.
+    act(() => {
+      confirm.click()
+      confirm.click()
+    })
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled())
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('still shows a refusal that arrives after the round ended', async () => {
+    let answer!: (response: Response) => void
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { answer = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'pending', [B]: 'completed', [C]: 'completed' })], LIVE_DELIBERATING)
+
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model-a' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    // model-a finished on its own while the stop was on its way.
+    view.rerender(panelElement('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'completed', [B]: 'completed', [C]: 'completed' })], LIVE_DELIBERATING))
+    answer(jsonResponse(409, { error: 'This step is no longer running.', code: 'STEP_NOT_RUNNING' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('This step is no longer running.')
+    expect(within(dialog).queryByRole('button', { name: /^(Stop|Retry) model-/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the notice once the ticket has moved on to the next step', async () => {
+    stubFetch(200, { success: true, phase: 'COUNCIL_DELIBERATING', memberId: A, outcome: 'completed' })
+    const view = renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'pending', [B]: 'completed', [C]: 'completed' })], LIVE_DELIBERATING)
+
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model-a' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model' }))
+    await within(dialog).findByText('model-a finished before it could be stopped.')
+
+    // The live council view gives up its scope once the ticket leaves the step.
+    view.rerender(panelElement('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'completed', [B]: 'completed', [C]: 'completed' }, { isFinal: true })], null))
+    expect(screen.getByText('model-a finished before it could be stopped.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Stop|Retry) model-/ })).not.toBeInTheDocument()
   })
 
   it('locks the controls and shows a spinner while the request runs', async () => {
@@ -508,12 +545,16 @@ describe('voter badge controls in a voting step', () => {
     })
   }
 
-  function renderVotes(content: string, scope: CouncilMemberControlScope | null) {
-    return renderWithProviders(
+  function votesElement(content: string, scope: CouncilMemberControlScope | null) {
+    return (
       <CouncilMemberControlContext.Provider value={scope}>
         <ArtifactContent artifactId="vote-details" phase="COUNCIL_VOTING_PRD" content={content} />
-      </CouncilMemberControlContext.Provider>,
+      </CouncilMemberControlContext.Provider>
     )
+  }
+
+  function renderVotes(content: string, scope: CouncilMemberControlScope | null) {
+    return renderWithProviders(votesElement(content, scope))
   }
 
   it('offers Stop only on voters still scoring, and Retry on every voter', () => {
@@ -559,6 +600,38 @@ describe('voter badge controls in a voting step', () => {
       url: '/api/tickets/1%3ATEST-1/council/members/retry',
       body: { phase: 'COUNCIL_VOTING_PRD', memberId: B },
     })
+  })
+
+  it('still shows a refusal that arrives after the vote ended', async () => {
+    let answer!: (response: Response) => void
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { answer = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderVotes(voteContent({ [A]: 'pending', [B]: 'completed', [C]: 'completed' }), LIVE_PRD_VOTING)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop model-a' }))
+    fireEvent.click(within(screen.getByRole('group', { name: 'Stop model-a?' })).getByRole('button', { name: 'Stop model' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    view.rerender(votesElement(voteContent({ [A]: 'completed', [B]: 'completed', [C]: 'completed' }, { isFinal: true }), LIVE_PRD_VOTING))
+    answer(jsonResponse(409, { error: 'This step is no longer running.', code: 'STEP_NOT_RUNNING' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('This step is no longer running.')
+    expect(screen.queryByRole('button', { name: /^(Stop|Retry) model-/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the notice, without buttons, once the ticket has moved on', async () => {
+    stubFetch(200, { success: true, phase: 'COUNCIL_VOTING_PRD', memberId: A, outcome: 'completed' })
+    // model-a is the only voter still at work; model-c already ended, so
+    // nothing is left running once model-a turns out to have finished.
+    const view = renderVotes(voteContent({ [A]: 'pending', [B]: 'completed', [C]: 'failed' }), LIVE_PRD_VOTING)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop model-a' }))
+    fireEvent.click(within(screen.getByRole('group', { name: 'Stop model-a?' })).getByRole('button', { name: 'Stop model' }))
+    await screen.findByText('model-a finished before it could be stopped.')
+
+    // A stale artifact still showing the vote open must not bring the buttons back.
+    view.rerender(votesElement(voteContent({ [A]: 'pending', [B]: 'completed', [C]: 'failed' }), null))
+    expect(screen.getByText('model-a finished before it could be stopped.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Stop|Retry) model-/ })).not.toBeInTheDocument()
   })
 
   it('warns before a stop that leaves the vote short of its quorum', async () => {

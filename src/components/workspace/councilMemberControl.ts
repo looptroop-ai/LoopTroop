@@ -270,13 +270,17 @@ export function useCouncilMemberConfirmation(scope: CouncilMemberControlScope) {
     notice,
     isPending: control.isPending,
     error: control.error,
+    // A reset mutation never calls the `onSettled` given to `mutate`, so the
+    // guard is cleared here too rather than left set for good.
     open(next: CouncilMemberControlRequest) {
       control.reset()
+      sending.current = false
       setNotice(null)
       setRequest(next)
     },
     cancel() {
       control.reset()
+      sending.current = false
       setRequest(null)
     },
     confirm() {

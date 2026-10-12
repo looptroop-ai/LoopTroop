@@ -52,6 +52,7 @@ describe('useCouncilMemberControl', () => {
     expect(result.current.data).toMatchObject({ outcome: 'stopped' })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket-artifacts', TEST.ticketId] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket', TEST.ticketId] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket-skips', TEST.ticketId] })
   })
 
   it('sends the PRD part with a retry', async () => {
@@ -97,6 +98,7 @@ describe('useCouncilMemberControl', () => {
     // A refusal means the screen is behind the server, so it reloads either way.
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket-artifacts', TEST.ticketId] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket', TEST.ticketId] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket-skips', TEST.ticketId] })
   })
 
   it('keeps the details of a failed stop', async () => {

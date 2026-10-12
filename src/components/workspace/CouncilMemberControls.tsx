@@ -13,9 +13,11 @@ import {
 } from './councilMemberControl'
 
 // RotateCcw rather than RefreshCw: the spinning RefreshCw already means "refining".
+// The hints stay general: what a stop or retry does here depends on the round,
+// and the confirmation says it.
 const ACTIONS: Record<CouncilMemberControlAction, { label: string; hint: string; Icon: LucideIcon }> = {
-  stop: { label: 'Stop', hint: 'Stop this model. The step goes on without it.', Icon: Square },
-  retry: { label: 'Retry', hint: 'Start this model over with a full new time limit.', Icon: RotateCcw },
+  stop: { label: 'Stop', hint: 'Stop this model.', Icon: Square },
+  retry: { label: 'Retry', hint: 'Run this model again.', Icon: RotateCcw },
 }
 
 export function CouncilMemberControlButton({ action, memberId, onClick, disabled, iconOnly = false }: {
@@ -64,9 +66,9 @@ export function CouncilMemberConfirmStrip({ confirmation, control }: {
   control: CouncilMemberControl | null
 }) {
   const { request } = confirmation
+  const error = describeQueryError(confirmation.error)
   if (request && control) {
     const copy = request.action === 'stop' ? control.stop : control.retry
-    const error = describeQueryError(confirmation.error)
     return (
       <div role="group" aria-label={copy.question} className="space-y-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
         <p>
@@ -94,6 +96,9 @@ export function CouncilMemberConfirmStrip({ confirmation, control }: {
       </div>
     )
   }
+  // The round ended under the request: the buttons are gone, but a refusal
+  // still has to reach the person who confirmed it.
+  if (error) return <p role="alert" className="text-xs text-destructive">{error}</p>
   return confirmation.notice
     ? <p role="status" className="text-xs text-muted-foreground">{confirmation.notice}</p>
     : null
@@ -105,7 +110,7 @@ export function CouncilMemberConfirmStrip({ confirmation, control }: {
  * confirmation under the header.
  *
  * Stays mounted after the round ends (`control` null, no buttons), so the
- * notice about a stop the model beat is still there to read.
+ * notice about a stop the model beat, or a refusal, is still there to read.
  */
 export function CouncilMemberDialogControls({ scope, control }: {
   scope: CouncilMemberControlScope

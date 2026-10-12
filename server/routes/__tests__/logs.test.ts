@@ -372,6 +372,59 @@ describe('ticket log projection API', () => {
     expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['saved occurrence', 'phase/bead window'])('finds native evidence from earlier ownership for a %s', async (scope) => {
+    const { ticket, project, repoDir } = createLogTestTicket()
+    const context = getTicketContext(ticket.id)
+    assert(context)
+    const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
+    context.projectDb.insert(ticketStatusHistory).values({ ticketId: context.localTicketId, newStatus: 'CODING', changedAt: time(20) }).run()
+    appendLogEvent(ticket.id, 'info', 'CODING', 'earlier session owner', {
+      timestamp: time(5), sessionId: 'earlier-session', phaseAttempt: 2, beadId: 'target-bead',
+    }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'DRAFTING_PRD', 'another phase owner', {
+      timestamp: time(5), sessionId: 'other-phase-session',
+    }, 'system', 'DRAFTING_PRD')
+    const otherTicket = createTicket({ projectId: project.id, title: 'another ticket' })
+    appendLogEvent(otherTicket.id, 'info', 'CODING', 'another ticket owner', {
+      timestamp: time(5), sessionId: 'other-ticket-session',
+    }, 'system', 'CODING')
+    if (scope === 'phase/bead window') {
+      appendLogEvent(ticket.id, 'info', 'CODING', 'another bead owner', {
+        timestamp: time(5), sessionId: 'other-bead-session', phaseAttempt: 2, beadId: 'other-bead',
+      }, 'system', 'CODING')
+      appendLogEvent(ticket.id, 'info', 'CODING', 'another attempt owner', {
+        timestamp: time(5), sessionId: 'other-attempt-session', phaseAttempt: 1, beadId: 'target-bead',
+      }, 'system', 'CODING')
+    }
+    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: time(30) })
+    assert(occurrence)
+    const nativePath = await writeNativeFixture(repoDir, 'earlier-session.log', 2)
+    listOpenCodeNativeLogFilesMock.mockReturnValue([nativeCandidate(nativePath)])
+    const rows = [10, 19, 20, 25, 30, 31].map(second => ({ sessionId: 'earlier-session', second, content: `native-${second}` }))
+    rows.push(...['other-phase-session', 'other-ticket-session', 'other-bead-session', 'other-attempt-session'].map(sessionId => ({ sessionId, second: 25, content: sessionId })))
+    readOpenCodeNativeLogFileMock.mockResolvedValue(rows.map(({ sessionId, second, content }, index) => ({
+      timestamp: time(second), type: 'debug', source: 'debug', audience: 'debug', kind: 'session', op: 'append',
+      phase: 'opencode_native', phaseAttempt: 1, status: 'opencode_native', message: content, content,
+      sessionId, data: {}, nativeIdentity: `earlier-session.log:${index + 1}`,
+    })))
+    const query = scope === 'saved occurrence'
+      ? `errorOccurrenceId=${occurrence.id}`
+      : `phase=CODING&phaseAttempt=2&beadId=target-bead&startedAt=${time(20)}&endedAt=${time(30)}`
+    const baseUrl = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&limit=2&${query}`
+    const response = await app.request(baseUrl)
+    expect(response.status).toBe(200)
+    const first = await response.json() as { entries: Array<{ content: string }>; totalEntries: number; olderCursor: string }
+    expect(first.entries.map(entry => entry.content)).toEqual(['native-25', 'native-30'])
+    expect(first.totalEntries).toBe(3)
+    const older = await (await app.request(`${baseUrl}&before=${encodeURIComponent(first.olderCursor)}`)).json() as { entries: Array<{ content: string }>; hasOlder: boolean }
+    expect(older.entries.map(entry => entry.content)).toEqual(['native-20'])
+    expect(older.hasOlder).toBe(false)
+    const exported = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs/export?view=debug&${query}`)
+    expect(await exported.text()).toBe([20, 25, 30].map(second => `[${time(second)}] native-${second}`).join('\n'))
+    expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledWith(nativeCandidate(nativePath), ['earlier-session'], expect.any(Object))
+    expect(readOpenCodeNativeLogFileMock).toHaveBeenCalledTimes(1)
+  })
+
   it('filters command chatter before paginating the overview', async () => {
     const { ticket } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'visible milestone', {}, 'system', 'CODING')

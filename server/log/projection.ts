@@ -1431,16 +1431,11 @@ async function queryDebugPage(
   scopeKey: string,
 ) {
   const { sqlite, statements } = storage
-  const scopeClauses = [...clauses]
-  const scopeParams = [...params]
-  if (query.modelId) {
-    scopeClauses.push('model_id = ?')
-    scopeParams.push(query.modelId)
-  }
   // Session ownership is a small indexed projection lookup. The page query
   // below still asks SQLite for only limit+1 rows; it never parses the archive
   // merely to discover native rows for a later page. Do not apply modelId here:
   // the persisted row owns the session, while the native row owns its model.
+  // Ownership may have been recorded before this failure window began.
   const sessionIdSql = "COALESCE(NULLIF(json_extract(p.entry_json, '$.sessionId'), ''), json_extract(p.entry_json, '$.data.sessionId'))"
   const sessionSql = `SELECT DISTINCT ${sessionIdSql} AS session_id
     FROM execution_log_projection AS p
@@ -1469,6 +1464,14 @@ async function queryDebugPage(
     nativeSnapshotKey = await ensureNativeSnapshot(storage, sessionIds)
   }
 
+  if (query.startedAt) { clauses.push('timestamp >= ?'); params.push(query.startedAt) }
+  if (query.endedAt) { clauses.push('timestamp <= ?'); params.push(query.endedAt) }
+  const scopeClauses = [...clauses]
+  const scopeParams = [...params]
+  if (query.modelId) {
+    scopeClauses.push('model_id = ?')
+    scopeParams.push(query.modelId)
+  }
   const pageClauses = [...scopeClauses]
   const pageParams = [...scopeParams]
   if (before) {
@@ -1605,9 +1608,9 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (query.scope === 'phase' && query.phase) { clauses.push('phase = ?'); params.push(query.phase) }
   if (typeof query.phaseAttempt === 'number') { clauses.push('phase_attempt = ?'); params.push(query.phaseAttempt) }
   if (query.beadId) { clauses.push('bead_id = ?'); params.push(query.beadId) }
+  if (query.view === 'debug') return queryDebugPage(storage, query, before, clauses, params, scopeKey)
   if (query.startedAt) { clauses.push('timestamp >= ?'); params.push(query.startedAt) }
   if (query.endedAt) { clauses.push('timestamp <= ?'); params.push(query.endedAt) }
-  if (query.view === 'debug') return queryDebugPage(storage, query, before, clauses, params, scopeKey)
   let modelIds: string[] | undefined
   if (shouldIncludeTotals) {
     // Tabs describe the whole scope, even when the selected view or model has

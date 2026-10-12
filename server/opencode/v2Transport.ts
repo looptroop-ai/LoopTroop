@@ -57,8 +57,9 @@ export class V2OpenCodeHttpError extends Error {
     readonly status: number,
     readonly body: unknown,
     readonly openCodeErrorSource?: "opencode_server" | "opencode_prompt",
+    options?: ErrorOptions,
   ) {
-    super(errorMessage(status, body));
+    super(errorMessage(status, body), options);
     this.name = "V2OpenCodeHttpError";
   }
 }
@@ -742,14 +743,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       const response = await this.fetcher(url, init);
       const expectedStatus = options.expectedStatus ?? 200;
       if (response.status !== expectedStatus) {
-        const body = await responseBody(response);
-        const serverAuthentication = asRecord(body)?._tag === "UnauthorizedError"
-          || /^Basic\b/i.test(response.headers.get("www-authenticate") ?? "");
-        throw new V2OpenCodeHttpError(
-          response.status,
-          body,
-          options.serverOperation !== false || serverAuthentication ? "opencode_server" : "opencode_prompt",
-        );
+        throw await httpResponseError(response, options.serverOperation !== false, init.signal ?? undefined);
       }
       if (expectedStatus === 204) {
         await response.body?.cancel().catch(() => undefined);
@@ -809,11 +803,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
 
     if (!response.ok) {
       signal?.removeEventListener("abort", abortFromCaller);
-      throw new V2OpenCodeHttpError(
-        response.status,
-        await responseBody(response),
-        "opencode_server",
-      );
+      throw await httpResponseError(response, true, signal);
     }
     if (
       !response.headers
@@ -1277,6 +1267,21 @@ async function responseBody(response: Response): Promise<unknown> {
   } catch {
     return text;
   }
+}
+
+async function httpResponseError(response: Response, serverOperation: boolean, signal?: AbortSignal): Promise<V2OpenCodeHttpError> {
+  let body: unknown;
+  let options: ErrorOptions | undefined;
+  try {
+    body = await responseBody(response);
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))) throw error;
+    options = { cause: error };
+  }
+  const serverAuthentication = asRecord(body)?._tag === "UnauthorizedError"
+    || /^Basic\b/i.test(response.headers.get("www-authenticate") ?? "");
+  return new V2OpenCodeHttpError(response.status, body,
+    serverOperation || serverAuthentication ? "opencode_server" : "opencode_prompt", options);
 }
 
 function dataOf(value: unknown): unknown {

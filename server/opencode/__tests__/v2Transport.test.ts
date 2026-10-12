@@ -5,6 +5,8 @@ import {
 } from "../transport";
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from "../v2Transport";
 import { OpenCodeSDKAdapter } from "../adapter";
+import { buildOpenCodeBlockedErrorDiagnostics } from "../blockedErrorDiagnostics";
+import { isContinuableBlockedError } from "../sessionContinuation";
 
 interface CapturedRequest {
   url: URL;
@@ -57,6 +59,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function emptyResponse(status = 204): Response {
   return new Response(null, { status });
+}
+
+function unreadableResponse(status: number, cause: unknown, headers?: HeadersInit): Response {
+  return new Response(new ReadableStream({ start(controller) { controller.error(cause); } }), { status, headers });
 }
 
 function eventStream(events: unknown[]): Response {
@@ -2525,6 +2531,68 @@ describe("OpenCode v2 fetch transport", () => {
       body: "upstream unavailable",
       message: "OpenCode v2 request failed (HTTP 502): upstream unavailable",
     });
+  });
+
+  it.each(['request', 'event stream'])('preserves the HTTP status and original body-read cause for an unsuccessful %s', async (operation) => {
+    const cause = Object.assign(new TypeError('Response body stream failed'), { code: 'ECONNRESET' });
+    const { transport } = createTransport(() => unreadableResponse(401, cause));
+    const failure = await (operation === 'request'
+      ? transport.getSession('session-1')
+      : transport.subscribeToEvents('session-1', '/workspace')).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(V2OpenCodeHttpError);
+    expect(failure).toMatchObject({ status: 401, body: undefined, cause, openCodeErrorSource: 'opencode_server' });
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: failure, sessionId: 'session-1' });
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_session', statusCode: 401, transportCode: 'ECONNRESET', causeMessage: cause.message });
+  });
+
+  it.each([false, true])('preserves failed prompt-body status and header-only server proof: %s', async (serverChallenge) => {
+    const cause = new TypeError('Response body stream failed');
+    const { transport } = createTransport((request) => request.url.pathname.endsWith('/prompt')
+      ? unreadableResponse(401, cause, serverChallenge ? { 'www-authenticate': 'Basic realm="Secure Area"' } : undefined)
+      : emptyResponse());
+    const failure = await transport.dispatchPrompt(promptRequest()).catch((error: unknown) => error);
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: failure, sessionId: 'session-1', modelId: 'openai/model-a' });
+
+    expect(failure).toMatchObject({ name: 'V2OpenCodeHttpError', status: 401, cause });
+    expect(result.diagnostics).toMatchObject({ kind: serverChallenge ? 'opencode_session' : 'runtime', statusCode: 401, causeMessage: cause.message });
+    expect(result.diagnostics?.providerId).toBeUndefined();
+    expect(result.errorCodes).toEqual([]);
+    expect(isContinuableBlockedError(result)).toBe(serverChallenge);
+  });
+
+  it.each(['request', 'event stream'])('keeps body-read abort and timeout failures unchanged for an unsuccessful %s', async (operation) => {
+    for (const name of ['AbortError', 'TimeoutError']) {
+      const cause = new DOMException('Reading stopped', name);
+      const { transport } = createTransport(() => unreadableResponse(401, cause));
+      await expect(operation === 'request'
+        ? transport.getSession('session-1')
+        : transport.subscribeToEvents('session-1', '/workspace')).rejects.toBe(cause);
+    }
+  });
+
+  it.each([new TypeError('Response body stream failed'), undefined])('does not turn an unreadable 404 lookup into a confirmed missing or stopped session: %s', async (cause) => {
+    const { transport } = createTransport(() => unreadableResponse(404, cause));
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, async () => transport);
+
+    const failure = await adapter.getSession('session-1').catch((error: unknown) => error);
+    expect(failure).toMatchObject({ name: 'V2OpenCodeHttpError', status: 404, cause });
+    assert(failure instanceof Error);
+    expect(Object.hasOwn(failure, 'cause')).toBe(true);
+    await expect(adapter.abortSession('session-1')).resolves.toBe(false);
+  });
+
+  it('does not clear cached ownership when an interrupt 404 body cannot be read', async () => {
+    const cause = new TypeError('Response body stream failed');
+    const { transport, requests } = createTransport((request) => request.url.pathname.endsWith('/interrupt')
+      ? unreadableResponse(404, cause)
+      : jsonResponse({ data: { id: 'session-1', location: { directory: '/workspace' } } }));
+    const adapter = new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, async () => transport);
+    await adapter.getSession('session-1');
+
+    await expect(adapter.abortSession('session-1')).resolves.toBe(false);
+    await expect(adapter.abortSession('session-1')).resolves.toBe(false);
+    expect(requests.filter((request) => request.method === 'GET')).toHaveLength(1);
   });
 
   it("keeps adapter health available without requesting a slow or unavailable catalog", async () => {

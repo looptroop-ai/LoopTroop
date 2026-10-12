@@ -2526,6 +2526,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
   private isConfirmedSessionNotFoundError(error: unknown): boolean {
     const record = this.getRecord(error);
+    // An unreadable error response cannot prove that the remote session is gone.
+    if (record?.name === "V2OpenCodeHttpError" && record.body === undefined && Object.hasOwn(record, "cause")) return false;
     const response = this.getRecord(record?.response);
     const status = this.readHttpStatus(response) ?? this.readHttpStatus(record);
     return status === 404;

@@ -66,8 +66,8 @@ export function isCouncilVotingControlPhase(phase: unknown): boolean {
  *
  * Each model writes the PRD in two parts: Full Answers (Part 1), then the draft
  * (Part 2). Retrying from `full_answers` redoes both. Retrying from `prd_draft`
- * keeps a finished Part 1 and redoes only the draft; with Part 1 unfinished it
- * redoes both as well.
+ * keeps a finished Part 1 and redoes only the draft; with Part 1 unfinished, or
+ * thrown away by a stop, it redoes both as well.
  */
 export const COUNCIL_MEMBER_RETRY_PARTS = ['full_answers', 'prd_draft'] as const
 

@@ -201,6 +201,8 @@ describe('conductVoting', () => {
       undefined,
       (entry) => progress.push({ outcome: entry.outcome }),
     )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
-    expect(progress).toEqual([])
+    // Never reported as timed out: the stop was not confirmed. It is reported as
+    // failed instead, so the live view stops showing the voter at work.
+    expect(progress).toEqual([{ outcome: 'failed' }])
   })
 })

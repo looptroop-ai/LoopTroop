@@ -24,7 +24,7 @@ import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnost
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
-import { PHASE_DEADLINE_ERROR, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
+import { PHASE_DEADLINE_ERROR, armAttemptDeadline, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
 import { isAbortError } from '../lib/abort'
 import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
@@ -187,7 +187,6 @@ export async function conductVoting(
     scope: 'council_member',
   })
   const sessionManager = sessionOwnership ? new SessionManager(adapter) : null
-  let deadlineReached = false
 
   function buildStructuredOutputMeta(
     repairApplied: boolean,
@@ -247,11 +246,17 @@ export async function conductVoting(
       // had one, no longer counts toward the winner.
       memberOutcomes[memberId] = 'pending'
       voterDetailMap.delete(memberId)
-      for (let index = votes.length - 1; index >= 0; index -= 1) {
-        if (votes[index]!.voterId === memberId) votes.splice(index, 1)
-      }
+      const kept = votes.filter((vote) => vote.voterId !== memberId)
+      votes.splice(0, votes.length, ...kept)
       onVoteProgress?.({ memberId, outcome: 'pending', votes: [] })
     },
+    // The live view must stop showing a voter working once it has left the
+    // round on an error; the round fails when the others settle.
+    onFailed: (memberId, error) => recordOutcome(memberId, {
+      outcome: 'failed',
+      votes: [],
+      error: getErrorMessage(error),
+    }),
   })
 
   const voteMember = async (voter: CouncilMember, attempt: CouncilMemberAttempt): Promise<VoteAttemptResult> => {
@@ -267,7 +272,6 @@ export async function conductVoting(
     let sessionId = ''
     let closed = false
     let promptReturned = false
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     let response = ''
     const rawAttempts: RawAttempt[] = []
     const memberAbortController = new AbortController()
@@ -276,11 +280,11 @@ export async function conductVoting(
       memberAbortController.signal,
       attempt.signal,
     ])
-    let resolveExecutionSettled: () => void = () => {}
+    let resolveExecutionSettled: () => void = () => undefined
     const executionSettled = new Promise<void>((resolve) => {
       resolveExecutionSettled = resolve
     })
-    let resolveSessionReady: () => void = () => {}
+    let resolveSessionReady: () => void = () => undefined
     const sessionReady = new Promise<void>((resolve) => {
       resolveSessionReady = resolve
     })
@@ -288,7 +292,6 @@ export async function conductVoting(
     const markTimedOut = () => {
       if (closed) return
       closed = true
-      deadlineReached = true
       memberAbortController.abort()
     }
 
@@ -508,32 +511,13 @@ export async function conductVoting(
       return stop.stopped
     }
 
-    // Cleared while suspended and re-armed on resume, so a question wait moves
-    // the round's deadline instead of expiring the voter waiting on the answer.
-    let unsubscribeBudget: (() => void) | undefined
-    const deadlinePromise = attemptBudget.totalMs === undefined
-      ? null
-      : new Promise<never>((_, reject) => {
-        const armRoundTimer = () => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle)
-            timeoutHandle = undefined
-          }
-          if (closed || attemptBudget.suspended()) return
-          timeoutHandle = setTimeout(() => {
-            markTimedOut()
-            reject(new Error(PHASE_DEADLINE_ERROR))
-          }, Math.max(0, attemptBudget.remainingMs() ?? 0))
-        }
-        unsubscribeBudget = attemptBudget.onChange(armRoundTimer)
-        armRoundTimer()
-      })
+    const deadline = armAttemptDeadline(attemptBudget, () => closed, markTimedOut)
 
     try {
       return await Promise.race([
         executeVote,
         attempt.interrupted,
-        ...(deadlinePromise ? [deadlinePromise] : []),
+        ...(deadline.promise ? [deadline.promise] : []),
       ])
     } catch (error) {
       const callerCancelled = signal?.aborted || (isAbortError(error) && signal?.aborted)
@@ -544,18 +528,13 @@ export async function conductVoting(
       }
 
       // A person's stop or restart wins over whatever reached the race first.
+      // Nothing the voter wrote is kept, earlier rejected scorecards included.
       if (attempt.interruption()) {
         closed = true
         memberAbortController.abort()
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedVoterStopError(sessionId)
-        return {
-          outcome: 'stopped',
-          votes: [],
-          error: COUNCIL_MEMBER_STOPPED_ERROR,
-          ...(response ? { rawResponse: response } : {}),
-          rawAttempts: [...rawAttempts],
-        }
+        return { outcome: 'stopped', votes: [], error: COUNCIL_MEMBER_STOPPED_ERROR }
       }
 
       const errorDetail = getErrorMessage(error)
@@ -563,7 +542,6 @@ export async function conductVoting(
       if (timedOut) {
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedVoterStopError(sessionId)
-        deadlineReached = true
       }
       if (!timedOut) {
         const preserveForContinuation = sessionId && sessionOwnership
@@ -593,10 +571,7 @@ export async function conductVoting(
         rawAttempts: [...rawAttempts],
       }
     } finally {
-      unsubscribeBudget?.()
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle)
-      }
+      deadline.dispose()
       if (attemptBudget !== budget) attemptBudget.release()
     }
   }
@@ -619,7 +594,9 @@ export async function conductVoting(
   return {
     votes,
     memberOutcomes,
-    deadlineReached,
+    // From the outcomes that stand, so a voter restarted after timing out does
+    // not report a deadline the final round never hit.
+    deadlineReached: Object.values(memberOutcomes).some((outcome) => outcome === 'timed_out'),
     presentationOrders,
     voterDetails: [...voterDetailMap.values()],
   }

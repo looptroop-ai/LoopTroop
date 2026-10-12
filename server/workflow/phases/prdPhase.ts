@@ -501,7 +501,8 @@ export async function handlePrdDraft(
       {
         entryId: `prd-full-answers-summary:${fullAnswers.memberId}`,
         audience: 'ai',
-        kind: 'error',
+        // A stop is a person's decision, not a fault.
+        kind: fullAnswers.outcome === 'stopped' ? 'session' : 'error',
         op: 'append',
         source: `model:${fullAnswers.memberId}`,
         modelId: fullAnswers.memberId,

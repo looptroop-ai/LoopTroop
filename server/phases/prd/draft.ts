@@ -667,6 +667,72 @@ async function executeStructuredStep(
   }
 }
 
+/** One member's result as the live artifacts receive it. */
+function toFinishedProgress(memberId: string, draft: DraftResult, sessionId: string | undefined): DraftProgressEvent {
+  return {
+    memberId,
+    status: 'finished',
+    sessionId,
+    outcome: draft.outcome,
+    duration: draft.duration,
+    error: draft.error,
+    content: draft.content,
+    questionCount: draft.questionCount,
+    draftMetrics: draft.draftMetrics,
+    structuredOutput: draft.structuredOutput,
+    ...(typeof draft.rawResponse === 'string' ? { rawResponse: draft.rawResponse } : {}),
+    ...(typeof draft.normalizedResponse === 'string' ? { normalizedResponse: draft.normalizedResponse } : {}),
+    ...(draft.rawAttempts ? { rawAttempts: draft.rawAttempts } : {}),
+    ...(draft.skippedReason ? { skippedReason: draft.skippedReason } : {}),
+  }
+}
+
+/** How one member's step ended without a usable result, from the error that ended it. */
+function buildPrdMemberFailure(
+  memberId: string,
+  error: unknown,
+  options: { stoppedByPerson: boolean; duration: number; timeoutMs: number },
+): DraftResult {
+  // A stop keeps nothing the model wrote, earlier rejected attempts included.
+  if (options.stoppedByPerson) return buildFailedDraft(memberId, 'stopped', options.duration, COUNCIL_MEMBER_STOPPED_ERROR)
+  const structuredError = error instanceof StructuredStepError ? error : null
+  const errorContent = structuredError?.content ?? ''
+  if (isPhaseDeadlineError(error) || (error instanceof Error && error.message === 'Timeout')) {
+    return buildFailedDraft(
+      memberId,
+      'timed_out',
+      options.timeoutMs,
+      `AI response timeout reached after ${options.timeoutMs}ms`,
+      '',
+      structuredError?.questionCount,
+      structuredError?.draftMetrics,
+      structuredError?.structuredOutput,
+      errorContent || undefined,
+      undefined,
+      structuredError?.rawAttempts,
+    )
+  }
+  const { outcome, errorDetail, failureClass } = classifyDraftFailure(error, {
+    content: errorContent,
+    failureClass: structuredError?.structuredOutput.failureClass,
+  })
+  return buildFailedDraft(
+    memberId,
+    outcome,
+    options.duration,
+    errorDetail,
+    '',
+    structuredError?.questionCount,
+    structuredError?.draftMetrics,
+    structuredError?.structuredOutput ?? (
+      failureClass ? buildStructuredOutput(undefined, undefined, 0, failureClass) : undefined
+    ),
+    errorContent || undefined,
+    undefined,
+    structuredError?.rawAttempts,
+  )
+}
+
 export async function draftPRD(
   adapter: OpenCodeAdapter,
   members: CouncilMember[],
@@ -722,7 +788,6 @@ export async function draftPRD(
     scope: 'phase_attempt',
   })
   const budget = createBudget()
-  let deadlineReached = false
   const canonicalInterviewResult = normalizeInterviewDocumentOutput(canonicalInterview, {
     ticketId: options.ticketExternalId ?? options.ticketId ?? '',
   })
@@ -761,6 +826,13 @@ export async function draftPRD(
       }
       onDraftProgress?.({ memberId, status: 'restarted' })
     },
+    // The live view must stop showing a member working once it has left the
+    // round on an error; the round fails when the others settle.
+    onFailed: (memberId, error) => {
+      const failed = buildFailedDraft(memberId, 'failed', 0, getErrorMessage(error))
+      if (!keptFullAnswers.has(memberId)) onFullAnswersProgress?.(toFinishedProgress(memberId, failed, undefined))
+      onDraftProgress?.(toFinishedProgress(memberId, failed, undefined))
+    },
   })
 
   const draftMember = async (member: CouncilMember, attempt: CouncilMemberAttempt): Promise<PrdMemberResult> => {
@@ -778,11 +850,11 @@ export async function draftPRD(
     // stop can find what to close while a step is still running.
     let currentStep: PrdDraftSubstep = kept ? 'prd_draft' : 'full_answers'
     let stepSessionId: string | undefined
-    let resolveSessionReady: () => void = () => {}
+    let resolveSessionReady: () => void = () => undefined
     let sessionReady = new Promise<void>((resolve) => {
       resolveSessionReady = resolve
     })
-    let resolveExecutionSettled: () => void = () => {}
+    let resolveExecutionSettled: () => void = () => undefined
     const executionSettled = new Promise<void>((resolve) => {
       resolveExecutionSettled = resolve
     })
@@ -834,65 +906,17 @@ export async function draftPRD(
       })
     }
 
-    const emitFailedResult = (error: unknown, step: PrdDraftSubstep, stoppedByPerson = false) => {
+    /** Records how the member's attempt ended without a PRD draft, and returns what stands. */
+    const settleFailedMember = (error: unknown, step: PrdDraftSubstep, stoppedByPerson: boolean): PrdMemberResult => {
       if (!stoppedByPerson && (signal?.aborted || error instanceof CancelledError || (isAbortError(error) && signal?.aborted))) {
         throw new CancelledError()
       }
-
-      const duration = Date.now() - memberStart
-      const timedOut = !stoppedByPerson
-        && (isPhaseDeadlineError(error) || (error instanceof Error && error.message === 'Timeout'))
-      if (timedOut) deadlineReached = true
-      const timedOutDuration = options.draftTimeoutMs
-      const structuredError = error instanceof StructuredStepError ? error : null
-      const errorContent = structuredError?.content ?? ''
-      const errorRawAttempts = structuredError?.rawAttempts
-
-      const failed = stoppedByPerson
-        ? buildFailedDraft(member.modelId, 'stopped', duration, COUNCIL_MEMBER_STOPPED_ERROR)
-        : timedOut
-          ? buildFailedDraft(
-              member.modelId,
-              'timed_out',
-              timedOutDuration,
-              `AI response timeout reached after ${options.draftTimeoutMs}ms`,
-              '',
-              structuredError?.questionCount,
-              structuredError?.draftMetrics,
-              structuredError?.structuredOutput,
-              errorContent || undefined,
-              undefined,
-              errorRawAttempts,
-            )
-          : (() => {
-              const {
-                outcome,
-                errorDetail,
-                failureClass,
-              } = classifyDraftFailure(error, {
-                content: errorContent,
-                failureClass: structuredError?.structuredOutput.failureClass,
-              })
-              const structuredOutput = structuredError?.structuredOutput ?? (
-                failureClass
-                  ? buildStructuredOutput(undefined, undefined, 0, failureClass)
-                  : undefined
-              )
-              return buildFailedDraft(
-                member.modelId,
-                outcome,
-                duration,
-                errorDetail,
-                '',
-                structuredError?.questionCount,
-                structuredError?.draftMetrics,
-                structuredOutput,
-                errorContent || undefined,
-                undefined,
-                errorRawAttempts,
-              )
-            })()
-
+      const failed = buildPrdMemberFailure(member.modelId, error, {
+        stoppedByPerson,
+        duration: Date.now() - memberStart,
+        timeoutMs: options.draftTimeoutMs,
+      })
+      const sessionId = currentSession?.id ?? stepSessionId
       onStepEvent?.({
         memberId: member.modelId,
         step,
@@ -902,56 +926,34 @@ export async function draftPRD(
         error: failed.error,
       })
 
-      if (!fullAnswersResult) {
-        fullAnswersResult = failed
-        onFullAnswersProgress?.({
-          memberId: member.modelId,
-          status: 'finished',
-          sessionId: currentSession?.id,
-          outcome: fullAnswersResult.outcome,
-          duration: fullAnswersResult.duration,
-          error: fullAnswersResult.error,
-          content: fullAnswersResult.content,
-          questionCount: fullAnswersResult.questionCount,
-          structuredOutput: fullAnswersResult.structuredOutput,
-          ...(typeof fullAnswersResult.rawResponse === 'string' ? { rawResponse: fullAnswersResult.rawResponse } : {}),
-          ...(typeof fullAnswersResult.normalizedResponse === 'string' ? { normalizedResponse: fullAnswersResult.normalizedResponse } : {}),
-          ...(fullAnswersResult.rawAttempts ? { rawAttempts: fullAnswersResult.rawAttempts } : {}),
-          ...(fullAnswersResult.skippedReason ? { skippedReason: fullAnswersResult.skippedReason } : {}),
-        })
+      // A stop throws away everything the model did in this step, finished Part 1
+      // answers included, so nothing of a stopped model reaches the vote or the
+      // refinement. A later retry then redoes both parts.
+      if (stoppedByPerson) keptFullAnswers.delete(member.modelId)
+      const answers = fullAnswersResult && !stoppedByPerson ? fullAnswersResult : failed
+      if (answers !== fullAnswersResult) {
+        fullAnswersResult = answers
+        onFullAnswersProgress?.(toFinishedProgress(member.modelId, answers, sessionId))
       }
 
+      const draft = prdResult ?? (step === 'full_answers'
+        ? buildSkippedPrdDraftAfterFullAnswers(member.modelId, failed.outcome)
+        : failed)
       if (!prdResult) {
-        prdResult = step === 'full_answers'
-          ? buildSkippedPrdDraftAfterFullAnswers(member.modelId, failed.outcome)
-          : failed
-        onDraftProgress?.({
-          memberId: member.modelId,
-          status: 'finished',
-          sessionId: currentSession?.id,
-          outcome: prdResult.outcome,
-          duration: prdResult.duration,
-          error: prdResult.error,
-          content: prdResult.content,
-          questionCount: prdResult.questionCount,
-          draftMetrics: prdResult.draftMetrics,
-          structuredOutput: prdResult.structuredOutput,
-          ...(typeof prdResult.rawResponse === 'string' ? { rawResponse: prdResult.rawResponse } : {}),
-          ...(typeof prdResult.normalizedResponse === 'string' ? { normalizedResponse: prdResult.normalizedResponse } : {}),
-          ...(prdResult.rawAttempts ? { rawAttempts: prdResult.rawAttempts } : {}),
-          ...(prdResult.skippedReason ? { skippedReason: prdResult.skippedReason } : {}),
-        })
+        prdResult = draft
+        onDraftProgress?.(toFinishedProgress(member.modelId, draft, sessionId))
         if (step === 'full_answers') {
           onStepEvent?.({
             memberId: member.modelId,
             step: 'prd_draft',
             status: 'skipped',
-            outcome: prdResult.outcome,
+            outcome: draft.outcome,
             duration: 0,
-            error: prdResult.error,
+            error: draft.error,
           })
         }
       }
+      return { fullAnswers: answers, prd: draft }
     }
 
     const pipeline = (async (): Promise<PrdMemberResult> => {
@@ -1214,28 +1216,16 @@ export async function draftPRD(
         }
         if (interruption === 'retry') {
           // Nothing is recorded: the round starts this member over at once.
-          return {
-            fullAnswers: fullAnswersResult ?? buildFailedDraft(member.modelId, 'stopped', 0, COUNCIL_MEMBER_STOPPED_ERROR),
-            prd: buildFailedDraft(member.modelId, 'stopped', 0, COUNCIL_MEMBER_STOPPED_ERROR),
-          }
+          const discarded = buildFailedDraft(member.modelId, 'stopped', 0, COUNCIL_MEMBER_STOPPED_ERROR)
+          return { fullAnswers: discarded, prd: discarded }
         }
-        emitFailedResult(error, fullAnswersResult ? 'prd_draft' : 'full_answers', true)
-        return {
-          fullAnswers: fullAnswersResult!,
-          prd: prdResult!,
-        }
+        return settleFailedMember(error, fullAnswersResult ? 'prd_draft' : 'full_answers', true)
       }
 
       if (currentSession) {
         await stopPrdSession(adapter, sessionManager, currentSession.id, signal)
       }
-
-      const failedStep = fullAnswersResult ? 'prd_draft' : 'full_answers'
-      emitFailedResult(error, failedStep)
-      return {
-        fullAnswers: fullAnswersResult!,
-        prd: prdResult!,
-      }
+      return settleFailedMember(error, fullAnswersResult ? 'prd_draft' : 'full_answers', false)
     } finally {
       if (attemptBudget !== budget) attemptBudget.release()
     }
@@ -1268,6 +1258,8 @@ export async function draftPRD(
       acc[draft.memberId] = draft.outcome
       return acc
     }, {}),
-    deadlineReached,
+    // From the outcomes that stand, so a member restarted after timing out does
+    // not report a deadline the final round never hit.
+    deadlineReached: [...drafts, ...fullAnswers].some((draft) => draft.outcome === 'timed_out'),
   }
 }

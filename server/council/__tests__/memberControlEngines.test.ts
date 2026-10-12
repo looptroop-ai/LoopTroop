@@ -131,7 +131,11 @@ describe('stopping and restarting one council member', () => {
   })
 
   describe('drafting', () => {
-    async function startDrafting(adapter: ScriptedAdapter, title: string) {
+    async function startDrafting(
+      adapter: ScriptedAdapter,
+      title: string,
+      options: { timeoutMs?: number; validate?: (content: string) => { normalizedContent?: string } } = {},
+    ) {
       const { ticket, paths } = await createInitializedTestTicket(repoManager, { title })
       const progress: DraftProgressEvent[] = []
       const run = generateDrafts(
@@ -139,12 +143,12 @@ describe('stopping and restarting one council member', () => {
         MEMBERS,
         [{ type: 'text', content: 'Draft the interview questions.' }],
         paths.worktreePath,
-        LONG_TIMEOUT_MS,
+        options.timeoutMs ?? LONG_TIMEOUT_MS,
         undefined,
         undefined,
         undefined,
         (entry) => progress.push(entry),
-        undefined,
+        options.validate,
         { ticketId: ticket.id, phase: 'COUNCIL_DELIBERATING' },
       )
       return { ticket, run, progress }
@@ -192,6 +196,45 @@ describe('stopping and restarting one council member', () => {
       expect(result.drafts[1]?.content).toBe('Second draft from B')
       const bEvents = progress.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status)
       expect(bEvents).toEqual(['session_created', 'restarted', 'session_created', 'finished'])
+    })
+
+    it('keeps nothing a stopped drafter wrote, earlier rejected attempts included', async () => {
+      const adapter = new ScriptedAdapter({ [MODEL_A]: ['Draft from A'], [MODEL_B]: ['not a draft', 'stall'] })
+      const { ticket, run, progress } = await startDrafting(adapter, 'Stop after a rejected attempt', {
+        validate: (content) => {
+          if (content === 'not a draft') throw new Error('schema validation failed')
+          return {}
+        },
+      })
+      await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its structured retry')
+
+      await stopCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B)
+      const result = await run
+
+      expect(result.drafts[1]).toEqual(expect.objectContaining({ outcome: 'stopped', error: COUNCIL_MEMBER_STOPPED_ERROR }))
+      expect(result.drafts[1]).not.toHaveProperty('rawAttempts')
+      expect(result.drafts[1]).not.toHaveProperty('rawResponse')
+      expect(result.drafts[1]?.structuredOutput).toBeUndefined()
+      const finished = progress.find((entry) => entry.memberId === MODEL_B && entry.status === 'finished')
+      expect(finished?.rawAttempts).toBeUndefined()
+    })
+
+    it('does not report a deadline once a timed-out drafter was restarted to a result', async () => {
+      // A stays busy on a restart with its own clock; B times out on the round's
+      // clock, is restarted, and drafts. The round never ends on a timeout.
+      const adapter = new ScriptedAdapter({ [MODEL_A]: ['stall', 'stall'], [MODEL_B]: ['stall', 'Second draft from B'] })
+      const { ticket, run, progress } = await startDrafting(adapter, 'Retry a timed-out drafter', { timeoutMs: 600 })
+      await waitFor(() => adapter.promptsFor(MODEL_A).length === 1 && adapter.promptsFor(MODEL_B).length === 1, 'both to start')
+      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_A)
+      await waitFor(() => progress.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'timed_out'), 'B to time out')
+
+      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B)
+      await waitFor(() => progress.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'completed'), 'B to draft')
+      await stopCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_A)
+      const result = await run
+
+      expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'stopped', [MODEL_B]: 'completed' })
+      expect(result.deadlineReached).toBe(false)
     })
 
     it('redoes a finished draft while another model is still working, and keeps only the new one', async () => {
@@ -329,6 +372,47 @@ describe('stopping and restarting one council member', () => {
         .toEqual(['session_created', 'finished'])
       expect(draftEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))
         .toEqual(['session_created', 'restarted', 'session_created', 'finished'])
+    })
+
+    it('throws away finished Part 1 answers when the model is stopped during Part 2', async () => {
+      const adapter = new ScriptedAdapter({
+        [MODEL_A]: [resolvedFullAnswers(), makePrdYaml()],
+        [MODEL_B]: [resolvedFullAnswers(), 'stall'],
+      })
+      const { ticket, run, fullAnswerEvents } = await startPrd(adapter, 'Stop during the PRD draft')
+      await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its PRD draft')
+
+      await stopCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B)
+      const result = await run
+
+      // Nothing of a stopped model reaches the vote or the refinement.
+      expect(result.fullAnswerOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
+      expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
+      expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => [entry.status, entry.outcome]))
+        .toEqual([['session_created', undefined], ['finished', 'completed'], ['finished', 'stopped']])
+    })
+
+    it('redoes Full Answers on a Part 2 retry when Part 1 did not finish usably', async () => {
+      // A stays busy on its PRD draft so the round is still open for B's retry.
+      const adapter = new ScriptedAdapter({
+        [MODEL_A]: [resolvedFullAnswers(), 'stall'],
+        [MODEL_B]: ['not interview yaml', 'still not interview yaml', resolvedFullAnswers(), makePrdYaml()],
+      })
+      const { ticket, run, fullAnswerEvents, draftEvents } = await startPrd(adapter, 'Part 2 retry after a failed Part 1')
+      await waitFor(
+        () => fullAnswerEvents.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'invalid_output'),
+        'B to fail Full Answers',
+      )
+
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'prd_draft')
+      await waitFor(() => draftEvents.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'completed'), 'B to draft')
+      await stopCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_A)
+      const result = await run
+
+      expect(result.fullAnswerOutcomes[MODEL_B]).toBe('completed')
+      expect(result.memberOutcomes[MODEL_B]).toBe('completed')
+      expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))
+        .toContain('restarted')
     })
 
     it('redoes both parts when the restart comes from Full Answers', async () => {

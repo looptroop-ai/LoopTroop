@@ -409,7 +409,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Why per-model answers matter: Different models may make different reasonable assumptions. Keeping Full Answers per model lets the vote compare a PRD together with the assumptions that produced it.",
       "Part 2, PRD drafting: Each model uses its own completed answer set, plus relevant files and ticket details, to write a full PRD with requirements, acceptance criteria, edge cases, test intent, and implementation guidance.",
       "Draft gating: If a model cannot produce a valid Full Answers artifact, its PRD draft does not start. The workflow records that row as invalid with diagnostics instead of pretending a usable PRD exists.",
-      "Stop or retry one model: While drafting runs, each model has a Part 1 chip and a Part 2 chip. Open either one and use Stop or Retry in the top-right corner of its window. Both ask for confirmation. Stop from either chip stops the model while the others carry on. Retry from the Part 1 chip redoes both parts. Retry from the Part 2 chip keeps Part 1 answers that passed validation and redoes only the PRD draft; without them it redoes both parts.",
+      "Stop or retry one model: While drafting runs, each model has a Part 1 chip and a Part 2 chip. Open either one and use Stop or Retry in the top-right corner of its window. Both ask for confirmation. Stop from either chip stops the model while the others carry on. Retry from the Part 1 chip redoes both parts. Retry from the Part 2 chip keeps Part 1 answers that passed validation and redoes only the PRD draft; without them, or after a stop, it redoes both parts.",
       "Validation and retries: LoopTroop validates both Full Answers and PRD drafts, keeps accepted bodies for the vote, and records rejected attempts and diagnostics in Raw history. Structured retries run in fresh sessions.",
     ],
     outputs: [
@@ -429,9 +429,9 @@ const WORKFLOW_PHASE_DETAILS = {
       "Malformed Full Answers or PRD text stays diagnostic-only. Safe parser repairs fix formatting, not meaning.",
       "This is the stage that turns interview intent into a formal implementation specification.",
       "The vote later selects both a PRD approach and the assumptions behind it.",
-      "A model you stop shows as Stopped, does not count toward Min Council Quorum, and keeps nothing it wrote. A model stopped during Part 1 never starts its PRD draft. The stop lasts for this step only, so the model still votes in Voting on Specs.",
+      "A model you stop shows as Stopped, does not count toward Min Council Quorum, and keeps nothing it wrote. A model stopped during Part 1 never starts its PRD draft, and one stopped during Part 2 loses its Part 1 answers too, so nothing it wrote reaches the vote or the refinement. The stop lasts for this step only, so the model still votes in Voting on Specs.",
       "Retry is offered while at least one model is still working: on a model still drafting, on one that ended without a usable result (failed, invalid output, timed out, or stopped), and on one that finished fine. Retrying a finished model throws away its PRD draft for good, and its Full Answers too when you retry from Part 1. If the new run fails, the model counts as failed. The retried model gets a full AI response timeout of its own, so the step can run longer than usual.",
-      "If the model was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
+      "If the model was waiting on an AI question you had not answered, the question closes with it, and the skip trail records it as refused by you. Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the drafting step of the PRD phase. Interview and beads use the same multi-model pattern later, but PRD drafting is the only one with a separate Full Answers stage first.",
@@ -469,7 +469,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "The rubric is weighted, so some categories matter more than others in the final score.",
       "A voter you stop shows as Stopped and does not count toward Min Council Quorum. The stop lasts for this step only.",
       "Retry is offered while at least one voter is still working: on a voter still scoring, on one that ended without usable scores (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished vote is thrown away for good, and if the new run fails, the voter counts as failed. The retried voter gets a full AI response timeout of its own, so the step can run longer than usual.",
-      "If the voter was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
+      "Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the voting step of the PRD phase. Interview and beads use the same pattern with different rubrics.",
@@ -610,7 +610,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Different models often spot different natural task boundaries, which is why the workflow drafts several plans before voting.",
       "A model you stop shows as Stopped, does not count toward Min Council Quorum, and keeps nothing it wrote. The stop lasts for this step only, so the model still votes in Voting on Blueprint.",
       "Retry is offered while at least one model is still working: on a model still drafting, on one that ended without a usable blueprint (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished blueprint is thrown away for good, and if the new run fails, the model counts as failed. The retried model gets a full AI response timeout of its own, so the step can run longer than usual.",
-      "If the model was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
+      "If the model was waiting on an AI question you had not answered, the question closes with it, and the skip trail records it as refused by you. Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the drafting step of the beads phase. Interview and PRD use the same multi-model pattern, but they draft question sets or specs instead of task graphs.",
@@ -647,7 +647,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "The winning blueprint is not the final plan. It still goes through refinement, coverage, and expansion.",
       "A voter you stop shows as Stopped and does not count toward Min Council Quorum. The stop lasts for this step only.",
       "Retry is offered while at least one voter is still working: on a voter still scoring, on one that ended without usable scores (failed, invalid output, timed out, or stopped), and on one that finished fine. A finished vote is thrown away for good, and if the new run fails, the voter counts as failed. The retried voter gets a full AI response timeout of its own, so the step can run longer than usual.",
-      "If the voter was waiting on an AI question you had not answered, Stop and Retry refuse it first, and the skip trail records the refusal as yours. Every Stop and Retry is written to the phase log.",
+      "Every Stop and Retry is written to the phase log.",
     ],
     equivalents: [
       "This is the voting step of the beads phase. Interview and PRD use the same pattern with different rubrics.",

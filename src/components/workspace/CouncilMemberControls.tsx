@@ -110,7 +110,8 @@ export function CouncilMemberConfirmStrip({ confirmation, control }: {
  * confirmation under the header.
  *
  * Stays mounted after the round ends (`control` null, no buttons), so the
- * notice about a stop the model beat, or a refusal, is still there to read.
+ * notice about a stop the model beat, or a refusal, is still there to read
+ * for as long as the dialog is.
  */
 export function CouncilMemberDialogControls({ scope, control }: {
   scope: CouncilMemberControlScope

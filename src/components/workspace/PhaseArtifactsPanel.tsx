@@ -694,9 +694,11 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
   const memberControlScope = useContext(CouncilMemberControlContext)
   const liveMemberControlScope = memberControlScope?.phase === phase ? memberControlScope : null
   // Held while the same member dialog stays open. A stop or retry can end the
-  // step, and the ticket then moves on and takes the live scope with it, but
-  // what the person was told about that request must stay readable until they
-  // close the dialog. Buttons still come only from the live scope.
+  // step, and the ticket then moves on and takes the live scope with it. Where
+  // this panel stays on screen (the person picked this step in the timeline),
+  // what they were told about that request stays readable until they close the
+  // dialog. Otherwise the workspace follows the ticket, and the phase log keeps
+  // the outcome. Buttons still come only from the live scope.
   const [heldMemberControlScope, setHeldMemberControlScope] = useState<CouncilMemberControlScope | null>(null)
   if (liveMemberControlScope && selectedMemberChip && heldMemberControlScope !== liveMemberControlScope) {
     setHeldMemberControlScope(liveMemberControlScope)

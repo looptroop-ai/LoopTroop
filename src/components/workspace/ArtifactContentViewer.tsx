@@ -2293,7 +2293,8 @@ function VoterStatusBadges({ voters, renderControls }: {
 /**
  * The badges with Stop and Retry on each while the vote runs, and the
  * confirmation under them. Stays mounted once the vote ends (no buttons), so a
- * notice about a stop the voter beat, or a refusal, is still there to read.
+ * notice about a stop the voter beat, or a refusal, is still there to read
+ * for as long as this view is.
  */
 function LiveVoterStatusBadges({ scope, voters, minQuorum, roundOpen }: {
   scope: CouncilMemberControlScope
@@ -2373,8 +2374,10 @@ function VotingResultsView({ data, showHeader = true, phase }: { data: CouncilRe
     ? memberControlScope
     : null
   // Held once seen. A stop or retry can end the vote, and the ticket then moves
-  // on and takes the live scope with it, but what the person was told about that
-  // request stays readable. Buttons still need the live scope.
+  // on and takes the live scope with it. Where this view stays on screen (the
+  // person picked this step in the timeline), what they were told about that
+  // request stays readable; otherwise the workspace follows the ticket, and the
+  // phase log keeps the outcome. Buttons still need the live scope.
   const [heldControlScope, setHeldControlScope] = useState<CouncilMemberControlScope | null>(null)
   if (liveControlScope && heldControlScope !== liveControlScope) setHeldControlScope(liveControlScope)
   const badgeControlScope = liveControlScope ?? heldControlScope

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
+import { COUNCIL_MEMBER_CONTROL_PHASES, COUNCIL_MEMBER_RETRY_PARTS } from '@shared/councilMembers'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 import { EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES } from '@shared/executionSetupCategories'
 import { gitHookPolicySchema, ticketContentFields, ticketOverrideFields } from '../../lib/settingSchemas'
@@ -304,6 +305,20 @@ export const opencodeQuestionSkipSchema = z.object({
 
 /** Stopping the countdown carries nothing. It is a fact, not a request. */
 export const opencodeQuestionTimerStopSchema = z.object({}).strict()
+
+export const councilMemberStopSchema = z.object({
+  phase: z.enum(COUNCIL_MEMBER_CONTROL_PHASES),
+  memberId: z.string().min(1),
+}).strict()
+
+export const councilMemberRetrySchema = councilMemberStopSchema.extend({
+  part: z.enum(COUNCIL_MEMBER_RETRY_PARTS).optional(),
+}).strict().refine(
+  // Only PRD drafting has parts. Accepting one elsewhere would answer 200 for a
+  // request that asked for something no other step can do.
+  (body) => body.part === undefined || body.phase === 'DRAFTING_PRD',
+  { message: '`part` is only accepted for DRAFTING_PRD', path: ['part'] },
+)
 
 export const devEventSchema = z.object({
   type: z.enum([

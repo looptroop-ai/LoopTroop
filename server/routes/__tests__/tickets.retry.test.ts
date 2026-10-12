@@ -23,13 +23,13 @@ import {
   getPendingSessionContinuationForTicketPhase,
 } from '../../opencode/sessionContinuation'
 
-const { getSessionMock } = vi.hoisted(() => ({ getSessionMock: vi.fn() }))
+const { getSessionMock, abortSessionMock } = vi.hoisted(() => ({ getSessionMock: vi.fn(), abortSessionMock: vi.fn() }))
 
 vi.mock('../../opencode/factory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../opencode/factory')>()
   return {
     ...actual,
-    getOpenCodeAdapter: vi.fn(() => ({ getSession: getSessionMock, abortSession: vi.fn() })),
+    getOpenCodeAdapter: vi.fn(() => ({ getSession: getSessionMock, abortSession: abortSessionMock })),
   }
 })
 
@@ -117,6 +117,25 @@ function insertSetupSession(ticketRef: string, state: 'active' | 'abandoned', ph
     phaseAttempt,
     state,
   }).run()
+}
+
+function insertCouncilSession(ticketRef: string) {
+  const context = getTicketContext(ticketRef)
+  if (!context) throw new Error(`Missing ticket context for ${ticketRef}`)
+  context.projectDb.insert(opencodeSessions).values({
+    sessionId: 'ses-council-member',
+    ticketId: context.localTicketId,
+    phase: 'DRAFTING_BEADS',
+    phaseAttempt: 1,
+    memberId: 'test/model-b',
+    state: 'active',
+  }).run()
+}
+
+function councilSessionState(ticketRef: string) {
+  const context = getTicketContext(ticketRef)
+  return context?.projectDb.select().from(opencodeSessions).all()
+    .find((session) => session.sessionId === 'ses-council-member')?.state
 }
 
 describe('ticketRouter POST /tickets/:id/retry', () => {
@@ -558,5 +577,37 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     expect(response.status).toBe(409)
     expect(sendTicketEvent).not.toHaveBeenCalled()
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+  })
+
+  // A council member whose stop OpenCode never confirmed leaves its session row
+  // active. Retrying without stopping it first would reconnect the new round
+  // to that session instead of starting the model fresh.
+  it.each([
+    { confirmed: false, status: 409, state: 'active' },
+    { confirmed: true, status: 200, state: 'abandoned' },
+  ])('stops a council session left active before retrying the step (confirmed: $confirmed)', async ({ confirmed, status, state }) => {
+    const { app, ticket } = setupRetryTicketApp()
+    ensureActivePhaseAttempt(ticket.id, 'DRAFTING_BEADS')
+    insertCouncilSession(ticket.id)
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'DRAFTING_BEADS' } }),
+      errorMessage: 'Could not confirm abort of OpenCode session ses-council-member',
+    })
+    abortSessionMock.mockResolvedValue(confirmed)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(response.status).toBe(status)
+    expect(abortSessionMock).toHaveBeenCalledWith('ses-council-member')
+    expect(councilSessionState(ticket.id)).toBe(state)
+    if (confirmed) {
+      expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
+    } else {
+      expect(sendTicketEvent).not.toHaveBeenCalled()
+      expect(listPhaseAttempts(ticket.id, 'DRAFTING_BEADS')).toEqual([
+        expect.objectContaining({ attemptNumber: 1, state: 'active' }),
+      ])
+    }
   })
 })

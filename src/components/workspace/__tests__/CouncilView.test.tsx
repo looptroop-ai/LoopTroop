@@ -29,25 +29,32 @@ vi.mock('@/hooks/useTicketPhaseAttempts', () => ({
   useTicketPhaseAttempts: (...args: unknown[]) => mockUseTicketPhaseAttempts(...args),
 }))
 
-vi.mock('../PhaseArtifactsPanel', () => ({
-  PhaseArtifactsPanel: ({
-    phase,
-    ticketId,
-    councilMemberCount,
-    councilMemberNames,
-    artifactState,
-  }: {
-    phase: string
-    ticketId?: string
-    councilMemberCount?: number
-    councilMemberNames?: string[]
-    artifactState?: { artifacts?: Array<{ content?: string | null }> }
-  }) => (
-    <div data-testid="phase-artifacts-panel">
-      {phase}:{ticketId}:{councilMemberCount ?? 0}:{councilMemberNames?.join(',') ?? ''}:{artifactState?.artifacts?.[0]?.content ?? ''}
-    </div>
-  ),
-}))
+vi.mock('../PhaseArtifactsPanel', async () => {
+  const { useContext } = await import('react')
+  const { CouncilMemberControlContext } = await import('../councilMemberControl')
+  return {
+    PhaseArtifactsPanel: function MockPhaseArtifactsPanel({
+      phase,
+      ticketId,
+      councilMemberCount,
+      councilMemberNames,
+      artifactState,
+    }: {
+      phase: string
+      ticketId?: string
+      councilMemberCount?: number
+      councilMemberNames?: string[]
+      artifactState?: { artifacts?: Array<{ content?: string | null }> }
+    }) {
+      const memberControlScope = useContext(CouncilMemberControlContext)
+      return (
+        <div data-testid="phase-artifacts-panel" data-member-controls={memberControlScope ? JSON.stringify(memberControlScope) : 'none'}>
+          {phase}:{ticketId}:{councilMemberCount ?? 0}:{councilMemberNames?.join(',') ?? ''}:{artifactState?.artifacts?.[0]?.content ?? ''}
+        </div>
+      )
+    },
+  }
+})
 
 vi.mock('../CollapsiblePhaseLogSection', () => ({
   CollapsiblePhaseLogSection: ({
@@ -179,6 +186,83 @@ describe('CouncilView', () => {
 
     expect(screen.getByText(/1\/3 complete/)).toBeInTheDocument()
     expect(screen.getByText(/Winner: gpt-5\.2 · 16 pts/)).toBeInTheDocument()
+  })
+
+  it('does not count a stopped voter as complete', () => {
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: [makeArtifact(
+        'COUNCIL_VOTING_PRD',
+        'prd_votes',
+        JSON.stringify({
+          // The stopped voter's vote row is a leftover: its outcome decides, not the row.
+          votes: [
+            { voterId: 'openai/gpt-5.2', draftId: 'openai/gpt-5.2', totalScore: 16 },
+            { voterId: 'openai/gpt-5.4', draftId: 'openai/gpt-5.2', totalScore: 12 },
+          ],
+          voterOutcomes: { 'openai/gpt-5.2': 'completed', 'openai/gpt-5.4': 'stopped' },
+        }),
+      )],
+      isLoading: false,
+    })
+
+    render(<CouncilView phase="COUNCIL_VOTING_PRD" ticket={makeTicket({ status: 'COUNCIL_VOTING_PRD' })} />)
+
+    expect(screen.getByText(/1\/2 complete/)).toBeInTheDocument()
+  })
+
+  it.each([
+    'COUNCIL_DELIBERATING',
+    'DRAFTING_PRD',
+    'DRAFTING_BEADS',
+    'COUNCIL_VOTING_INTERVIEW',
+    'COUNCIL_VOTING_PRD',
+    'COUNCIL_VOTING_BEADS',
+  ])('offers member controls while the ticket is live in %s', (phase) => {
+    render(<CouncilView phase={phase} ticket={makeTicket({ status: phase })} />)
+
+    expect(screen.getByTestId('phase-artifacts-panel'))
+      .toHaveAttribute('data-member-controls', JSON.stringify({ ticketId: TEST.ticketId, phase }))
+  })
+
+  it.each([
+    ['the ticket has moved past the step', 'COUNCIL_DELIBERATING', 'COUNCIL_VOTING_INTERVIEW'],
+    ['the step has no per-model controls', 'REFINING_PRD', 'REFINING_PRD'],
+  ])('offers no member controls when %s', (_case, phase, status) => {
+    render(<CouncilView phase={phase} ticket={makeTicket({ status })} />)
+
+    expect(screen.getByTestId('phase-artifacts-panel')).toHaveAttribute('data-member-controls', 'none')
+  })
+
+  it('offers no member controls on an archived version of the live step', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({
+      data: [
+        {
+          ticketId: TEST.ticketId,
+          phase: 'DRAFTING_PRD',
+          attemptNumber: 2,
+          state: 'active',
+          archivedReason: null,
+          createdAt: '2026-04-29T12:00:00.000Z',
+          archivedAt: null,
+        },
+        {
+          ticketId: TEST.ticketId,
+          phase: 'DRAFTING_PRD',
+          attemptNumber: 1,
+          state: 'archived',
+          archivedReason: 'interview_edit_restart',
+          createdAt: '2026-04-29T11:00:00.000Z',
+          archivedAt: '2026-04-29T12:00:00.000Z',
+        },
+      ],
+    })
+
+    render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
+    expect(screen.getByTestId('phase-artifacts-panel')).not.toHaveAttribute('data-member-controls', 'none')
+
+    fireEvent.change(screen.getByRole('combobox', { name: /version/i }), { target: { value: '1' } })
+
+    expect(screen.getByTestId('phase-artifacts-panel')).toHaveAttribute('data-member-controls', 'none')
   })
 
   it('shows the highest valid score as leader while ignoring incomplete vote rows', () => {

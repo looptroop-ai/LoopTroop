@@ -786,6 +786,7 @@ describe('PhaseArtifactsPanel', () => {
           { memberId: 'model/invalid', outcome: 'invalid_output' },
           { memberId: 'model/timeout', outcome: 'timed_out' },
           { memberId: 'model/failed', outcome: 'failed' },
+          { memberId: 'model/stopped', outcome: 'stopped' },
         ],
       }),
     })
@@ -797,6 +798,7 @@ describe('PhaseArtifactsPanel', () => {
           { voterId: 'model/invalid', draftId: 'model/invalid', totalScore: 0 },
           { voterId: 'model/timeout', draftId: 'model/invalid', totalScore: 0 },
           { voterId: 'model/failed', draftId: 'model/invalid', totalScore: 0 },
+          { voterId: 'model/stopped', draftId: 'model/invalid', totalScore: 0 },
           { voterId: 'model/invalid', draftId: 'model/timeout', totalScore: 0 },
         ],
       }),
@@ -804,12 +806,47 @@ describe('PhaseArtifactsPanel', () => {
 
     const members = buildCouncilMemberArtifacts('COUNCIL_VOTING_PRD', [draftArtifact, voteArtifact], [], false)
 
-    expect(members.map(({ modelId }) => modelId)).toEqual(['model/invalid', 'model/timeout', 'model/failed'])
+    expect(members.map(({ modelId }) => modelId)).toEqual(['model/invalid', 'model/timeout', 'model/failed', 'model/stopped'])
     expect(members.map(({ outcome, detail }) => [outcome, detail])).toEqual([
       ['invalid_output', 'draft had invalid output'],
       ['timed_out', 'draft timed out'],
       ['failed', 'draft failed'],
+      ['stopped', 'draft stopped'],
     ])
+  })
+
+  it('details stopped voters and never shows a stopped draft as finished while refining', () => {
+    const draftArtifact = makeArtifact({
+      phase: 'DRAFTING_PRD',
+      artifactType: 'prd_drafts',
+      content: JSON.stringify({
+        drafts: [
+          { memberId: 'model/winner', outcome: 'completed', content: 'Winning draft' },
+          { memberId: 'model/stopped', outcome: 'stopped', content: 'Abandoned partial draft' },
+        ],
+      }),
+    })
+    const voteArtifact = makeArtifact({
+      phase: 'COUNCIL_VOTING_PRD',
+      artifactType: 'prd_votes',
+      content: JSON.stringify({
+        voterOutcomes: { 'model/winner': 'completed', 'model/stopped': 'stopped' },
+        votes: [{ voterId: 'model/winner', draftId: 'model/winner', totalScore: 90 }],
+        winnerId: 'model/winner',
+      }),
+    })
+
+    const voters = buildCouncilMemberArtifacts('COUNCIL_VOTING_PRD', [voteArtifact], ['model/winner', 'model/stopped'], false)
+    expect(voters.map(({ outcome, detail }) => [outcome, detail])).toEqual([
+      ['completed', 'scored 1 drafts'],
+      ['stopped', 'vote stopped'],
+    ])
+
+    const refining = buildCouncilMemberArtifacts('REFINING_PRD', [draftArtifact, voteArtifact], ['model/winner', 'model/stopped'], false)
+    const stopped = refining.find(({ modelId }) => modelId === 'model/stopped')
+    expect(stopped?.outcome).toBe('stopped')
+    expect(stopped?.detail).toBe('draft stopped')
+    expect(getCouncilStatusLabel(stopped?.outcome, stopped?.action)).toBe('Stopped')
   })
 
   it.each([
@@ -837,6 +874,7 @@ describe('PhaseArtifactsPanel', () => {
           { memberId: 'model/failed', outcome: 'failed', error: 'Provider rejected the request' },
           { memberId: 'model/timeout', outcome: 'timed_out' },
           { memberId: 'model/plain', outcome: 'completed', content: 'First generated line\nSecond generated line' },
+          { memberId: 'model/stopped', outcome: 'stopped', error: 'Stopped by you' },
         ],
       }),
     })
@@ -845,8 +883,8 @@ describe('PhaseArtifactsPanel', () => {
       <TestPhaseArtifactsPanel
         phase="DRAFTING_PRD"
         isCompleted={false}
-        councilMemberCount={4}
-        councilMemberNames={['model/invalid', 'model/failed', 'model/timeout', 'model/plain']}
+        councilMemberCount={5}
+        councilMemberNames={['model/invalid', 'model/failed', 'model/timeout', 'model/plain', 'model/stopped']}
         preloadedArtifacts={[draftArtifact]}
       />,
     )
@@ -858,6 +896,8 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByText('Invalid Output')).toBeInTheDocument()
     expect(screen.getByText('Failed')).toBeInTheDocument()
     expect(screen.getByText('Timed Out')).toBeInTheDocument()
+    expect(screen.getByText('Stopped')).toBeInTheDocument()
+    expect(screen.getByText('stopped by you')).toHaveClass('text-slate-400')
   })
 
   it('uses a stored interview winner when revisiting drafts without vote artifacts', () => {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useContext, useMemo, useState } from 'react'
 import { encode } from 'gpt-tokenizer'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -14,7 +14,10 @@ import {
   buildCouncilMemberArtifacts,
   buildFullAnswerMemberArtifacts,
   getCouncilAction,
+  getDraftingRoundMeta,
 } from './councilArtifacts'
+import { CouncilMemberControlContext, getDraftMemberControl, type CouncilMemberControlScope } from './councilMemberControl'
+import { CouncilMemberDialogControls } from './CouncilMemberControls'
 import type { ArtifactDef, CouncilOutcome, ViewingArtifact, ViewingArtifactSelection } from './phaseArtifactTypes'
 import {
   tryParseCouncilResult,
@@ -97,6 +100,16 @@ interface BeadCommitMetadata {
   id: string
   title: string
   priority: number
+}
+
+/**
+ * Puts focus on the dialog itself rather than its first button. With member
+ * controls showing, that button is often Stop, and a focused trigger opens its
+ * tooltip: a working model's dialog would open with Stop highlighted.
+ */
+function focusDialogItself(event: Event) {
+  event.preventDefault()
+  if (event.target instanceof HTMLElement) event.target.focus()
 }
 
 function normalizeBeadCommitMetadata(value: unknown): BeadCommitMetadata | null {
@@ -672,13 +685,37 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
     return detail ? { detail } : {}
   }
 
+  const selectedMemberChip = viewingSelection?.kind === 'member'
+    ? memberArtifacts.find((artifact) => artifact.key === viewingSelection.key)
+      ?? fullAnswerArtifacts.find((artifact) => artifact.key === viewingSelection.key)
+    : undefined
+
+  // Stop and Retry exist only under the live council view, for the step it shows.
+  const memberControlScope = useContext(CouncilMemberControlContext)
+  const liveMemberControlScope = memberControlScope?.phase === phase ? memberControlScope : null
+  // Held while the same member dialog stays open. A stop or retry can end the
+  // step, and the ticket then moves on and takes the live scope with it. Where
+  // this panel stays on screen (the person picked this step in the timeline),
+  // what they were told about that request stays readable until they close the
+  // dialog. Otherwise the workspace follows the ticket, and the phase log keeps
+  // the outcome. Buttons still come only from the live scope.
+  const [heldMemberControlScope, setHeldMemberControlScope] = useState<CouncilMemberControlScope | null>(null)
+  if (liveMemberControlScope && selectedMemberChip && heldMemberControlScope !== liveMemberControlScope) {
+    setHeldMemberControlScope(liveMemberControlScope)
+  }
+  const dialogMemberControlScope = selectedMemberChip ? liveMemberControlScope ?? heldMemberControlScope : null
+  const memberControl = useMemo(
+    () => (liveMemberControlScope && selectedMemberChip
+      ? getDraftMemberControl(phase, selectedMemberChip, memberArtifacts, fullAnswerArtifacts, getDraftingRoundMeta(phase, dbArtifacts))
+      : null),
+    [dbArtifacts, fullAnswerArtifacts, liveMemberControlScope, memberArtifacts, phase, selectedMemberChip],
+  )
+
   const viewingArtifact = useMemo<ViewingArtifact | null>(() => {
     if (!viewingSelection) return null
 
     if (viewingSelection.kind === 'member') {
-      return memberArtifacts.find((artifact) => artifact.key === viewingSelection.key)?.viewer
-        ?? fullAnswerArtifacts.find((artifact) => artifact.key === viewingSelection.key)?.viewer
-        ?? null
+      return selectedMemberChip?.viewer ?? null
     }
 
     const artifact = displayedSupplementalArtifacts.find((item) => item.id === viewingSelection.id)
@@ -692,7 +729,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       reportContent: findReportContent(artifact),
       icon: artifact.icon,
     }
-  }, [displayedSupplementalArtifacts, findDbContent, findReportContent, fullAnswerArtifacts, memberArtifacts, viewingSelection])
+  }, [displayedSupplementalArtifacts, findDbContent, findReportContent, selectedMemberChip, viewingSelection])
 
   const visibleMemberArtifacts = collapseVotingMemberArtifacts
     || phase === 'VERIFYING_PRD_COVERAGE'
@@ -816,9 +853,22 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       ) : null}
       {artifactsBody}
 
-      <Dialog open={!!viewingArtifact} onOpenChange={(open) => !open && setViewingSelection(null)}>
-        <DialogContent className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg">
-          <DialogHeader>
+      <Dialog
+        open={!!viewingArtifact}
+        onOpenChange={(open) => {
+          if (open) return
+          setViewingSelection(null)
+          setHeldMemberControlScope(null)
+        }}
+      >
+        <DialogContent
+          // The dialog can hold focus itself (see focusDialogItself): a ring only
+          // for keyboard focus, never the browser outline after a click.
+          className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onOpenAutoFocus={memberControl ? focusDialogItself : undefined}
+        >
+          {/* Padded clear of the member controls, which sit over its top right. */}
+          <DialogHeader className={memberControl ? 'pr-20 sm:pr-36' : undefined}>
             <DialogTitle className="text-sm font-mono font-semibold flex items-center gap-2">
               {viewingArtifact?.icon ?? null}
               {viewingArtifact?.label}
@@ -827,6 +877,13 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
               {viewingArtifact?.description ?? 'Artifact details for the current council phase.'}
             </DialogDescription>
           </DialogHeader>
+          {dialogMemberControlScope && selectedMemberChip ? (
+            <CouncilMemberDialogControls
+              key={selectedMemberChip.key}
+              scope={dialogMemberControlScope}
+              control={memberControl}
+            />
+          ) : null}
           <div className="max-h-[60vh] min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
             <div className="min-w-0 max-w-full overflow-x-hidden bg-muted/60 rounded-lg border border-border/30 p-4">
               {resolvedArtifactState.isLoading && resolvedArtifactState.artifacts === undefined ? (

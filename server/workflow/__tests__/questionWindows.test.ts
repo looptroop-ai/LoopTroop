@@ -12,6 +12,7 @@ import {
   attachRequest,
   claimRequestForReply,
   clearTicketWindows,
+  closeMemberQuestions,
   getPendingQuestionSummary,
   getTicketQuestionState,
   markRequestReplied,
@@ -24,10 +25,12 @@ import {
   stopTicketTimers,
 } from '../questionWindows'
 import { getTicketContext } from '../../storage/ticketQueries'
+import { archiveActivePhaseAttempts, createFreshPhaseAttempts, ensureActivePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import { closeQuestionWait } from '../../storage/questionWaits'
 import { questionWaits } from '../../db/schema'
 import type { OpenCodeQuestionInfo } from '../../opencode/types'
 import { MockOpenCodeAdapter, type OpenCodeAdapter } from '../../opencode/adapter'
+import { emitOpenCodeSessionEnded } from '../../opencode/sessionEvents'
 
 const adapter = new MockOpenCodeAdapter()
 // The window machinery reaches for the process-wide adapter, so the mock is
@@ -261,6 +264,147 @@ describe('question windows', () => {
     expect(events.every((event) => event.skippedBy === 'system')).toBe(true)
     const summary = events.find((event) => event.isActionSummary)
     expect(summary?.questionContext?.expiry_reason).toBe('ticket_canceled')
+  })
+
+  it('closes a stopped member\'s questions at once, under the person', () => {
+    const ticket = makeTicket()
+    ask(ticket.id, { phase: 'DRAFTING_PRD' })
+    ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b', memberId: 'openai/gpt', phase: 'DRAFTING_PRD' })
+    const replyClaim = claimRequestForReply(ticket.id, 'ses_a', 'req_a')
+
+    expect(closeMemberQuestions(ticket.id, 'DRAFTING_PRD', 'anthropic/claude', {
+      actor: 'user',
+      resolution: 'member_stopped',
+      reason: 'You stopped this model while its question was open.',
+    })).toBe(1)
+
+    // Closed before the stop lands, and not refused: the model is not woken.
+    expect(adapter.questionRejections).toEqual([])
+    expect(getTicketQuestionState(ticket.id).requests.map((request) => request.requestId)).toEqual(['req_b'])
+    const summary = listSkipEvents(ticket.id)
+      .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
+    expect(summary?.skippedBy).toBe('user')
+    expect(summary?.questionContext?.expiry_reason).toBe('member_stopped')
+    // A reply already on its way can no longer complete it.
+    expect(markRequestReplied(ticket.id, 'ses_a', 'req_a', replyClaim ?? undefined)).toBe(false)
+    // The other member is still waiting on a person, so the clocks stay held.
+    expect(isTicketWorkSuspended(ticket.id)).toBe(true)
+
+    // The session stop that follows finds nothing left to close.
+    emitOpenCodeSessionEnded({ sessionId: 'ses_a', ticketId: ticket.id, reason: 'aborted' })
+    expect(listSkipEvents(ticket.id).filter((event) => event.isActionSummary)).toHaveLength(1)
+  })
+
+  it('lets the clocks run once a stopped member\'s question was the last one waiting', () => {
+    const ticket = makeTicket()
+    ask(ticket.id, { phase: 'DRAFTING_BEADS' })
+
+    closeMemberQuestions(ticket.id, 'DRAFTING_BEADS', 'anthropic/claude', {
+      actor: 'user',
+      resolution: 'member_restarted',
+      reason: 'You restarted this model while its question was open.',
+    })
+
+    // Even when OpenCode never confirms the stop, nothing still holds every
+    // model's clock or waits for an answer.
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+  })
+
+  it('never brings back a question a stop closed, after this process forgot it', async () => {
+    const ticket = makeTicket()
+    // A retried step: the question comes in under attempt 2, while the council
+    // session's row, which the poll and the restart read, still says 1.
+    ensureActivePhaseAttempt(ticket.id, 'DRAFTING_BEADS')
+    archiveActivePhaseAttempts(ticket.id, ['DRAFTING_BEADS'], 'test_retry')
+    createFreshPhaseAttempts(ticket.id, ['DRAFTING_BEADS'])
+    ask(ticket.id, { phase: 'DRAFTING_BEADS', phaseAttempt: 2 })
+    closeMemberQuestions(ticket.id, 'DRAFTING_BEADS', 'anthropic/claude', {
+      actor: 'user',
+      resolution: 'member_stopped',
+      reason: 'You stopped this model while its question was open.',
+    })
+    // OpenCode never confirmed the stop, so it still holds the question. The
+    // in-memory record is gone, as after a restart or once its tombstone lapses.
+    resetAllQuestionWindows()
+
+    // The poll re-attaches whatever OpenCode lists.
+    expect(ask(ticket.id, { phase: 'DRAFTING_BEADS' })).toBe(false)
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+
+    // A restart that finds its session gone refuses it, without a second record.
+    adapter.mockQuestions = [{ id: 'req_a', sessionID: 'ses_a', questions: QUESTIONS }]
+    const result = await reconcilePendingQuestionsAfterRestart({
+      projectRoot: getTicketContext(ticket.id)?.projectRoot ?? '',
+      owners: [{ sessionId: 'ses_a', ticketId: ticket.id, memberId: 'anthropic/claude', phase: 'DRAFTING_BEADS', phaseAttempt: 1, active: false }],
+      windowMsFor: () => 60_000,
+    })
+    expect(result).toEqual({ reattached: 0, rejected: 1, unverified: 0 })
+    expect(listSkipEvents(ticket.id).filter((event) => event.isActionSummary)
+      .map((event) => event.questionContext?.expiry_reason)).toEqual(['member_stopped'])
+  })
+
+  it('does not close a question twice when its session ends while expiry is telling OpenCode', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b', memberId: 'openai/gpt' })
+    const refusals: Array<() => void> = []
+    vi.spyOn(adapter, 'rejectQuestion').mockImplementation(() => new Promise<void>((resolve) => {
+      refusals.push(resolve)
+    }))
+
+    // The wait runs out: expiry takes both and is telling OpenCode about req_a.
+    await vi.advanceTimersByTimeAsync(300_000)
+    await settle()
+    expect(refusals).toHaveLength(1)
+    // req_a's session ends meanwhile, and that teardown closes it.
+    emitOpenCodeSessionEnded({ sessionId: 'ses_a', ticketId: ticket.id, reason: 'aborted' })
+    refusals[0]?.()
+    await settle()
+
+    // req_b is still being refused, so a person is still being waited on.
+    expect(refusals).toHaveLength(2)
+    expect(isTicketWorkSuspended(ticket.id)).toBe(true)
+    const summaries = () => listSkipEvents(ticket.id).filter((event) => event.isActionSummary)
+    expect(summaries().map((event) => event.questionContext?.expiry_reason)).toEqual(['session_lost'])
+
+    refusals[1]?.()
+    await settle()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+    expect(summaries().map((event) => event.questionContext?.expiry_reason).sort()).toEqual(['session_lost', 'window_elapsed'])
+  })
+
+  it('names the same siblings on every receipt when a session with several questions ends', () => {
+    const ticket = makeTicket()
+    ask(ticket.id, { phase: 'DRAFTING_PRD' })
+    ask(ticket.id, { requestId: 'req_b', phase: 'DRAFTING_PRD' })
+
+    emitOpenCodeSessionEnded({ sessionId: 'ses_a', ticketId: ticket.id, reason: 'aborted' })
+
+    const siblings = listSkipEvents(ticket.id)
+      .filter((event) => event.isActionSummary)
+      .map((event) => event.questionContext?.sibling_request_ids)
+    expect(siblings.sort()).toEqual([['req_a'], ['req_b']])
+  })
+
+  it('closes a question whose reply is in flight when its session ends', () => {
+    const ticket = makeTicket()
+    ask(ticket.id, { phase: 'DRAFTING_BEADS' })
+    expect(claimRequestForReply(ticket.id, 'ses_a', 'req_a')).toBeTruthy()
+
+    emitOpenCodeSessionEnded({ sessionId: 'ses_a', ticketId: ticket.id, reason: 'aborted' })
+
+    // Claimed for a reply that can no longer land, the request would otherwise
+    // be stranded with the ticket's clocks held still.
+    expect(getTicketQuestionState(ticket.id).requests).toEqual([])
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+    const summary = listSkipEvents(ticket.id)
+      .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
+    expect(summary?.skippedBy).toBe('system')
+    expect(summary?.questionContext?.expiry_reason).toBe('session_lost')
   })
 
   it('refuses every request on the clock when the wait runs out', async () => {

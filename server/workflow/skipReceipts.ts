@@ -29,6 +29,7 @@ import {
   SKIP_REASON_MAX_LENGTH,
   SKIP_REASON_PROMPT_MAX_LENGTH,
   SKIP_ACTORS,
+  SKIP_EXPIRY_REASONS,
   SKIP_RECEIPT_SCHEMA_VERSION,
   SKIP_SURFACES,
   truncateSkipReason,
@@ -91,7 +92,7 @@ const skipQuestionContextSchema = z.object({
   elapsed_wall_ms: z.number().int().nonnegative(),
   elapsed_active_ms: z.number().int().nonnegative(),
   sibling_request_ids: z.array(z.string().min(1)),
-  expiry_reason: z.enum(['window_elapsed', 'user_skipped', 'ticket_canceled', 'session_lost', 'daemon_restart']),
+  expiry_reason: z.enum(SKIP_EXPIRY_REASONS),
   quorum_impact: z.string().min(1).nullable(),
 })
 

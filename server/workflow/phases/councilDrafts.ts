@@ -10,6 +10,7 @@ import type {
   RawAttempt,
   Vote,
   VotePresentationOrder,
+  VoterDetail,
 } from '../../council/types'
 import { parseCouncilMembers } from '../../council/members'
 import { db as appDb } from '../../db/index'
@@ -37,13 +38,16 @@ export function formatDraftRoundSummary(
     timedOut: number
     failed: number
     invalidOutput: number
+    stopped?: number
   },
 ) {
   const timing = deadlineReached
     ? `reached configured deadline (${timeoutMs}ms)`
     : `completed in ${formatDurationMs(elapsedMs)}`
 
-  return `${label} ${timing}: completed=${summary.completed}, timed_out=${summary.timedOut}, failed=${summary.failed}, invalid_output=${summary.invalidOutput}.`
+  // Only named when it happened, so a round nobody touched logs as it always did.
+  const stopped = summary.stopped ? `, stopped=${summary.stopped}` : ''
+  return `${label} ${timing}: completed=${summary.completed}, timed_out=${summary.timedOut}, failed=${summary.failed}, invalid_output=${summary.invalidOutput}${stopped}.`
 }
 
 export function summarizeDraftOutcomes(drafts: DraftResult[]) {
@@ -52,10 +56,11 @@ export function summarizeDraftOutcomes(drafts: DraftResult[]) {
       if (draft.outcome === 'completed') summary.completed++
       else if (draft.outcome === 'timed_out') summary.timedOut++
       else if (draft.outcome === 'failed') summary.failed++
+      else if (draft.outcome === 'stopped') summary.stopped++
       else summary.invalidOutput++
       return summary
     },
-    { completed: 0, timedOut: 0, invalidOutput: 0, failed: 0 },
+    { completed: 0, timedOut: 0, invalidOutput: 0, failed: 0, stopped: 0 },
   )
 }
 
@@ -95,6 +100,7 @@ export function formatDraftFailureDetail(
   failureClass?: StructuredFailureClass,
 ) {
   if (outcome === 'timed_out') return 'timed out'
+  if (outcome === 'stopped') return 'stopped by the user'
   if (outcome === 'invalid_output') {
     if (failureClass && error) return `invalid output (${failureClass}: ${error})`
     if (failureClass) return `invalid output (${failureClass})`
@@ -142,16 +148,18 @@ export function emitDraftProgressInfoLog(
     )
     const durationText = typeof entry.duration === 'number' ? ` after ${formatDurationMs(entry.duration)}` : ''
     const sessionText = entry.sessionId ? ` session=${entry.sessionId}` : ''
+    // A stop is a person's decision, not a fault.
+    const stopped = entry.outcome === 'stopped'
     emitAiDetail(
       ticketId,
       ticketExternalId,
       phase,
-      'error',
+      stopped ? 'info' : 'error',
       `${label} draft ${detail} for ${entry.memberId}${sessionText}${durationText}.`,
       {
         entryId: `${entry.sessionId ?? `${phase}:${entry.memberId}`}:draft-finished`,
         audience: 'ai',
-        kind: 'error',
+        kind: stopped ? 'session' : 'error',
         op: 'append',
         source: `model:${entry.memberId}`,
         modelId: entry.memberId,
@@ -160,6 +168,88 @@ export function emitDraftProgressInfoLog(
       },
     )
   }
+}
+
+/**
+ * Folds one member's progress into a round's live drafts. Returns whether the
+ * live artifact changed.
+ *
+ * A `restarted` member goes back to a bare pending entry: whatever its earlier
+ * attempt reported, content and diagnostics alike, belongs to a run that no
+ * longer counts. A `finished` entry is likewise the member's whole result, so
+ * diagnostics it does not carry are dropped rather than kept from an earlier
+ * one: a model stopped during PRD Part 2 must not leave its Part 1 output
+ * readable under Raw.
+ */
+export function applyDraftProgress(liveDrafts: DraftResult[], entry: DraftProgressEvent): boolean {
+  const draftIndex = liveDrafts.findIndex((draft) => draft.memberId === entry.memberId)
+  if (draftIndex < 0) return false
+  if (entry.status === 'restarted') {
+    liveDrafts[draftIndex] = { memberId: entry.memberId, content: '', outcome: 'pending', duration: 0 }
+    return true
+  }
+  if (entry.status !== 'finished' || !entry.outcome) return false
+  const previous = liveDrafts[draftIndex]!
+  liveDrafts[draftIndex] = {
+    memberId: previous.memberId,
+    content: entry.content ?? previous.content,
+    outcome: entry.outcome,
+    duration: entry.duration ?? previous.duration,
+    error: entry.error,
+    questionCount: entry.questionCount,
+    ...(entry.draftMetrics ? { draftMetrics: entry.draftMetrics } : {}),
+    structuredOutput: entry.structuredOutput,
+    ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
+    ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
+    ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
+    ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
+  }
+  return true
+}
+
+/** A voting round's live state, as its artifact shows it while voters finish. */
+export interface LiveVoteState {
+  votes: Vote[]
+  voterOutcomes: Record<string, MemberOutcome>
+  voterDetails: Map<string, VoterDetail>
+}
+
+/**
+ * Folds one voter's progress into a round's live vote state.
+ *
+ * A voter's scorecard replaces whatever it had before, so a restarted voter,
+ * reported back as `pending` with no votes, stops counting toward the leader.
+ */
+export function applyVoteProgress(
+  live: LiveVoteState,
+  entry: {
+    memberId: string
+    outcome: MemberOutcome
+    votes: Vote[]
+    error?: string
+    rawResponse?: string
+    normalizedResponse?: string
+    structuredOutput?: DraftStructuredOutputMeta
+    rawAttempts?: RawAttempt[]
+  },
+): void {
+  live.voterOutcomes[entry.memberId] = entry.outcome
+  for (let index = live.votes.length - 1; index >= 0; index -= 1) {
+    if (live.votes[index]!.voterId === entry.memberId) live.votes.splice(index, 1)
+  }
+  live.votes.push(...entry.votes)
+  if (entry.outcome === 'pending') {
+    live.voterDetails.delete(entry.memberId)
+    return
+  }
+  live.voterDetails.set(entry.memberId, {
+    voterId: entry.memberId,
+    ...(entry.error ? { error: entry.error } : {}),
+    ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
+    ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
+    ...(entry.structuredOutput ? { structuredOutput: entry.structuredOutput } : {}),
+    ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
+  })
 }
 
 export function createPendingDrafts(members: Array<{ modelId: string }>): DraftResult[] {
@@ -178,6 +268,8 @@ export function upsertCouncilDraftArtifact(
   drafts: DraftResult[],
   memberOutcomes?: Record<string, MemberOutcome>,
   isFinal: boolean = false,
+  /** The quorum this round is judged by; the screen warns before a stop breaks it. */
+  minQuorum?: number,
 ) {
   const resolvedOutcomes = memberOutcomes ?? drafts.reduce<Record<string, MemberOutcome>>(
     (acc, draft) => {
@@ -199,6 +291,7 @@ export function upsertCouncilDraftArtifact(
     drafts: persistedDrafts,
     memberOutcomes: resolvedOutcomes,
     isFinal,
+    ...(typeof minQuorum === 'number' ? { minQuorum } : {}),
   }))
 
   persistUiArtifactCompanionArtifact(ticketId, phase, artifactType, {
@@ -236,10 +329,13 @@ export function upsertCouncilVoteArtifact(
   winnerId?: string,
   totalScore?: number,
   isFinal: boolean = false,
+  /** The quorum this round is judged by; the screen warns before a stop breaks it. */
+  minQuorum?: number,
 ) {
   upsertLatestPhaseArtifact(ticketId, artifactType, phase, JSON.stringify({
     ...(winnerId ? { winnerId } : {}),
     ...(isFinal ? { isFinal } : { isFinal: false }),
+    ...(typeof minQuorum === 'number' ? { minQuorum } : {}),
   }))
 
   persistUiArtifactCompanionArtifact(ticketId, phase, artifactType, {
@@ -289,6 +385,8 @@ export function emitCouncilDecisionLogs(
 ) {
   const completedMembers = collectMembersByOutcome(memberOutcomes, 'completed')
   const timedOutMembers = collectMembersByOutcome(memberOutcomes, 'timed_out')
+  const stoppedMembers = collectMembersByOutcome(memberOutcomes, 'stopped')
+  const stoppedText = stoppedMembers.length > 0 ? ` stopped_members=${stoppedMembers.join(', ')}.` : ''
 
   emitPhaseLog(
     ticketId,
@@ -296,8 +394,8 @@ export function emitCouncilDecisionLogs(
     phase,
     'info',
     deadlineReached
-      ? `Council response deadline reached after ${timeoutMs}ms. completed_members=${completedMembers.length > 0 ? completedMembers.join(', ') : 'none'}. timed_out_members=${timedOutMembers.length > 0 ? timedOutMembers.join(', ') : 'none'}.`
-      : `Council responses settled before the ${timeoutMs}ms deadline. completed_members=${completedMembers.length > 0 ? completedMembers.join(', ') : 'none'}. timed_out_members=${timedOutMembers.length > 0 ? timedOutMembers.join(', ') : 'none'}.`,
+      ? `Council response deadline reached after ${timeoutMs}ms. completed_members=${completedMembers.length > 0 ? completedMembers.join(', ') : 'none'}. timed_out_members=${timedOutMembers.length > 0 ? timedOutMembers.join(', ') : 'none'}.${stoppedText}`
+      : `Council responses settled before the ${timeoutMs}ms deadline. completed_members=${completedMembers.length > 0 ? completedMembers.join(', ') : 'none'}. timed_out_members=${timedOutMembers.length > 0 ? timedOutMembers.join(', ') : 'none'}.${stoppedText}`,
   )
   emitPhaseLog(
     ticketId,

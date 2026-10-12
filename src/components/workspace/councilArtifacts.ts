@@ -3,17 +3,20 @@ import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { extractInterviewQuestionPreviews } from '@shared/interviewQuestions'
+import { isCouncilMemberOutcome, type CouncilMemberOutcome } from '@shared/councilMembers'
+import { isRecord } from '@shared/typeGuards'
 import { countBeadsInContent } from '@/lib/beadsDocument'
 import {
   findLatestArtifact,
   findLatestCompanionArtifact,
+  isFailedCouncilOutcome,
   mergeCoverageArtifactContent,
   mergeDraftArtifactContent,
   mergeVoteArtifactContent,
 } from './artifactCompanionUtils'
 
 export type CouncilAction = 'drafting' | 'scoring' | 'refining' | 'verifying' | 'working'
-export type CouncilOutcome = 'pending' | 'completed' | 'timed_out' | 'invalid_output' | 'failed'
+export type CouncilOutcome = CouncilMemberOutcome
 
 export interface CouncilViewerArtifact {
   id: string
@@ -94,7 +97,37 @@ interface CoverageResultLike {
 
 type Domain = 'interview' | 'prd' | 'beads'
 type ArtifactSource = Pick<TicketArtifact, 'phase' | 'artifactType' | 'content'>
-type NonSuccessOutcome = Extract<CouncilOutcome, 'invalid_output' | 'failed' | 'timed_out'>
+type NonSuccessOutcome = Exclude<CouncilOutcome, 'pending' | 'completed'>
+
+/** What a live council round's artifact says about the round as a whole. */
+export interface CouncilRoundMeta {
+  /** The round is over and nothing in it can change. */
+  isFinal: boolean
+  /** How many results the step needs to go on, or null when the artifact does not say. */
+  minQuorum: number | null
+}
+
+/** Reads the round fields a drafts or votes artifact keeps beside its members. */
+export function readCouncilRoundMeta(round: unknown): CouncilRoundMeta | null {
+  if (!isRecord(round)) return null
+  const { isFinal, minQuorum } = round
+  return {
+    isFinal: isFinal === true,
+    minQuorum: typeof minQuorum === 'number' && Number.isFinite(minQuorum) && minQuorum > 0 ? minQuorum : null,
+  }
+}
+
+/**
+ * The round a drafting status runs, read from that status's own drafts
+ * artifact. In `DRAFTING_PRD` that is the PRD drafts (Part 2): the step's
+ * quorum counts drafts, and a model still on Part 1 is still pending there.
+ */
+export function getDraftingRoundMeta(phase: string, artifacts: ArtifactSource[]): CouncilRoundMeta | null {
+  const domain = getPhaseDomain(phase)
+  if (!domain) return null
+  const artifact = findLatestArtifact(artifacts, (candidate) => candidate.phase === phase && candidate.artifactType === `${domain}_drafts`)
+  return readCouncilRoundMeta(parseCouncilResult(artifact?.content))
+}
 
 export function getCouncilAction(phase: string): CouncilAction {
   if (phase.includes('DELIBERATING') || phase.includes('DRAFTING')) return 'drafting'
@@ -104,17 +137,16 @@ export function getCouncilAction(phase: string): CouncilAction {
   return 'working'
 }
 
+const SETTLED_OUTCOME_LABELS: Record<Exclude<CouncilOutcome, 'pending'>, string> = {
+  completed: 'Finished',
+  failed: 'Failed',
+  timed_out: 'Timed Out',
+  invalid_output: 'Invalid Output',
+  stopped: 'Stopped',
+}
+
 export function getCouncilStatusLabel(outcome?: CouncilOutcome, action?: CouncilAction): string {
-  if (outcome === 'failed') return 'Failed'
-  if (outcome === 'timed_out') return 'Timed Out'
-  if (outcome === 'invalid_output') return 'Invalid Output'
-  if (outcome === 'completed') return 'Finished'
-  if (outcome === 'pending') {
-    if (action === 'drafting') return 'Drafting'
-    if (action === 'scoring') return 'Scoring'
-    if (action === 'refining') return 'Refining'
-    if (action === 'verifying') return 'Verifying'
-  }
+  if (isCouncilMemberOutcome(outcome) && outcome !== 'pending') return SETTLED_OUTCOME_LABELS[outcome]
   if (action === 'drafting') return 'Drafting'
   if (action === 'scoring') return 'Scoring'
   if (action === 'refining') return 'Refining'
@@ -160,12 +192,8 @@ function mergeCouncilDraftLists(primaryDrafts: DraftLike[], fallbackDrafts: Draf
       questionCount: primary.questionCount ?? fallback.questionCount,
       draftMetrics: primary.draftMetrics ?? fallback.draftMetrics,
     }
-    return isFailedDraftOutcome(merged.outcome) ? { ...merged, content: undefined } : merged
+    return isFailedCouncilOutcome(merged.outcome) ? { ...merged, content: undefined } : merged
   })
-}
-
-function isFailedDraftOutcome(outcome: CouncilOutcome | undefined): outcome is NonSuccessOutcome {
-  return outcome === 'invalid_output' || outcome === 'failed' || outcome === 'timed_out'
 }
 
 function buildDraftMemberArtifacts(
@@ -291,9 +319,8 @@ function buildRefiningMemberArtifacts(
       : isWinner
         ? makeWinnerViewer(domain, phase, memberId, refinedArtifact?.content ?? voteArtifact?.content ?? '', refinedArtifact?.content ? true : false)
         : makeDraftViewer(domain, memberId, mergedVoteContent ?? voteArtifact?.content ?? '')
-    const draftFailureOutcome = draft?.outcome === 'invalid_output' || draft?.outcome === 'failed' || draft?.outcome === 'timed_out'
-      ? draft.outcome as NonSuccessOutcome
-      : undefined
+    const draftOutcome = draft?.outcome
+    const draftFailureOutcome = isFailedCouncilOutcome(draftOutcome) ? draftOutcome : undefined
     const detail = draftFailureOutcome && !isWinner
       ? getDraftFailureVotingDetail(draftFailureOutcome)
       : shouldShowProposedDraft
@@ -387,12 +414,21 @@ function makeFullAnswersViewer(modelId: string, content: string): CouncilViewerA
   }
 }
 
+/** Why a member's draft (or Full Answers) has no usable content, as its chip says it. */
+function getFailedDraftDetail(outcome: NonSuccessOutcome, draft: DraftLike): string {
+  switch (outcome) {
+    case 'timed_out': return 'no response received'
+    case 'failed': return draft.error || 'runtime failure'
+    case 'invalid_output': return draft.error || 'malformed response'
+    case 'stopped': return 'stopped by you'
+    default: return outcome satisfies never
+  }
+}
+
 function getFullAnswersDetail(draft: DraftLike | undefined): string {
   if (!draft) return 'waiting for response'
   if (draft.outcome === 'pending') return 'filling in answers'
-  if (draft.outcome === 'timed_out') return 'no response received'
-  if (draft.outcome === 'failed') return draft.error || 'runtime failure'
-  if (draft.outcome === 'invalid_output') return draft.error || 'malformed response'
+  if (isFailedCouncilOutcome(draft.outcome)) return getFailedDraftDetail(draft.outcome, draft)
   if (!draft.content) return ''
   const count = typeof draft.questionCount === 'number'
     ? draft.questionCount
@@ -433,18 +469,13 @@ function formatBeadsDraftMetrics(draft: DraftLike): string | null {
 }
 
 function getDraftDetail(domain: Domain, draft: DraftLike | undefined): string {
-  if (!draft) return 'waiting for response'
-  if (draft.outcome === 'pending') return 'waiting for response'
-  if (draft.outcome === 'timed_out') return 'no response received'
-  if (draft.outcome === 'failed') return draft.error || 'runtime failure'
-  if (draft.outcome === 'invalid_output') {
-    // Still try to show useful detail if content exists
-    if (draft.content) {
-      const detail = getDraftCompletionDetail(domain, draft)
-      if (detail) return detail
-    }
-    return draft.error || 'malformed response'
+  if (!draft || draft.outcome === 'pending') return 'waiting for response'
+  // Invalid output can still carry content worth summarizing.
+  if (draft.outcome === 'invalid_output' && draft.content) {
+    const detail = getDraftCompletionDetail(domain, draft)
+    if (detail) return detail
   }
+  if (isFailedCouncilOutcome(draft.outcome)) return getFailedDraftDetail(draft.outcome, draft)
   return getDraftCompletionDetail(domain, draft)
 }
 
@@ -470,18 +501,28 @@ function getDraftCompletionDetail(domain: Domain, draft: DraftLike | undefined):
   return lineCount > 0 ? `${lineCount} lines generated` : ''
 }
 
+const FAILED_VOTE_DETAIL: Record<NonSuccessOutcome, string> = {
+  timed_out: 'vote timed out',
+  failed: 'vote failed',
+  invalid_output: 'malformed scores',
+  stopped: 'vote stopped',
+}
+
 function getVotingDetail(outcome: CouncilOutcome, voteCount: number): string {
   if (outcome === 'completed') return voteCount > 0 ? `scored ${voteCount} drafts` : 'scoring complete'
-  if (outcome === 'timed_out') return 'vote timed out'
-  if (outcome === 'failed') return 'vote failed'
-  if (outcome === 'invalid_output') return 'malformed scores'
+  if (isFailedCouncilOutcome(outcome)) return FAILED_VOTE_DETAIL[outcome]
   return 'waiting for scores'
 }
 
+const DRAFT_FAILURE_VOTING_DETAIL: Record<NonSuccessOutcome, string> = {
+  invalid_output: 'draft had invalid output',
+  timed_out: 'draft timed out',
+  failed: 'draft failed',
+  stopped: 'draft stopped',
+}
+
 function getDraftFailureVotingDetail(outcome: NonSuccessOutcome): string {
-  if (outcome === 'invalid_output') return 'draft had invalid output'
-  if (outcome === 'timed_out') return 'draft timed out'
-  return 'draft failed'
+  return DRAFT_FAILURE_VOTING_DETAIL[outcome]
 }
 
 function getCoverageDetail(result: CoverageResultLike | null): string {
@@ -672,7 +713,7 @@ function getDraftOutcomes(domain: Domain, artifacts: ArtifactSource[], draftPhas
   const result = parseCouncilResult(mergedContent)
   const outcomes = new Map<string, NonSuccessOutcome>()
   for (const draft of result?.drafts ?? []) {
-    if (draft.outcome === 'invalid_output' || draft.outcome === 'failed' || draft.outcome === 'timed_out') {
+    if (isFailedCouncilOutcome(draft.outcome)) {
       outcomes.set(draft.memberId, draft.outcome)
     }
   }

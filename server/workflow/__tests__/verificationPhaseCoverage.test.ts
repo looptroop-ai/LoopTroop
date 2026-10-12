@@ -1,5 +1,6 @@
 import { afterAll, assert, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { readFileNoFollowSync } from '../../io/readFile'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { makePrdYaml, TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -144,7 +145,7 @@ describe('handlePreFlight', () => {
 
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')!.content)).toEqual(report)
     expect(sendEvent).toHaveBeenCalledWith({ type: 'CHECKS_PASSED' })
-    const entries = readFileSync(paths.debugLogPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    const entries = readFileNoFollowSync(paths.debugLogPath).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
     expect(entries).toEqual(expect.arrayContaining([
       expect.objectContaining({
         message: expect.stringContaining('opencode.provider.request.failed'),
@@ -284,7 +285,7 @@ describe('handlePreFlight', () => {
 
     const artifact = getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')
     assert(artifact)
-    const persistedLog = readFileSync(paths.executionLogPath, 'utf-8')
+    const persistedLog = readFileNoFollowSync(paths.executionLogPath)
     const emittedFailure = JSON.stringify(sendEvent.mock.calls)
     for (const evidence of [artifact.content, persistedLog, emittedFailure]) {
       expect(evidence).toContain('[redacted]')

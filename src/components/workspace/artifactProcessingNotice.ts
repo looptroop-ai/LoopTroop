@@ -8,6 +8,7 @@ import type {
   StructuredInterventionCategory,
   StructuredInterventionStage,
 } from '@shared/structuredInterventions'
+import { isCouncilMemberOutcome } from '@shared/councilMembers'
 import type {
   ArtifactStructuredOutputData,
   CouncilOutcome,
@@ -211,12 +212,17 @@ function isReusedApprovedInterviewFullAnswersContext(context?: ArtifactProcessin
   return context?.fullAnswersOrigin === 'reused-approved-interview'
 }
 
+const ARTIFACT_STATUS_LABELS: Record<ArtifactProcessingStatus, string> = {
+  timed_out: 'timed out',
+  invalid_output: 'saved invalid output',
+  failed: 'failed',
+  stopped: 'stopped',
+  pending: 'is still in progress',
+  completed: 'validated',
+}
+
 function formatArtifactStatusLabel(status: ArtifactProcessingStatus): string {
-  if (status === 'timed_out') return 'timed out'
-  if (status === 'invalid_output') return 'saved invalid output'
-  if (status === 'failed') return 'failed'
-  if (status === 'pending') return 'is still in progress'
-  return 'validated'
+  return isCouncilMemberOutcome(status) ? ARTIFACT_STATUS_LABELS[status] : 'validated'
 }
 
 function getArtifactProcessingStrings(kind: ArtifactProcessingKind, context?: ArtifactProcessingNoticeContext) {

@@ -24,13 +24,15 @@ import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnost
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
-import { PHASE_DEADLINE_ERROR, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
+import { PHASE_DEADLINE_ERROR, armAttemptDeadline, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
 import { isAbortError } from '../lib/abort'
 import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
 import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
-import { confirmCouncilSessionStopped, waitForCouncilSession } from './sessionStop'
+import { stopCutShortCouncilSession } from './sessionStop'
+import { CouncilMemberInterruptedError, openCouncilRound, type CouncilMemberAttempt } from './memberControl'
+import { COUNCIL_MEMBER_STOPPED_ERROR } from '@shared/councilMembers'
 
 function unconfirmedVoterStopError(sessionId?: string): Error {
   return new Error(sessionId
@@ -103,6 +105,17 @@ export function buildVotePresentationOrder(
   }))
 }
 
+/** One voter's attempt: how it ended and what it left behind. */
+interface VoteAttemptResult {
+  outcome: MemberOutcome
+  votes: Vote[]
+  error?: string
+  structuredOutput?: DraftStructuredOutputMeta
+  rawResponse?: string
+  normalizedResponse?: string
+  rawAttempts?: RawAttempt[]
+}
+
 export async function conductVoting(
   adapter: OpenCodeAdapter,
   voters: CouncilMember[],
@@ -163,18 +176,17 @@ export async function conductVoting(
     outcomes[voter.modelId] = 'pending'
     return outcomes
   }, {})
-  const finalizedMembers = new Set<string>()
   const voterDetailMap = new Map<string, VoterDetail>()
-  // One budget for the round. Same reason as the drafter: this timer is its own
-  // `Promise.race`, invisible to the prompt timer, so a voter blocked on a
-  // question would otherwise lose the round while waiting for an answer.
-  const budget = createWorkBudget({
+  // One budget for the round, shared by every voter's first run. Same reason as
+  // the drafter: this timer is its own `Promise.race`, invisible to the prompt
+  // timer, so a voter blocked on a question would otherwise lose the round
+  // while waiting for an answer.
+  const createBudget = () => createWorkBudget({
     ...(sessionOwnership?.ticketId ? { ticketId: sessionOwnership.ticketId } : {}),
     ...(timeoutMs && timeoutMs > 0 ? { totalMs: timeoutMs } : {}),
     scope: 'council_member',
   })
   const sessionManager = sessionOwnership ? new SessionManager(adapter) : null
-  let deadlineReached = false
 
   function buildStructuredOutputMeta(
     repairApplied: boolean,
@@ -192,71 +204,87 @@ export async function conductVoting(
     })
   }
 
-  function recordOutcome(
-    memberId: string,
-    outcome: MemberOutcome,
-    voterVotes: Vote[],
-    error?: string,
-    structuredOutput?: DraftStructuredOutputMeta,
-    rawResponse?: string,
-    normalizedResponse?: string,
-    rawAttempts?: RawAttempt[],
-  ): boolean {
-    if (finalizedMembers.has(memberId)) return false
-
-    finalizedMembers.add(memberId)
-    memberOutcomes[memberId] = outcome
+  function recordOutcome(memberId: string, result: VoteAttemptResult): void {
+    memberOutcomes[memberId] = result.outcome
     voterDetailMap.set(memberId, {
       voterId: memberId,
-      ...(error ? { error } : {}),
-      ...(typeof rawResponse === 'string' ? { rawResponse } : {}),
-      ...(typeof normalizedResponse === 'string' ? { normalizedResponse } : {}),
-      ...(structuredOutput ? { structuredOutput } : {}),
-      ...(rawAttempts && rawAttempts.length > 0 ? { rawAttempts: [...rawAttempts] } : {}),
+      ...(result.error ? { error: result.error } : {}),
+      ...(typeof result.rawResponse === 'string' ? { rawResponse: result.rawResponse } : {}),
+      ...(typeof result.normalizedResponse === 'string' ? { normalizedResponse: result.normalizedResponse } : {}),
+      ...(result.structuredOutput ? { structuredOutput: result.structuredOutput } : {}),
+      ...(result.rawAttempts && result.rawAttempts.length > 0 ? { rawAttempts: [...result.rawAttempts] } : {}),
     })
-    if (outcome === 'completed' && voterVotes.length > 0) {
-      votes.push(...voterVotes)
+    if (result.outcome === 'completed' && result.votes.length > 0) {
+      votes.push(...result.votes)
     }
     onVoteProgress?.({
       memberId,
-      outcome,
-      votes: voterVotes,
-      error,
-      rawResponse,
-      normalizedResponse,
-      structuredOutput,
-      ...(rawAttempts && rawAttempts.length > 0 ? { rawAttempts: [...rawAttempts] } : {}),
+      outcome: result.outcome,
+      votes: result.votes,
+      error: result.error,
+      rawResponse: result.rawResponse,
+      normalizedResponse: result.normalizedResponse,
+      structuredOutput: result.structuredOutput,
+      ...(result.rawAttempts && result.rawAttempts.length > 0 ? { rawAttempts: [...result.rawAttempts] } : {}),
     })
-    return true
   }
 
   if (validDrafts.length === 0) {
     return { votes, memberOutcomes, deadlineReached: false, presentationOrders, voterDetails: [] }
   }
 
-  const promises = voters.map(async (voter): Promise<Vote[]> => {
+  const budget = createBudget()
+  const round = openCouncilRound<VoteAttemptResult>({
+    ticketId: sessionOwnership?.ticketId,
+    phase: sessionOwnership?.phase,
+    memberIds: voters.map((voter) => voter.modelId),
+    signal,
+    outcomeOf: (result) => result.outcome,
+    onSettled: recordOutcome,
+    onRestart: (memberId) => {
+      // A restarted voter scores again from nothing: its old scorecard, if it
+      // had one, no longer counts toward the winner.
+      memberOutcomes[memberId] = 'pending'
+      voterDetailMap.delete(memberId)
+      const kept = votes.filter((vote) => vote.voterId !== memberId)
+      votes.splice(0, votes.length, ...kept)
+      onVoteProgress?.({ memberId, outcome: 'pending', votes: [] })
+    },
+    // The live view must stop showing a voter working once it has left the
+    // round on an error; the round fails when the others settle.
+    onFailed: (memberId, error) => recordOutcome(memberId, {
+      outcome: 'failed',
+      votes: [],
+      error: getErrorMessage(error),
+    }),
+  })
+
+  const voteMember = async (voter: CouncilMember, attempt: CouncilMemberAttempt): Promise<VoteAttemptResult> => {
+    // A restart is a fresh chance, so it gets the full timeout on its own clock
+    // rather than whatever the round's shared one has left.
+    const attemptBudget = attempt.number === 1 ? budget : createBudget()
     const presentationSeed = randomUUID()
     const anonymized = buildVotePresentationOrder(validDrafts, presentationSeed)
     presentationOrders[voter.modelId] = {
       seed: presentationSeed,
       order: anonymized.map(draft => draft.draftId),
     }
-    const voterVotes: Vote[] = []
     let sessionId = ''
     let closed = false
     let promptReturned = false
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     let response = ''
     const rawAttempts: RawAttempt[] = []
     const memberAbortController = new AbortController()
-    const memberSignal = signal
-      ? AbortSignal.any([signal, memberAbortController.signal])
-      : memberAbortController.signal
-    let resolveExecutionSettled: () => void = () => {}
+    const memberSignal = AbortSignal.any([
+      ...(signal ? [signal] : []),
+      memberAbortController.signal,
+      attempt.signal,
+    ])
+    let resolveExecutionSettled: () => void = () => undefined
     const executionSettled = new Promise<void>((resolve) => {
       resolveExecutionSettled = resolve
     })
-    let resolveSessionReady: () => void = () => {}
+    let resolveSessionReady: () => void = () => undefined
     const sessionReady = new Promise<void>((resolve) => {
       resolveSessionReady = resolve
     })
@@ -264,11 +292,10 @@ export async function conductVoting(
     const markTimedOut = () => {
       if (closed) return
       closed = true
-      deadlineReached = true
       memberAbortController.abort()
     }
 
-    const executeVote = (async () => {
+    const executeVote = (async (): Promise<VoteAttemptResult> => {
       const votingPrompt = buildPromptForVoter
         ? buildPromptForVoter({ voter, anonymizedDrafts: anonymized, rubric })
         : [
@@ -294,7 +321,7 @@ export async function conductVoting(
       const retryDiagnostics: NonNullable<DraftStructuredOutputMeta['retryDiagnostics']> = []
 
       while (true) {
-        if (budget.expired()) {
+        if (attemptBudget.expired()) {
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
@@ -304,7 +331,7 @@ export async function conductVoting(
           projectPath,
           parts: promptParts,
           signal: memberSignal,
-          workBudget: budget,
+          workBudget: attemptBudget,
           timeoutKind: 'ai_response',
           model: voter.modelId,
           variant: voter.variant,
@@ -316,6 +343,8 @@ export async function conductVoting(
                   phase: sessionOwnership.phase,
                   phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
                   memberId: voter.modelId,
+                  // A restart must not pick its abandoned predecessor back up.
+                  ...(attempt.number > 1 ? { forceFresh: true } : {}),
                 },
               }
             : {}),
@@ -323,7 +352,7 @@ export async function conductVoting(
             sessionId = session.id
             resolveSessionReady()
             if (closed) {
-              throw new Error(`OpenCode session ${session.id} was created after the council deadline`)
+              throw new Error(`OpenCode session ${session.id} was created after the member's council turn ended`)
             }
 
           },
@@ -346,8 +375,10 @@ export async function conductVoting(
           },
         })
 
-        if (closed || signal?.aborted || memberAbortController.signal.aborted) {
+        if (closed || memberSignal.aborted) {
           if (signal?.aborted && !closed) throw new CancelledError()
+          const interruption = attempt.interruption()
+          if (interruption) throw new CouncilMemberInterruptedError(interruption)
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
@@ -384,6 +415,7 @@ export async function conductVoting(
             lastValidationError,
             retryDiagnostics,
           )
+          const voterVotes: Vote[] = []
           for (const [draftIndex, draft] of anonymized.entries()) {
             const draftLabel = `Draft ${draftIndex + 1}`
             const normalizedScores = scorecardResult.value.draftScores[draftLabel] ?? {}
@@ -399,10 +431,14 @@ export async function conductVoting(
               totalScore: normalizedScores.total_score ?? scores.reduce((sum, score) => sum + score.score, 0),
             })
           }
-          if (!recordOutcome(voter.modelId, 'completed', voterVotes, undefined, structuredOutput, response, normalizedResponse, rawAttempts)) {
-            return voterVotes
+          return {
+            outcome: 'completed',
+            votes: voterVotes,
+            structuredOutput,
+            rawResponse: response,
+            ...(normalizedResponse !== undefined ? { normalizedResponse } : {}),
+            rawAttempts: [...rawAttempts],
           }
-          break
         }
 
         lastValidationError = scorecardResult.error
@@ -422,24 +458,20 @@ export async function conductVoting(
           retryDiagnostic: scorecardResult.retryDiagnostic,
         }))
         if (!shouldRetryStructuredOutput(attemptCount, normalizedMaxStructuredRetries)) {
-          const structuredOutput = buildStructuredOutputMeta(
-            scorecardResult.repairApplied,
-            scorecardResult.repairWarnings,
-            attemptCount,
-            scorecardResult.error,
-            retryDiagnostics,
-          )
-          recordOutcome(
-            voter.modelId,
-            'invalid_output',
-            [],
-            scorecardResult.error,
-            structuredOutput,
-            response,
-            undefined,
-            rawAttempts,
-          )
-          return voterVotes
+          return {
+            outcome: 'invalid_output',
+            votes: [],
+            error: scorecardResult.error,
+            structuredOutput: buildStructuredOutputMeta(
+              scorecardResult.repairApplied,
+              scorecardResult.repairWarnings,
+              attemptCount,
+              scorecardResult.error,
+              retryDiagnostics,
+            ),
+            rawResponse: response,
+            rawAttempts: [...rawAttempts],
+          }
         }
 
         attemptCount += 1
@@ -449,66 +481,44 @@ export async function conductVoting(
           schemaReminder: buildStrictVoteSchemaReminder(rubric),
         })
       }
-
-      return voterVotes
     })()
       .finally(() => {
         resolveExecutionSettled()
       })
 
     const ensureSessionStopped = async (): Promise<boolean> => {
-      if (promptReturned) return true
-      const findTrackedSession = () => sessionId || (
-        sessionOwnership
-          ? sessionManager?.getOwnedActiveSession(sessionOwnership.ticketId, sessionOwnership.phase, {
-              phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
-              memberId: voter.modelId,
-            })?.sessionId
-          : undefined
-      )
-      let trackedSessionId = findTrackedSession()
-      if (!trackedSessionId) {
-        const waitOutcome = await waitForCouncilSession(sessionReady, executionSettled)
-        trackedSessionId = findTrackedSession()
-        if (!trackedSessionId) {
-          if (waitOutcome !== 'execution_settled') return false
-          return sessionOwnership && sessionManager
-            ? !sessionManager.hasUnresolvedSessionOwnershipForScope(sessionOwnership.ticketId, sessionOwnership.phase, {
-                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
-                memberId: voter.modelId,
-              })
-            : true
-        }
-      }
-      sessionId = trackedSessionId
-      return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'voter')
+      const memberScope = sessionOwnership
+        ? { phaseAttempt: sessionOwnership.phaseAttempt ?? 1, memberId: voter.modelId }
+        : null
+      const stop = await stopCutShortCouncilSession({
+        adapter,
+        sessionManager,
+        role: 'voter',
+        promptReturned,
+        findSessionId: () => sessionId || (
+          sessionOwnership && memberScope
+            ? sessionManager?.getOwnedActiveSession(sessionOwnership.ticketId, sessionOwnership.phase, memberScope)?.sessionId
+            : undefined
+        ),
+        sessionReady,
+        executionSettled,
+        hasUnresolvedOwnership: () => Boolean(
+          sessionOwnership && memberScope
+          && sessionManager?.hasUnresolvedSessionOwnershipForScope(sessionOwnership.ticketId, sessionOwnership.phase, memberScope),
+        ),
+      })
+      if (stop.sessionId) sessionId = stop.sessionId
+      return stop.stopped
     }
 
-    // Cleared while suspended and re-armed on resume, so a question wait moves
-    // the round's deadline instead of expiring the voter waiting on the answer.
-    let unsubscribeBudget: (() => void) | undefined
-    const deadlinePromise = budget.totalMs === undefined
-      ? null
-      : new Promise<never>((_, reject) => {
-        const armRoundTimer = () => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle)
-            timeoutHandle = undefined
-          }
-          if (closed || budget.suspended()) return
-          timeoutHandle = setTimeout(() => {
-            markTimedOut()
-            reject(new Error(PHASE_DEADLINE_ERROR))
-          }, Math.max(0, budget.remainingMs() ?? 0))
-        }
-        unsubscribeBudget = budget.onChange(armRoundTimer)
-        armRoundTimer()
-      })
+    const deadline = armAttemptDeadline(attemptBudget, () => closed, markTimedOut)
 
     try {
-      return deadlinePromise
-        ? await Promise.race([executeVote, deadlinePromise])
-        : await executeVote
+      return await Promise.race([
+        executeVote,
+        attempt.interrupted,
+        ...(deadline.promise ? [deadline.promise] : []),
+      ])
     } catch (error) {
       const callerCancelled = signal?.aborted || (isAbortError(error) && signal?.aborted)
       if (callerCancelled || error instanceof CancelledError) {
@@ -517,12 +527,21 @@ export async function conductVoting(
         throw new CancelledError()
       }
 
+      // A person's stop or restart wins over whatever reached the race first.
+      // Nothing the voter wrote is kept, earlier rejected scorecards included.
+      if (attempt.interruption()) {
+        closed = true
+        memberAbortController.abort()
+        const stopped = await ensureSessionStopped()
+        if (!stopped) throw unconfirmedVoterStopError(sessionId)
+        return { outcome: 'stopped', votes: [], error: COUNCIL_MEMBER_STOPPED_ERROR }
+      }
+
       const errorDetail = getErrorMessage(error)
       const timedOut = isPhaseDeadlineError(error) || isAiResponseTimeoutError(error) || closed
       if (timedOut) {
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedVoterStopError(sessionId)
-        deadlineReached = true
       }
       if (!timedOut) {
         const preserveForContinuation = sessionId && sessionOwnership
@@ -544,26 +563,23 @@ export async function conductVoting(
           if (!stopped) throw unconfirmedVoterStopError(sessionId)
         }
       }
-      const outcome: MemberOutcome = timedOut
-        ? 'timed_out'
-        : 'failed'
-      recordOutcome(voter.modelId, outcome, [], outcome === 'timed_out'
-        ? `AI response timeout reached after ${timeoutMs}ms`
-        : errorDetail,
-      undefined,
-      response || undefined,
-      undefined,
-      rawAttempts)
-      return []
-    } finally {
-      unsubscribeBudget?.()
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle)
+      return {
+        outcome: timedOut ? 'timed_out' : 'failed',
+        votes: [],
+        error: timedOut ? `AI response timeout reached after ${timeoutMs}ms` : errorDetail,
+        ...(response ? { rawResponse: response } : {}),
+        rawAttempts: [...rawAttempts],
       }
+    } finally {
+      deadline.dispose()
+      if (attemptBudget !== budget) attemptBudget.release()
     }
-  })
+  }
 
-  const settled = await Promise.allSettled(promises)
+  const settled = await Promise.allSettled(
+    voters.map((voter) => round.run(voter.modelId, (attempt) => voteMember(voter, attempt))),
+  )
+  round.close()
   budget.release()
   if (signal?.aborted) {
     throw new CancelledError()
@@ -578,7 +594,9 @@ export async function conductVoting(
   return {
     votes,
     memberOutcomes,
-    deadlineReached,
+    // From the outcomes that stand, so a voter restarted after timing out does
+    // not report a deadline the final round never hit.
+    deadlineReached: Object.values(memberOutcomes).some((outcome) => outcome === 'timed_out'),
     presentationOrders,
     voterDetails: [...voterDetailMap.values()],
   }

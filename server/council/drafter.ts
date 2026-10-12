@@ -14,9 +14,9 @@ import type { Message, PromptPart, StreamEvent } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../workflow/runOpenCodePrompt'
 import { createWorkBudget } from '../workflow/workBudget'
-import { wasMemberAnswered } from '../workflow/questionWindows'
+import { forgetMemberAnswered, wasMemberAnswered } from '../workflow/questionWindows'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
-import { PHASE_DEADLINE_ERROR, isPhaseDeadlineError, isAiResponseTimeoutError, classifyDraftFailure } from './draftUtils'
+import { PHASE_DEADLINE_ERROR, armAttemptDeadline, isPhaseDeadlineError, isAiResponseTimeoutError, classifyDraftFailure } from './draftUtils'
 import { isAbortError } from '../lib/abort'
 import { buildStructuredRetryPrompt } from '../structuredOutput'
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
@@ -24,10 +24,12 @@ import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnost
 import { normalizeStructuredRetryCount } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
 import { getErrorMessage } from '@shared/typeGuards'
+import { COUNCIL_MEMBER_STOPPED_ERROR } from '@shared/councilMembers'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
 import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
-import { confirmCouncilSessionStopped, waitForCouncilSession } from './sessionStop'
+import { stopCutShortCouncilSession } from './sessionStop'
+import { CouncilMemberInterruptedError, openCouncilRound, type CouncilMemberAttempt } from './memberControl'
 
 function unconfirmedDraftStopError(sessionId?: string): Error {
   return new Error(sessionId
@@ -59,6 +61,12 @@ interface GenerateDraftsRuntimeOptions {
   onDraftResult?: (draft: DraftResult) => void
   maxStructuredRetries?: number
   structuredRetrySchemaReminder?: string
+}
+
+/** One member's attempt, with the session it reported under. */
+interface DraftAttemptResult {
+  draft: DraftResult
+  sessionId: string | undefined
 }
 
 function buildMemberOutcomeMap(drafts: DraftResult[]) {
@@ -93,25 +101,26 @@ export async function generateDrafts(
   runtimeOptions?: GenerateDraftsRuntimeOptions,
 ): Promise<DraftGenerationResult> {
   const results = new Map<string, DraftResult>()
-  const finalizedMembers = new Set<string>()
-  // One budget for the round, shared by every member. It is a budget rather than
-  // a bare deadline so a question wait can hold it: the round's own
-  // `Promise.race` timer never saw the prompt timer, so without this a member
-  // blocked on a question would still lose its round to a timeout.
-  const budget = createWorkBudget({
+  // One budget for the round, shared by every member's first run. It is a
+  // budget rather than a bare deadline so a question wait can hold it: the
+  // round's own `Promise.race` timer never saw the prompt timer, so without this
+  // a member blocked on a question would still lose its round to a timeout.
+  const createBudget = () => createWorkBudget({
     ...(runtimeOptions?.ticketId ? { ticketId: runtimeOptions.ticketId } : {}),
     ...(timeout > 0 ? { totalMs: timeout } : {}),
     scope: 'council_member',
   })
-  const sessionManager = runtimeOptions?.ticketId && runtimeOptions.phase
-    ? new SessionManager(adapter)
+  const budget = createBudget()
+  const ownershipScope = runtimeOptions?.ticketId && runtimeOptions.phase
+    ? {
+        ticketId: runtimeOptions.ticketId,
+        phase: runtimeOptions.phase,
+        phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+      }
     : null
-  let deadlineReached = false
+  const sessionManager = ownershipScope ? new SessionManager(adapter) : null
 
-  function recordResult(draft: DraftResult, sessionId?: string): boolean {
-    if (finalizedMembers.has(draft.memberId)) return false
-
-    finalizedMembers.add(draft.memberId)
+  function recordResult(draft: DraftResult, sessionId?: string) {
     results.set(draft.memberId, draft)
     runtimeOptions?.onDraftResult?.(draft)
     onDraftProgress?.({
@@ -130,10 +139,38 @@ export async function generateDrafts(
       ...(draft.rawAttempts ? { rawAttempts: draft.rawAttempts } : {}),
       ...(draft.skippedReason ? { skippedReason: draft.skippedReason } : {}),
     })
-    return true
   }
 
-  const promises = members.map(async (member): Promise<DraftResult> => {
+  const round = openCouncilRound<DraftAttemptResult>({
+    ticketId: ownershipScope?.ticketId,
+    phase: ownershipScope?.phase,
+    memberIds: members.map((member) => member.modelId),
+    signal,
+    outcomeOf: (attempt) => attempt.draft.outcome,
+    onSettled: (_memberId, attempt) => recordResult(attempt.draft, attempt.sessionId),
+    onRestart: (memberId) => {
+      results.delete(memberId)
+      // The restarted draft starts without the answer the old one was given.
+      if (ownershipScope) {
+        forgetMemberAnswered(ownershipScope.ticketId, ownershipScope.phase, ownershipScope.phaseAttempt, memberId)
+      }
+      onDraftProgress?.({ memberId, status: 'restarted' })
+    },
+    // The live view must stop showing a member working once it has left the
+    // round on an error; the round fails when the others settle.
+    onFailed: (memberId, error) => recordResult({
+      memberId,
+      content: '',
+      outcome: 'failed',
+      duration: 0,
+      error: getErrorMessage(error),
+    }),
+  })
+
+  const draftMember = async (member: CouncilMember, attempt: CouncilMemberAttempt): Promise<DraftAttemptResult> => {
+    // A restart is a fresh chance, so it gets the full timeout on its own clock
+    // rather than whatever the round's shared one has left.
+    const attemptBudget = attempt.number === 1 ? budget : createBudget()
     const startTime = Date.now()
     let sessionId: string | undefined
     let content = ''
@@ -142,16 +179,17 @@ export async function generateDrafts(
     let attemptCount = 0
     let closed = false
     let promptReturned = false
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     const memberAbortController = new AbortController()
-    const memberSignal = signal
-      ? AbortSignal.any([signal, memberAbortController.signal])
-      : memberAbortController.signal
-    let resolveExecutionSettled: () => void = () => {}
+    const memberSignal = AbortSignal.any([
+      ...(signal ? [signal] : []),
+      memberAbortController.signal,
+      attempt.signal,
+    ])
+    let resolveExecutionSettled: () => void = () => undefined
     const executionSettled = new Promise<void>((resolve) => {
       resolveExecutionSettled = resolve
     })
-    let resolveSessionReady: () => void = () => {}
+    let resolveSessionReady: () => void = () => undefined
     const sessionReady = new Promise<void>((resolve) => {
       resolveSessionReady = resolve
     })
@@ -173,14 +211,22 @@ export async function generateDrafts(
       }
     }
 
+    /** What this attempt saw before it ended, carried on every non-success draft. */
+    const buildEvidence = () => ({
+      questionCount: validation?.questionCount,
+      draftMetrics: validation?.draftMetrics,
+      ...(typeof rawResponse === 'string' ? { rawResponse } : {}),
+      ...(typeof normalizedResponse === 'string' ? { normalizedResponse } : {}),
+      ...(rawAttempts.length > 0 ? { rawAttempts: [...rawAttempts] } : {}),
+    })
+
     const markTimedOut = () => {
       if (closed) return
       closed = true
-      deadlineReached = true
       memberAbortController.abort()
     }
 
-    const executeDraft = (async () => {
+    const executeDraft = (async (): Promise<DraftResult> => {
       if (signal?.aborted) throw new CancelledError()
       let promptParts = contextParts
       const initialInput = formatPromptText(contextParts)
@@ -188,7 +234,7 @@ export async function generateDrafts(
       const maxStructuredRetries = normalizeStructuredRetryCount(runtimeOptions?.maxStructuredRetries)
 
       while (true) {
-        if (budget.expired()) {
+        if (attemptBudget.expired()) {
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
@@ -198,18 +244,18 @@ export async function generateDrafts(
           projectPath,
           parts: promptParts,
           signal: memberSignal,
-          workBudget: budget,
+          workBudget: attemptBudget,
           timeoutKind: 'ai_response',
           model: member.modelId,
           variant: member.variant,
           toolPolicy: runtimeOptions?.toolPolicy,
-          ...(runtimeOptions?.ticketId && runtimeOptions.phase
+          ...(ownershipScope
             ? {
                 sessionOwnership: {
-                  ticketId: runtimeOptions.ticketId,
-                  phase: runtimeOptions.phase,
-                  phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+                  ...ownershipScope,
                   memberId: member.modelId,
+                  // A restart must not pick its abandoned predecessor back up.
+                  ...(attempt.number > 1 ? { forceFresh: true } : {}),
                 },
               }
             : {}),
@@ -217,7 +263,7 @@ export async function generateDrafts(
             sessionId = session.id
             resolveSessionReady()
             if (closed) {
-              throw new Error(`OpenCode session ${session.id} was created after the council deadline`)
+              throw new Error(`OpenCode session ${session.id} was created after the member's council turn ended`)
             }
 
             onDraftProgress?.({
@@ -245,8 +291,10 @@ export async function generateDrafts(
           },
         })
 
-        if (closed || signal?.aborted || memberAbortController.signal.aborted) {
+        if (closed || memberSignal.aborted) {
           if (signal?.aborted && !closed) throw new CancelledError()
+          const interruption = attempt.interruption()
+          if (interruption) throw new CouncilMemberInterruptedError(interruption)
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
@@ -327,7 +375,7 @@ export async function generateDrafts(
         member.modelId,
       )
 
-      const draft: DraftResult = {
+      return {
         memberId: member.modelId,
         outcome: 'completed',
         duration: Date.now() - startTime,
@@ -340,75 +388,45 @@ export async function generateDrafts(
         ...(typeof normalizedResponse === 'string' ? { normalizedResponse } : {}),
         ...(rawAttempts.length > 0 ? { rawAttempts: [...rawAttempts] } : {}),
       }
-
-      if (!recordResult(draft, sessionId)) {
-        return draft
-      }
-
-      return draft
     })()
       .finally(() => {
         resolveExecutionSettled()
       })
 
     const ensureSessionStopped = async (): Promise<boolean> => {
-      if (promptReturned) return true
-      const findTrackedSession = () => sessionId ?? (
-        runtimeOptions?.ticketId && runtimeOptions.phase
-          ? sessionManager?.getOwnedActiveSession(runtimeOptions.ticketId, runtimeOptions.phase, {
-              phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
-              memberId: member.modelId,
-            })?.sessionId
-          : undefined
-      )
-      let trackedSessionId = findTrackedSession()
-      if (!trackedSessionId) {
-        // A prompt can ignore its local abort signal. Give its session-create
-        // callback a bounded chance to publish the id, but never wait for the
-        // prompt itself before attempting the remote stop.
-        const waitOutcome = await waitForCouncilSession(sessionReady, executionSettled)
-        trackedSessionId = findTrackedSession()
-        if (!trackedSessionId) {
-          if (waitOutcome !== 'execution_settled') return false
-          return runtimeOptions?.ticketId && sessionManager
-            ? !sessionManager.hasUnresolvedSessionOwnershipForScope(runtimeOptions.ticketId, runtimeOptions.phase!, {
-                phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
-                memberId: member.modelId,
-              })
-            : true
-        }
-      }
-      sessionId = trackedSessionId
-      return confirmCouncilSessionStopped(adapter, sessionManager, trackedSessionId, 'drafter')
+      const memberScope = ownershipScope
+        ? { phaseAttempt: ownershipScope.phaseAttempt, memberId: member.modelId }
+        : null
+      const stop = await stopCutShortCouncilSession({
+        adapter,
+        sessionManager,
+        role: 'drafter',
+        promptReturned,
+        findSessionId: () => sessionId ?? (
+          ownershipScope && memberScope
+            ? sessionManager?.getOwnedActiveSession(ownershipScope.ticketId, ownershipScope.phase, memberScope)?.sessionId
+            : undefined
+        ),
+        sessionReady,
+        executionSettled,
+        hasUnresolvedOwnership: () => Boolean(
+          ownershipScope && memberScope
+          && sessionManager?.hasUnresolvedSessionOwnershipForScope(ownershipScope.ticketId, ownershipScope.phase, memberScope),
+        ),
+      })
+      if (stop.sessionId) sessionId = stop.sessionId
+      return stop.stopped
     }
 
-    // Re-armed from the budget rather than set once, so a question wait moves it
-    // instead of expiring the member who is waiting for the answer. Cleared
-    // outright while suspended: a timer re-set from the frozen remaining time
-    // would still fire mid-wait.
-    let unsubscribeBudget: (() => void) | undefined
-    const deadlinePromise = budget.totalMs === undefined
-      ? null
-      : new Promise<never>((_, reject) => {
-        const armRoundTimer = () => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle)
-            timeoutHandle = undefined
-          }
-          if (closed || budget.suspended()) return
-          timeoutHandle = setTimeout(() => {
-            markTimedOut()
-            reject(new Error(PHASE_DEADLINE_ERROR))
-          }, Math.max(0, budget.remainingMs() ?? 0))
-        }
-        unsubscribeBudget = budget.onChange(armRoundTimer)
-        armRoundTimer()
-      })
+    const deadline = armAttemptDeadline(attemptBudget, () => closed, markTimedOut)
 
     try {
-      return deadlinePromise
-        ? await Promise.race([executeDraft, deadlinePromise])
-        : await executeDraft
+      const draft = await Promise.race([
+        executeDraft,
+        attempt.interrupted,
+        ...(deadline.promise ? [deadline.promise] : []),
+      ])
+      return { draft, sessionId }
     } catch (err) {
       const callerCancelled = signal?.aborted || (isAbortError(err) && signal?.aborted)
       if (callerCancelled || err instanceof CancelledError) {
@@ -417,37 +435,52 @@ export async function generateDrafts(
         throw new CancelledError()
       }
 
+      // A person's stop or restart wins over whatever reached the race first:
+      // a deadline landing in the same moment still reads as the stop they asked
+      // for, and a restart discards this attempt either way. Nothing the model
+      // wrote is kept, earlier rejected attempts included.
+      if (attempt.interruption()) {
+        closed = true
+        memberAbortController.abort()
+        const stopped = await ensureSessionStopped()
+        if (!stopped) throw unconfirmedDraftStopError(sessionId)
+        return {
+          draft: {
+            memberId: member.modelId,
+            content: '',
+            outcome: 'stopped',
+            duration: Date.now() - startTime,
+            error: COUNCIL_MEMBER_STOPPED_ERROR,
+          },
+          sessionId,
+        }
+      }
+
       const duration = Date.now() - startTime
       if (isPhaseDeadlineError(err) || isAiResponseTimeoutError(err) || closed) {
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedDraftStopError(sessionId)
-        deadlineReached = true
-        const draft: DraftResult = {
-          memberId: member.modelId,
-          content: '',
-          outcome: 'timed_out',
-          duration: timeout,
-          error: `AI response timeout reached after ${timeout}ms`,
-          questionCount: validation?.questionCount,
-          draftMetrics: validation?.draftMetrics,
-          structuredOutput: buildStructuredOutput(),
-          ...(typeof rawResponse === 'string' ? { rawResponse } : {}),
-          ...(typeof normalizedResponse === 'string' ? { normalizedResponse } : {}),
-          ...(rawAttempts.length > 0 ? { rawAttempts: [...rawAttempts] } : {}),
+        return {
+          draft: {
+            memberId: member.modelId,
+            content: '',
+            outcome: 'timed_out',
+            duration: timeout,
+            error: `AI response timeout reached after ${timeout}ms`,
+            structuredOutput: buildStructuredOutput(),
+            ...buildEvidence(),
+          },
+          sessionId,
         }
-        recordResult(draft, sessionId)
-        return draft
       }
 
-      const preserveForContinuation = sessionId && runtimeOptions?.ticketId && runtimeOptions.phase
+      const preserveForContinuation = sessionId && ownershipScope
         ? shouldPreserveSessionForContinuation({
             error: err,
             sessionId,
             modelId: member.modelId,
             sessionOwnership: {
-              ticketId: runtimeOptions.ticketId,
-              phase: runtimeOptions.phase,
-              phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+              ...ownershipScope,
               memberId: member.modelId,
             },
             signal: memberSignal,
@@ -463,39 +496,36 @@ export async function generateDrafts(
         errorDetail,
         failureClass,
       } = classifyDraftFailure(err, { content, failureClass: lastFailureClass })
-      const draft: DraftResult = {
-        memberId: member.modelId,
-        content: '',
-        outcome,
-        duration,
-        error: errorDetail,
-        questionCount: validation?.questionCount,
-        draftMetrics: validation?.draftMetrics,
-        structuredOutput: buildStructuredOutput() ?? (
-          failureClass
-            ? {
-                repairApplied: false,
-                repairWarnings: [],
-                autoRetryCount: attemptCount,
-                failureClass,
-              }
-            : undefined
-        ),
-        ...(typeof rawResponse === 'string' ? { rawResponse } : {}),
-        ...(typeof normalizedResponse === 'string' ? { normalizedResponse } : {}),
-        ...(rawAttempts.length > 0 ? { rawAttempts: [...rawAttempts] } : {}),
+      return {
+        draft: {
+          memberId: member.modelId,
+          content: '',
+          outcome,
+          duration,
+          error: errorDetail,
+          structuredOutput: buildStructuredOutput() ?? (
+            failureClass
+              ? {
+                  repairApplied: false,
+                  repairWarnings: [],
+                  autoRetryCount: attemptCount,
+                  failureClass,
+                }
+              : undefined
+          ),
+          ...buildEvidence(),
+        },
+        sessionId,
       }
-      recordResult(draft, sessionId)
-      return draft
     } finally {
-      unsubscribeBudget?.()
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle)
-      }
+      deadline.dispose()
+      if (attemptBudget !== budget) attemptBudget.release()
     }
-  })
+  }
 
+  const promises = members.map((member) => round.run(member.modelId, (attempt) => draftMember(member, attempt)))
   const settled = await Promise.allSettled(promises)
+  round.close()
   budget.release()
   if (signal?.aborted) {
     throw new CancelledError()
@@ -518,6 +548,8 @@ export async function generateDrafts(
   return {
     drafts,
     memberOutcomes: buildMemberOutcomeMap(drafts),
-    deadlineReached,
+    // From the outcomes that stand: a member that timed out and was then
+    // restarted to a result did not leave the round at its deadline.
+    deadlineReached: drafts.some((draft) => draft.outcome === 'timed_out'),
   }
 }

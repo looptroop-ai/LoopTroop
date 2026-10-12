@@ -2964,6 +2964,35 @@ items:
     expect(screen.getAllByText('Finished').length).toBeGreaterThan(0)
   })
 
+  it('shows a stopped voter as stopped rather than still scoring or finished', () => {
+    const score = (voterId: string) => ({
+      voterId,
+      draftId: 'vendor/draft-a',
+      totalScore: 91,
+      scores: [{ category: 'Coverage of requirements', score: 91 }],
+    })
+    render(
+      <ArtifactContent
+        artifactId="prd-votes"
+        phase="COUNCIL_VOTING_PRD"
+        content={JSON.stringify({
+          drafts: [{ memberId: 'vendor/draft-a', outcome: 'completed', content: 'draft-a' }],
+          // voter-b's row is a leftover: its outcome decides, not the row.
+          votes: [score('vendor/voter-a'), score('vendor/voter-b')],
+          voterOutcomes: { 'vendor/voter-a': 'completed', 'vendor/voter-b': 'stopped', 'vendor/voter-c': 'stopped' },
+          isFinal: false,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('(1/3 complete)')).toBeInTheDocument()
+    expect(screen.getAllByText('Stopped')).toHaveLength(2)
+    expect(screen.queryByText('Scoring')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText(/Voter Details/i).closest('button')!)
+    expect(screen.getByText('Stopped before submitting scores.')).toBeInTheDocument()
+  })
+
   it('switches vote raw tabs between all models, exact voter raw, and validated voter output', async () => {
     const writeTextMock = mockClipboard()
 
@@ -3385,6 +3414,30 @@ items:
     )
 
     expect(screen.getByText(expectedMessage)).toBeInTheDocument()
+  })
+
+  it('explains a stopped draft without calling it an error', () => {
+    render(
+      <ArtifactContent
+        artifactId="draft-member-vendor%2Fprovider-a"
+        phase="COUNCIL_DELIBERATING"
+        content={JSON.stringify({
+          drafts: [{
+            memberId: 'vendor/provider-a',
+            outcome: 'stopped',
+            error: 'Stopped by you',
+            rawAttempts: [{ attempt: 1, status: 'rejected', rawResponse: 'questions: [', validationError: 'Unclosed list.' }],
+          }],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('You stopped this model before it returned a usable draft.')).toBeInTheDocument()
+    expect(screen.getAllByText('Stopped').length).toBeGreaterThan(0)
+    // The diagnostics view, not the waiting view: the earlier attempt stays readable.
+    expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument()
+    expect(screen.queryByText('Stopped by you')).not.toBeInTheDocument()
+    expect(screen.queryByText('Artifact is still being generated for this member.')).not.toBeInTheDocument()
   })
 
   it('shows generic council member output when no specialized artifact view applies', () => {

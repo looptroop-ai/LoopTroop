@@ -4,6 +4,7 @@ import {
   parseUiArtifactCompanionArtifact,
 } from '@shared/artifactCompanions'
 import { isRecord } from '@shared/typeGuards'
+import { isCouncilMemberOutcome, type CouncilMemberOutcome } from '@shared/councilMembers'
 
 type ArtifactSource = Pick<TicketArtifact, 'phase' | 'artifactType' | 'content'>
 
@@ -35,8 +36,16 @@ function normalizeMemberOutcomes(value: unknown): Record<string, string> | undef
   )
 }
 
-function isFailedCouncilOutcome(value: unknown): boolean {
-  return value === 'invalid_output' || value === 'failed' || value === 'timed_out'
+/**
+ * A member's turn that ended without a usable result: it failed, timed out,
+ * returned invalid output, or a person stopped it.
+ *
+ * The one copy of this rule. The drafting views, the raw-output tabs and the
+ * merge below each kept their own list, and a new outcome then had to be added
+ * to every list or it read as a success in some of them.
+ */
+export function isFailedCouncilOutcome(value: unknown): value is Exclude<CouncilMemberOutcome, 'pending' | 'completed'> {
+  return isCouncilMemberOutcome(value) && value !== 'pending' && value !== 'completed'
 }
 
 function suppressFailedDraftBody<T extends Record<string, unknown>>(draft: T): T {

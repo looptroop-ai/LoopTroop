@@ -14,7 +14,7 @@ function listEditor(container: HTMLElement, label: string) {
 
 function epicEditor(trigger: HTMLElement) {
   const section = trigger.closest('div.border')
-  assert(section instanceof HTMLDivElement, 'Could not find epic editor section')
+  if (!(section instanceof HTMLDivElement)) throw new Error('Could not find epic editor section')
   return within(section)
 }
 

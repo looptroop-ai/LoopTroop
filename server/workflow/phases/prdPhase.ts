@@ -33,6 +33,8 @@ import {
   emitOpenCodeStreamEvent,
   emitOpenCodePromptLog,
   emitDraftProgressInfoLog,
+  applyDraftProgress,
+  applyVoteProgress,
   createOpenCodeStreamState,
   resolveCouncilRuntimeSettings,
   resolveStructuredRetryRuntimeSettings,
@@ -316,8 +318,8 @@ export async function handlePrdDraft(
   const streamStates = new Map<string, OpenCodeStreamState>()
   const liveFullAnswers = createPendingDrafts(members)
   const liveDrafts = createPendingDrafts(members)
-  upsertCouncilDraftArtifact(ticketId, phase, 'prd_full_answers', liveFullAnswers)
-  upsertCouncilDraftArtifact(ticketId, phase, 'prd_drafts', liveDrafts)
+  upsertCouncilDraftArtifact(ticketId, phase, 'prd_full_answers', liveFullAnswers, undefined, false, councilSettings.minQuorum)
+  upsertCouncilDraftArtifact(ticketId, phase, 'prd_drafts', liveDrafts, undefined, false, councilSettings.minQuorum)
   const result = await draftPRD(
     adapter,
     members,
@@ -372,23 +374,7 @@ export async function handlePrdDraft(
     },
     (entry) => {
       emitDraftProgressInfoLog(ticketId, context.externalId, phase, 'PRD', entry)
-      if (entry.status !== 'finished' || !entry.outcome) return
-      const draftIndex = liveDrafts.findIndex(draft => draft.memberId === entry.memberId)
-      if (draftIndex < 0) return
-      liveDrafts[draftIndex] = {
-        ...liveDrafts[draftIndex]!,
-        content: entry.content ?? liveDrafts[draftIndex]!.content,
-        outcome: entry.outcome,
-        duration: entry.duration ?? liveDrafts[draftIndex]!.duration,
-        error: entry.error,
-        questionCount: entry.questionCount,
-        draftMetrics: entry.draftMetrics,
-        structuredOutput: entry.structuredOutput,
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-        ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
-      }
+      if (!applyDraftProgress(liveDrafts, entry)) return
       if (entry.structuredOutput?.repairWarnings.length) {
         emitPhaseLog(
           ticketId,
@@ -409,24 +395,10 @@ export async function handlePrdDraft(
           { source: 'system', modelId: entry.memberId },
         )
       }
-      upsertCouncilDraftArtifact(ticketId, phase, 'prd_drafts', liveDrafts)
+      upsertCouncilDraftArtifact(ticketId, phase, 'prd_drafts', liveDrafts, undefined, false, councilSettings.minQuorum)
     },
     (entry) => {
-      const fullAnswersIndex = liveFullAnswers.findIndex((draft) => draft.memberId === entry.memberId)
-      if (fullAnswersIndex < 0 || !entry.outcome) return
-      liveFullAnswers[fullAnswersIndex] = {
-        ...liveFullAnswers[fullAnswersIndex]!,
-        content: entry.content ?? liveFullAnswers[fullAnswersIndex]!.content,
-        outcome: entry.outcome,
-        duration: entry.duration ?? liveFullAnswers[fullAnswersIndex]!.duration,
-        error: entry.error,
-        questionCount: entry.questionCount,
-        structuredOutput: entry.structuredOutput,
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-        ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
-      }
+      if (!applyDraftProgress(liveFullAnswers, entry)) return
       if (entry.structuredOutput?.repairWarnings.length) {
         emitPhaseLog(
           ticketId,
@@ -447,7 +419,7 @@ export async function handlePrdDraft(
           { source: 'system', modelId: entry.memberId },
         )
       }
-      upsertCouncilDraftArtifact(ticketId, phase, 'prd_full_answers', liveFullAnswers)
+      upsertCouncilDraftArtifact(ticketId, phase, 'prd_full_answers', liveFullAnswers, undefined, false, councilSettings.minQuorum)
     },
     (entry) => {
       const stepLabel = entry.step === 'full_answers' ? 'Full Answers' : 'PRD draft'
@@ -471,7 +443,7 @@ export async function handlePrdDraft(
         context.externalId,
         phase,
         entry.outcome === 'failed' ? 'error' : 'info',
-        `${entry.memberId} ${stepLabel} ${entry.outcome === 'timed_out' ? 'timed out' : 'failed'}${entry.error ? `: ${entry.error}` : '.'}`,
+        `${entry.memberId} ${stepLabel} ${entry.outcome === 'timed_out' ? 'timed out' : entry.outcome === 'stopped' ? 'was stopped by the user' : 'failed'}${entry.error ? `: ${entry.error}` : '.'}`,
         { source: 'system', modelId: entry.memberId },
       )
     },
@@ -521,17 +493,16 @@ export async function handlePrdDraft(
 
   for (const fullAnswers of result.fullAnswers) {
     if (fullAnswers.outcome === 'completed') continue
-    const detail = fullAnswers.outcome === 'timed_out'
-      ? formatDraftFailureDetail(fullAnswers.outcome, fullAnswers.error, fullAnswers.structuredOutput?.failureClass)
-      : fullAnswers.outcome === 'invalid_output' || fullAnswers.outcome === 'failed'
-        ? formatDraftFailureDetail(fullAnswers.outcome, fullAnswers.error, fullAnswers.structuredOutput?.failureClass)
-        : 'failed'
+    const detail = fullAnswers.outcome === 'pending'
+      ? 'failed'
+      : formatDraftFailureDetail(fullAnswers.outcome, fullAnswers.error, fullAnswers.structuredOutput?.failureClass)
     emitAiDetail(ticketId, context.externalId, 'DRAFTING_PRD', 'model_output',
       `${fullAnswers.memberId} ${detail}.`,
       {
         entryId: `prd-full-answers-summary:${fullAnswers.memberId}`,
         audience: 'ai',
-        kind: 'error',
+        // A stop is a person's decision, not a fault.
+        kind: fullAnswers.outcome === 'stopped' ? 'session' : 'error',
         op: 'append',
         source: `model:${fullAnswers.memberId}`,
         modelId: fullAnswers.memberId,
@@ -541,8 +512,8 @@ export async function handlePrdDraft(
       })
   }
 
-  upsertCouncilDraftArtifact(ticketId, phase, 'prd_full_answers', result.fullAnswers, result.fullAnswerOutcomes, true)
-  upsertCouncilDraftArtifact(ticketId, phase, 'prd_drafts', result.drafts, result.memberOutcomes, true)
+  upsertCouncilDraftArtifact(ticketId, phase, 'prd_full_answers', result.fullAnswers, result.fullAnswerOutcomes, true, councilSettings.minQuorum)
+  upsertCouncilDraftArtifact(ticketId, phase, 'prd_drafts', result.drafts, result.memberOutcomes, true, councilSettings.minQuorum)
   emitPhaseLog(
     ticketId,
     context.externalId,
@@ -616,7 +587,7 @@ export async function handlePrdVote(
 
   emitPhaseLog(ticketId, context.externalId, 'COUNCIL_VOTING_PRD', 'info',
     `PRD voting started with ${members.length} council members on ${intermediate.drafts.filter(d => d.outcome === 'completed').length} drafts.`)
-  upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_PRD', 'prd_votes', intermediate.drafts, [], liveVoterOutcomes, [...liveVoterDetails.values()])
+  upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_PRD', 'prd_votes', intermediate.drafts, [], liveVoterOutcomes, [...liveVoterDetails.values()], undefined, undefined, undefined, false, councilSettings.minQuorum)
 
   if (signal.aborted) throw new CancelledError(ticketId)
   const voteRun = await conductVoting(
@@ -666,17 +637,8 @@ export async function handlePrdVote(
       )
     },
     (entry) => {
-      liveVoterOutcomes[entry.memberId] = entry.outcome
-      if (entry.votes.length > 0) liveVotes.push(...entry.votes)
-      liveVoterDetails.set(entry.memberId, {
-        voterId: entry.memberId,
-        ...(entry.error ? { error: entry.error } : {}),
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.structuredOutput ? { structuredOutput: entry.structuredOutput } : {}),
-        ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-      })
-      upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_PRD', 'prd_votes', intermediate.drafts, liveVotes, liveVoterOutcomes, [...liveVoterDetails.values()])
+      applyVoteProgress({ votes: liveVotes, voterOutcomes: liveVoterOutcomes, voterDetails: liveVoterDetails }, entry)
+      upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_PRD', 'prd_votes', intermediate.drafts, liveVotes, liveVoterOutcomes, [...liveVoterDetails.values()], undefined, undefined, undefined, false, councilSettings.minQuorum)
     },
     ({ anonymizedDrafts, rubric }) => buildPrdVotePrompt(voteTicketState, anonymizedDrafts, rubric),
     {
@@ -713,6 +675,7 @@ export async function handlePrdVote(
       undefined,
       undefined,
       true,
+      councilSettings.minQuorum,
     )
     throw buildCouncilQuorumErrorWithDiagnostics(
       `PRD voting quorum not met: ${voteQuorum.message}`,
@@ -741,6 +704,7 @@ export async function handlePrdVote(
     winnerId,
     totalScore,
     true,
+    councilSettings.minQuorum,
   )
   emitPhaseLog(ticketId, context.externalId, 'COUNCIL_VOTING_PRD', 'info',
     `PRD voting selected winner: ${winnerId} (score: ${totalScore}).`)

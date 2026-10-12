@@ -1,6 +1,7 @@
 import type { DraftResult, MemberOutcome } from './types'
 import type { StructuredFailureClass } from '../lib/structuredOutputRetry'
 import { classifyStructuredFailureFromError } from '../lib/structuredOutputRetry'
+import type { WorkBudget } from '../workflow/workBudget'
 import { getErrorMessage } from '@shared/typeGuards'
 
 export const PHASE_DEADLINE_ERROR = 'CouncilPhaseDeadlineReached'
@@ -51,5 +52,50 @@ export function classifyDraftFailure(
     outcome: failureClass === 'validation_error' ? 'invalid_output' as const : 'failed' as const,
     errorDetail: getErrorMessage(error),
     failureClass,
+  }
+}
+
+/**
+ * One member attempt's deadline, as a promise that rejects with
+ * PHASE_DEADLINE_ERROR when its budget runs out (null for an unbounded one).
+ *
+ * Re-armed from the budget rather than set once, so a question wait moves it
+ * instead of expiring the member who is waiting for the answer. Cleared
+ * outright while suspended: a timer re-set from the frozen remaining time would
+ * still fire mid-wait. `dispose` stops it; call it from a `finally`.
+ */
+export function armAttemptDeadline(
+  budget: WorkBudget,
+  isClosed: () => boolean,
+  onExpire: () => void,
+): { promise: Promise<never> | null; dispose: () => void } {
+  if (budget.totalMs === undefined) return { promise: null, dispose: () => undefined }
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+  let unsubscribe: (() => void) | undefined
+  const clear = () => {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle)
+      timeoutHandle = undefined
+    }
+  }
+  const promise = new Promise<never>((_, reject) => {
+    const arm = () => {
+      clear()
+      if (isClosed() || budget.suspended()) return
+      const delayMs = Math.max(0, budget.remainingMs() ?? 0)
+      timeoutHandle = setTimeout(() => {
+        onExpire()
+        reject(new Error(PHASE_DEADLINE_ERROR))
+      }, delayMs)
+    }
+    unsubscribe = budget.onChange(arm)
+    arm()
+  })
+  return {
+    promise,
+    dispose: () => {
+      unsubscribe?.()
+      clear()
+    },
   }
 }

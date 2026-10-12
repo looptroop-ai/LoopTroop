@@ -1,3 +1,4 @@
+import { isCouncilMemberOutcome } from '@shared/councilMembers'
 import { loadTicketDirContext } from './ticketDirContext'
 import { type TicketState } from '../../opencode/contextBuilder'
 import type {
@@ -46,13 +47,7 @@ function recoverPersistedDrafts(
     const memberId = typeof record.memberId === 'string' ? record.memberId : ''
     if (!memberId) return []
 
-    const outcome = (
-      record.outcome === 'completed'
-      || record.outcome === 'pending'
-      || record.outcome === 'timed_out'
-      || record.outcome === 'invalid_output'
-      || record.outcome === 'failed'
-    )
+    const outcome = isCouncilMemberOutcome(record.outcome)
       ? record.outcome
       : memberOutcomes?.[memberId] ?? 'pending'
 

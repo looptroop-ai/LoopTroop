@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import * as jsYaml from 'js-yaml'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { isCouncilMemberOutcome, isCouncilVotingControlPhase } from '@shared/councilMembers'
 import type { ManualQaBeadOrigin } from '@/hooks/useTickets'
 import { Trophy, Lightbulb } from 'lucide-react'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
@@ -40,7 +41,18 @@ import { renderWordDiffSegments } from './diffWordHighlights'
 import { InterviewDocumentView } from './InterviewDocumentView'
 import {
   getCouncilStatusLabel,
+  readCouncilRoundMeta,
 } from './councilArtifacts'
+import { isFailedCouncilOutcome } from './artifactCompanionUtils'
+import {
+  CouncilMemberControlContext,
+  getVoteMemberControl,
+  isCouncilRoundOpen,
+  useCouncilMemberConfirmation,
+  type CouncilMemberControlScope,
+  type CouncilRoundMember,
+} from './councilMemberControl'
+import { CouncilMemberConfirmStrip, CouncilMemberControlButton } from './CouncilMemberControls'
 import { CouncilStatusIcon } from './CouncilStatusIcon'
 import {
   hasArtifactProcessingNotice,
@@ -95,7 +107,6 @@ import {
   getRejectedVoteRawResponse,
   getValidatedDraftContent,
   hasStructuredRetryMetadata,
-  isFailedCouncilDraftOutcome,
   shouldShowValidatedDraftRawOnly,
   withDraftRawLogFallback,
 } from './artifactViewers/rawAttempts'
@@ -2229,7 +2240,108 @@ export function BeadsDraftView({ content, parsedBeads }: { content: string; pars
   )
 }
 
-function VotingResultsView({ data, showHeader = true }: { data: CouncilResultData; showHeader?: boolean }) {
+/**
+ * A member draft with nothing to show yet. Only `pending` and `completed` reach
+ * it today: every outcome without a usable result opens the diagnostics view
+ * first. The rest are here so a change to that routing cannot show a blank.
+ */
+const DRAFT_WAITING_MESSAGES: Record<CouncilOutcome, string> = {
+  pending: 'Artifact is still being generated for this member.',
+  completed: 'No content available yet.',
+  timed_out: 'No response was received before the council timeout.',
+  failed: 'This member failed before producing output.',
+  invalid_output: 'This member returned malformed output.',
+  stopped: 'You stopped this model before it finished.',
+}
+
+const VOTER_WITHOUT_SCORES_TEXT: Record<CouncilOutcome, string> = {
+  pending: 'Still scoring drafts.',
+  failed: 'Failed before submitting scores.',
+  timed_out: 'Timed out before submitting scores.',
+  invalid_output: 'Returned malformed scores.',
+  stopped: 'Stopped before submitting scores.',
+  completed: 'No scores recorded.',
+}
+
+function VoterStatusBadges({ voters, renderControls }: {
+  voters: readonly CouncilRoundMember[]
+  renderControls?: (voterId: string) => React.ReactNode
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {voters.map(({ memberId: voterId, outcome }) => (
+        // A div badge: the controls inside it are buttons, and a button cannot sit inside one.
+        <ModelBadge
+          key={voterId}
+          modelId={voterId}
+          className="px-2.5 py-1.5 h-auto items-start"
+        >
+          <div className="min-w-0 text-left">
+            <div className="text-[10px] font-medium truncate">{getModelDisplayName(voterId)}</div>
+            <div className="mt-0.5 flex items-center gap-1 text-[10px] opacity-80">
+              <CouncilStatusIcon outcome={outcome} action="scoring" className="h-3 w-3" />
+              <span>{getCouncilStatusLabel(outcome, 'scoring')}</span>
+            </div>
+          </div>
+          {renderControls?.(voterId)}
+        </ModelBadge>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The badges with Stop and Retry on each while the vote runs, and the
+ * confirmation under them. Stays mounted once the vote ends (no buttons), so a
+ * notice about a stop the voter beat, or a refusal, is still there to read
+ * for as long as this view is.
+ */
+function LiveVoterStatusBadges({ scope, voters, minQuorum, roundOpen }: {
+  scope: CouncilMemberControlScope
+  voters: readonly CouncilRoundMember[]
+  minQuorum: number | null
+  roundOpen: boolean
+}) {
+  const confirmation = useCouncilMemberConfirmation(scope)
+  const requestedId = roundOpen ? confirmation.request?.memberId : undefined
+  return (
+    <>
+      <VoterStatusBadges
+        voters={voters}
+        renderControls={roundOpen ? (voterId) => {
+          const control = getVoteMemberControl(voterId, voters, minQuorum)
+          return (
+            <div className="-mr-1 -mt-0.5 flex shrink-0 self-start">
+              {control.canStop ? (
+                <CouncilMemberControlButton
+                  iconOnly
+                  action="stop"
+                  memberId={voterId}
+                  disabled={confirmation.isPending}
+                  onClick={() => confirmation.open({ action: 'stop', memberId: voterId })}
+                />
+              ) : null}
+              <CouncilMemberControlButton
+                iconOnly
+                action="retry"
+                memberId={voterId}
+                disabled={confirmation.isPending}
+                onClick={() => confirmation.open({ action: 'retry', memberId: voterId })}
+              />
+            </div>
+          )
+        } : undefined}
+      />
+      <CouncilMemberConfirmStrip
+        confirmation={confirmation}
+        control={requestedId ? getVoteMemberControl(requestedId, voters, minQuorum) : null}
+      />
+    </>
+  )
+}
+
+function VotingResultsView({ data, showHeader = true, phase }: { data: CouncilResultData; showHeader?: boolean; phase?: string }) {
+  const memberControlScope = useContext(CouncilMemberControlContext)
   const votes = Array.isArray(data.votes)
     ? data.votes
     : []
@@ -2252,11 +2364,24 @@ function VotingResultsView({ data, showHeader = true }: { data: CouncilResultDat
   const categories = votes[0]?.scores?.map(s => s.category) ?? []
   const getVoterOutcome = (voterId: string): CouncilOutcome => {
     const outcome = voterOutcomes[voterId]
-    if (outcome === 'completed' || outcome === 'failed' || outcome === 'timed_out' || outcome === 'invalid_output' || outcome === 'pending') {
-      return outcome
-    }
+    if (isCouncilMemberOutcome(outcome)) return outcome
     return votes.some(v => v.voterId === voterId) ? 'completed' : 'pending'
   }
+  const voters = voterIds.map((voterId) => ({ memberId: voterId, outcome: getVoterOutcome(voterId) }))
+  const roundMeta = readCouncilRoundMeta(data)
+  // Stop and Retry only for the vote the live council view is running, and only until it ends.
+  const liveControlScope = memberControlScope?.phase === phase && isCouncilVotingControlPhase(phase)
+    ? memberControlScope
+    : null
+  // Held once seen. A stop or retry can end the vote, and the ticket then moves
+  // on and takes the live scope with it. Where this view stays on screen (the
+  // person picked this step in the timeline), what they were told about that
+  // request stays readable; otherwise the workspace follows the ticket, and the
+  // phase log keeps the outcome. Buttons still need the live scope.
+  const [heldControlScope, setHeldControlScope] = useState<CouncilMemberControlScope | null>(null)
+  if (liveControlScope && heldControlScope !== liveControlScope) setHeldControlScope(liveControlScope)
+  const badgeControlScope = liveControlScope ?? heldControlScope
+  const roundOpen = isCouncilRoundOpen(roundMeta, voters)
   const voterProcessingNoticeById = new Map<string, ArtifactStructuredOutputData | undefined>(
     voterIds.map((voterId) => {
       const detail = voterDetailById.get(voterId)
@@ -2309,26 +2434,16 @@ function VotingResultsView({ data, showHeader = true }: { data: CouncilResultDat
               Voter Status <span className="text-muted-foreground font-normal">({completedCount}/{voterIds.length} complete)</span>
             </div>
           )}
-          <div className="flex flex-wrap gap-2">
-            {voterIds.map(voterId => {
-              const outcome = getVoterOutcome(voterId)
-              return (
-                <ModelBadge
-                  key={voterId}
-                  modelId={voterId}
-                  className="px-2.5 py-1.5 h-auto items-start"
-                >
-                  <div className="min-w-0 text-left">
-                    <div className="text-[10px] font-medium truncate">{getModelDisplayName(voterId)}</div>
-                    <div className="mt-0.5 flex items-center gap-1 text-[10px] opacity-80">
-                      <CouncilStatusIcon outcome={outcome} action="scoring" className="h-3 w-3" />
-                      <span>{getCouncilStatusLabel(outcome, 'scoring')}</span>
-                    </div>
-                  </div>
-                </ModelBadge>
-              )
-            })}
-          </div>
+          {badgeControlScope ? (
+            <LiveVoterStatusBadges
+              scope={badgeControlScope}
+              voters={voters}
+              minQuorum={roundMeta?.minQuorum ?? null}
+              roundOpen={roundOpen && liveControlScope !== null}
+            />
+          ) : (
+            <VoterStatusBadges voters={voters} />
+          )}
         </div>
       )}
 
@@ -2412,15 +2527,7 @@ function VotingResultsView({ data, showHeader = true }: { data: CouncilResultDat
                 </div>
                 {votes.filter(v => v.voterId === voterId).length === 0 ? (
                   <div className="ml-4 text-muted-foreground italic">
-                    {getVoterOutcome(voterId) === 'pending'
-                      ? 'Still scoring drafts.'
-                      : getVoterOutcome(voterId) === 'failed'
-                        ? 'Failed before submitting scores.'
-                        : getVoterOutcome(voterId) === 'timed_out'
-                          ? 'Timed out before submitting scores.'
-                        : getVoterOutcome(voterId) === 'invalid_output'
-                            ? 'Returned malformed scores.'
-                            : 'No scores recorded.'}
+                    {VOTER_WITHOUT_SCORES_TEXT[getVoterOutcome(voterId)]}
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -2803,9 +2910,7 @@ export function ArtifactContent({
       const voterDetailById = new Map(voterDetails.map((detail) => [detail.voterId, detail] as const))
       const completedCount = voterIds.filter(voterId => {
         const outcome = voterOutcomes[voterId]
-        if (outcome === 'completed' || outcome === 'failed' || outcome === 'timed_out' || outcome === 'invalid_output' || outcome === 'pending') {
-          return outcome === 'completed'
-        }
+        if (isCouncilMemberOutcome(outcome)) return outcome === 'completed'
         return votes.some(v => v.voterId === voterId)
       }).length
 
@@ -2870,7 +2975,7 @@ export function ArtifactContent({
 
       return (
         <WithRawTab content={content} structuredLabel="Votes" header={header} rawSources={rawSources}>
-          <VotingResultsView data={councilResult} showHeader={false} />
+          <VotingResultsView data={councilResult} showHeader={false} phase={phase} />
         </WithRawTab>
       )
     }
@@ -2881,7 +2986,7 @@ export function ArtifactContent({
       const winnerDraft = winnerDraftSource
         ? withDraftRawLogFallback(winnerDraftSource, phase, artifactId, draftRawLogFallbacks)
         : undefined
-      if (winnerDraft && isFailedCouncilDraftOutcome(winnerDraft.outcome)) {
+      if (winnerDraft && isFailedCouncilOutcome(winnerDraft.outcome)) {
         const isPrd = isStructuredPrdArtifactId(artifactId)
         const isBeads = Boolean(artifactId?.includes('beads'))
         const diagnosticContent = JSON.stringify({
@@ -2978,7 +3083,7 @@ export function ArtifactContent({
       ? withDraftRawLogFallback(draftSource, phase, artifactId, draftRawLogFallbacks)
       : null
     const draftContent = draft
-      ? (isFailedCouncilDraftOutcome(draft.outcome) ? '' : draft.content ?? '')
+      ? (isFailedCouncilOutcome(draft.outcome) ? '' : draft.content ?? '')
       : councilResult.refinedContent ?? councilResult.winnerContent ?? ''
 
     const header = draft ? (
@@ -3006,7 +3111,7 @@ export function ArtifactContent({
       </ModelBadge>
     ) : null
 
-    if (draft && isFailedCouncilDraftOutcome(draft.outcome)) {
+    if (draft && isFailedCouncilOutcome(draft.outcome)) {
       const isFullAnswers = isPrdFullAnswersArtifactId(artifactId)
       const isInterview = Boolean(artifactId?.startsWith('draft') || artifactId?.includes('interview'))
       const isPrd = isStructuredPrdArtifactId(artifactId) && !isFullAnswers
@@ -3082,15 +3187,11 @@ export function ArtifactContent({
     }
 
     if (draft) {
-      const waitingMessage = draft.outcome === 'pending'
-        ? 'Artifact is still being generated for this member.'
-        : draft.outcome === 'timed_out'
-          ? 'No response was received before the council timeout.'
-          : draft.outcome === 'failed'
-            ? (draft.error || 'This member failed before producing output.')
-            : draft.outcome === 'invalid_output'
-              ? (draft.error || 'This member returned malformed output.')
-              : 'No content available yet.'
+      const waitingMessage = (draft.outcome === 'failed' || draft.outcome === 'invalid_output') && draft.error
+        ? draft.error
+        : isCouncilMemberOutcome(draft.outcome)
+          ? DRAFT_WAITING_MESSAGES[draft.outcome]
+          : 'No content available yet.'
       const noticeOutput = withRawNormalizationNotice(draft.structuredOutput, draft.rawResponse, draft.normalizedResponse, draft.content)
       return (
         <div className="space-y-3">

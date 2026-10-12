@@ -283,7 +283,11 @@ describe('Council draft, vote and refine steps', () => {
       await rejection
 
       expect(unconfirmedAdapter.abortCalls).toContain('mock-session-1')
-      expect(unconfirmedAdapter.finishedEvents.filter(entry => entry.status === 'finished')).toEqual([])
+      // Never reported as timed out: the stop was not confirmed. It is reported
+      // as failed with that reason, so the live view stops showing it working.
+      expect(unconfirmedAdapter.finishedEvents.filter(entry => entry.status === 'finished')).toEqual([
+        expect.objectContaining({ outcome: 'failed', error: 'Could not confirm abort of OpenCode session mock-session-1' }),
+      ])
     } finally {
       vi.useRealTimers()
     }

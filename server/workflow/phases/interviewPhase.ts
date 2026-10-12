@@ -76,6 +76,8 @@ import {
   emitOpenCodeStreamEvent,
   emitOpenCodePromptLog,
   emitDraftProgressInfoLog,
+  applyDraftProgress,
+  applyVoteProgress,
   createOpenCodeStreamState,
   resolveInterviewDraftSettings,
   resolveCouncilRuntimeSettings,
@@ -1249,7 +1251,7 @@ export async function handleInterviewDeliberate(
   const startedAt = Date.now()
   const streamStates = new Map<string, OpenCodeStreamState>()
   const liveDrafts = createPendingDrafts(members)
-  upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', liveDrafts)
+  upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', liveDrafts, undefined, false, draftSettings.minQuorum)
   const result = await deliberateInterview(
     adapter,
     members,
@@ -1303,22 +1305,7 @@ export async function handleInterviewDeliberate(
     },
     (entry) => {
       emitDraftProgressInfoLog(ticketId, context.externalId, phase, 'Interview', entry)
-      if (entry.status !== 'finished' || !entry.outcome) return
-      const draftIndex = liveDrafts.findIndex(draft => draft.memberId === entry.memberId)
-      if (draftIndex < 0) return
-      liveDrafts[draftIndex] = {
-        ...liveDrafts[draftIndex]!,
-        content: entry.content ?? liveDrafts[draftIndex]!.content,
-        outcome: entry.outcome,
-        duration: entry.duration ?? liveDrafts[draftIndex]!.duration,
-        error: entry.error,
-        questionCount: entry.questionCount,
-        structuredOutput: entry.structuredOutput,
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-        ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
-      }
+      if (!applyDraftProgress(liveDrafts, entry)) return
       if (entry.structuredOutput?.repairWarnings.length) {
         emitPhaseLog(
           ticketId,
@@ -1339,7 +1326,7 @@ export async function handleInterviewDeliberate(
           { source: 'system', modelId: entry.memberId },
         )
       }
-      upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', liveDrafts)
+      upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', liveDrafts, undefined, false, draftSettings.minQuorum)
     },
   )
 
@@ -1370,7 +1357,7 @@ export async function handleInterviewDeliberate(
     nextStatus,
   )
 
-  upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', result.drafts, result.memberOutcomes, true)
+  upsertCouncilDraftArtifact(ticketId, phase, 'interview_drafts', result.drafts, result.memberOutcomes, true, draftSettings.minQuorum)
   emitPhaseLog(
     ticketId,
     context.externalId,
@@ -1431,7 +1418,7 @@ export async function handleInterviewVote(
 
   emitPhaseLog(ticketId, context.externalId, 'COUNCIL_VOTING_INTERVIEW', 'info',
     `Interview voting started with ${members.length} council members on ${intermediate.drafts.filter(d => d.outcome === 'completed').length} drafts.`)
-  upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_INTERVIEW', 'interview_votes', intermediate.drafts, [], liveVoterOutcomes, [...liveVoterDetails.values()])
+  upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_INTERVIEW', 'interview_votes', intermediate.drafts, [], liveVoterOutcomes, [...liveVoterDetails.values()], undefined, undefined, undefined, false, councilSettings.minQuorum)
 
   if (signal.aborted) throw new CancelledError(ticketId)
   const voteRun = await conductVoting(
@@ -1481,17 +1468,8 @@ export async function handleInterviewVote(
       )
     },
     (entry) => {
-      liveVoterOutcomes[entry.memberId] = entry.outcome
-      if (entry.votes.length > 0) liveVotes.push(...entry.votes)
-      liveVoterDetails.set(entry.memberId, {
-        voterId: entry.memberId,
-        ...(entry.error ? { error: entry.error } : {}),
-        ...(typeof entry.rawResponse === 'string' ? { rawResponse: entry.rawResponse } : {}),
-        ...(typeof entry.normalizedResponse === 'string' ? { normalizedResponse: entry.normalizedResponse } : {}),
-        ...(entry.structuredOutput ? { structuredOutput: entry.structuredOutput } : {}),
-        ...(entry.rawAttempts ? { rawAttempts: entry.rawAttempts } : {}),
-      })
-      upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_INTERVIEW', 'interview_votes', intermediate.drafts, liveVotes, liveVoterOutcomes, [...liveVoterDetails.values()])
+      applyVoteProgress({ votes: liveVotes, voterOutcomes: liveVoterOutcomes, voterDetails: liveVoterDetails }, entry)
+      upsertCouncilVoteArtifact(ticketId, 'COUNCIL_VOTING_INTERVIEW', 'interview_votes', intermediate.drafts, liveVotes, liveVoterOutcomes, [...liveVoterDetails.values()], undefined, undefined, undefined, false, councilSettings.minQuorum)
     },
     ({ anonymizedDrafts, rubric }) => buildInterviewVotePrompt(
       interviewTicketState,
@@ -1532,6 +1510,7 @@ export async function handleInterviewVote(
       undefined,
       undefined,
       true,
+      councilSettings.minQuorum,
     )
     throw buildCouncilQuorumErrorWithDiagnostics(
       `Interview voting quorum not met: ${voteQuorum.message}`,
@@ -1562,6 +1541,7 @@ export async function handleInterviewVote(
     winnerId,
     totalScore,
     true,
+    councilSettings.minQuorum,
   )
   emitPhaseLog(
     ticketId,

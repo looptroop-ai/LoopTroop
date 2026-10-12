@@ -36,6 +36,46 @@ export async function waitForCouncilSession(
 }
 
 /**
+ * Stops the session of a council member whose turn was cut short, wherever that
+ * session got to.
+ *
+ * The turn may have a session mid-prompt, or one still being created: its id
+ * then arrives through the create callback, or is found through its ownership
+ * row. A prompt that already returned has nothing left running. Resolves with
+ * whether the stop is confirmed and the id it settled on, if any.
+ */
+export async function stopCutShortCouncilSession(input: {
+  adapter: OpenCodeAdapter
+  sessionManager: SessionManager | null
+  role: 'drafter' | 'voter'
+  promptReturned: boolean
+  /** The turn's own record of its session, falling back to the ownership row. */
+  findSessionId: () => string | undefined
+  sessionReady: Promise<void>
+  executionSettled: Promise<void>
+  /** Whether a create for this turn may still be in flight with no row yet. */
+  hasUnresolvedOwnership: () => boolean
+}): Promise<{ stopped: boolean; sessionId: string | undefined }> {
+  if (input.promptReturned) return { stopped: true, sessionId: input.findSessionId() }
+  let sessionId = input.findSessionId()
+  if (!sessionId) {
+    // A prompt can ignore its local abort signal. Give its session-create
+    // callback a bounded chance to publish the id, but never wait for the
+    // prompt itself before attempting the remote stop.
+    const waitOutcome = await waitForCouncilSession(input.sessionReady, input.executionSettled)
+    sessionId = input.findSessionId()
+    if (!sessionId) {
+      if (waitOutcome !== 'execution_settled') return { stopped: false, sessionId }
+      return { stopped: !input.hasUnresolvedOwnership(), sessionId }
+    }
+  }
+  return {
+    stopped: await confirmCouncilSessionStopped(input.adapter, input.sessionManager, sessionId, input.role),
+    sessionId,
+  }
+}
+
+/**
  * Confirm a council session is stopped without waiting for its prompt promise.
  *
  * OpenCode may leave a prompt request pending after its local AbortSignal fires.

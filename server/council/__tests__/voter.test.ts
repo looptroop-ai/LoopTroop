@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
 import { SILENT_DISABLED_PERMISSIONS } from '../../opencode/toolPolicy'
 import type { CouncilMember, DraftResult } from '../types'
@@ -176,8 +176,13 @@ describe('conductVoting', () => {
   })
 
   it('does not report a voting timeout when remote stop remains unconfirmed', async () => {
+    let markPromptStarted: () => void = () => undefined
+    const promptStarted = new Promise<void>((resolve) => {
+      markPromptStarted = resolve
+    })
     class UnconfirmedStopAdapter extends MockOpenCodeAdapter {
       override async promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        markPromptStarted()
         return stalledPrompt(signal)
       }
 
@@ -186,21 +191,35 @@ describe('conductVoting', () => {
       }
     }
 
-    const progress: Array<{ outcome: string }> = []
-    await expect(conductVoting(
-      new UnconfirmedStopAdapter(),
-      [{ modelId: 'model-a', name: 'Model A' }],
-      [{ memberId: 'draft-a', content: 'draft-a content', outcome: 'completed', duration: 1 }],
-      [{ type: 'text', content: 'vote prompt' }],
-      '/tmp/test',
-      'interview_draft',
-      5,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      (entry) => progress.push({ outcome: entry.outcome }),
-    )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
-    expect(progress).toEqual([])
+    // The deadline runs out only once the session exists. On a busy machine a
+    // real 5ms one could expire first, and with no session there is no stop
+    // left unconfirmed.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true })
+    try {
+      const timeoutMs = 60_000
+      const progress: Array<{ outcome: string }> = []
+      const outcome = expect(conductVoting(
+        new UnconfirmedStopAdapter(),
+        [{ modelId: 'model-a', name: 'Model A' }],
+        [{ memberId: 'draft-a', content: 'draft-a content', outcome: 'completed', duration: 1 }],
+        [{ type: 'text', content: 'vote prompt' }],
+        '/tmp/test',
+        'interview_draft',
+        timeoutMs,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (entry) => progress.push({ outcome: entry.outcome }),
+      )).rejects.toThrow('Could not confirm abort of OpenCode session mock-session-1')
+      await promptStarted
+      await vi.advanceTimersByTimeAsync(timeoutMs)
+      await outcome
+      // Never reported as timed out: the stop was not confirmed. It is reported as
+      // failed instead, so the live view stops showing the voter at work.
+      expect(progress).toEqual([{ outcome: 'failed' }])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

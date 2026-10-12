@@ -142,6 +142,8 @@ const serverIntegrationTests = [
   'server/lib/__tests__/processTree.test.ts',
   'server/opencode/__tests__/supervisor.test.ts',
   'server/council/__tests__/sessionOwnershipStop.test.ts',
+  // Drives the drafting, voting and PRD engines against a real ticket's sessions.
+  'server/council/__tests__/memberControlEngines.test.ts',
   'server/__tests__/startupArtifacts.test.ts',
   'server/git/__tests__/runCommandFallback.test.ts',
   // These run real Git/process fixtures and must not block or mutate a shared worker.

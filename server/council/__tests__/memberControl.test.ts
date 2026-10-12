@@ -261,7 +261,8 @@ describe('council member control', () => {
     control.finish('a')
     await flush()
 
-    await retryCouncilMember(TICKET, PHASE, 'a')
+    // Answered with the failure, not a success for a restart that never began.
+    await expect(retryCouncilMember(TICKET, PHASE, 'a')).rejects.toMatchObject({ code: 'STOP_UNCONFIRMED' })
     await expect(runA).rejects.toThrow('artifact reset failed')
 
     control.finish('b')
@@ -306,6 +307,23 @@ describe('council member control', () => {
     await expect(runA).resolves.toEqual({ memberId: 'a', outcome: 'completed', attempt: 1 })
     expect(round.isClosed).toBe(true)
     expect(hasLiveCouncilRound(TICKET, PHASE)).toBe(false)
+  })
+
+  it('answers a restart of a finished member that a cancel overtakes', async () => {
+    const control = controllableAttempts()
+    const abort = new AbortController()
+    const { round, restarts } = openRound(['a', 'b'], abort.signal)
+    const runA = round.run('a', control.run('a'))
+    void round.run('b', control.run('b'))
+    control.finish('a')
+    await flush()
+
+    // The cancel lands before the run loop wakes up for the restart.
+    const retry = retryCouncilMember(TICKET, PHASE, 'a')
+    abort.abort()
+    await expect(retry).resolves.toBeUndefined()
+    await expect(runA).resolves.toMatchObject({ outcome: 'completed', attempt: 1 })
+    expect(restarts).toEqual([])
   })
 
   it('leaves the newer round in charge when an older one closes late', async () => {

@@ -97,7 +97,8 @@ export interface CouncilRoundOptions<T> {
 
 type ResumeDecision =
   | { kind: 'close' }
-  | { kind: 'retry'; part: CouncilMemberRetryPart | undefined }
+  /** `started` resolves once the run loop has dealt with the restart. */
+  | { kind: 'retry'; part: CouncilMemberRetryPart | undefined; started: Deferred<undefined> }
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -264,6 +265,7 @@ export class CouncilRound<T> {
       // Only a canceled ticket closes a round under a member it is restarting.
       if (decision.kind === 'close' || this.closed) {
         slot.state = 'settled'
+        if (decision.kind === 'retry') decision.started.resolve(undefined)
         return result
       }
       part = decision.part
@@ -272,6 +274,8 @@ export class CouncilRound<T> {
       } catch (error) {
         this.failMember(slot, error)
         throw error
+      } finally {
+        decision.started.resolve(undefined)
       }
     }
   }
@@ -299,10 +303,11 @@ export class CouncilRound<T> {
   /**
    * Starts a member over with a fresh attempt.
    *
-   * A working member is interrupted first, and this resolves once its session
-   * is confirmed stopped and the new attempt is running. A settled member
-   * starts again straight away. Either way `beforeInterrupt` runs after the
-   * checks and right before the restart, as for a stop.
+   * A working member is interrupted first. Either way this resolves once the
+   * restart is recorded and the new attempt is running, and rejects when the
+   * member left the round instead: its stop was never confirmed, or recording
+   * the restart failed. `beforeInterrupt` runs after the checks and right
+   * before the restart, as for a stop.
    */
   async retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void): Promise<void> {
     const slot = this.requireLiveSlot(memberId)
@@ -316,7 +321,10 @@ export class CouncilRound<T> {
       // meantime cannot close the round under this restart.
       slot.resume = null
       slot.state = 'running'
-      resume({ kind: 'retry', part })
+      const started = createDeferred<undefined>()
+      resume({ kind: 'retry', part, started })
+      await started.promise
+      throwIfMemberDied(slot)
       return
     }
     const control = requireInterruptibleAttempt(slot)

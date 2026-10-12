@@ -82,8 +82,9 @@ export type CouncilMemberRetryPart = (typeof COUNCIL_MEMBER_RETRY_PARTS)[number]
  * - `MEMBER_FINISHED`: Stop on a model that already finished its turn.
  * - `MEMBER_BUSY`: a stop or retry for that model is already under way.
  * - `STOP_UNCONFIRMED`: the model's turn could not be ended cleanly (OpenCode
- *   did not confirm its session stopped). The round fails once the other
- *   models finish, rather than risk two copies of the model running.
+ *   did not confirm its session stopped), or its restart could not be
+ *   recorded. The round fails once the other models finish, rather than risk
+ *   two copies of the model running.
  */
 export type CouncilMemberControlErrorCode =
   | 'STEP_NOT_RUNNING'

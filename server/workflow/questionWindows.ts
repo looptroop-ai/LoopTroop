@@ -355,20 +355,16 @@ function persistRequest(record: QuestionRequestRecord, timerKey: string): void {
  * person stopped the model that asked, and OpenCode never confirmed the stop.
  * The next poll, or a daemon restart, would then arm it again and offer an
  * answer into the session the person ended. The saved record outlasts both.
+ *
+ * Looked up by the request alone. The record is saved under the step attempt
+ * live when the question came in, while the poll and the restart file it under
+ * the session row's attempt, which is 1 for every council session.
  */
-function wasResolvedEarlier(input: {
-  ticketId: string
-  sessionId: string
-  requestId: string
-  phase: WorkflowPhaseId
-  phaseAttempt: number
-}): boolean {
+function wasResolvedEarlier(ticketId: string, sessionId: string, requestId: string): boolean {
   try {
     const artifact = getLatestPhaseArtifact(
-      input.ticketId,
-      `${QUESTION_REQUEST_ARTIFACT_PREFIX}${requestKey(input.sessionId, input.requestId)}`,
-      input.phase,
-      input.phaseAttempt,
+      ticketId,
+      `${QUESTION_REQUEST_ARTIFACT_PREFIX}${requestKey(sessionId, requestId)}`,
     )
     if (!artifact?.content) return false
     return (JSON.parse(artifact.content) as { state?: unknown }).state === 'resolved'
@@ -517,7 +513,7 @@ export function attachRequest(input: {
   if (existing?.requests.has(key)) return false
   // Same for one that arrives after its own answer: OpenCode has been told, and
   // a second window would suspend the ticket's clocks with nothing to lift it.
-  if (wasResolvedRecently(input.ticketId, key) || wasResolvedEarlier(input)) return false
+  if (wasResolvedRecently(input.ticketId, key) || wasResolvedEarlier(input.ticketId, input.sessionId, input.requestId)) return false
 
   const timer = armOrResetTimer(input)
 
@@ -1351,7 +1347,7 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
     // leave a receipt: an orphan question that vanishes without a trail is how
     // a blocked round becomes unexplainable weeks later.
     // One already closed here (its model was stopped) keeps the receipt it has.
-    const closedEarlier = owner !== undefined && wasResolvedEarlier({ ...owner, requestId: request.id })
+    const closedEarlier = owner !== undefined && wasResolvedEarlier(owner.ticketId, request.sessionID, request.id)
     const failure = await rejectWithRetries(request.id, undefined, request.sessionID)
     if (!failure) {
       if (owner && !closedEarlier) writeOrphanReceipt(owner, request, null)

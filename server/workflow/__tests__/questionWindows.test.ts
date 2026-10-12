@@ -25,6 +25,7 @@ import {
   stopTicketTimers,
 } from '../questionWindows'
 import { getTicketContext } from '../../storage/ticketQueries'
+import { archiveActivePhaseAttempts, createFreshPhaseAttempts, ensureActivePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import { closeQuestionWait } from '../../storage/questionWaits'
 import { questionWaits } from '../../db/schema'
 import type { OpenCodeQuestionInfo } from '../../opencode/types'
@@ -312,7 +313,12 @@ describe('question windows', () => {
 
   it('never brings back a question a stop closed, after this process forgot it', async () => {
     const ticket = makeTicket()
-    ask(ticket.id, { phase: 'DRAFTING_BEADS' })
+    // A retried step: the question comes in under attempt 2, while the council
+    // session's row, which the poll and the restart read, still says 1.
+    ensureActivePhaseAttempt(ticket.id, 'DRAFTING_BEADS')
+    archiveActivePhaseAttempts(ticket.id, ['DRAFTING_BEADS'], 'test_retry')
+    createFreshPhaseAttempts(ticket.id, ['DRAFTING_BEADS'])
+    ask(ticket.id, { phase: 'DRAFTING_BEADS', phaseAttempt: 2 })
     closeMemberQuestions(ticket.id, 'DRAFTING_BEADS', 'anthropic/claude', {
       actor: 'user',
       resolution: 'member_stopped',
@@ -330,7 +336,7 @@ describe('question windows', () => {
     // A restart that finds its session gone refuses it, without a second record.
     adapter.mockQuestions = [{ id: 'req_a', sessionID: 'ses_a', questions: QUESTIONS }]
     const result = await reconcilePendingQuestionsAfterRestart({
-      projectRoot: getTicketContext(ticket.id)!.projectRoot,
+      projectRoot: getTicketContext(ticket.id)?.projectRoot ?? '',
       owners: [{ sessionId: 'ses_a', ticketId: ticket.id, memberId: 'anthropic/claude', phase: 'DRAFTING_BEADS', phaseAttempt: 1, active: false }],
       windowMsFor: () => 60_000,
     })

@@ -132,6 +132,18 @@ describe('shared blocked error diagnostics', () => {
     expect(sanitizeDiagnosticText(redacted)).toBe(redacted)
   })
 
+  it('removes URL query credentials with a long internal backslash run and preserves closing delimiters', () => {
+    const record = {
+      requestUrl: `https://host.example/path?api_key=opaque-secret${'\\'.repeat(2000)}tail`,
+      statusCode: 401,
+      message: 'Keep this.',
+    }
+    const expected = { ...record, requestUrl: 'https://host.example/path' }
+    expect(JSON.parse(sanitizeDiagnosticText(JSON.stringify(record)))).toEqual(expected)
+    const encoded = JSON.stringify(JSON.stringify(record))
+    expect(JSON.parse(JSON.parse(sanitizeDiagnosticText(encoded)))).toEqual(expected)
+  })
+
   it.each(['credentials=opaque-review-secret statusCode=401', 'credentials: opaque-review-secret', 'credentials provided: opaque-review-secret'])('redacts plain credential containers: %s', (value) => {
     expect(sanitizeDiagnosticText(value)).not.toContain('opaque-review-secret')
     expect(sanitizeDiagnosticText(value)).toContain('[redacted]')
@@ -438,6 +450,34 @@ describe('shared blocked error diagnostics', () => {
   it('keeps neighboring logfmt fields after an unquoted cookie field', () => {
     expect(sanitizeDiagnosticText('cookie=session=opaque-review-secret statusCode=401 sessionID=ses-real duration=22ms')).toBe('cookie=[redacted] statusCode=401 sessionID=ses-real duration=22ms')
     expect(sanitizeDiagnosticText('Cookie: session=opaque-review-secret; other=opaque-review-other\nKeep evidence.')).toBe('Cookie: [redacted]\nKeep evidence.')
+  })
+
+  it.each([
+    ['set-cookie: session=opaque-review-secret session.id=ses-real model=gpt status=401 message=failed', 'set-cookie: [redacted] session.id=ses-real model=gpt status=401 message=failed'],
+    ['cookie=opaque-review-secret,status=401 session=ses-real model=gpt message=failed', 'cookie=[redacted],status=401 session=ses-real model=gpt message=failed'],
+    ['level=ERROR service=llm session.id=ses-real model=gpt status=401 set-cookie: opaque-review-secret message="failed"', 'level=ERROR service=llm session.id=ses-real model=gpt status=401 set-cookie: [redacted] message="failed"'],
+    ['cookie=first-review-secret status=401 Cookie: first=second-review-secret; arbitrary=third-review-secret', 'cookie=[redacted] status=401 Cookie: [redacted]'],
+    ['Cookie: first="first review secret"; arbitrary.name="second review secret"; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; extension=third-review-secret', 'Cookie: [redacted]'],
+    ["Cookie: arbitrary'name=first-review-secret'suffix; other=second-review-secret", 'Cookie: [redacted]'],
+    ['Set-Cookie: first=first-review-secret,other=second-review-secret; Path=/; SameSite=Lax; Secure', 'Set-Cookie: [redacted]'],
+    ['cookie provided: first-review-secret; arbitraryName=second-review-secret', 'cookie provided: [redacted]'],
+  ])('keeps cookie evidence parseable without revealing header pairs: %s', (rawLine, expectedLine) => {
+    const record = { rawLine, statusCode: 401, message: 'Keep this.', sessionId: 'ses-real' }
+    const expected = { ...record, rawLine: expectedLine }
+    expect(sanitizeDiagnosticText(rawLine)).toBe(expectedLine)
+    expect(sanitizeDiagnosticValue(record)).toEqual(expected)
+    let encoded = JSON.stringify(record, null, 2)
+    let redacted = JSON.stringify(expected, null, 2)
+    for (let depth = 0; depth < 4; depth += 1) {
+      const cleaned = sanitizeDiagnosticText(encoded)
+      expect(cleaned).toBe(redacted)
+      expect(sanitizeDiagnosticText(cleaned)).toBe(cleaned)
+      let decoded: unknown = cleaned
+      for (let layer = 0; layer <= depth; layer += 1) decoded = JSON.parse(decoded as string)
+      expect(decoded).toEqual(expected)
+      encoded = JSON.stringify(encoded)
+      redacted = JSON.stringify(redacted)
+    }
   })
 
   it.each([

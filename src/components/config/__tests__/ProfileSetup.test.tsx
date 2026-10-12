@@ -783,20 +783,24 @@ describe('ProfileSetup', () => {
     )
   })
 
-  it('blocks active invalid waits, restores validation on re-enable, and clears it with Default', async () => {
+  it.each(['0', '61', '2.5', ''])('blocks saving for an active invalid AI question wait of %j', async raw => {
     await renderProfileSetup()
     const waitField = openCustomAiQuestionWait()
     const save = screen.getByRole('button', { name: 'Save' })
 
-    for (const raw of ['0', '61', '2.5', '']) {
-      fireEvent.change(waitField, { target: { value: raw } })
-      expect(waitField).toHaveValue(raw === '' ? null : Number(raw))
-      expect(waitField).toHaveAttribute('aria-invalid', 'true')
-      expect(save).toBeDisabled()
-      fireEvent.submit(requireElement(save.closest('form'), 'configuration form'))
-      expect(updateProfileMutate).not.toHaveBeenCalled()
-      expect(createProfileMutate).not.toHaveBeenCalled()
-    }
+    fireEvent.change(waitField, { target: { value: raw } })
+    expect(waitField).toHaveValue(raw === '' ? null : Number(raw))
+    expect(waitField).toHaveAttribute('aria-invalid', 'true')
+    expect(save).toBeDisabled()
+    fireEvent.submit(requireElement(save.closest('form'), 'configuration form'))
+    expect(updateProfileMutate).not.toHaveBeenCalled()
+    expect(createProfileMutate).not.toHaveBeenCalled()
+  })
+
+  it('suspends an invalid custom wait while Off, restores it on re-enable, and clears it with Default', async () => {
+    await renderProfileSetup()
+    const waitField = openCustomAiQuestionWait()
+    const save = screen.getByRole('button', { name: 'Save' })
 
     fireEvent.change(waitField, { target: { value: '10' } })
     expect(save).toBeEnabled()

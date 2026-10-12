@@ -278,6 +278,35 @@ describe('ticket log projection API', () => {
     expect((await (await app.request(url)).json() as typeof body).entries).toEqual(body.entries)
   })
 
+  it('keeps stable evidence identities for same-time errors sharing one entry ID across pages and refreshes', async () => {
+    const { ticket } = createLogTestTicket()
+    const timestamp = new Date().toISOString()
+    for (const attempt of [1, 2, 3, 4, 4]) {
+      appendLogEvent(ticket.id, 'error', 'CODING', 'request failed', { timestamp, errorDetails: { attempt } }, 'model:provider/model', 'CODING', {
+        entryId: 'shared-session:error', audience: 'ai', kind: 'error', op: 'append',
+        sessionId: 'shared-session', modelId: 'provider/model',
+      })
+    }
+    const occurrence = recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'CODING', errorMessage: 'failure', occurredAt: timestamp })
+    assert(occurrence)
+    const baseUrl = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&errorOccurrenceId=${occurrence.id}&limit=3`
+    type EvidenceEntry = { entryId: string; _logMirrorKey: string; _logMirrorOccurrence: number; data: { errorDetails: { attempt: number } } }
+    const first = await (await app.request(baseUrl)).json() as { entries: EvidenceEntry[]; olderCursor: string; totalEntries: number }
+    expect(first.totalEntries).toBe(5)
+    expect(first.entries.map(entry => entry.data.errorDetails.attempt)).toEqual([3, 4, 4])
+    const older = await (await app.request(`${baseUrl}&before=${encodeURIComponent(first.olderCursor)}`)).json() as { entries: EvidenceEntry[]; hasOlder: boolean }
+    expect(older.hasOlder).toBe(false)
+    const entries = [...older.entries, ...first.entries]
+    expect(entries.map(entry => entry.data.errorDetails.attempt)).toEqual([1, 2, 3, 4, 4])
+    expect(entries.map(entry => entry.entryId)).toEqual(Array(5).fill('shared-session:error'))
+    const identity = (entry: EvidenceEntry) => `${entry._logMirrorKey}:${entry._logMirrorOccurrence}`
+    expect(new Set(entries.map(identity)).size).toBe(5)
+    const refreshed = await (await app.request(baseUrl)).json() as typeof first
+    expect(refreshed.entries.map(identity)).toEqual(first.entries.map(identity))
+    const ordinary = await (await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?view=debug&phase=CODING`)).json() as typeof first
+    expect(ordinary.entries.every(entry => entry._logMirrorKey === undefined && entry._logMirrorOccurrence === undefined)).toBe(true)
+  })
+
   it('keeps the latest same-time native records across line number digit widths', async () => {
     const { ticket, repoDir } = createLogTestTicket()
     const startedAt = new Date().toISOString()

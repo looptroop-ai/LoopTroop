@@ -685,6 +685,32 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
+  it.each(['known', 'unexpected'])('redacts %s initialization messages before logs, events, storage and the response', async (kind) => {
+    const { app, ticket } = setupStartTicketApp()
+    const message = 'Worktree initialization failed: apiKey=init-message-secret see https://example.test/init?token=signed-url-secret#private'
+    vi.mocked(initializeTicket).mockRejectedValueOnce(kind === 'known'
+      ? new TicketInitializationError('INIT_TEST', message)
+      : new Error(message))
+
+    const response = await app.request(`/api/tickets/${ticket.id}/start`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    const event = vi.mocked(sendTicketEvent).mock.calls.find(([, value]) => value.type === 'INIT_FAILED')?.[1]
+    expect(event).toMatchObject({
+      type: 'INIT_FAILED',
+      codes: [kind === 'known' ? 'INIT_TEST' : 'INIT_UNKNOWN'],
+      message: expect.stringContaining('Worktree initialization failed'),
+    })
+    const surfaces = [await response.json(), event, getTicketByRef(ticket.id), readPersistedLogEvents(ticket.id)]
+    for (const surface of surfaces) {
+      const serialized = JSON.stringify(surface)
+      expect(serialized).not.toContain('init-message-secret')
+      expect(serialized).not.toContain('signed-url-secret')
+      expect(serialized).toContain('[redacted]')
+    }
+    broadcaster.clearTicket(ticket.id)
+  })
+
   it('returns an initialization error when INIT_FAILED cannot be dispatched', async () => {
     const { app, ticket } = setupStartTicketApp()
     vi.mocked(initializeTicket).mockRejectedValueOnce(new Error('Worktree initialization exploded.'))

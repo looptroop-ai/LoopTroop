@@ -375,6 +375,7 @@ beforeAll(async () => {
     import('@/components/workspace/DraftView'),
     import('@/components/workspace/ManualQAView'),
     import('@/components/workspace/ErrorView'),
+    import('@/components/workspace/PhaseReviewView'),
   ])
 })
 

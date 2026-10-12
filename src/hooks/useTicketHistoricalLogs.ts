@@ -370,10 +370,14 @@ function normalizePage(payload: unknown, fallbackPhase?: string, preserveRecord 
   return {
     entries: records
       .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
-      .map(entry => ({
-        ...normalizeLogRecord(entry, fallbackPhase ?? String(entry.phase ?? entry.status ?? 'unknown')),
-        ...(preserveRecord ? { record: entry } : {}),
-      })),
+      .map(entry => {
+        const normalized = normalizeLogRecord(entry, fallbackPhase ?? String(entry.phase ?? entry.status ?? 'unknown'))
+        if (!preserveRecord) return normalized
+        const id = normalized._logMirrorKey
+          ? `record:${normalized._logMirrorKey}:${normalized._logMirrorOccurrence ?? 0}`
+          : normalized.entryId
+        return { ...normalized, id, entryId: id, record: entry }
+      }),
     olderCursor: typeof data.olderCursor === 'string' ? data.olderCursor : null,
     hasOlder: data.hasOlder === true,
     totalEntries: normalizeCount(data.totalEntries),
@@ -403,6 +407,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '', scope.errorOccurrenceId ?? '', scope.startedAt ?? '', scope.endedAt ?? '', scope.limit ?? INITIAL_LOG_PAGE_LIMIT,
   ], [scope.beadId, scope.errorOccurrenceId, scope.startedAt, scope.endedAt, scope.limit, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
   const queryScopeKey = JSON.stringify(queryKey)
+  const preserveRecord = scope.view === 'debug' && Boolean(scope.errorOccurrenceId || scope.startedAt || scope.endedAt)
 
   const query = useInfiniteQuery({
     queryKey,
@@ -423,7 +428,6 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
       const response = await fetch(getQuery(ticketId!, scope, pageParam ?? undefined), { signal })
       await throwIfHistoricalCursorExpired(response)
       await throwIfNotOk(response, 'Unable to load logs')
-      const preserveRecord = scope.view === 'debug' && Boolean(scope.errorOccurrenceId || scope.startedAt || scope.endedAt)
       const page = normalizePage(await response.json(), scope.phase, preserveRecord)
       if (pageParam === null && page.modelIds !== null && !signal.aborted) {
         queryClient.setQueryData<ModelCatalog>(modelQueryKey, previous => previous && revision > previous.appliedRevision
@@ -455,6 +459,14 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   }, [])
   const entries = useMemo(() => {
     void foldRevision
+    if (preserveRecord) {
+      // Evidence records are separate appends even when their display IDs or fingerprints repeat.
+      const records = new Map<string, LogEntry>()
+      for (const page of (query.data?.pages ?? []).toReversed()) {
+        for (const entry of page.entries) records.set(entry.entryId, entry)
+      }
+      return [...records.values()]
+    }
     if (foldScopeKeyRef.current !== queryScopeKey) {
       foldScopeKeyRef.current = queryScopeKey
       foldCacheRef.current = null
@@ -463,7 +475,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     const folded = foldHistoricalLogPages(query.data?.pages ?? [], scope.view, foldCacheRef.current)
     foldCacheRef.current = folded
     return folded.entries
-  }, [foldRevision, query.data?.pages, queryScopeKey, scope.view])
+  }, [foldRevision, preserveRecord, query.data?.pages, queryScopeKey, scope.view])
   const refetch = query.refetch
   const countPage = query.data?.pages.find(page => page.totalEntries !== null || page.totalTextLines !== null)
 

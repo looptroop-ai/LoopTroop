@@ -1514,6 +1514,13 @@ async function queryDebugPage(
     if (typeof entry.entryId !== 'string' || !entry.entryId) {
       entry.entryId = `persisted:${row.channel}:${row.mirror_key}:${row.mirror_occurrence}`
     }
+    if (query.startedAt || query.endedAt) {
+      // Pair AI mirrors, while keeping repeated appends separately addressable.
+      entry._logMirrorKey = createHash('sha256').update(
+        isAiLogEntry(entry) ? row.mirror_key : `${row.channel}:${row.identity}`,
+      ).digest('hex')
+      entry._logMirrorOccurrence = row.mirror_occurrence
+    }
     return {
       entry,
       timestamp: row.sort_timestamp,

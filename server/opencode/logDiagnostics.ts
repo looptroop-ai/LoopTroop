@@ -117,9 +117,10 @@ function readCandidateLogFiles(options: OpenCodeLogDiagnosticOptions): OpenCodeN
 }
 
 function readField(line: string, key: string): string | undefined {
-  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = line.match(new RegExp(`(?:^|\\s)${escapedKey}=([^\\s]+)`))
-  return match?.[1]
+  for (const match of line.matchAll(/(?:^|\s)([^\s=]+)=("(?:[^"\\]|\\.)*"|[^\s]+)/g)) {
+    if (match[1] === key) return match[2]
+  }
+  return undefined
 }
 
 function extractBalancedJsonAfter(line: string, marker: string): string | undefined {
@@ -189,9 +190,10 @@ function parseLogLineError(line: string, sessionId: string): ModelErrorInfo | un
 }
 
 function readLogfmtValue(line: string, key: string): string | undefined {
-  const quotedMatch = line.match(new RegExp(`(?:^|\\s)${key}="((?:[^"\\\\]|\\\\.)*)"`) )
-  if (quotedMatch) return (quotedMatch[1] ?? '').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-  return readField(line, key)
+  const value = readField(line, key)
+  return value?.startsWith('"') && value.endsWith('"')
+    ? value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+    : value
 }
 
 /** An ISO timestamp, or null when the value is missing or not a date. */

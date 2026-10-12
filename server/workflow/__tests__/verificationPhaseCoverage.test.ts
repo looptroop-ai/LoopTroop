@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, assert, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { makePrdYaml, TEST } from '../../test/factories'
@@ -282,7 +282,8 @@ describe('handlePreFlight', () => {
     const sendEvent = vi.fn()
     await handlePreFlight(ticket.id, context, sendEvent, new AbortController().signal)
 
-    const artifact = getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')!
+    const artifact = getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')
+    assert(artifact)
     const persistedLog = readFileSync(paths.executionLogPath, 'utf-8')
     const emittedFailure = JSON.stringify(sendEvent.mock.calls)
     for (const evidence of [artifact.content, persistedLog, emittedFailure]) {

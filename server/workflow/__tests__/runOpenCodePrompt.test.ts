@@ -1448,7 +1448,7 @@ describe('runOpenCodePrompt', () => {
     resetTestDb()
     const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Same session server login recovery' })
     patchTicket(ticket.id, { status: 'CODING' })
-    const serverFailure = new V2OpenCodeHttpError(statusCode, { message: 'Configured server password rejected' })
+    const serverFailure = new V2OpenCodeHttpError(statusCode, { message: 'Configured server password rejected' }, 'opencode_server')
     const adapter = new TestOpenCodeAdapter(['initial response', serverFailure])
     const initial = await runOpenCodePrompt({
       adapter, projectPath: '/tmp/project', parts: [{ type: 'text', content: 'Initial prompt' }],

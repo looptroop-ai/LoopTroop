@@ -110,6 +110,16 @@ function parseJsonRecord(value: string | undefined): Record<string, unknown> | u
   }
 }
 
+function responseBodyText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (value === undefined) return undefined
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return undefined
+  }
+}
+
 function unwrapErrorRecord(error: unknown): Record<string, unknown> | undefined {
   const outer = toRecord(error)
   if (!outer) return undefined
@@ -181,15 +191,20 @@ export function extractModelErrorInfo(error: unknown): ModelErrorInfo | undefine
   const data = toRecord(record?.data)
   const dataError = toRecord(data?.error)
   const dataDetail = toRecord(data?.detail)
+  const structuredType = getString(record?.type)
+  const providerType = structuredType?.startsWith('provider.') ? structuredType : undefined
   const responseBodySource = getString(record?.responseBody) ?? getString(data?.responseBody)
+    ?? getString(toRecord(record?.response)?.body)
+    ?? (record?.name === 'V2OpenCodeHttpError' ? responseBodyText(record.body) : undefined)
   const responseBody = truncate(responseBodySource)
   const responseBodyRecord = parseJsonRecord(responseBodySource)
   const responseBodyError = toRecord(responseBodyRecord?.error)
   const responseBodyErrorText = getString(responseBodyRecord?.error)
   const responseBodyDetail = toRecord(responseBodyRecord?.detail)
+  const responseErrorName = getString(responseBodyError?.name) ?? getString(responseBodyRecord?.name)
 
   const info: ModelErrorInfo = {
-    name: cleanMessage(getString(record?.name)),
+    name: cleanMessage(getString(record?.name) ?? structuredType),
     ...extractCauseDetails(error, record),
     message: cleanMessage(
       getString(record?.message)
@@ -204,7 +219,7 @@ export function extractModelErrorInfo(error: unknown): ModelErrorInfo | undefine
     ),
     providerId: cleanMessage(getString(record?.providerId)),
     providerModelId: cleanMessage(getString(record?.providerModelId)),
-    statusCode: getNumber(record?.statusCode) ?? getNumber(data?.statusCode),
+    statusCode: getNumber(record?.statusCode) ?? getNumber(data?.statusCode) ?? getNumber(record?.status),
     url: sanitizeUrl(getString(record?.url)),
     isRetryable: getBoolean(record?.isRetryable) ?? getBoolean(data?.isRetryable),
     requestModel: cleanMessage(
@@ -213,10 +228,12 @@ export function extractModelErrorInfo(error: unknown): ModelErrorInfo | undefine
     ),
     responseErrorType: cleanMessage(
       getString(record?.responseErrorType)
+      ?? providerType
       ?? getString(dataError?.type)
       ?? getString(responseBodyError?.type)
       ?? getString(responseBodyRecord?.error_type)
-      ?? getString(responseBodyRecord?.type),
+      ?? getString(responseBodyRecord?.type)
+      ?? (responseErrorName?.startsWith('Provider') ? responseErrorName : undefined),
     ),
     responseErrorTitle: cleanMessage(
       getString(record?.responseErrorTitle)
@@ -236,6 +253,7 @@ export function extractModelErrorInfo(error: unknown): ModelErrorInfo | undefine
       ?? getString(dataDetail?.code)
       ?? getString(responseBodyDetail?.code)
       ?? getString(responseBodyRecord?.code)
+      ?? (providerType ? getString(record?.message) : undefined)
     ),
     responseBodyPreview: truncate(getString(record?.responseBodyPreview)) ?? responseBody,
   }

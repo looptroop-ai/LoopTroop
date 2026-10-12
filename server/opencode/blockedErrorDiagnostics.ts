@@ -68,6 +68,7 @@ function normalizeErrorCodes(value: unknown): string[] {
 }
 
 function hasProviderSignal(info: ModelErrorInfo | undefined): boolean {
+  if (isNonProviderStructuredError(info)) return false
   return Boolean(
     info?.statusCode !== undefined
     || info?.requestModel
@@ -76,6 +77,10 @@ function hasProviderSignal(info: ModelErrorInfo | undefined): boolean {
     || info?.responseErrorMessage
     || info?.responseBodyPreview,
   )
+}
+
+function isNonProviderStructuredError(info: ModelErrorInfo | undefined): boolean {
+  return /^(?:tool\.|permission\.|unknown$)/.test(info?.name ?? '')
 }
 
 function normalizeMessage(value: string | undefined): string {
@@ -88,6 +93,7 @@ function cleanOptionalMessage(value: string | undefined): string | undefined {
 }
 
 function isAuthLikeFailure(info: ModelErrorInfo | undefined, message: string): boolean {
+  if (isNonProviderStructuredError(info)) return false
   const haystack = [
     message,
     info?.message,
@@ -101,12 +107,15 @@ function isAuthLikeFailure(info: ModelErrorInfo | undefined, message: string): b
     .toLowerCase()
     .replace(/_/g, ' ')
 
+  if (/\b(?:credits?error|billing[ .-]?error|payment[ .-]?required|(?:no|missing)[ .-]payment[ .-]method|(?:no|insufficient|exhausted)[ .-]credits?|credits?[ .-](?:exhausted|required|insufficient|unavailable))\b/.test(haystack)) return false
+
   return info?.statusCode === 401
     || /\b(auth|authentication|authenticated|unauthenticated|authorization|unauthorized|credentials?|api[ -]?key|signing in|sign in)\b/.test(haystack)
     || /\btoken\s+(?:(?:has|have)\s+(?:been\s+)?|(?:is|was)\s+)?(?:expired|invalidated|revoked|invalid)\b|\b(?:expired|invalidated|revoked|invalid)\s+token\b(?!\s+(?:count|limit|capacity|usage|length|budget)\b)/.test(haystack)
 }
 
 function isProviderLikeFailure(info: ModelErrorInfo | undefined, message: string): boolean {
+  if (isNonProviderStructuredError(info)) return false
   const haystack = [
     message,
     info?.message,
@@ -209,6 +218,7 @@ function resolveKind(input: {
   if (input.serverError && input.info?.statusCode !== undefined) return 'opencode_session'
   if (isTimeoutLike(input.summaryMessage)) return 'timeout'
   if (input.serverError) return isTransportLike(input.summaryMessage) ? 'transport' : 'opencode_session'
+  if (isNonProviderStructuredError(input.info)) return 'runtime'
   if (isProviderLikeFailure(input.info, input.summaryMessage)) return 'opencode_provider'
   if (input.responseMeta?.sessionErrored || input.attemptMeta?.errorSource === 'session_error') return 'opencode_session'
   if (isTransportLike(input.summaryMessage)) return 'transport'
@@ -254,6 +264,8 @@ export function buildOpenCodeBlockedErrorDiagnostics(
   const serverError = input.errorSource === 'opencode_server'
     || errorChain.some((error) => readErrorProperty(error, 'openCodeErrorSource') === 'opencode_server'
       || readErrorProperty(error, 'name') === 'OpenCodeConnectionError')
+  const promptHttpError = errorChain.some((error) => readErrorProperty(error, 'openCodeErrorSource') === 'opencode_prompt'
+    || readErrorProperty(error, 'name') === 'V2OpenCodeHttpError')
   const withoutProviderCodes = (codes: string[]) => codes.filter((code) => code !== OPENCODE_PROVIDER_AUTH_FAILED && code !== OPENCODE_PROVIDER_ERROR)
   const actualErrors = errorChain.filter((error): error is Error => error instanceof Error)
   const errorName = actualErrors[0]?.name
@@ -337,7 +349,12 @@ export function buildOpenCodeBlockedErrorDiagnostics(
   const infoWithStatus = statusCode === info?.statusCode
     ? info
     : { ...(info ?? {}), ...(statusCode !== undefined ? { statusCode } : {}) }
-  const kind = resolveKind({
+  const providerResponseType = info?.responseErrorType
+    && !/^(?:error|(?:unauthorized|forbidden)(?:error)?)$/i.test(info.responseErrorType)
+  const ambiguousPromptAccess = !serverError && promptHttpError
+    && (statusCode === 401 || statusCode === 403)
+    && !providerResponseType && !info?.providerId && !info?.requestModel
+  const kind = ambiguousPromptAccess ? 'runtime' : resolveKind({
     info: infoWithStatus,
     summaryMessage,
     responseMeta: input.responseMeta,
@@ -357,8 +374,8 @@ export function buildOpenCodeBlockedErrorDiagnostics(
     ...causeDetails,
     modelId: input.modelId,
     sessionId: input.sessionId,
-    providerId: serverError ? undefined : info?.providerId ?? (kind === 'opencode_provider' ? model?.providerID : undefined),
-    providerModelId: serverError ? undefined : info?.providerModelId
+    providerId: serverError || ambiguousPromptAccess ? undefined : info?.providerId ?? (kind === 'opencode_provider' ? model?.providerID : undefined),
+    providerModelId: serverError || ambiguousPromptAccess ? undefined : info?.providerModelId
       ?? (kind === 'opencode_provider' && (!info?.providerId || info.providerId === model?.providerID) ? model?.modelID : undefined),
     statusCode,
     requestModel: info?.requestModel,
@@ -377,7 +394,7 @@ export function buildOpenCodeBlockedErrorDiagnostics(
 
   return {
     diagnostics,
-    errorCodes: serverError ? withoutProviderCodes(carriedErrorCodes) : mergeErrorCodes(carriedErrorCodes, resolveErrorCodes(infoWithStatus, summaryMessage)),
+    errorCodes: serverError || ambiguousPromptAccess ? withoutProviderCodes(carriedErrorCodes) : mergeErrorCodes(carriedErrorCodes, resolveErrorCodes(infoWithStatus, summaryMessage)),
   }
 }
 

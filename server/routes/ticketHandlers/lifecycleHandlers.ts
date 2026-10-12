@@ -68,7 +68,7 @@ import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
 import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
 import { isExecutionBandStatus } from '../../workflow/executionBand'
 import { getErrorMessage } from '@shared/typeGuards'
-import { normalizeBlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText } from '@shared/errorDiagnostics'
 import { buildOpenCodeBlockedErrorDiagnostics } from '../../opencode/blockedErrorDiagnostics'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { broadcaster } from '../../sse/broadcaster'
@@ -219,24 +219,26 @@ export async function handleStartTicket(c: Context) {
     )
   } catch (err) {
     if (err instanceof TicketMetadataFormatError) {
-      emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workspace Init: ${err.message}`, {
-        error: err.message,
+      const message = sanitizeDiagnosticText(err.message)
+      emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workspace Init: ${message}`, {
+        error: message,
       })
-      return c.json({ error: err.message }, 409)
+      return c.json({ error: message }, 409)
     }
     const initErr = err instanceof TicketInitializationError
       ? err
       : new TicketInitializationError('INIT_UNKNOWN', getErrorMessage(err), { cause: err })
+    const message = sanitizeDiagnosticText(initErr.message)
     const diagnostics = normalizeBlockedErrorDiagnostics({
       ...buildOpenCodeBlockedErrorDiagnostics({ error: initErr }).diagnostics,
       kind: 'runtime',
       source: 'system',
-      summary: initErr.message,
+      summary: message,
       operation: 'initializing the ticket workspace',
     })
-    emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workspace Init: ${initErr.message}`, {
+    emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workspace Init: ${message}`, {
       code: initErr.code,
-      error: initErr.message,
+      error: message,
       diagnostics,
     })
 
@@ -244,12 +246,12 @@ export async function handleStartTicket(c: Context) {
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, {
         type: 'INIT_FAILED',
-        message: initErr.message,
+        message,
         codes: [initErr.code],
         diagnostics,
       })
     } catch (sendErr) {
-      const sendErrDetails = getErrorMessage(sendErr)
+      const sendErrDetails = sanitizeDiagnosticText(getErrorMessage(sendErr))
       emitRoutePhaseLog(
         ticketId,
         startPhase,
@@ -271,7 +273,7 @@ export async function handleStartTicket(c: Context) {
       ticketId,
       status: updated?.status,
       state: state?.state,
-      details: initErr.message,
+      details: message,
       codes: [initErr.code],
     })
   }

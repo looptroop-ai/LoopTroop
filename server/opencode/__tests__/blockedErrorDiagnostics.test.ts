@@ -9,8 +9,83 @@ import {
   buildOpenCodeBlockedErrorDiagnostics,
 } from '../blockedErrorDiagnostics'
 import { isContinuableBlockedError } from '../sessionContinuation'
+import { V2OpenCodeHttpError } from '../v2Transport'
 
 describe('OpenCode blocked error diagnostics', () => {
+  it.each(['Error', 'Unauthorized', 'UnauthorizedError', 'Forbidden', 'ForbiddenError'])('keeps the generic prompt response type %s neutral without losing its details', (type) => {
+    const body = { error: { type, message: 'Forbidden' } }
+    const error = new V2OpenCodeHttpError(403, body, 'opencode_prompt')
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error: new Error('Failed to prompt OpenCode session', { cause: error }), modelId: 'openai/model-a', sessionId: 'ses-ambiguous' })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics).toMatchObject({ kind: 'runtime', statusCode: 403, providerErrorType: type, providerErrorMessage: 'Forbidden', responseBodyPreview: JSON.stringify(body), modelId: 'openai/model-a', sessionId: 'ses-ambiguous' })
+    expect(result.diagnostics?.providerId).toBeUndefined()
+    expect(result.diagnostics?.providerModelId).toBeUndefined()
+    expect(isContinuableBlockedError(result)).toBe(false)
+  })
+
+  it.each([
+    { name: 'ProviderAuthError' }, { type: 'authentication_error' }, { type: 'provider.auth' },
+  ])('keeps explicit provider-auth response identity $name$type authoritative', (identity) => {
+    const error = new V2OpenCodeHttpError(401, { error: { ...identity, message: 'Provider credentials rejected' } }, 'opencode_prompt')
+    const result = buildOpenCodeBlockedErrorDiagnostics({ error, modelId: 'openai/model-a', sessionId: 'ses-provider' })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_AUTH_FAILED])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_provider', providerId: 'openai', statusCode: 401 })
+    expect(isContinuableBlockedError(result)).toBe(false)
+  })
+
+  it.each([
+    { type: 'provider.internal', status: 500, message: 'Internal server error', code: OPENCODE_PROVIDER_ERROR, continuable: true },
+    { type: 'provider.internal', status: 502, message: 'Bad gateway', code: OPENCODE_PROVIDER_ERROR, continuable: true },
+    { type: 'provider.auth', status: 401, message: 'Request blocked by upstream provider.', code: OPENCODE_PROVIDER_AUTH_FAILED, continuable: false },
+  ])('retains actual v2 $type step errors and HTTP $status continuation policy', ({ type, status, message, code, continuable }) => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({
+      modelId: 'openai/model-a', sessionId: 'ses-v2-provider',
+      attemptMeta: { errorSource: 'session_error', error: message, errorDetails: { type, status, message } },
+    })
+
+    expect(result.errorCodes).toEqual([code])
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_provider', source: 'provider', statusCode: status, providerErrorType: type, providerErrorMessage: message, providerId: 'openai' })
+    expect(isContinuableBlockedError(result)).toBe(continuable)
+  })
+
+  it.each(['tool.execution', 'permission.rejected', 'unknown'])('does not turn the v2 %s step error into a provider failure', (type) => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({
+      sessionId: 'ses-nonprovider',
+      attemptMeta: { errorSource: 'session_error', error: 'Authentication failed in a tool', errorDetails: { type, message: 'Authentication failed in a tool', status: 401 } },
+    })
+
+    expect(result.errorCodes).toEqual([])
+    expect(result.diagnostics).toMatchObject({ kind: 'runtime', statusCode: 401, errorName: type })
+    expect(isContinuableBlockedError(result)).toBe(false)
+  })
+
+  it('keeps a reviewed v2 CreditsError as a provider failure without refresh-login guidance', () => {
+    const responseBody = JSON.stringify({ error: { type: 'CreditsError', message: 'No payment method' } })
+    const result = buildOpenCodeBlockedErrorDiagnostics({
+      sessionId: 'ses-billing', modelId: 'openai/model-a',
+      attemptMeta: { errorSource: 'session_error', error: 'No payment method. Add a payment method...', errorDetails: {
+        type: 'provider.auth', status: 401, message: 'No payment method. Add a payment method...', response: { body: responseBody },
+      } },
+    })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_ERROR])
+    expect(result.errorCodes).not.toContain(OPENCODE_PROVIDER_AUTH_FAILED)
+    expect(result.diagnostics).toMatchObject({ kind: 'opencode_provider', statusCode: 401, providerErrorType: 'provider.auth', providerErrorMessage: 'No payment method', responseBodyPreview: responseBody })
+    expect(result.diagnostics?.summary).toBe('provider.auth: No payment method (HTTP 401)')
+    expect(isContinuableBlockedError(result)).toBe(false)
+  })
+
+  it.each(['billing_error: account disabled', 'Missing payment method', 'Insufficient credits', 'Credits exhausted'])('does not recommend refreshing credentials for explicit payment evidence: %s', (message) => {
+    const result = buildOpenCodeBlockedErrorDiagnostics({
+      sessionId: 'ses-billing', attemptMeta: { errorSource: 'session_error', error: message, errorDetails: { type: 'provider.auth', status: 401, message } },
+    })
+
+    expect(result.errorCodes).toEqual([OPENCODE_PROVIDER_ERROR])
+    expect(isContinuableBlockedError(result)).toBe(false)
+  })
+
   it('captures the error type and sanitized stack for runtime failures', () => {
     const error = new TypeError('Unexpected response shape')
     error.stack = 'TypeError: Unexpected response shape\n    at decode (https://user:password@example.test/decoder?token=private-token:10:2)\napiKey=sk-private-diagnostic-key'

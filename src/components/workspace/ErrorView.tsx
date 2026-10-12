@@ -56,6 +56,7 @@ import { sanitizeErrorForDisplay } from "@shared/errorDisplay";
 import {
   normalizeBlockedErrorDiagnostics,
   sanitizeDiagnosticText,
+  sanitizeDiagnosticValue,
 } from "@shared/errorDiagnostics";
 
 const MAX_RETRY_NOTE_LENGTH = 20_000;
@@ -262,7 +263,11 @@ function splitErrorCause(
     prefix += typePrefix;
     cause = cause.slice(typePrefix.length);
   }
-  const httpSuffix = cause.match(/\s+\(HTTP\s+\d{3}\)\s*$/)?.[0] ?? "";
+  const httpStart = cause.lastIndexOf("(HTTP");
+  const httpSuffix = httpStart > 0 && /\s/.test(cause[httpStart - 1] ?? "")
+    && /^\(HTTP\s+\d{3}\)\s*$/.test(cause.slice(httpStart))
+    ? cause.slice(cause.slice(0, httpStart).trimEnd().length)
+    : "";
   cause = cause.slice(0, cause.length - httpSuffix.length);
   suffix = httpSuffix + suffix;
   if (/^(?:No error details were captured\. Check the server logs\.|Pre-flight check failed|Execution-mode probe failed)\.?$/i.test(cause.trim())) {
@@ -662,7 +667,7 @@ function FailureDebugRecords({
     startTime,
     endTime,
   })).slice(-5).reverse();
-  const records = entries.map((entry) => ({ entry, content: sanitizeDiagnosticText(JSON.stringify(entry.record ?? {
+  const records = entries.map((entry) => ({ entry, content: JSON.stringify(sanitizeDiagnosticValue(entry.record ?? {
     timestamp: entry.timestamp,
     type: entry.type,
     phase: entry.status,
@@ -672,7 +677,7 @@ function FailureDebugRecords({
     modelId: entry.modelId,
     sessionId: entry.sessionId,
     message: entry.line,
-  }, null, 2)) }));
+  }), null, 2) }));
 
   return (
     <div className="space-y-1.5">

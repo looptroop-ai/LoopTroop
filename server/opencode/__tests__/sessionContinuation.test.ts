@@ -46,6 +46,7 @@ describe('session continuation eligibility', () => {
     ['transport failure', diagnostics({ kind: 'transport', source: 'opencode', summary: 'fetch failed: connection reset' })],
     ['OpenCode server HTTP 401', diagnostics({ kind: 'opencode_session', source: 'opencode', summary: 'Server authentication failed: configured password rejected', statusCode: 401, isRetryable: false })],
     ['OpenCode server HTTP 403', diagnostics({ kind: 'opencode_session', source: 'opencode', summary: 'Server authentication failed: configured password rejected', statusCode: 403, isRetryable: false })],
+    ['OpenCode server access denied', diagnostics({ kind: 'opencode_session', source: 'opencode', summary: 'Permission denied: forbidden', statusCode: 403, isRetryable: false })],
   ])('accepts %s', (_label, candidate) => {
     expect(isContinuableBlockedError({ diagnostics: candidate, errorCodes: [] })).toBe(true)
   })
@@ -87,8 +88,13 @@ describe('session continuation eligibility', () => {
       .toBe(false)
   })
 
+  it.each(['billing account disabled', 'quota exceeded', 'insufficient_quota', 'payment required', 'credits exhausted', 'invalid_request: payload invalid', 'content policy blocked this request', 'content-filter refusal', 'model_not_found'])('keeps an OpenCode server access failure blocked when it also reports %s', (summary) => {
+    expect(isContinuableBlockedError({ diagnostics: diagnostics({ kind: 'opencode_session', source: 'opencode', statusCode: 403, summary: `Forbidden: ${summary}` }) }))
+      .toBe(false)
+  })
+
   it.each([401, 403])('preserves an owned session after a real OpenCode server HTTP %s failure but keeps cancellation and ownership guards', (statusCode) => {
-    const error = new V2OpenCodeHttpError(statusCode, { message: 'Configured server password rejected' })
+    const error = new V2OpenCodeHttpError(statusCode, { message: 'Configured server password rejected' }, 'opencode_server')
     const input = { error, sessionId: 'ses-owned', sessionOwnership: { ticketId: 'ticket-1', phase: 'CODING' as const } }
 
     expect(shouldPreserveSessionForContinuation(input)).toBe(true)

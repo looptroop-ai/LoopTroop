@@ -1,5 +1,6 @@
 import { appendFileSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -133,13 +134,24 @@ describe('readOpenCodeNativeLogs', () => {
     writeLog(dir, `timestamp=${timestamp} level=ERROR service=llm session.id=ses-v2 message="authentication expired"\n`)
 
     const immediate = readOpenCodeNativeLogs(['ses-v2'], { logDirs: [dir] })
-    const indexed = await readOpenCodeNativeLogFile(listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!, ['ses-v2'])
+    const [file] = listOpenCodeNativeLogFiles({ logDirs: [dir] })
+    assert(file)
+    const indexed = await readOpenCodeNativeLogFile(file, ['ses-v2'])
 
     for (const entries of [immediate, indexed]) {
       expect(entries).toHaveLength(1)
       expect(entries[0]?.timestamp).toBe('2026-09-25T07:46:43.645Z')
       expect(entries[0]?.content).toContain('authentication expired')
     }
+  })
+
+  it('keeps spaces and escaped quotes and backslashes in a quoted native message', () => {
+    const dir = makeLogDir()
+    const message = 'a spaced "message" with a \\ path'
+    writeLog(dir, `timestamp=2026-09-25T07:46:43.645Z level=ERROR service=llm session.id=ses-quoted msg=${JSON.stringify(message)}\n`)
+
+    expect(readOpenCodeNativeLogs(['ses-quoted'], { logDirs: [dir] })[0]?.content)
+      .toBe(`[DEBUG] [ERROR] [opencode:llm] ${message}`)
   })
 
   it('keeps a line whose timestamp cannot be parsed, with no timestamp at all', () => {
@@ -174,6 +186,7 @@ describe('readOpenCodeNativeLogs', () => {
     writeLog(dir, [
       'time="2026-05-22T15:16:03.000Z" session.id=ses-other msg="theirs"',
       'time="2026-05-22T15:16:03.000Z" sessionXid=ses-1 msg="wrong field"',
+      'time="2026-05-22T15:16:03.000Z" msg="unrelated session.id=ses-1 text"',
       'time="2026-05-22T15:16:04.000Z" session.id=ses-1 msg="ours"',
       '',
     ].join('\n'))
@@ -197,7 +210,9 @@ describe('readOpenCodeNativeLogs', () => {
     const line = `timestamp=2026-09-25T07:46:43.645Z level=ERROR service=llm session.id=ses-1 message="request failed" error=${error}`
     writeLog(dir, `${line}\n`)
     const immediate = readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })
-    const indexed = await readOpenCodeNativeLogFile(listOpenCodeNativeLogFiles({ logDirs: [dir] })[0]!, ['ses-1'])
+    const [file] = listOpenCodeNativeLogFiles({ logDirs: [dir] })
+    assert(file)
+    const indexed = await readOpenCodeNativeLogFile(file, ['ses-1'])
 
     for (const entries of [immediate, indexed]) {
       expect(entries).toHaveLength(1)
@@ -207,6 +222,13 @@ describe('readOpenCodeNativeLogs', () => {
       expect(JSON.stringify(entries)).not.toContain('opaque-native-secret')
       expect(JSON.stringify(entries)).not.toContain('opaque-url-secret')
       expect(entries[0]?.content).toBe('[DEBUG] [ERROR] [opencode:llm] request failed')
+      const rawLine = entries[0]?.data.rawLine
+      assert(typeof rawLine === 'string')
+      const encodedError = rawLine.slice(rawLine.indexOf(' error=') + ' error='.length)
+      const parsedError = JSON.parse(encodedError) as unknown
+      expect(typeof parsedError === 'string' ? JSON.parse(parsedError) : parsedError).toMatchObject({
+        apiKey: '[redacted]', url: 'https://api.example.com/request', statusCode: 401, message: 'login expired',
+      })
     }
     expect(readFileSync(join(dir, '2026-05-22T151603.log'), 'utf8')).toBe(`${line}\n`)
   })

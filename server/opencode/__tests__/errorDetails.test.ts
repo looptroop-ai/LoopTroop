@@ -2,6 +2,27 @@ import { describe, expect, it } from 'vitest'
 import { extractModelErrorInfo, summarizeModelErrorForLog } from '../errorDetails'
 
 describe('OpenCode model error details', () => {
+  it('retains the actual v2 structured provider type, status, message and redacted response body', () => {
+    const info = extractModelErrorInfo({
+      type: 'provider.auth', status: 401, message: 'Request blocked by upstream provider.',
+      response: { body: JSON.stringify({ error: { type: 'authentication_error', message: 'Your login expired', apiKey: 'opaque-provider-secret' } }) },
+    })
+
+    expect(info).toMatchObject({ name: 'provider.auth', statusCode: 401, responseErrorType: 'provider.auth', responseErrorMessage: 'Your login expired' })
+    expect(info?.responseBodyPreview).toContain('authentication_error')
+    expect(info?.responseBodyPreview).not.toContain('opaque-provider-secret')
+  })
+
+  it('retains the v2 provider message when no response body is reported', () => {
+    expect(extractModelErrorInfo({ type: 'provider.internal', status: 502, message: 'Upstream request failed' }))
+      .toMatchObject({ name: 'provider.internal', statusCode: 502, responseErrorType: 'provider.internal', responseErrorMessage: 'Upstream request failed' })
+  })
+
+  it('preserves earlier normalized fields when the v2 aliases are also present', () => {
+    expect(extractModelErrorInfo({ statusCode: 429, status: 502, responseErrorType: 'rate_limit_error', type: 'provider.internal', responseErrorMessage: 'Rate limit reached', message: 'fallback' }))
+      .toMatchObject({ statusCode: 429, responseErrorType: 'rate_limit_error', responseErrorMessage: 'Rate limit reached' })
+  })
+
   it('keeps only sanitized messages and error codes from nested causes', () => {
     const error = new Error('wrapper', { cause: new TypeError('fetch failed', {
       cause: Object.assign(new Error('Authorization: Bearer abc.def.ghi failed for https://private-user:private-password@example.com/path?token=secret#fragment'), {

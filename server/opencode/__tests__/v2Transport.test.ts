@@ -388,6 +388,26 @@ describe("OpenCode v2 fetch transport", () => {
     });
   });
 
+  it.each(['body tag', 'Basic challenge'])('recognizes canonical server login evidence on a prompt failure: %s', async (evidence) => {
+    const { transport } = createTransport((request) => {
+      if (!request.url.pathname.endsWith('/prompt')) return emptyResponse();
+      return new Response(JSON.stringify(evidence === 'body tag'
+        ? { _tag: 'UnauthorizedError', message: 'Authentication required' }
+        : { message: 'Authentication required' }), {
+        status: 401,
+        headers: { 'content-type': 'application/json', ...(evidence === 'Basic challenge' ? { 'www-authenticate': 'Basic realm="Secure Area"' } : {}) },
+      });
+    });
+
+    await expect(transport.dispatchPrompt(promptRequest())).rejects.toMatchObject({ status: 401, openCodeErrorSource: 'opencode_server' });
+  });
+
+  it('marks server model-selection errors before the prompt is sent', async () => {
+    const { transport } = createTransport(() => jsonResponse({ message: 'Server access forbidden' }, 403));
+
+    await expect(transport.dispatchPrompt(promptRequest())).rejects.toMatchObject({ status: 403, openCodeErrorSource: 'opencode_server' });
+  });
+
   it("classifies a prompt response without an inbox id as receipt-unavailable", async () => {
     const { transport } = createTransport((request) => {
       if (

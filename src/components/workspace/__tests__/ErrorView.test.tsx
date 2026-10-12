@@ -407,6 +407,26 @@ describe("ErrorView", () => {
     expect(displayedMessage).not.toHaveTextContent("A different provider message");
   });
 
+  it.each([
+    ["additional cause detail", false],
+    ["(HTTP \t 401)", true],
+    [`(HTTP ${" ".repeat(2000)}invalid)`, false],
+  ])("preserves error emphasis with long whitespace before %s", (tail, hasHttpSuffix) => {
+    const cause = "Provider rejected the request";
+    const gap = " ".repeat(2000);
+    const errorMessage = `Execution-mode probe failed: ${cause}${gap}${tail}`;
+    const ticket = makeLiveErrorTicket({
+      errorMessage,
+      diagnostics: { kind: "opencode_provider", source: "provider", summary: errorMessage },
+    });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+
+    const strong = screen.getByText(hasHttpSuffix ? cause : `${cause} ${tail.replace(/\s+/g, " ")}`, { selector: "strong" });
+    expect(strong.textContent).toBe(hasHttpSuffix ? cause : `${cause}${gap}${tail}`);
+    expect(strong.closest("p")?.textContent).toBe(errorMessage);
+  });
+
   it("preserves full sanitized error and stack details for a non-OpenCode failure", () => {
     const message = ["Git failed: cannot acquire index.lock", "retry context", "retry context", "Authorization: Bearer privatevalue123"].join("\n");
     const stackTrace = "Error: cannot acquire index.lock\n    at commitWorktree (git.ts:12:3)\napi_key=sk-privatevalue123";
@@ -495,6 +515,39 @@ describe("ErrorView", () => {
     await waitFor(() => expect(mockUseTicketHistoricalLogs).toHaveBeenLastCalledWith(ticket.id, {
       scope: "phase", view: "debug", limit: 5, phase: "PRE_FLIGHT_CHECK", startedAt: "2025-12-31T23:59:00.000Z", endedAt: "2026-01-01T00:00:00.000Z",
     }, true));
+  });
+
+  it("preserves structured cookie evidence and neighboring fields in displayed debug JSON", () => {
+    const ticket = makeLiveErrorTicket({ id: "42" });
+    const record = {
+      timestamp: "2025-12-31T23:59:59.000Z",
+      message: "Provider request failed",
+      statusCode: 401,
+      data: {
+        rawLine: 'level=ERROR session.id=ses-real model=gpt status=401 set-cookie: opaque-review-secret message="failed"',
+        headers: { cookie: 'arbitrary=first-review-secret; other="second review secret"' },
+      },
+    };
+    mockUseTicketHistoricalLogs.mockReturnValue({ entries: [{
+      id: "cookie-record", entryId: "cookie-record", timestamp: record.timestamp, line: record.message,
+      source: "debug", status: "CODING", audience: "debug" as const, kind: "transport", streaming: false,
+      op: "append" as const, record,
+    }], isLoading: false, isError: false });
+
+    renderWithProviders(<ErrorView ticket={ticket} />);
+    fireEvent.click(screen.getByText("Technical details"));
+    const records = screen.getByRole("region", { name: "Failure debug records" });
+    const json = records.querySelector("pre");
+    assert(json);
+    expect(JSON.parse(json.textContent ?? "")).toEqual({
+      ...record,
+      data: {
+        rawLine: 'level=ERROR session.id=ses-real model=gpt status=401 set-cookie: [redacted] message="failed"',
+        headers: { cookie: "[redacted]" },
+      },
+    });
+    expect(json.textContent).not.toMatch(/opaque-review-secret|first-review-secret|second review secret/);
+    expect(json).not.toBeVisible();
   });
 
   it("labels an invalid debug timestamp explicitly and keeps records from separate attempts distinct", () => {

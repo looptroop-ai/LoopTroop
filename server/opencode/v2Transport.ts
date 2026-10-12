@@ -53,10 +53,10 @@ const LIST_PAGE_SIZE = 100;
 const MESSAGE_PAGE_SIZE = 100;
 
 export class V2OpenCodeHttpError extends Error {
-  readonly openCodeErrorSource = "opencode_server";
   constructor(
     readonly status: number,
     readonly body: unknown,
+    readonly openCodeErrorSource?: "opencode_server" | "opencode_prompt",
   ) {
     super(errorMessage(status, body));
     this.name = "V2OpenCodeHttpError";
@@ -519,6 +519,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         {
           method: "POST",
           signal,
+          serverOperation: false,
           body: {
             text: prompt.text,
             ...(prompt.files.length > 0 ? { files: prompt.files } : {}),
@@ -712,6 +713,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       signal?: AbortSignal;
       expectedStatus?: number;
       timeoutMs?: number | null;
+      serverOperation?: boolean;
     } = {},
   ): Promise<unknown> {
     const url = this.makeUrl(path, options.query);
@@ -740,9 +742,13 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       const response = await this.fetcher(url, init);
       const expectedStatus = options.expectedStatus ?? 200;
       if (response.status !== expectedStatus) {
+        const body = await responseBody(response);
+        const serverAuthentication = asRecord(body)?._tag === "UnauthorizedError"
+          || /^Basic\b/i.test(response.headers.get("www-authenticate") ?? "");
         throw new V2OpenCodeHttpError(
           response.status,
-          await responseBody(response),
+          body,
+          options.serverOperation !== false || serverAuthentication ? "opencode_server" : "opencode_prompt",
         );
       }
       if (expectedStatus === 204) {
@@ -806,6 +812,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       throw new V2OpenCodeHttpError(
         response.status,
         await responseBody(response),
+        "opencode_server",
       );
     }
     if (

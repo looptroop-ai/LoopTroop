@@ -78,7 +78,7 @@ describe('DEBUG emission privacy', () => {
   it('preserves ordinary AI content while sanitizing its non-persisted DEBUG mirror', () => {
     const append = vi.spyOn(executionLog, 'appendLogEvent').mockImplementation(() => {})
     const broadcast = vi.spyOn(broadcaster, 'broadcast').mockImplementation(() => {})
-    const content = 'const password = "logger-ai-secret"; https://docs.example/search?q=example#section'
+    const content = `const password = ${JSON.stringify('logger-ai-secret')}; https://docs.example/search?q=example#section`
     try {
       emitPhaseLog('1:T-logger', 'T-logger', 'CODING', 'model_output', content, { audience: 'ai', phaseAttempt: 2 })
       expect(append).toHaveBeenCalledTimes(1)

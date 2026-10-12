@@ -211,7 +211,7 @@ describe('handlePreFlight', () => {
     const events: StreamEvent[] = [
       retry,
       { type: 'session_status', sessionId, status: 'retry', attempt: 2, message: 'refresh_token=probe-retry-secret' },
-      { type: 'text', sessionId, messageId: 'msg-probe-text', partId: 'part-probe-text', text: 'Probe response: password="probe-text-secret"', streaming: false, complete: true },
+      { type: 'text', sessionId, messageId: 'msg-probe-text', partId: 'part-probe-text', text: `Probe response: password=${JSON.stringify('probe-text-secret')}`, streaming: false, complete: true },
     ]
     const original = JSON.stringify(events)
     const livePayloads: string[] = []

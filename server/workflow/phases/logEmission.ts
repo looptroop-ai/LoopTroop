@@ -6,6 +6,7 @@ import { profiles } from '../../db/schema'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import type { StructuredLogFields, StructuredLogAudience, StructuredLogKind, StructuredLogOp } from './types'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { sanitizeDiagnosticText, sanitizeDiagnosticValue } from '@shared/errorDiagnostics'
 
 // ── Cached tool log limits from profile ──────────────────────────────────────
 
@@ -59,6 +60,10 @@ export function emitPhaseLog(
   content: string,
   data?: Record<string, unknown>,
 ) {
+  if (type === 'debug' || data?.source === 'debug' || data?.audience === 'debug') {
+    content = sanitizeDiagnosticText(content)
+    data = sanitizeDiagnosticValue(data) as typeof data
+  }
   const source = typeof data?.source === 'string' ? data.source : undefined
   const suppressDebugMirror = data?.suppressDebugMirror === true
   const structuredExtra = {
@@ -160,14 +165,15 @@ export function emitDebugLog(
   payload?: unknown,
   persist = true,
 ) {
-  const payloadText = payload === undefined ? '' : ` ${stringifyForLog(payload)}`
-  const content = `[DEBUG] ${message}${payloadText}`
+  const safePayload = sanitizeDiagnosticValue(payload)
+  const payloadText = safePayload === undefined ? '' : ` ${stringifyForLog(safePayload)}`
+  const content = `[DEBUG] ${sanitizeDiagnosticText(message)}${payloadText}`
   const liveContent = content.length > LIVE_DEBUG_LOG_MAX_CHARS
     ? `${content.slice(0, LIVE_DEBUG_LOG_MAX_CHARS)}\n... [debug payload truncated for live stream; full entry is available in the debug log]`
     : content
-  const debugData = payload && typeof payload === 'object'
-    ? (payload as Record<string, unknown>)
-    : (payload !== undefined ? { value: payload } : undefined)
+  const debugData = safePayload && typeof safePayload === 'object'
+    ? (safePayload as Record<string, unknown>)
+    : (safePayload !== undefined ? { value: safePayload } : undefined)
   const timestamp = new Date().toISOString()
   const logData: Record<string, unknown> = debugData ? { ...debugData, timestamp } : { timestamp }
   const structuredExtra = {

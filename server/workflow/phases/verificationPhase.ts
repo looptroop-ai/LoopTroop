@@ -5221,7 +5221,9 @@ export async function handlePreFlight(
               "PRE_FLIGHT_CHECK",
               modelId,
               session.id,
-              event,
+              event.type === "debug_event" || event.type === "permission"
+                ? event
+                : sanitizeDiagnosticValue(event) as typeof event,
               preFlightStreamState,
             );
           },

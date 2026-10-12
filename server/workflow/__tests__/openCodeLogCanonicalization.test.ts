@@ -61,6 +61,7 @@ import {
   emitOpenCodeSessionLogs,
   emitOpenCodeStreamEvent,
 } from '../phases/helpers'
+import { emitDebugLog } from '../phases/logEmission'
 
 function getPersistedEntries() {
   return mockAppend.mock.calls.map(([, payload]) => JSON.parse(payload))
@@ -86,6 +87,44 @@ describe('OpenCode log canonicalization', () => {
   beforeEach(() => {
     mockAppend.mockClear()
     mockBroadcast.mockClear()
+  })
+
+  it.each(['PRE_FLIGHT_CHECK', 'CODING', 'COUNCIL_DELIBERATING'] as const)('redacts live and raw persisted %s debug diagnostics including the error copy', (phase) => {
+    const event = {
+      type: 'debug_event' as const, sessionId: 'ses-private-diagnostic', eventName: 'session.retry.scheduled',
+      summary: 'Authorization: Bearer stream-summary-secret', severity: 'error' as const,
+      details: {
+        attempt: 2, inputToken: 12, startToken: 'process-identity', cursor: 'cursor-real',
+        error: { status: 502, authorization: 'stream-header-secret', response: '{"apiKey":"stream-body-secret"}' },
+      },
+    }
+    const original = JSON.stringify(event)
+    emitOpenCodeStreamEvent(TEST.ticketId, TEST.externalId, phase, TEST.model, event.sessionId, event, createOpenCodeStreamState())
+
+    for (const evidence of [JSON.stringify(mockBroadcast.mock.calls), JSON.stringify(mockAppend.mock.calls)]) {
+      expect(evidence).toContain('[redacted]')
+      expect(evidence).not.toMatch(/stream-(?:summary|header|body)-secret/)
+    }
+    expect(getPersistedEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'debug', data: expect.objectContaining({
+        attempt: 2, inputToken: 12, startToken: 'process-identity', cursor: 'cursor-real',
+        error: { status: 502, authorization: '[redacted]', response: '{"apiKey":"[redacted]"}' },
+      }) }),
+      expect.objectContaining({ type: 'error', source: 'error', audience: 'debug', content: '[ERROR] Authorization: [redacted]' }),
+    ]))
+    expect(JSON.stringify(event)).toBe(original)
+  })
+
+  it('retains separate physical DEBUG records when only their credential values differ', () => {
+    for (const apiKey of ['stream-first-secret', 'stream-second-secret']) {
+      emitDebugLog(TEST.ticketId, 'CODING', 'provider.failed', { sessionId: 'ses-repeat', error: { apiKey } })
+    }
+
+    const records = getPersistedEntries().filter((entry) => entry.type === 'debug')
+    expect(records).toHaveLength(2)
+    expect(records.map((entry) => entry.data.error)).toEqual([{ apiKey: '[redacted]' }, { apiKey: '[redacted]' }])
+    expect(mockBroadcast.mock.calls.filter(([, , entry]) => entry.type === 'debug')).toHaveLength(2)
+    expect(JSON.stringify(mockAppend.mock.calls)).not.toMatch(/stream-(?:first|second)-secret/)
   })
 
   it('persists a single canonical text row for a single text-part assistant response', () => {

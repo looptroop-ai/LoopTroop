@@ -18,7 +18,8 @@ import type { DiagnosticCheck, PreFlightReport } from '../../phases/preflight/ty
 import type { executeFinalTestWithRetries } from '../../phases/finalTest/executor'
 import type { FinalTestGenerationResult } from '../../phases/finalTest/generator'
 import type { FinalTestCommandResult, FinalTestExecutionReport } from '../../phases/finalTest/runner'
-import type { PromptPart } from '../../opencode/types'
+import type { PromptPart, StreamEvent } from '../../opencode/types'
+import { broadcaster } from '../../sse/broadcaster'
 import { CancelledError } from '../../council/types'
 import { isContinuableBlockedError } from '../../opencode/sessionContinuation'
 import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
@@ -185,6 +186,79 @@ describe('handlePreFlight', () => {
         failedChecks: [{ name: 'OpenCode', category: 'connectivity', message: 'OpenCode is unreachable.' }],
       },
     })
+  })
+
+  it('redacts live and persisted probe events before the doctor report completes', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const sessionId = 'ses-probe-redaction'
+    const retry: StreamEvent = {
+      type: 'debug_event', sessionId, messageId: 'msg-probe-retry',
+      eventName: 'session.retry.scheduled', severity: 'error',
+      summary: 'Retrying probe: Authorization: Bearer probe-summary-secret',
+      details: {
+        attempt: 2, at: 123, sessionId, modelId: TEST.implementer,
+        phaseAttempt: 3, inputToken: 12, cacheReadToken: 4,
+        nextPageToken: 'pagination-cursor', startToken: 'process-identity', hasCredentials: true,
+        error: {
+          type: 'provider.internal', status: 502,
+          message: 'Authorization: Bearer probe-auth-secret',
+          headers: { authorization: 'probe-header-secret', cookie: 'first=probe-cookie-secret; other=probe-other-cookie-secret' },
+          response: { body: '{"apiKey":"probe-body-secret","message":"Keep the provider cause."}' },
+          url: 'https://user:probe-userinfo-secret@provider.example/probe?key=probe-url-secret#probe-fragment-secret',
+        },
+      },
+    }
+    const events: StreamEvent[] = [
+      retry,
+      { type: 'session_status', sessionId, status: 'retry', attempt: 2, message: 'refresh_token=probe-retry-secret' },
+      { type: 'text', sessionId, messageId: 'msg-probe-text', partId: 'part-probe-text', text: 'Probe response: password="probe-text-secret"', streaming: false, complete: true },
+    ]
+    const original = JSON.stringify(events)
+    const livePayloads: string[] = []
+    const clientId = 'probe-redaction-client'
+    assert(broadcaster.addClient(ticket.id, {
+      id: clientId,
+      send: (event, payload) => { if (event === 'log') livePayloads.push(payload) },
+      close: () => {},
+    }))
+    runPreFlightChecksMock.mockImplementationOnce(async (...args: Parameters<typeof import('../../phases/preflight/doctor').runPreFlightChecks>) => {
+      const options = args[6] as PreFlightRunOptions
+      for (const event of events) options.onOpenCodeStreamEvent?.({ session: { id: sessionId }, modelId: TEST.implementer, event })
+
+      const debugLog = readFileNoFollowSync(paths.debugLogPath)
+      const normalLog = readFileNoFollowSync(paths.executionLogPath)
+      const aiLog = readFileNoFollowSync(paths.aiLogPath)
+      for (const evidence of [livePayloads.join('\n'), debugLog, normalLog, aiLog]) {
+        expect(evidence).toContain('[redacted]')
+        expect(evidence).not.toMatch(/probe-(?:summary|auth|header|cookie|other-cookie|body|userinfo|url|fragment|retry|text)-secret/)
+      }
+      const entries = debugLog.trim().split('\n').map((line) => JSON.parse(line))
+      const persistedRetry = entries.find((entry) => entry.message.includes('opencode.session.retry.scheduled'))
+      expect(persistedRetry?.data).toMatchObject({
+        attempt: 2, at: 123, sessionId, modelId: TEST.implementer,
+        phaseAttempt: 3, inputToken: 12, cacheReadToken: 4,
+        nextPageToken: 'pagination-cursor', startToken: 'process-identity', hasCredentials: true,
+        error: {
+          type: 'provider.internal', status: 502, message: 'Authorization: [redacted]',
+          headers: { authorization: '[redacted]', cookie: '[redacted]' },
+          response: { body: '{"apiKey":"[redacted]","message":"Keep the provider cause."}' },
+          url: 'https://provider.example/probe',
+        },
+      })
+      const liveRetry = livePayloads.map((payload) => JSON.parse(payload)).find((entry) => entry.message.includes('opencode.session.retry.scheduled'))
+      expect(liveRetry?.data).toMatchObject(persistedRetry.data)
+      expect(JSON.stringify(events)).toBe(original)
+      expect(getLatestPhaseArtifact(ticket.id, 'preflight_report', 'PRE_FLIGHT_CHECK')).toBeUndefined()
+      return { passed: true, checks: [], criticalFailures: [], warnings: [] } satisfies PreFlightReport
+    })
+
+    try {
+      const sendEvent = vi.fn()
+      await handlePreFlight(ticket.id, context, sendEvent, new AbortController().signal)
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'CHECKS_PASSED' })
+    } finally {
+      broadcaster.removeClient(ticket.id, clientId)
+    }
   })
 
   it('retains every failed check and the provider cause when readiness has several failures', async () => {

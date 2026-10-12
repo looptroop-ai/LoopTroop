@@ -1,12 +1,99 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as executionLog from '../../../log/executionLog'
+import { broadcaster } from '../../../sse/broadcaster'
 import {
   buildBeadLogFields,
+  emitDebugLog,
+  emitPhaseLog,
   formatStreamEventDuration,
   formatTimestamp,
   normalizeAttachmentMetadata,
   stringifyForLog,
   stringifyToolDetail,
 } from '../logEmission'
+
+describe('DEBUG emission privacy', () => {
+  it.each(['PRE_FLIGHT_CHECK', 'CODING', 'COUNCIL_DELIBERATING'] as const)('sanitizes %s debug message and payload before live truncation or persistence', (phase) => {
+    const append = vi.spyOn(executionLog, 'appendLogEvent').mockImplementation(() => {})
+    const broadcast = vi.spyOn(broadcaster, 'broadcast').mockImplementation(() => {})
+    const payload = {
+      entryId: 'entry-real', sessionId: 'ses-real', modelId: 'openai/model-real', phaseAttempt: 2,
+      cursor: 'cursor-real', startToken: 'process-real', inputToken: 12, hasCredentials: false,
+      headers: { authorization: 'logger-header-secret', cookie: 'first=logger-cookie-secret; second=logger-other-cookie-secret' },
+      response: '{"apiKey":"logger-body-secret","message":"Keep the cause."}',
+      evidence: 'e'.repeat(9000),
+    }
+    const original = JSON.stringify(payload)
+    try {
+      emitDebugLog('1:T-logger', phase, `${'m'.repeat(7980)} Authorization: Bearer logger-message-secret`, payload)
+      expect(append).toHaveBeenCalledTimes(1)
+      const persistedMessage = append.mock.calls[0]?.[3] ?? ''
+      const persistedData = append.mock.calls[0]?.[4]
+      const live = broadcast.mock.calls[0]?.[2]
+      for (const evidence of [persistedMessage, JSON.stringify(persistedData), JSON.stringify(live)]) {
+        expect(evidence).not.toMatch(/logger-(?:header|cookie|other-cookie|body|message)-secret/)
+      }
+      expect(persistedMessage.length).toBeGreaterThan(10_000)
+      expect(live?.content).toContain('debug payload truncated for live stream')
+      expect(persistedData).toMatchObject({
+        ...payload,
+        headers: { authorization: '[redacted]', cookie: '[redacted]' },
+        response: '{"apiKey":"[redacted]","message":"Keep the cause."}',
+      })
+      expect(live?.data).toEqual(persistedData)
+      expect(JSON.stringify(payload)).toBe(original)
+    } finally {
+      append.mockRestore()
+      broadcast.mockRestore()
+    }
+  })
+
+  it.each(['type', 'source', 'audience'] as const)('sanitizes direct DEBUG records classified by %s', (route) => {
+    const append = vi.spyOn(executionLog, 'appendLogEvent').mockImplementation(() => {})
+    const broadcast = vi.spyOn(broadcaster, 'broadcast').mockImplementation(() => {})
+    const metadata = {
+      phaseAttempt: 2, entryId: `entry-${route}`, fingerprint: `fingerprint-${route}`,
+      cursor: 'cursor-real', startToken: 'process-real', inputToken: 12,
+      variant: 'Authorization: Bearer logger-route-variant-secret',
+      ...(route === 'source' ? { source: 'debug' } : {}),
+      ...(route === 'audience' ? { audience: 'debug', source: 'error' } : {}),
+      authorization: 'logger-route-header-secret',
+    }
+    try {
+      emitPhaseLog('1:T-logger', 'T-logger', 'CODING', route === 'type' ? 'debug' : 'error', 'Authorization: Bearer logger-route-secret', metadata)
+      const persisted = append.mock.calls[0]
+      expect(persisted?.[3]).toBe('Authorization: [redacted]')
+      expect(persisted?.[4]).toMatchObject({ ...metadata, authorization: '[redacted]', variant: 'Authorization: [redacted]' })
+      expect(persisted?.[7]).toMatchObject({ entryId: metadata.entryId, fingerprint: metadata.fingerprint, phaseAttempt: 2, variant: 'Authorization: [redacted]' })
+      expect(JSON.stringify(broadcast.mock.calls)).not.toContain('logger-route-secret')
+      expect(JSON.stringify(broadcast.mock.calls)).not.toContain('logger-route-header-secret')
+      expect(JSON.stringify(broadcast.mock.calls)).not.toContain('logger-route-variant-secret')
+      expect(metadata.authorization).toBe('logger-route-header-secret')
+    } finally {
+      append.mockRestore()
+      broadcast.mockRestore()
+    }
+  })
+
+  it('preserves ordinary AI content while sanitizing its non-persisted DEBUG mirror', () => {
+    const append = vi.spyOn(executionLog, 'appendLogEvent').mockImplementation(() => {})
+    const broadcast = vi.spyOn(broadcaster, 'broadcast').mockImplementation(() => {})
+    const content = 'const password = "logger-ai-secret"; https://docs.example/search?q=example#section'
+    try {
+      emitPhaseLog('1:T-logger', 'T-logger', 'CODING', 'model_output', content, { audience: 'ai', phaseAttempt: 2 })
+      expect(append).toHaveBeenCalledTimes(1)
+      expect(append.mock.calls[0]?.[3]).toBe(content)
+      expect(broadcast.mock.calls[0]?.[2].content).toBe(content)
+      const mirror = broadcast.mock.calls.find(([, , event]) => event.type === 'debug')?.[2]
+      expect(mirror?.content).toContain('[redacted]')
+      expect(JSON.stringify(mirror)).not.toContain('logger-ai-secret')
+      expect(JSON.stringify(mirror)).not.toContain('?q=example')
+    } finally {
+      append.mockRestore()
+      broadcast.mockRestore()
+    }
+  })
+})
 
 /**
  * The value formatters behind every log line a phase emits.

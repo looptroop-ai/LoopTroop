@@ -1,4 +1,4 @@
-import { createContext, useState } from 'react'
+import { createContext, useRef, useState } from 'react'
 import {
   COUNCIL_DRAFTING_CONTROL_PHASES,
   type CouncilMemberControlPhase,
@@ -86,17 +86,28 @@ function buildStopCopy(
   memberId: string,
   round: readonly CouncilRoundMember[],
   minQuorum: number | null,
+  /** Finished results the stop throws away too: a PRD model's Part 1 answers. */
+  finishedLost: readonly CouncilMemberResult[],
 ): CouncilMemberConfirmCopy {
+  const othersWorking = round.some((member) => member.outcome === 'pending' && member.memberId !== memberId)
   // What can still arrive once this model stops: the finished results and the
   // other models still working. A failed, timed out or stopped model is done.
   const reachable = round.filter((member) => (
     member.outcome === 'completed' || (member.outcome === 'pending' && member.memberId !== memberId)
   )).length
+  const needed = minQuorum === null ? '' : `This step needs ${minQuorum} ${minQuorum === 1 ? 'result' : 'results'} and ${reachable === 0 ? 'none' : `only ${reachable}`} can still arrive`
   return {
     question: `Stop ${name}?`,
-    consequence: 'Its unfinished work is thrown away and the step goes on with the other models.',
+    consequence: [
+      finishedLost.length > 0 ? describeFinishedResultsLost(finishedLost) : null,
+      othersWorking
+        ? 'Its unfinished work is thrown away and the step goes on with the other models.'
+        : 'Its unfinished work is thrown away and the step moves on without it.',
+    ].filter(Boolean).join(' '),
     warning: minQuorum !== null && reachable < minQuorum
-      ? `This step needs ${minQuorum} ${minQuorum === 1 ? 'result' : 'results'} and ${reachable === 0 ? 'none' : `only ${reachable}`} can still arrive, so it will fail and the ticket will stop with an error. You can retry the whole step from there.`
+      ? othersWorking
+        ? `${needed}. Unless you retry another model in time, the step will fail and the ticket will stop with an error.`
+        : `${needed}, so the step will fail and the ticket will stop with an error. You can retry the whole step from there.`
       : null,
     confirmLabel: 'Stop model',
     destructive: true,
@@ -123,12 +134,14 @@ function buildRetryCopy(
   }
 }
 
-function buildMemberControl({ memberId, working, lost, round, minQuorum, scope, part }: {
+function buildMemberControl({ memberId, working, lost, stopLoses = [], round, minQuorum, scope, part }: {
   memberId: string
   /** Whether the model is still working on this step, in any part of it. */
   working: boolean
   /** Finished results a retry would throw away, in the order they were made. */
   lost: readonly CouncilMemberResult[]
+  /** Finished results a stop would throw away. */
+  stopLoses?: readonly CouncilMemberResult[]
   /** Every member as the step's quorum counts them. */
   round: readonly CouncilRoundMember[]
   minQuorum: number | null
@@ -140,7 +153,7 @@ function buildMemberControl({ memberId, working, lost, round, minQuorum, scope, 
     memberId,
     canStop: working,
     part,
-    stop: buildStopCopy(name, memberId, round, minQuorum),
+    stop: buildStopCopy(name, memberId, round, minQuorum, stopLoses),
     retry: buildRetryCopy(name, working, lost, scope),
   }
 }
@@ -193,6 +206,8 @@ export function getDraftMemberControl(
       ...(answersFinished && !keepsAnswers ? ['answers' as const] : []),
       ...(draftOutcome === 'completed' ? ['draft' as const] : []),
     ],
+    // A stop throws away everything the model did in this step, Part 1 included.
+    stopLoses: answersFinished ? ['answers'] : [],
     round,
     minQuorum: meta.minQuorum,
     scope: keepsAnswers ? 'draft_only' : 'both_parts',
@@ -246,6 +261,9 @@ export function useCouncilMemberConfirmation(scope: CouncilMemberControlScope) {
   const control = useCouncilMemberControl()
   const [request, setRequest] = useState<CouncilMemberControlRequest | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // Set synchronously, so a second click landing before the next render cannot
+  // send the request twice.
+  const sending = useRef(false)
 
   return {
     request,
@@ -262,12 +280,16 @@ export function useCouncilMemberConfirmation(scope: CouncilMemberControlScope) {
       setRequest(null)
     },
     confirm() {
-      if (!request) return
+      if (!request || sending.current) return
+      sending.current = true
       const sent = request
       control.mutate({ ...sent, ticketId: scope.ticketId, phase: scope.phase }, {
         onSuccess: (result) => {
           setRequest(null)
           if (sent.action === 'stop' && 'outcome' in result) setNotice(describeStopResult(sent.memberId, result.outcome))
+        },
+        onSettled: () => {
+          sending.current = false
         },
       })
     },

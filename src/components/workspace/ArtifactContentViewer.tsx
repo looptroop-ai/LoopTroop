@@ -2290,19 +2290,24 @@ function VoterStatusBadges({ voters, renderControls }: {
   )
 }
 
-/** The badges with Stop and Retry on each, and the confirmation under them, while the vote runs. */
-function LiveVoterStatusBadges({ scope, voters, minQuorum }: {
+/**
+ * The badges with Stop and Retry on each while the vote runs, and the
+ * confirmation under them. Stays mounted once the vote ends (no buttons), so a
+ * notice about a stop the voter beat is still there to read.
+ */
+function LiveVoterStatusBadges({ scope, voters, minQuorum, roundOpen }: {
   scope: CouncilMemberControlScope
   voters: readonly CouncilRoundMember[]
   minQuorum: number | null
+  roundOpen: boolean
 }) {
   const confirmation = useCouncilMemberConfirmation(scope)
-  const requestedId = confirmation.request?.memberId
+  const requestedId = roundOpen ? confirmation.request?.memberId : undefined
   return (
     <>
       <VoterStatusBadges
         voters={voters}
-        renderControls={(voterId) => {
+        renderControls={roundOpen ? (voterId) => {
           const control = getVoteMemberControl(voterId, voters, minQuorum)
           return (
             <div className="-mr-1 -mt-0.5 flex shrink-0 self-start">
@@ -2324,7 +2329,7 @@ function LiveVoterStatusBadges({ scope, voters, minQuorum }: {
               />
             </div>
           )
-        }}
+        } : undefined}
       />
       <CouncilMemberConfirmStrip
         confirmation={confirmation}
@@ -2364,11 +2369,10 @@ function VotingResultsView({ data, showHeader = true, phase }: { data: CouncilRe
   const voters = voterIds.map((voterId) => ({ memberId: voterId, outcome: getVoterOutcome(voterId) }))
   const roundMeta = readCouncilRoundMeta(data)
   // Stop and Retry only for the vote the live council view is running, and only until it ends.
-  const liveControlScope = memberControlScope?.phase === phase
-    && isCouncilVotingControlPhase(phase)
-    && isCouncilRoundOpen(roundMeta, voters)
+  const liveControlScope = memberControlScope?.phase === phase && isCouncilVotingControlPhase(phase)
     ? memberControlScope
     : null
+  const roundOpen = isCouncilRoundOpen(roundMeta, voters)
   const voterProcessingNoticeById = new Map<string, ArtifactStructuredOutputData | undefined>(
     voterIds.map((voterId) => {
       const detail = voterDetailById.get(voterId)
@@ -2422,7 +2426,7 @@ function VotingResultsView({ data, showHeader = true, phase }: { data: CouncilRe
             </div>
           )}
           {liveControlScope ? (
-            <LiveVoterStatusBadges scope={liveControlScope} voters={voters} minQuorum={roundMeta?.minQuorum ?? null} />
+            <LiveVoterStatusBadges scope={liveControlScope} voters={voters} minQuorum={roundMeta?.minQuorum ?? null} roundOpen={roundOpen} />
           ) : (
             <VoterStatusBadges voters={voters} />
           )}

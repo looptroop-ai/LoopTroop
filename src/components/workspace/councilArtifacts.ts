@@ -415,17 +415,20 @@ function makeFullAnswersViewer(modelId: string, content: string): CouncilViewerA
 }
 
 /** Why a member's draft (or Full Answers) has no usable content, as its chip says it. */
-const FAILED_DRAFT_DETAIL: Record<NonSuccessOutcome, (draft: DraftLike) => string> = {
-  timed_out: () => 'no response received',
-  failed: (draft) => draft.error || 'runtime failure',
-  invalid_output: (draft) => draft.error || 'malformed response',
-  stopped: () => 'stopped by you',
+function getFailedDraftDetail(outcome: NonSuccessOutcome, draft: DraftLike): string {
+  switch (outcome) {
+    case 'timed_out': return 'no response received'
+    case 'failed': return draft.error || 'runtime failure'
+    case 'invalid_output': return draft.error || 'malformed response'
+    case 'stopped': return 'stopped by you'
+    default: return outcome satisfies never
+  }
 }
 
 function getFullAnswersDetail(draft: DraftLike | undefined): string {
   if (!draft) return 'waiting for response'
   if (draft.outcome === 'pending') return 'filling in answers'
-  if (isFailedCouncilOutcome(draft.outcome)) return FAILED_DRAFT_DETAIL[draft.outcome](draft)
+  if (isFailedCouncilOutcome(draft.outcome)) return getFailedDraftDetail(draft.outcome, draft)
   if (!draft.content) return ''
   const count = typeof draft.questionCount === 'number'
     ? draft.questionCount
@@ -472,7 +475,7 @@ function getDraftDetail(domain: Domain, draft: DraftLike | undefined): string {
     const detail = getDraftCompletionDetail(domain, draft)
     if (detail) return detail
   }
-  if (isFailedCouncilOutcome(draft.outcome)) return FAILED_DRAFT_DETAIL[draft.outcome](draft)
+  if (isFailedCouncilOutcome(draft.outcome)) return getFailedDraftDetail(draft.outcome, draft)
   return getDraftCompletionDetail(domain, draft)
 }
 

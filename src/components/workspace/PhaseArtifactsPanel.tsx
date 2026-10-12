@@ -844,7 +844,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
 
       <Dialog open={!!viewingArtifact} onOpenChange={(open) => !open && setViewingSelection(null)}>
         <DialogContent
-          className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg"
+          className={`max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg${memberControl ? ' focus:outline-none' : ''}`}
           onOpenAutoFocus={memberControl ? focusDialogItself : undefined}
         >
           {/* Padded clear of the member controls, which sit over its top right. */}
@@ -857,9 +857,9 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
               {viewingArtifact?.description ?? 'Artifact details for the current council phase.'}
             </DialogDescription>
           </DialogHeader>
-          {memberControl && liveMemberControlScope ? (
+          {liveMemberControlScope && selectedMemberChip ? (
             <CouncilMemberDialogControls
-              key={selectedMemberChip?.key}
+              key={selectedMemberChip.key}
               scope={liveMemberControlScope}
               control={memberControl}
             />

@@ -46,6 +46,10 @@ export function useCouncilMemberControl() {
     // finished" means this screen is behind the server, and the fresh artifacts
     // are what take the stale buttons away. Returned, so the request reads as
     // done only once the chips show its result.
-    onSettled: (_result, _error, variables) => queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', variables.ticketId] }),
+    // The ticket too: stopping the last working model ends the step and moves the ticket on.
+    onSettled: (_result, _error, variables) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', variables.ticketId] }),
+      queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] }),
+    ]),
   })
 }

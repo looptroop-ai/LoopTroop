@@ -29,7 +29,10 @@ const LIVE_DELIBERATING: CouncilMemberControlScope = { ticketId: TEST.ticketId, 
 const LIVE_PRD_DRAFTING: CouncilMemberControlScope = { ticketId: TEST.ticketId, phase: 'DRAFTING_PRD' }
 const LIVE_PRD_VOTING: CouncilMemberControlScope = { ticketId: TEST.ticketId, phase: 'COUNCIL_VOTING_PRD' }
 
-const QUORUM_WARNING_TAIL = 'so it will fail and the ticket will stop with an error. You can retry the whole step from there.'
+/** The warning when the stopped model was the last one working: the step ends on the spot. */
+const QUORUM_FAILS_NOW = 'so the step will fail and the ticket will stop with an error. You can retry the whole step from there.'
+/** The warning while other models still work: retrying one of them can still save the step. */
+const QUORUM_FAILS_UNLESS = 'Unless you retry another model in time, the step will fail and the ticket will stop with an error.'
 
 const { makeArtifact, resetArtifactIds } = createArtifactFactory()
 
@@ -95,8 +98,8 @@ function sentRequest(fetchMock: ReturnType<typeof stubFetch>) {
   return { url, body: JSON.parse(String(init?.body)) as unknown }
 }
 
-function renderPanel(phase: string, artifacts: TicketArtifact[], scope: CouncilMemberControlScope | null) {
-  return renderWithProviders(
+function panelElement(phase: string, artifacts: TicketArtifact[], scope: CouncilMemberControlScope | null) {
+  return (
     <CouncilMemberControlContext.Provider value={scope}>
       <PhaseArtifactsPanel
         phase={phase}
@@ -106,13 +109,19 @@ function renderPanel(phase: string, artifacts: TicketArtifact[], scope: CouncilM
         councilMemberNames={MEMBERS}
         artifactState={successfulArtifactState(artifacts)}
       />
-    </CouncilMemberControlContext.Provider>,
+    </CouncilMemberControlContext.Provider>
   )
+}
+
+function renderPanel(phase: string, artifacts: TicketArtifact[], scope: CouncilMemberControlScope | null) {
+  return renderWithProviders(panelElement(phase, artifacts, scope))
 }
 
 /** Opens a member chip. In `DRAFTING_PRD` index 0 is Part 1 and index 1 is Part 2. */
 function openChip(modelName: string, index = 0) {
-  fireEvent.click(screen.getAllByRole('button', { name: new RegExp(`^${modelName}`) })[index]!)
+  const chips = screen.getAllByRole('button').filter((button) => button.getAttribute('aria-label')?.startsWith(modelName)
+    || button.textContent?.startsWith(modelName))
+  fireEvent.click(chips[index]!)
   return screen.getByRole('dialog')
 }
 
@@ -157,9 +166,9 @@ describe('getDraftMemberControl', () => {
   it.each([
     // [what, outcomes, minQuorum, warning]
     ['the other model still working keeps the quorum in reach', { [A]: 'pending', [B]: 'pending', [C]: 'completed' }, 2, null],
-    ['a finished result counts toward the quorum', { [A]: 'pending', [B]: 'completed', [C]: 'failed' }, 2, `This step needs 2 results and only 1 can still arrive, ${QUORUM_WARNING_TAIL}`],
-    ['the stopped model no longer counts', { [A]: 'pending', [B]: 'pending', [C]: 'failed' }, 2, `This step needs 2 results and only 1 can still arrive, ${QUORUM_WARNING_TAIL}`],
-    ['ended models never count', { [A]: 'pending', [B]: 'failed', [C]: 'stopped' }, 1, `This step needs 1 result and none can still arrive, ${QUORUM_WARNING_TAIL}`],
+    ['a finished result counts toward the quorum', { [A]: 'pending', [B]: 'completed', [C]: 'failed' }, 2, `This step needs 2 results and only 1 can still arrive, ${QUORUM_FAILS_NOW}`],
+    ['the stopped model no longer counts', { [A]: 'pending', [B]: 'pending', [C]: 'failed' }, 2, `This step needs 2 results and only 1 can still arrive. ${QUORUM_FAILS_UNLESS}`],
+    ['ended models never count', { [A]: 'pending', [B]: 'failed', [C]: 'stopped' }, 1, `This step needs 1 result and none can still arrive, ${QUORUM_FAILS_NOW}`],
     ['a round without a quorum never warns', { [A]: 'pending', [B]: 'failed' }, undefined, null],
   ] as const)('warns about the quorum on a stop when %s', (_case, outcomes, minQuorum, warning) => {
     const artifacts = [minQuorum === undefined
@@ -182,6 +191,18 @@ describe('getDraftMemberControl', () => {
       confirmLabel: 'Stop model',
       destructive: true,
     })
+  })
+
+  it('says the step moves on when the stopped model is the last one working', () => {
+    const artifacts = [interviewDrafts({ [A]: 'pending', [B]: 'completed', [C]: 'completed' })]
+    expect(controlFor('COUNCIL_DELIBERATING', artifacts, `COUNCIL_DELIBERATING:${A}`)?.stop.consequence)
+      .toBe('Its unfinished work is thrown away and the step moves on without it.')
+  })
+
+  it('names the finished Part 1 answers a PRD stop throws away', () => {
+    const artifacts = prdArtifacts({ [A]: 'completed', [B]: 'pending' }, { [A]: 'pending', [B]: 'pending' })
+    expect(controlFor('DRAFTING_PRD', artifacts, `DRAFTING_PRD:${A}`)?.stop.consequence)
+      .toBe('Its finished answers are thrown away for good. Its unfinished work is thrown away and the step goes on with the other models.')
   })
 
   it.each([
@@ -268,7 +289,7 @@ describe('getDraftMemberControl', () => {
       )
       const control = controlFor('DRAFTING_PRD', artifacts, `DRAFTING_PRD:fullanswers:${A}`)
       expect(control?.canStop).toBe(true)
-      expect(control?.stop.warning).toBe(`This step needs 2 results and only 1 can still arrive, ${QUORUM_WARNING_TAIL}`)
+      expect(control?.stop.warning).toBe(`This step needs 2 results and only 1 can still arrive. ${QUORUM_FAILS_UNLESS}`)
     })
   })
 })
@@ -367,7 +388,7 @@ describe('member dialog controls in a drafting step', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model-a' }))
 
     expect(within(dialog).getByRole('group', { name: 'Stop model-a?' }))
-      .toHaveTextContent(`This step needs 2 results and only 1 can still arrive, ${QUORUM_WARNING_TAIL}`)
+      .toHaveTextContent(`This step needs 2 results and only 1 can still arrive. ${QUORUM_FAILS_UNLESS}`)
   })
 
   it('shows the server refusal inline and keeps the confirmation open', async () => {
@@ -393,6 +414,46 @@ describe('member dialog controls in a drafting step', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model' }))
 
     expect(await within(dialog).findByText('model-a finished before it could be stopped.')).toHaveAttribute('role', 'status')
+  })
+
+  it('keeps the notice after the stop the model beat ends the round', async () => {
+    stubFetch(200, { success: true, phase: 'COUNCIL_DELIBERATING', memberId: A, outcome: 'completed' })
+    const view = renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'pending', [B]: 'completed', [C]: 'completed' })], LIVE_DELIBERATING)
+
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model-a' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model' }))
+    await within(dialog).findByText('model-a finished before it could be stopped.')
+
+    // The refreshed artifacts show nobody working: the round is over.
+    view.rerender(panelElement('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'completed', [B]: 'completed', [C]: 'completed' })], LIVE_DELIBERATING))
+    expect(screen.queryByRole('button', { name: 'Retry model-a' })).not.toBeInTheDocument()
+    expect(screen.getByText('model-a finished before it could be stopped.')).toBeInTheDocument()
+  })
+
+  it('shows an unconfirmed stop inline', async () => {
+    stubFetch(500, { error: 'This model\'s turn could not be ended cleanly.', code: 'STOP_UNCONFIRMED' })
+    renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'pending', [B]: 'pending' })], LIVE_DELIBERATING)
+
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model-a' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('could not be ended cleanly')
+  })
+
+  it('sends one request when the confirm button is clicked twice in a row', async () => {
+    const fetchMock = stubFetch(200, { success: true, phase: 'COUNCIL_DELIBERATING', memberId: A, outcome: 'stopped' })
+    renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'pending', [B]: 'pending' })], LIVE_DELIBERATING)
+
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop model-a' }))
+    const confirm = within(dialog).getByRole('button', { name: 'Stop model' })
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('locks the controls and shows a spinner while the request runs', async () => {
@@ -506,7 +567,7 @@ describe('voter badge controls in a voting step', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop model-a' }))
     const strip = screen.getByRole('group', { name: 'Stop model-a?' })
-    expect(strip).toHaveTextContent(`This step needs 2 results and only 1 can still arrive, ${QUORUM_WARNING_TAIL}`)
+    expect(strip).toHaveTextContent(`This step needs 2 results and only 1 can still arrive, ${QUORUM_FAILS_NOW}`)
 
     fireEvent.click(within(strip).getByRole('button', { name: 'Stop model' }))
 

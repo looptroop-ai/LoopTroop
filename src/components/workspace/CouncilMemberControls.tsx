@@ -39,7 +39,8 @@ export function CouncilMemberControlButton({ action, memberId, onClick, disabled
           onClick={onClick}
           className={cn(
             'gap-1 text-[11px] font-normal text-muted-foreground hover:text-foreground [&_svg]:size-3',
-            iconOnly ? 'h-5 w-5 px-0' : 'h-6 px-1.5',
+            // 24px: the smallest pointer target WCAG 2.2 AA accepts.
+            iconOnly ? 'h-6 w-6 px-0' : 'h-6 px-1.5',
           )}
         >
           <Icon aria-hidden="true" />
@@ -102,32 +103,36 @@ export function CouncilMemberConfirmStrip({ confirmation, control }: {
  * Stop and Retry for the model a drafting step's member dialog shows: small
  * buttons in the header's top right, left of the close button, and the
  * confirmation under the header.
+ *
+ * Stays mounted after the round ends (`control` null, no buttons), so the
+ * notice about a stop the model beat is still there to read.
  */
 export function CouncilMemberDialogControls({ scope, control }: {
   scope: CouncilMemberControlScope
-  control: CouncilMemberControl
+  control: CouncilMemberControl | null
 }) {
   const confirmation = useCouncilMemberConfirmation(scope)
-  const { memberId, part } = control
   return (
     <>
-      {/* The close button sits at right-4 top-4 and is 16px wide. */}
-      <div className="absolute right-11 top-3 flex items-center gap-0.5">
-        {control.canStop ? (
+      {control ? (
+        // The close button sits at right-4 top-4 and is 16px wide.
+        <div className="absolute right-11 top-3 flex items-center gap-0.5">
+          {control.canStop ? (
+            <CouncilMemberControlButton
+              action="stop"
+              memberId={control.memberId}
+              disabled={confirmation.isPending}
+              onClick={() => confirmation.open({ action: 'stop', memberId: control.memberId })}
+            />
+          ) : null}
           <CouncilMemberControlButton
-            action="stop"
-            memberId={memberId}
+            action="retry"
+            memberId={control.memberId}
             disabled={confirmation.isPending}
-            onClick={() => confirmation.open({ action: 'stop', memberId })}
+            onClick={() => confirmation.open({ action: 'retry', memberId: control.memberId, part: control.part })}
           />
-        ) : null}
-        <CouncilMemberControlButton
-          action="retry"
-          memberId={memberId}
-          disabled={confirmation.isPending}
-          onClick={() => confirmation.open({ action: 'retry', memberId, part })}
-        />
-      </div>
+        </div>
+      ) : null}
       <CouncilMemberConfirmStrip confirmation={confirmation} control={control} />
     </>
   )

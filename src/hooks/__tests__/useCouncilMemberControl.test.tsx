@@ -51,6 +51,7 @@ describe('useCouncilMemberControl', () => {
     })
     expect(result.current.data).toMatchObject({ outcome: 'stopped' })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket-artifacts', TEST.ticketId] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket', TEST.ticketId] })
   })
 
   it('sends the PRD part with a retry', async () => {
@@ -95,6 +96,7 @@ describe('useCouncilMemberControl', () => {
     expect(result.current.error?.message).toBe('Could not stop the model (HTTP 409: This step is no longer running.)')
     // A refusal means the screen is behind the server, so it reloads either way.
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket-artifacts', TEST.ticketId] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ticket', TEST.ticketId] })
   })
 
   it('keeps the details of a failed stop', async () => {

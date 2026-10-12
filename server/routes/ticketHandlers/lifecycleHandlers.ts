@@ -69,6 +69,7 @@ import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workf
 import { isExecutionBandStatus } from '../../workflow/executionBand'
 import { getErrorMessage } from '@shared/typeGuards'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
+import { isCouncilMemberControlPhase } from '@shared/councilMembers'
 import { broadcaster } from '../../sse/broadcaster'
 import {
   clearSessionContinuation,
@@ -951,7 +952,10 @@ export async function handleRetryTicket(c: Context) {
   }
 
   try {
-    if (ticket.previousStatus === 'PREPARING_EXECUTION_ENV') {
+    // A council step can fail with a member whose stop OpenCode never
+    // confirmed. Its session row is still active, and the retried round would
+    // reconnect to it instead of starting the model fresh.
+    if (ticket.previousStatus === 'PREPARING_EXECUTION_ENV' || isCouncilMemberControlPhase(ticket.previousStatus)) {
       const stopped = await abortTicketSessions(ticketId)
       if (stopped === false) {
         return c.json({

@@ -82,10 +82,11 @@ export function armAttemptDeadline(
     const arm = () => {
       clear()
       if (isClosed() || budget.suspended()) return
+      const delayMs = Math.max(0, budget.remainingMs() ?? 0)
       timeoutHandle = setTimeout(() => {
         onExpire()
         reject(new Error(PHASE_DEADLINE_ERROR))
-      }, Math.max(0, budget.remainingMs() ?? 0))
+      }, delayMs)
     }
     unsubscribe = budget.onChange(arm)
     arm()

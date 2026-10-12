@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, PromptSessionOptions } from '../../opencode/types'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -220,21 +220,32 @@ describe('stopping and restarting one council member', () => {
     })
 
     it('does not report a deadline once a timed-out drafter was restarted to a result', async () => {
-      // A stays busy on a restart with its own clock; B times out on the round's
-      // clock, is restarted, and drafts. The round never ends on a timeout.
-      const adapter = new ScriptedAdapter({ [MODEL_A]: ['stall', 'stall'], [MODEL_B]: ['stall', 'Second draft from B'] })
-      const { ticket, run, progress } = await startDrafting(adapter, 'Retry a timed-out drafter', { timeoutMs: 600 })
-      await waitFor(() => adapter.promptsFor(MODEL_A).length === 1 && adapter.promptsFor(MODEL_B).length === 1, 'both to start')
-      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_A)
-      await waitFor(() => progress.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'timed_out'), 'B to time out')
+      // B times out on the round's clock, is restarted, and drafts, while A keeps
+      // the round open on a restart with its own clock. A is restarted halfway
+      // through the round, so it still has half its time when B times out. The
+      // clocks are faked but keep moving, so polling and I/O run as usual and
+      // that half is a minute of real time, however slow the machine.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true })
+      try {
+        const timeoutMs = 120_000
+        const adapter = new ScriptedAdapter({ [MODEL_A]: ['stall', 'stall'], [MODEL_B]: ['stall', 'Second draft from B'] })
+        const { ticket, run, progress } = await startDrafting(adapter, 'Retry a timed-out drafter', { timeoutMs })
+        await waitFor(() => adapter.promptsFor(MODEL_A).length === 1 && adapter.promptsFor(MODEL_B).length === 1, 'both to start')
+        await vi.advanceTimersByTimeAsync(timeoutMs / 2)
+        await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_A)
+        await vi.advanceTimersByTimeAsync(timeoutMs / 2)
+        await waitFor(() => progress.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'timed_out'), 'B to time out')
 
-      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B)
-      await waitFor(() => progress.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'completed'), 'B to draft')
-      await stopCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_A)
-      const result = await run
+        await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B)
+        await waitFor(() => progress.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'completed'), 'B to draft')
+        await stopCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_A)
+        const result = await run
 
-      expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'stopped', [MODEL_B]: 'completed' })
-      expect(result.deadlineReached).toBe(false)
+        expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'stopped', [MODEL_B]: 'completed' })
+        expect(result.deadlineReached).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('redoes a finished draft while another model is still working, and keeps only the new one', async () => {
@@ -295,6 +306,20 @@ describe('stopping and restarting one council member', () => {
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
       expect(result.votes.every((vote) => vote.voterId === MODEL_A)).toBe(true)
       expect(result.voterDetails.find((detail) => detail.voterId === MODEL_B)?.error).toBe(COUNCIL_MEMBER_STOPPED_ERROR)
+    })
+
+    it('keeps nothing a stopped voter wrote, a rejected scorecard included', async () => {
+      const adapter = new ScriptedAdapter({ [MODEL_A]: [scorecard()], [MODEL_B]: ['not a scorecard', 'stall'] })
+      const { ticket, run } = await startVoting(adapter, 'Stop a voter after a rejected scorecard')
+      await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its structured retry')
+
+      await stopCouncilMember(ticket.id, 'COUNCIL_VOTING_INTERVIEW', MODEL_B)
+      const result = await run
+
+      const detail = result.voterDetails.find((entry) => entry.voterId === MODEL_B)
+      expect(detail?.error).toBe(COUNCIL_MEMBER_STOPPED_ERROR)
+      expect(detail).not.toHaveProperty('rawAttempts')
+      expect(detail).not.toHaveProperty('rawResponse')
     })
 
     it('restarts a voter and counts only its new scorecard', async () => {
@@ -403,6 +428,8 @@ describe('stopping and restarting one council member', () => {
         () => fullAnswerEvents.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'invalid_output'),
         'B to fail Full Answers',
       )
+      // A step's session stays open after its prompt, so a failed step stops it.
+      expect(adapter.aborted).toContain(adapter.promptsFor(MODEL_B)[0])
 
       await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'prd_draft')
       await waitFor(() => draftEvents.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'completed'), 'B to draft')
@@ -413,6 +440,34 @@ describe('stopping and restarting one council member', () => {
       expect(result.memberOutcomes[MODEL_B]).toBe('completed')
       expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))
         .toContain('restarted')
+    })
+
+    it('redoes both parts on a Part 2 retry after a stop threw the Part 1 answers away', async () => {
+      // A stays busy on its PRD draft so the round is still open for B's retry.
+      const adapter = new ScriptedAdapter({
+        [MODEL_A]: [resolvedFullAnswers(), 'stall'],
+        [MODEL_B]: [resolvedFullAnswers(), 'stall', resolvedFullAnswers(), makePrdYaml()],
+      })
+      const { ticket, run, fullAnswerEvents, draftEvents } = await startPrd(adapter, 'Retry after a Part 2 stop')
+      await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its PRD draft')
+      await stopCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B)
+
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'prd_draft')
+      await waitFor(() => draftEvents.some((entry) => entry.memberId === MODEL_B && entry.outcome === 'completed'), 'B to draft')
+      await stopCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_A)
+      const result = await run
+
+      // Part 1 ran again in a session of its own, rather than being skipped.
+      expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.outcome ?? entry.status)).toEqual([
+        'session_created',
+        'completed',
+        'stopped',
+        'restarted',
+        'session_created',
+        'completed',
+      ])
+      expect(result.fullAnswerOutcomes[MODEL_B]).toBe('completed')
+      expect(result.memberOutcomes[MODEL_B]).toBe('completed')
     })
 
     it('redoes both parts when the restart comes from Full Answers', async () => {

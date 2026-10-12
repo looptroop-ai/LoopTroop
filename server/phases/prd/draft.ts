@@ -668,7 +668,7 @@ async function executeStructuredStep(
 }
 
 /** One member's result as the live artifacts receive it. */
-function toFinishedProgress(memberId: string, draft: DraftResult, sessionId: string | undefined): DraftProgressEvent {
+function toFinishedProgress(memberId: string, draft: DraftResult, sessionId?: string): DraftProgressEvent {
   return {
     memberId,
     status: 'finished',
@@ -830,8 +830,8 @@ export async function draftPRD(
     // round on an error; the round fails when the others settle.
     onFailed: (memberId, error) => {
       const failed = buildFailedDraft(memberId, 'failed', 0, getErrorMessage(error))
-      if (!keptFullAnswers.has(memberId)) onFullAnswersProgress?.(toFinishedProgress(memberId, failed, undefined))
-      onDraftProgress?.(toFinishedProgress(memberId, failed, undefined))
+      if (!keptFullAnswers.has(memberId)) onFullAnswersProgress?.(toFinishedProgress(memberId, failed))
+      onDraftProgress?.(toFinishedProgress(memberId, failed))
     },
   })
 
@@ -877,8 +877,9 @@ export async function draftPRD(
       stepSessionId = sessionId
       resolveSessionReady()
       // Thrown so the prompt runner stops the session it just opened: the
-      // member's turn ended while it was being created.
-      if (attempt.interruption()) {
+      // member's turn ended, or the ticket was canceled, while it was being
+      // created, and nothing else will stop it.
+      if (attempt.interruption() || signal?.aborted) {
         throw new Error(`OpenCode session ${sessionId} was created after the member's council turn ended`)
       }
     }
@@ -904,6 +905,15 @@ export async function draftPRD(
           && sessionManager?.hasUnresolvedSessionOwnershipForScope(options.ticketId, 'DRAFTING_PRD', ownership),
         ),
       })
+    }
+
+    /** Stops the step's session; a stop OpenCode will not confirm fails the member. */
+    const stopStepSession = async (): Promise<void> => {
+      const stop = await stopCutShortSession()
+      if (stop.stopped) return
+      throw new Error(stop.sessionId
+        ? `Could not confirm abort of OpenCode session ${stop.sessionId}`
+        : 'Could not confirm abort of an OpenCode session that was still being created')
     }
 
     /** Records how the member's attempt ended without a PRD draft, and returns what stands. */
@@ -933,7 +943,8 @@ export async function draftPRD(
       const answers = fullAnswersResult && !stoppedByPerson ? fullAnswersResult : failed
       if (answers !== fullAnswersResult) {
         fullAnswersResult = answers
-        onFullAnswersProgress?.(toFinishedProgress(member.modelId, answers, sessionId))
+        // A Part 2 session is not the one that wrote the answers being dropped.
+        onFullAnswersProgress?.(toFinishedProgress(member.modelId, answers, step === 'full_answers' ? sessionId : undefined))
       }
 
       const draft = prdResult ?? (step === 'full_answers'
@@ -1208,12 +1219,7 @@ export async function draftPRD(
       // unless the whole ticket is being canceled.
       const interruption = signal?.aborted ? null : attempt.interruption()
       if (interruption) {
-        const stop = await stopCutShortSession()
-        if (!stop.stopped) {
-          throw new Error(stop.sessionId
-            ? `Could not confirm abort of OpenCode session ${stop.sessionId}`
-            : 'Could not confirm abort of an OpenCode session that was still being created')
-        }
+        await stopStepSession()
         if (interruption === 'retry') {
           // Nothing is recorded: the round starts this member over at once.
           const discarded = buildFailedDraft(member.modelId, 'stopped', 0, COUNCIL_MEMBER_STOPPED_ERROR)
@@ -1224,6 +1230,11 @@ export async function draftPRD(
 
       if (currentSession) {
         await stopPrdSession(adapter, sessionManager, currentSession.id, signal)
+      } else if (!signal?.aborted) {
+        // The step failed before handing its session back (structured retries
+        // ran out, or its time did). Each step's session stays open after its
+        // prompt, so stop the one it opened. A cancel stops every session itself.
+        await stopStepSession()
       }
       return settleFailedMember(error, fullAnswersResult ? 'prd_draft' : 'full_answers', false)
     } finally {

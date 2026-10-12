@@ -188,6 +188,27 @@ describe('applyDraftProgress', () => {
     expect(live[0]).toEqual({ memberId: 'a', content: '', outcome: 'pending', duration: 0 })
   })
 
+  it('drops the diagnostics of an earlier result that a later one does not carry', () => {
+    const live = createPendingDrafts([{ modelId: 'a' }])
+    applyDraftProgress(live, {
+      memberId: 'a',
+      status: 'finished',
+      outcome: 'completed',
+      content: 'Part 1 answers',
+      rawResponse: 'Part 1 output',
+      normalizedResponse: 'Part 1 output',
+      rawAttempts: [{ attempt: 1, stage: 'draft', outcome: 'accepted', rawResponse: 'Part 1 output' }],
+    })
+
+    // A model stopped during PRD Part 2 throws its Part 1 answers away.
+    applyDraftProgress(live, { memberId: 'a', status: 'finished', outcome: 'stopped', content: '', error: 'Stopped by the user' })
+
+    expect(live[0]).toEqual(expect.objectContaining({ outcome: 'stopped', content: '' }))
+    expect(live[0]).not.toHaveProperty('rawResponse')
+    expect(live[0]).not.toHaveProperty('normalizedResponse')
+    expect(live[0]).not.toHaveProperty('rawAttempts')
+  })
+
   it('ignores session events and members outside the round', () => {
     const live = createPendingDrafts([{ modelId: 'a' }])
     expect(applyDraftProgress(live, { memberId: 'a', status: 'session_created', sessionId: 's-1' })).toBe(false)

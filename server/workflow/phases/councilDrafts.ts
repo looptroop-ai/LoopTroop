@@ -176,7 +176,10 @@ export function emitDraftProgressInfoLog(
  *
  * A `restarted` member goes back to a bare pending entry: whatever its earlier
  * attempt reported, content and diagnostics alike, belongs to a run that no
- * longer counts.
+ * longer counts. A `finished` entry is likewise the member's whole result, so
+ * diagnostics it does not carry are dropped rather than kept from an earlier
+ * one: a model stopped during PRD Part 2 must not leave its Part 1 output
+ * readable under Raw.
  */
 export function applyDraftProgress(liveDrafts: DraftResult[], entry: DraftProgressEvent): boolean {
   const draftIndex = liveDrafts.findIndex((draft) => draft.memberId === entry.memberId)
@@ -188,7 +191,7 @@ export function applyDraftProgress(liveDrafts: DraftResult[], entry: DraftProgre
   if (entry.status !== 'finished' || !entry.outcome) return false
   const previous = liveDrafts[draftIndex]!
   liveDrafts[draftIndex] = {
-    ...previous,
+    memberId: previous.memberId,
     content: entry.content ?? previous.content,
     outcome: entry.outcome,
     duration: entry.duration ?? previous.duration,

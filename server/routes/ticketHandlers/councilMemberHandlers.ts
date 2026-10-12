@@ -6,31 +6,32 @@ import type {
 } from '@shared/councilMembers'
 import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import type { MemberOutcome } from '../../council/types'
 import {
   CouncilMemberControlError,
   retryCouncilMember,
   stopCouncilMember,
 } from '../../council/memberControl'
 import { getTicketContext } from '../../storage/tickets'
-import { attributeMemberQuestions } from '../../workflow/questionWindows'
+import { closeMemberQuestions } from '../../workflow/questionWindows'
 import { emitRoutePhaseLog, getTicketParam } from './routeUtils'
 import { councilMemberRetrySchema, councilMemberStopSchema } from './schemas'
 
 /**
- * Files the member's open AI questions under the person's decision.
+ * Closes the member's open AI questions under the person's decision.
  *
  * Runs inside the stop or retry, after its checks and right before the member
- * is interrupted, so the question is closed by the same session stop that ends
- * the model's turn and cannot be answered or refused by anything in between.
+ * is interrupted (or restarted, when it had already finished), so nothing can
+ * answer, skip or expire the question in between.
  */
-function attributeQuestionsTo(
+function closeQuestionsFor(
   ticketId: string,
   phase: WorkflowPhaseId,
   memberId: string,
   resolution: 'member_stopped' | 'member_restarted',
 ): () => void {
   return () => {
-    attributeMemberQuestions(ticketId, phase, memberId, {
+    closeMemberQuestions(ticketId, phase, memberId, {
       actor: 'user',
       resolution,
       reason: resolution === 'member_stopped'
@@ -38,6 +39,13 @@ function attributeQuestionsTo(
         : 'You restarted this model while its question was open.',
     })
   }
+}
+
+/** The phase log line for a stop, which a model can beat by ending its turn first. */
+function describeStopOutcome(memberId: string, outcome: MemberOutcome): string {
+  if (outcome === 'stopped') return `You stopped ${memberId}. The step goes on without it.`
+  if (outcome === 'completed') return `${memberId} finished before the stop reached it.`
+  return `${memberId} ended its turn on its own before the stop reached it.`
 }
 
 function respondWithControlError(c: Context, error: unknown) {
@@ -63,16 +71,8 @@ export async function handleStopCouncilMember(c: Context) {
   const { phase, memberId } = parsed.data
 
   try {
-    const outcome = await stopCouncilMember(ticketId, phase, memberId, attributeQuestionsTo(ticketId, phase, memberId, 'member_stopped'))
-    emitRoutePhaseLog(
-      ticketId,
-      phase,
-      'info',
-      outcome === 'stopped'
-        ? `You stopped ${memberId}. The step goes on without it.`
-        : `${memberId} finished before the stop reached it.`,
-      { modelId: memberId },
-    )
+    const outcome = await stopCouncilMember(ticketId, phase, memberId, closeQuestionsFor(ticketId, phase, memberId, 'member_stopped'))
+    emitRoutePhaseLog(ticketId, phase, 'info', describeStopOutcome(memberId, outcome), { modelId: memberId })
     return c.json({ success: true, phase, memberId, outcome } satisfies CouncilMemberStopResponse)
   } catch (error) {
     return respondWithControlError(c, error)
@@ -92,7 +92,7 @@ export async function handleRetryCouncilMember(c: Context) {
   const part = phase === 'DRAFTING_PRD' ? parsed.data.part ?? 'prd_draft' : undefined
 
   try {
-    await retryCouncilMember(ticketId, phase, memberId, part, attributeQuestionsTo(ticketId, phase, memberId, 'member_restarted'))
+    await retryCouncilMember(ticketId, phase, memberId, part, closeQuestionsFor(ticketId, phase, memberId, 'member_restarted'))
     // Which part restarts is logged by the step itself when the new attempt
     // begins: a PRD restart from Part 2 redoes both parts when Part 1 is unusable.
     emitRoutePhaseLog(ticketId, phase, 'info', `You restarted ${memberId}, with a full new time limit.`, { modelId: memberId })

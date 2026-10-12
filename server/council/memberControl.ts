@@ -122,7 +122,7 @@ interface AttemptControl {
   retryPart: CouncilMemberRetryPart | undefined
   readonly interrupted: Deferred<never>
   /** Resolves once the run loop has dealt with this attempt's end. */
-  readonly done: Deferred<void>
+  readonly done: Deferred<undefined>
 }
 
 interface MemberSlot {
@@ -150,7 +150,7 @@ function beginAttempt(slot: MemberSlot, part: CouncilMemberRetryPart | undefined
     interruption: null,
     retryPart: undefined,
     interrupted,
-    done: createDeferred<void>(),
+    done: createDeferred<undefined>(),
   }
   control.view = {
     number: slot.attempts,
@@ -248,16 +248,16 @@ export class CouncilRound<T> {
           // the restart is answered only once the new attempt is running.
           part = control.retryPart
           this.options.onRestart?.(memberId, { part })
-          control.done.resolve()
+          control.done.resolve(undefined)
           continue
         }
         slot.outcome = this.options.outcomeOf(result)
         this.options.onSettled?.(memberId, result)
         slot.state = 'settled'
-        control.done.resolve()
+        control.done.resolve(undefined)
       } catch (error) {
         this.failMember(slot, error)
-        control.done.resolve()
+        control.done.resolve(undefined)
         throw error
       }
       const decision = await this.waitForRetryOrClose(slot)
@@ -299,9 +299,10 @@ export class CouncilRound<T> {
   /**
    * Starts a member over with a fresh attempt.
    *
-   * A working member is interrupted first (`beforeInterrupt` runs right before,
-   * as for a stop), and this resolves once its session is confirmed stopped and
-   * the new attempt is running. A settled member starts again straight away.
+   * A working member is interrupted first, and this resolves once its session
+   * is confirmed stopped and the new attempt is running. A settled member
+   * starts again straight away. Either way `beforeInterrupt` runs after the
+   * checks and right before the restart, as for a stop.
    */
   async retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void): Promise<void> {
     const slot = this.requireLiveSlot(memberId)
@@ -310,6 +311,7 @@ export class CouncilRound<T> {
       if (!resume) {
         throw new CouncilMemberControlError('MEMBER_BUSY', 'That model is already being stopped or restarted.')
       }
+      beforeInterrupt?.()
       // Marked running before the run loop wakes, so a member settling in the
       // meantime cannot close the round under this restart.
       slot.resume = null
@@ -446,8 +448,8 @@ export async function stopCouncilMember(
 }
 
 /**
- * Restarts one member of a live round. `beforeInterrupt` runs only when a
- * working member is interrupted, right before it is.
+ * Restarts one member of a live round. `beforeInterrupt` runs once the restart
+ * is certain to happen, right before it does.
  */
 export async function retryCouncilMember(
   ticketId: string,

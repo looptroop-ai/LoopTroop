@@ -147,7 +147,7 @@ describe('council member control', () => {
 
     const beforeInterrupt = vi.fn(() => {
       // Runs right before the interruption, in the same synchronous step.
-      expect(control.attempts.find((entry) => entry.memberId === 'a')!.attempt.interruption()).toBeNull()
+      expect(control.attempts.find((entry) => entry.memberId === 'a')?.attempt.interruption()).toBeNull()
     })
     await retryCouncilMember(TICKET, PHASE, 'a', 'prd_draft', beforeInterrupt)
     expect(beforeInterrupt).toHaveBeenCalledTimes(1)
@@ -173,11 +173,14 @@ describe('council member control', () => {
     control.finish('a', 'completed')
     await flush()
 
-    // A settled member has no session to interrupt, so nothing runs before it.
-    const beforeInterrupt = vi.fn()
+    // A settled member has nothing to interrupt, but the hook still runs, right
+    // before the restart begins, so anything it left open is closed in time.
+    const beforeInterrupt = vi.fn(() => {
+      expect(restarts).toEqual([])
+    })
     await retryCouncilMember(TICKET, PHASE, 'a', undefined, beforeInterrupt)
     await flush()
-    expect(beforeInterrupt).not.toHaveBeenCalled()
+    expect(beforeInterrupt).toHaveBeenCalledTimes(1)
     expect(restarts).toEqual([{ memberId: 'a', part: undefined }])
 
     // B finishing no longer closes the round: A is working again.

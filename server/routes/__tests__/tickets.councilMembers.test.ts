@@ -8,7 +8,7 @@ import { resetCouncilRounds } from '../../council/memberControl'
 import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
 import { attachRequest, getTicketQuestionState, resetAllQuestionWindows } from '../../workflow/questionWindows'
 import { listSkipEvents } from '../../workflow/skipReceipts'
-import { resetAllWorkBudgets } from '../../workflow/workBudget'
+import { isTicketWorkSuspended, resetAllWorkBudgets } from '../../workflow/workBudget'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { ticketRouter } from '../tickets'
 
@@ -70,6 +70,23 @@ function post(ticketId: string, action: 'stop' | 'retry', body: unknown) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  })
+}
+
+/** Opens an AI question in Council Drafting Blueprint, on the model's live session unless one is named. */
+function askAs(ticketId: string, memberId: string, requestId: string, sessionId?: string) {
+  const liveSessionId = sessionId ?? listOpenCodeSessionsForTicket(ticketId, ['active'])
+    .find((session) => session.memberId === memberId)?.sessionId
+  if (!liveSessionId) throw new Error(`${memberId} has no active session`)
+  attachRequest({
+    ticketId,
+    sessionId: liveSessionId,
+    requestId,
+    memberId,
+    phase: 'DRAFTING_BEADS',
+    phaseAttempt: 1,
+    windowMs: 300_000,
+    questions: [{ question: 'Which store?', header: 'Store', options: [] }],
   })
 }
 
@@ -165,46 +182,26 @@ describe('council member routes', () => {
     expect(adapter.prompted.filter((model) => model === MODEL_B)).toHaveLength(2)
   })
 
-  it('refuses the stopped model\'s open question as the person\'s decision, and leaves the others alone', async () => {
-    const { ticket, run, adapter } = await startRound('Stop a model with a question', 'DRAFTING_BEADS')
-    const sessionOf = (memberId: string) => listOpenCodeSessionsForTicket(ticket.id, ['active'])
-      .find((session) => session.memberId === memberId)?.sessionId
-    const sessionB = sessionOf(MODEL_B)
-    expect(sessionB).toBeDefined()
-    const question = { question: 'Which store?', header: 'Store', options: [] }
-    attachRequest({
-      ticketId: ticket.id,
-      sessionId: sessionB!,
-      requestId: 'req_b',
-      memberId: MODEL_B,
-      phase: 'DRAFTING_BEADS',
-      phaseAttempt: 1,
-      windowMs: 300_000,
-      questions: [question],
-    })
-    attachRequest({
-      ticketId: ticket.id,
-      sessionId: 'ses_elsewhere',
-      requestId: 'req_other',
-      memberId: MODEL_A,
-      phase: 'DRAFTING_BEADS',
-      phaseAttempt: 1,
-      windowMs: 300_000,
-      questions: [question],
-    })
+  it.each([
+    ['stop', 'member_stopped'],
+    ['retry', 'member_restarted'],
+  ] as const)('closes the model\'s open question on a %s as the person\'s decision, and leaves the others alone', async (action, resolution) => {
+    const { ticket, run, adapter } = await startRound(`${action} a model with a question`, 'DRAFTING_BEADS')
+    askAs(ticket.id, MODEL_B, 'req_b')
+    askAs(ticket.id, MODEL_A, 'req_other', 'ses_elsewhere')
 
-    const res = await post(ticket.id, 'stop', { phase: 'DRAFTING_BEADS', memberId: MODEL_B })
+    const res = await post(ticket.id, action, { phase: 'DRAFTING_BEADS', memberId: MODEL_B })
     expect(res.status).toBe(200)
     await run
 
-    // Closed by the session stop itself, not refused first: refusing would wake
-    // the model for the moment before the stop landed.
+    // Closed when the person confirmed, not refused: refusing would wake the
+    // model for the moment before the stop landed.
     expect(adapter.questionRejections).toEqual([])
     expect(getTicketQuestionState(ticket.id).requests.map((request) => request.requestId)).toEqual(['req_other'])
     const summary = listSkipEvents(ticket.id)
       .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
     expect(summary?.skippedBy).toBe('user')
-    expect(summary?.questionContext?.expiry_reason).toBe('member_stopped')
+    expect(summary?.questionContext?.expiry_reason).toBe(resolution)
   })
 
   it('answers MEMBER_BUSY to a second action sent while the first is still stopping the model', async () => {
@@ -221,12 +218,17 @@ describe('council member routes', () => {
   })
 
   it('answers 500 STOP_UNCONFIRMED when OpenCode does not confirm the stop, and fails the step', async () => {
-    const { ticket, run, adapter } = await startRound('Unconfirmed stop')
+    const { ticket, run, adapter } = await startRound('Unconfirmed stop', 'DRAFTING_BEADS')
+    askAs(ticket.id, MODEL_B, 'req_b')
     adapter.confirmAborts = false
 
-    const res = await post(ticket.id, 'stop', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_B })
+    const res = await post(ticket.id, 'stop', { phase: 'DRAFTING_BEADS', memberId: MODEL_B })
     expect(res.status).toBe(500)
     expect(await res.json()).toMatchObject({ code: 'STOP_UNCONFIRMED' })
     await expect(run).rejects.toThrow('Could not confirm abort')
+    // The question still closed: it can no longer be answered into a session
+    // the step gave up on, or hold every model's clock still.
+    expect(getTicketQuestionState(ticket.id).requests).toEqual([])
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
   })
 })

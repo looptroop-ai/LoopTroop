@@ -28,6 +28,7 @@ import {
   getTicketQuestionState,
   markRequestReplied,
   markRequestSkipped,
+  UNTRACKED_CLAIM_ID,
   reconcileAgainstPending,
   releaseRequestClaim,
   stopTicketTimers,
@@ -281,7 +282,11 @@ export async function handleReplyOpenCodeQuestion(c: Context) {
     const adapter = getOpenCodeAdapter()
     await resolveQuestionSessionDirectory(adapter, question.sessionId)
     await adapter.replyQuestion(requestId, parsed.data.answers, undefined, undefined, question.sessionId)
-    markRequestReplied(ticketId, question.sessionId, requestId, claimId)
+    if (!markRequestReplied(ticketId, question.sessionId, requestId, claimId) && claimId !== UNTRACKED_CLAIM_ID) {
+      // Closed while OpenCode was being told: its session ended, or a person
+      // stopped its model. That close wrote the record and told the screen.
+      return c.json({ error: 'That question was closed before your answer was recorded' }, 409)
+    }
     emitOpenCodeQuestionLog(ticketId, question.phase, '[QUESTION] AI question answered.', {
       requestId,
       sessionId: question.sessionId,
@@ -341,7 +346,10 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
     await adapter.rejectQuestion(requestId, undefined, undefined, question.sessionId)
     // Written after the rejection lands, so the trail never records a decision
     // OpenCode was never told about.
-    markRequestSkipped(ticketId, question.sessionId, requestId, reason, claimId)
+    if (!markRequestSkipped(ticketId, question.sessionId, requestId, reason, claimId) && claimId !== UNTRACKED_CLAIM_ID) {
+      // Closed while OpenCode was being told, as for an answer.
+      return c.json({ error: 'That question was closed before your skip was recorded' }, 409)
+    }
     const receiptLine = reason ? ` Reason: ${reason}` : ''
     emitOpenCodeQuestionLog(ticketId, question.phase, `[QUESTION] AI question skipped.${receiptLine}`, {
       requestId,

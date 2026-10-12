@@ -14,6 +14,7 @@ import {
   resetAllQuestionWindows,
 } from '../../workflow/questionWindows'
 import { isTicketWorkSuspended, resetAllWorkBudgets } from '../../workflow/workBudget'
+import { emitOpenCodeSessionEnded } from '../../opencode/sessionEvents'
 import { ticketRouter } from '../tickets'
 
 const adapter = new MockOpenCodeAdapter()
@@ -212,6 +213,35 @@ describe('ticketRouter OpenCode questions', () => {
     // question on screen that nothing could ever resolve.
     expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
     expect(isTicketWorkSuspended(ticket.id)).toBe(true)
+  })
+
+  it.each([
+    ['reply', { answers: [['SQLite'], ['8080']] }],
+    ['reject', {}],
+  ] as const)('answers 409 to a %s whose question its session stop closed meanwhile', async (route, body) => {
+    const { ticket, session } = await createTicketWithQuestion()
+    await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions`)
+    // The session ends while OpenCode is taking the verdict, and that closes the question.
+    const endSession = async () => {
+      emitOpenCodeSessionEnded({ sessionId: session.id, ticketId: ticket.id, reason: 'aborted' })
+    }
+    const verdict = route === 'reply'
+      ? vi.spyOn(adapter, 'replyQuestion').mockImplementation(endSession)
+      : vi.spyOn(adapter, 'rejectQuestion').mockImplementation(endSession)
+    try {
+      const res = await app.request(
+        `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions/req_route/${route}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      )
+
+      expect(res.status).toBe(409)
+      // The session stop wrote the only record of how it ended.
+      const summaries = listSkipEvents(ticket.id).filter((event) => event.isActionSummary)
+      expect(summaries.map((event) => event.questionContext?.expiry_reason)).toEqual(['session_lost'])
+      expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+    } finally {
+      verdict.mockRestore()
+    }
   })
 
   it('refuses a second verdict for a question that already has one', async () => {

@@ -67,16 +67,10 @@ interface QuestionRequestRecord {
   claimId: string | null
   /** Bumped on every transition so a late frame cannot undo a newer one. */
   revision: number
-  /**
-   * Set when a person stops or restarts the council member that asked: the
-   * session stop that follows closes this request in their name rather than as
-   * `session_lost` under `system`.
-   */
-  endedBy?: SessionEndAttribution
 }
 
-/** Who to file a request under when its session is stopped on purpose. */
-export interface SessionEndAttribution {
+/** Who closed a council member's questions by stopping or restarting it, and why. */
+export interface MemberQuestionClosure {
   actor: SkipActor
   resolution: Extract<QuestionResolution, 'member_stopped' | 'member_restarted'>
   reason: string
@@ -790,10 +784,16 @@ async function rejectRecord(
   reason: string | null,
   siblingIds?: string[],
 ): Promise<boolean> {
+  // A teardown can seize this request while OpenCode is being told (its session
+  // ended, or a person stopped its model), and that teardown closes it. Carrying
+  // on would write a second receipt and close it a second time.
+  const claimedRevision = record.revision
+  const seizedMeanwhile = () => record.revision !== claimedRevision
   const context = getTicketContext(record.ticketId)
   const failure = context
     ? await rejectWithRetries(record.requestId, undefined, record.sessionId)
     : 'Ticket is no longer available'
+  if (seizedMeanwhile()) return true
 
   if (failure) {
     // OpenCode would not take the refusal. Abandoning the session is what stops
@@ -801,6 +801,7 @@ async function rejectRecord(
     // confirmed either, return the claim to pending and retain the local
     // record; callers must not report a terminal stop while it may still run.
     const aborted = await getOpenCodeAdapter().abortSession(record.sessionId).catch(() => false)
+    if (seizedMeanwhile()) return true
     console.warn(
       `[questions] Could not refuse ${record.requestId} on ${record.ticketId}: ${failure}`
       + ` (session abort ${aborted ? 'succeeded' : 'failed'})`,
@@ -1095,30 +1096,41 @@ export async function clearTicketWindows(
 }
 
 /**
- * Files one council member's open questions under a person's stop or restart.
+ * Closes one council member's open questions because a person stopped or
+ * restarted it.
  *
- * Called right before the member is interrupted. Its session is then stopped,
- * and the session-ended hook closes these requests under `attribution` instead
- * of `session_lost`. OpenCode is not told separately: refusing first would wake
- * the model for the moment before the stop lands, and the stop ends the wait
- * anyway. Returns how many requests were marked.
+ * Called right before the member is interrupted, so nothing can answer, skip or
+ * expire them once the person has decided, and the receipt names that person.
+ * Closing them here rather than when the session ends also covers a stop
+ * OpenCode never confirms: the question no longer holds every model's clock
+ * still, and can no longer be answered into a session the step has given up
+ * on. OpenCode is not told: refusing would wake the model for the moment before
+ * its session is stopped, and stopping the session ends the wait there.
+ * Returns how many requests were closed.
  */
-export function attributeMemberQuestions(
+export function closeMemberQuestions(
   ticketId: string,
   phase: WorkflowPhaseId,
   memberId: string,
-  attribution: SessionEndAttribution,
+  closure: MemberQuestionClosure,
 ): number {
-  let marked = 0
-  for (const timer of timersByTicket.get(ticketId)?.values() ?? []) {
+  let closed = 0
+  for (const timer of [...(timersByTicket.get(ticketId)?.values() ?? [])]) {
     if (timer.phase !== phase) continue
-    for (const record of pendingRequests(timer)) {
-      if (record.memberId !== memberId) continue
-      record.endedBy = attribution
-      marked += 1
+    // Seized rather than claimed, so a reply or an expiry part-way through
+    // cannot complete it afterwards.
+    const doomed = pendingRequests(timer)
+      .filter((record) => record.memberId === memberId)
+      .map((record) => seizeForTeardown(timer, requestKey(record.sessionId, record.requestId)))
+      .filter((record): record is QuestionRequestRecord => record !== null)
+    const siblingIds = doomed.map((record) => record.requestId)
+    for (const record of doomed) {
+      writeQuestionReceipt({ timer, record, ...closure, siblingIds })
+      finish(timer, record)
+      closed += 1
     }
   }
-  return marked
+  return closed
 }
 
 /**
@@ -1409,21 +1421,25 @@ onOpenCodeSessionEnded((event) => {
   const timers = timersByTicket.get(event.ticketId)
   if (!timers) return
   for (const timer of [...timers.values()]) {
-    for (const record of pendingRequests(timer)) {
-      if (record.sessionId !== event.sessionId) continue
-      // Seized rather than claimed: a reply part-way through cannot finish on
-      // a dead session, and leaving it would strand the request (and the
-      // suspended clocks) if that reply then failed and released its claim.
-      const seized = seizeForTeardown(timer, requestKey(record.sessionId, record.requestId))
-      if (!seized) continue
+    // Seized rather than claimed: a reply part-way through cannot finish on a
+    // dead session, and leaving it would strand the request (and the suspended
+    // clocks) if that reply then failed and released its claim.
+    const doomed = pendingRequests(timer)
+      .filter((record) => record.sessionId === event.sessionId)
+      .map((record) => seizeForTeardown(timer, requestKey(record.sessionId, record.requestId)))
+      .filter((record): record is QuestionRequestRecord => record !== null)
+    // Taken before the first one closes, so every receipt names the same batch.
+    const siblingIds = doomed.map((record) => record.requestId)
+    for (const record of doomed) {
       writeQuestionReceipt({
         timer,
-        record: seized,
-        actor: seized.endedBy?.actor ?? 'system',
-        resolution: seized.endedBy?.resolution ?? 'session_lost',
-        reason: seized.endedBy?.reason ?? 'The session ended before anyone answered.',
+        record,
+        actor: 'system',
+        resolution: 'session_lost',
+        reason: 'The session ended before anyone answered.',
+        siblingIds,
       })
-      finish(timer, seized)
+      finish(timer, record)
     }
   }
 })

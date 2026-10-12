@@ -310,6 +310,35 @@ describe('question windows', () => {
     expect(isTicketWorkSuspended(ticket.id)).toBe(false)
   })
 
+  it('never brings back a question a stop closed, after this process forgot it', async () => {
+    const ticket = makeTicket()
+    ask(ticket.id, { phase: 'DRAFTING_BEADS' })
+    closeMemberQuestions(ticket.id, 'DRAFTING_BEADS', 'anthropic/claude', {
+      actor: 'user',
+      resolution: 'member_stopped',
+      reason: 'You stopped this model while its question was open.',
+    })
+    // OpenCode never confirmed the stop, so it still holds the question. The
+    // in-memory record is gone, as after a restart or once its tombstone lapses.
+    resetAllQuestionWindows()
+
+    // The poll re-attaches whatever OpenCode lists.
+    expect(ask(ticket.id, { phase: 'DRAFTING_BEADS' })).toBe(false)
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+
+    // A restart that finds its session gone refuses it, without a second record.
+    adapter.mockQuestions = [{ id: 'req_a', sessionID: 'ses_a', questions: QUESTIONS }]
+    const result = await reconcilePendingQuestionsAfterRestart({
+      projectRoot: getTicketContext(ticket.id)!.projectRoot,
+      owners: [{ sessionId: 'ses_a', ticketId: ticket.id, memberId: 'anthropic/claude', phase: 'DRAFTING_BEADS', phaseAttempt: 1, active: false }],
+      windowMsFor: () => 60_000,
+    })
+    expect(result).toEqual({ reattached: 0, rejected: 1, unverified: 0 })
+    expect(listSkipEvents(ticket.id).filter((event) => event.isActionSummary)
+      .map((event) => event.questionContext?.expiry_reason)).toEqual(['member_stopped'])
+  })
+
   it('does not close a question twice when its session ends while expiry is telling OpenCode', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))

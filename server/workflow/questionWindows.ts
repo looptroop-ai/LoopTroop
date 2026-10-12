@@ -347,6 +347,36 @@ function persistRequest(record: QuestionRequestRecord, timerKey: string): void {
   }
 }
 
+/**
+ * Whether this request was closed before, as its saved record says.
+ *
+ * The tombstone below covers a replayed `asked` for fifteen minutes and only in
+ * this process. A request can be closed here while OpenCode still holds it: a
+ * person stopped the model that asked, and OpenCode never confirmed the stop.
+ * The next poll, or a daemon restart, would then arm it again and offer an
+ * answer into the session the person ended. The saved record outlasts both.
+ */
+function wasResolvedEarlier(input: {
+  ticketId: string
+  sessionId: string
+  requestId: string
+  phase: WorkflowPhaseId
+  phaseAttempt: number
+}): boolean {
+  try {
+    const artifact = getLatestPhaseArtifact(
+      input.ticketId,
+      `${QUESTION_REQUEST_ARTIFACT_PREFIX}${requestKey(input.sessionId, input.requestId)}`,
+      input.phase,
+      input.phaseAttempt,
+    )
+    if (!artifact?.content) return false
+    return (JSON.parse(artifact.content) as { state?: unknown }).state === 'resolved'
+  } catch {
+    return false
+  }
+}
+
 // ── Broadcast ────────────────────────────────────────────────────────────────
 
 function broadcastTimer(timer: QuestionTimer): void {
@@ -487,7 +517,7 @@ export function attachRequest(input: {
   if (existing?.requests.has(key)) return false
   // Same for one that arrives after its own answer: OpenCode has been told, and
   // a second window would suspend the ticket's clocks with nothing to lift it.
-  if (wasResolvedRecently(input.ticketId, key)) return false
+  if (wasResolvedRecently(input.ticketId, key) || wasResolvedEarlier(input)) return false
 
   const timer = armOrResetTimer(input)
 
@@ -1320,9 +1350,11 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
     // No live session owns it, so nothing will ever answer it. Refuse it and
     // leave a receipt: an orphan question that vanishes without a trail is how
     // a blocked round becomes unexplainable weeks later.
+    // One already closed here (its model was stopped) keeps the receipt it has.
+    const closedEarlier = owner !== undefined && wasResolvedEarlier({ ...owner, requestId: request.id })
     const failure = await rejectWithRetries(request.id, undefined, request.sessionID)
     if (!failure) {
-      if (owner) writeOrphanReceipt(owner, request, null)
+      if (owner && !closedEarlier) writeOrphanReceipt(owner, request, null)
       rejected += 1
       continue
     }
@@ -1339,7 +1371,7 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
       )
       continue
     }
-    if (owner) writeOrphanReceipt(owner, request, failure)
+    if (owner && !closedEarlier) writeOrphanReceipt(owner, request, failure)
     rejected += 1
   }
   return { reattached, rejected, unverified }

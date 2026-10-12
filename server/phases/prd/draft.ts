@@ -9,7 +9,7 @@ import type {
   RawAttempt,
 } from '../../council/types'
 import { CancelledError } from '../../council/types'
-import { classifyDraftFailure, isPhaseDeadlineError, PHASE_DEADLINE_ERROR } from '../../council/draftUtils'
+import { armAttemptDeadline, classifyDraftFailure, isPhaseDeadlineError, PHASE_DEADLINE_ERROR } from '../../council/draftUtils'
 import { isAbortError } from '../../lib/abort'
 import { buildMinimalContext, clearContextCache, type TicketState } from '../../opencode/contextBuilder'
 import type { OpenCodeToolPolicy } from '../../opencode/toolPolicy'
@@ -850,6 +850,9 @@ export async function draftPRD(
     // stop can find what to close while a step is still running.
     let currentStep: PrdDraftSubstep = kept ? 'prd_draft' : 'full_answers'
     let stepSessionId: string | undefined
+    // Set when the attempt's deadline beats the work, which a prompt that
+    // ignores its abort signal would otherwise never let end.
+    let timedOut = false
     let resolveSessionReady: () => void = () => undefined
     let sessionReady = new Promise<void>((resolve) => {
       resolveSessionReady = resolve
@@ -867,10 +870,11 @@ export async function draftPRD(
       })
     }
 
-    /** Past a stop or restart, nothing this attempt does may reach the artifacts. */
+    /** Past a stop, a restart or the deadline, nothing this attempt does may reach the artifacts. */
     const throwIfInterrupted = () => {
       const interruption = attempt.interruption()
       if (interruption) throw new CouncilMemberInterruptedError(interruption)
+      if (timedOut) throw new Error(PHASE_DEADLINE_ERROR)
     }
 
     const noteSessionCreated = (sessionId: string) => {
@@ -879,7 +883,7 @@ export async function draftPRD(
       // Thrown so the prompt runner stops the session it just opened: the
       // member's turn ended, or the ticket was canceled, while it was being
       // created, and nothing else will stop it.
-      if (attempt.interruption() || signal?.aborted) {
+      if (attempt.interruption() || timedOut || signal?.aborted) {
         throw new Error(`OpenCode session ${sessionId} was created after the member's council turn ended`)
       }
     }
@@ -1212,8 +1216,12 @@ export async function draftPRD(
         resolveExecutionSettled()
       })
 
+    const deadline = armAttemptDeadline(attemptBudget, () => timedOut, () => {
+      timedOut = true
+    })
+
     try {
-      return await Promise.race([pipeline, attempt.interrupted])
+      return await Promise.race([pipeline, attempt.interrupted, ...(deadline.promise ? [deadline.promise] : [])])
     } catch (error) {
       // A person's stop or restart wins over whatever reached the race first,
       // unless the whole ticket is being canceled.
@@ -1238,6 +1246,7 @@ export async function draftPRD(
       }
       return settleFailedMember(error, fullAnswersResult ? 'prd_draft' : 'full_answers', false)
     } finally {
+      deadline.dispose()
       if (attemptBudget !== budget) attemptBudget.release()
     }
   }

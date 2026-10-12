@@ -343,7 +343,7 @@ describe('stopping and restarting one council member', () => {
   })
 
   describe('PRD drafting', () => {
-    async function startPrd(adapter: ScriptedAdapter, title: string) {
+    async function startPrd(adapter: ScriptedAdapter, title: string, timeoutMs = LONG_TIMEOUT_MS) {
       const { ticket, paths } = await createInitializedTestTicket(repoManager, { title })
       const fullAnswerEvents: DraftProgressEvent[] = []
       const draftEvents: DraftProgressEvent[] = []
@@ -352,7 +352,7 @@ describe('stopping and restarting one council member', () => {
         MEMBERS,
         { ticketId: TEST.externalId, title, description: 'Council stop and retry.', interview: makeInterviewYaml() },
         paths.worktreePath,
-        { draftTimeoutMs: LONG_TIMEOUT_MS, minQuorum: 1, ticketId: ticket.id, ticketExternalId: TEST.externalId },
+        { draftTimeoutMs: timeoutMs, minQuorum: 1, ticketId: ticket.id, ticketExternalId: TEST.externalId },
         undefined,
         undefined,
         undefined,
@@ -378,6 +378,36 @@ describe('stopping and restarting one council member', () => {
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
       expect(result.drafts[1]?.error).toBe('PRD draft not started because the model was stopped during Full Answers')
       expect(adapter.promptsFor(MODEL_B)).toHaveLength(1)
+    })
+
+    it('times out a model whose prompt ignores the abort, so the step still ends', async () => {
+      // Faked clocks that keep moving, as in the drafting deadline test above.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true })
+      try {
+        const timeoutMs = 120_000
+        const adapter = new ScriptedAdapter({
+          [MODEL_A]: [resolvedFullAnswers(), makePrdYaml()],
+          [MODEL_B]: ['hang'],
+        })
+        const { run, draftEvents } = await startPrd(adapter, 'A PRD model that never answers', timeoutMs)
+        let ended = false
+        run.then(() => { ended = true }, () => { ended = true })
+        await waitFor(
+          () => draftEvents.some((entry) => entry.memberId === MODEL_A && entry.status === 'finished')
+            && adapter.promptsFor(MODEL_B).length === 1,
+          'A to draft and B to start Full Answers',
+        )
+
+        await vi.advanceTimersByTimeAsync(timeoutMs)
+        await waitFor(() => ended, 'the step to end')
+        const result = await run
+
+        expect(result.fullAnswerOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
+        expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
+        expect(adapter.aborted).toContain(adapter.promptsFor(MODEL_B)[0])
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('keeps finished Full Answers when the PRD draft is restarted', async () => {

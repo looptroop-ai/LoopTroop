@@ -1,10 +1,8 @@
-import { isEntryPoint } from './entryPoint'
 import { APP_VERSION } from '../lib/appVersion'
 import { startDaemon, installShutdownHandlers } from '../daemon/startDaemon'
 import { startDaemonLogRotation } from '../lib/daemonLog'
 import { daemonOrigin } from '../lib/daemonPaths'
 import { resolveSettings } from '../lib/appSettings'
-import { getErrorMessage } from '@shared/typeGuards'
 import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
 
 export interface DaemonProcessOptions {
@@ -71,12 +69,4 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
   // lasts long enough to fill one. A foreground daemon writes to whatever the
   // user pointed it at, which is not LoopTroop's to truncate.
   startDaemonLogRotation()
-}
-
-// Executed directly when spawned as the detached child.
-if (isEntryPoint(import.meta.url, process.argv[1])) {
-  runDaemonProcess().catch((error: unknown) => {
-    console.error(`[daemon] Failed to start: ${getErrorMessage(error)}`)
-    process.exit(1)
-  })
 }

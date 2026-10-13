@@ -28,6 +28,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - LoopTroop starts OpenCode from `~/.opencode/bin` again on Ubuntu, Fedora and other Linux desktops, where the OpenCode installer creates that folder group-writable.
 - When another server already holds OpenCode's default port, LoopTroop starts its own OpenCode on the next free port and tells you where it went.
 - `looptroop doctor` compares your Node with the newest release of your own Node line, says what `gh` is still needed for, and names the checks that actually stop LoopTroop from running.
+- `looptroop` commands such as `status` and `--help` answer in about a quarter of a second instead of several seconds, and the npm package is less than half its former size.
 
 ### Added
 
@@ -53,6 +54,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - `looptroop doctor` keeps marking a missing `gh` with `✗`, but adds that LoopTroop starts without it and that a ticket needs it before coding starts, when its pre-flight check runs. Its last line names the checks that stop LoopTroop from running, for example `LoopTroop cannot run until this is fixed: opencode.`, instead of pointing at every `✗` above it.
 - When OpenCode's default address (`127.0.0.1:4096`) is held by a server LoopTroop cannot use, because it rejects LoopTroop's password or is not OpenCode, LoopTroop leaves that server alone and starts its own OpenCode on the next free port. OpenCode v2 makes up a new password for every `opencode serve` started by hand, and other tools built on OpenCode take 4096 too, so a server left running there used to stop LoopTroop from starting at all. A server that answers with a 5xx error still counts as an OpenCode that is starting up: LoopTroop waits for it, then judges it by what it answers once it is up. An address you set with `LOOPTROOP_OPENCODE_BASE_URL` or `opencodeBaseUrl` is never moved, and the move never takes LoopTroop's own web port. When LoopTroop's own address is the one OpenCode would use, as with `looptroop start --port 4096`, the default address moves too and `doctor` names the port it would take; an address you set on that port and host stops the start, even when a server already answers there, with a message that names both settings. `looptroop start`, `looptroop open`, `looptroop status`, `looptroop doctor` and the daemon log say where OpenCode went and why. Before the first start, `doctor` reports a held default port as a warning that names the port a start would take, and as a failure when no port is free.
 
+### Performance
+
+- `looptroop` commands load only the code they run. The server build is now split into shared files under `dist/server/chunks/`, so `looptroop --version`, `status`, and `--help` no longer load the database layer and every other dependency before doing anything. On the machine this was measured on they went from about 5 seconds to about 0.25 seconds.
+- The CLI, the daemon, and the package entry now share one copy of the server instead of carrying one each, which roughly halves the npm package.
+
 ### Security
 
 - Provider diagnostics remove terminal control sequences before redacting recognized credential fields and common credential formats, then apply the preview length limit. This prevents control sequences or truncation from exposing credentials in error details. Redaction covers camelCase credential keys, credential assignments split across lines in formatted JSON, labeled authorization values, Basic and Bearer credentials, complete cookie header values, and URL credentials, queries, and fragments, while common failure prose remains readable. Repeated unterminated terminal sequences no longer cause slow diagnostic processing. All phase Debug records, including readiness probes, coding and council sessions, redact credentials before serialization, live-stream truncation, broadcast or storage. Readiness stream events also protect diagnostic copies outside the Debug view. Model, session, process, timing and numeric token metadata remain available. Security regressions inspect complete raw stored logs through the existing protected file reader and construct synthetic password examples at runtime, preserving their checks without misleading alerts about fixture paths or hard-coded credentials.
@@ -61,9 +67,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Removed
 
 - Local OpenCode configuration and plugins in `.opencode/` are now ignored by Git. The repository no longer includes the listener-limit plugin.
+- Removed `dist/server/cli/daemonProcess.js`. `looptroop start` has started the daemon through the CLI for some time, so nothing ran this file any more.
 
 ### Fixed
 
+- Running the CLI file directly (`node dist/server/cli/cli.js start` rather than the installed `looptroop` command) no longer starts the daemon twice in one process. The second start failed against the first one's lock and wrote `LoopTroop is already running` with the daemon's own pid to the log.
 - An AI question could be closed twice when its session ended while its own wait was running out. That wrote two skip records and let every model's clock run again while another question was still waiting.
 - Answering or skipping an AI question that was closed in the meantime (its session ended, or its model was stopped) answers `409` instead of reporting success and logging an answer that was never recorded.
 - When a session with several open AI questions ends, every skip record names the same related questions; the last one used to name none.

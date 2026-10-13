@@ -4,12 +4,12 @@ import { resolve, sep } from 'node:path'
 import { isEntryPoint } from '../entryPoint'
 
 /**
- * The detached daemon is spawned as `node <abs path>/daemonProcess.js`, so this
- * predicate decides whether the child does any work at all. A false negative is
- * invisible: the child exits 0 having run nothing, and `start` blames a timeout.
+ * A directly run entry (`node <abs path>/cli.js`) does any work at all only if
+ * this predicate says so. A false negative is invisible: the process exits 0
+ * having run nothing.
  */
 describe('isEntryPoint', () => {
-  const modulePath = resolve('/tmp/looptroop/dist/server/cli/daemonProcess.js')
+  const modulePath = resolve('/tmp/looptroop/dist/server/cli/cli.js')
   const moduleUrl = pathToFileURL(modulePath).href
 
   it('matches the path Node was asked to run', () => {
@@ -19,13 +19,13 @@ describe('isEntryPoint', () => {
   it('matches when the URL is percent-encoded and the argument is not', () => {
     // npm installs into "Program Files" on Windows and into paths with spaces
     // on macOS often enough that this is the common case, not an edge one.
-    const spaced = resolve(`${sep}tmp`, 'loop troop', 'daemonProcess.js')
+    const spaced = resolve(`${sep}tmp`, 'loop troop', 'cli.js')
     expect(pathToFileURL(spaced).href).toContain('%20')
     expect(isEntryPoint(pathToFileURL(spaced).href, spaced)).toBe(true)
   })
 
   it('does not match a different file in the same directory', () => {
-    expect(isEntryPoint(moduleUrl, resolve('/tmp/looptroop/dist/server/cli/cli.js'))).toBe(false)
+    expect(isEntryPoint(moduleUrl, resolve('/tmp/looptroop/dist/server/cli/launcher.cjs'))).toBe(false)
   })
 
   it('does not match when the module was imported rather than executed', () => {
@@ -34,7 +34,7 @@ describe('isEntryPoint', () => {
   })
 
   it('rejects a module URL that is not a file URL', () => {
-    expect(isEntryPoint('https://example.com/daemonProcess.js', modulePath)).toBe(false)
+    expect(isEntryPoint('https://example.com/cli.js', modulePath)).toBe(false)
     expect(isEntryPoint('data:text/javascript,0', modulePath)).toBe(false)
   })
 
@@ -44,8 +44,8 @@ describe('isEntryPoint', () => {
    * Asserting the shapes differ keeps anyone from "simplifying" back to it.
    */
   it('does not depend on a hand-built file:// URL matching argv', () => {
-    const windowsUrl = 'file:///C:/Program%20Files/looptroop/daemonProcess.js'
-    const windowsArgv = 'C:\\Program Files\\looptroop\\daemonProcess.js'
+    const windowsUrl = 'file:///C:/Program%20Files/looptroop/cli.js'
+    const windowsArgv = 'C:\\Program Files\\looptroop\\cli.js'
     expect(windowsUrl).not.toBe(`file://${windowsArgv}`)
   })
 })

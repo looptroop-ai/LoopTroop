@@ -7,12 +7,11 @@ import { fileURLToPath } from 'node:url'
  *
  * The obvious spelling — comparing `import.meta.url` with
  * `` `file://${process.argv[1]}` `` — is wrong on Windows and quietly so. A
- * module URL there is `file:///C:/path/daemonProcess.js` while `argv[1]` is
- * `C:\path\daemonProcess.js`, so the two never match: three slashes against two,
+ * module URL there is `file:///C:/path/cli.js` while `argv[1]` is
+ * `C:\path\cli.js`, so the two never match: three slashes against two,
  * backslashes against forward, and a drive letter that belongs after the
- * authority. The detached daemon then loads its own module, runs nothing, and
- * exits silently — `looptroop start` waits out its full readiness timeout and
- * reports a failure with no cause in the log.
+ * authority. The entry then loads its own module, runs nothing, and exits
+ * silently.
  *
  * Comparing filesystem paths instead makes the platform's own rules do the work:
  * `fileURLToPath` handles the drive letter, the slashes and any percent-encoding

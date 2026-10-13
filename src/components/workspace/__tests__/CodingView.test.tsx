@@ -6,6 +6,7 @@ import { makeTicket, TEST, type RuntimeBeadInput } from '@/test/factories'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import type { Ticket } from '@/hooks/useTickets'
 import { useLogs } from '@/context/useLogContext'
+import { estimateTokens } from '@shared/tokenEstimate'
 
 const mockUseTicketArtifacts = vi.fn()
 const mockUseTicketPhaseAttempts = vi.fn()
@@ -951,7 +952,7 @@ describe('CodingView', () => {
     expect(screen.getByText((content) => content.includes('Accepted prompt line 1'))).toBeTruthy()
     expect(screen.getByText('2 Lines')).toBeTruthy()
     expect(screen.getByText(`${prompt.length.toLocaleString()} Characters`)).toBeTruthy()
-    expect(screen.getByText(`~${Math.ceil(prompt.length / 4).toLocaleString()} Tokens (estimate)`)).toBeTruthy()
+    expect(screen.getByText(`~${estimateTokens(prompt).toLocaleString()} Tokens (estimate)`)).toBeTruthy()
     expect(screen.getByText('Iteration 1')).toBeTruthy()
     expect(screen.getByText('Model openai/gpt-5.4')).toBeTruthy()
     expect(screen.getByText('Session session-raw-1')).toBeTruthy()

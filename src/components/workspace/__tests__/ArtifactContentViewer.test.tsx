@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render as baseRender, screen, within } from '@testing-library/react'
 import type { ReactElement, ReactNode } from 'react'
 import { deriveStructuredInterventions } from '@shared/structuredInterventions'
+import { estimateTokens } from '@shared/tokenEstimate'
 import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersView, PrdDraftView } from '../ArtifactContentViewer'
 import { buildArtifactProcessingNoticeCopy } from '../artifactProcessingNotice'
 import { serializeBeadCommitsDiffContent } from '../diffUtils'
@@ -2598,7 +2599,7 @@ items:
     expect(screen.getByRole('group', { name: /gpt-5.2 · coverage audit raw output/i })).toBeInTheDocument()
     expect(screen.getByText(`${coverageDisplayContent.split('\n').length.toLocaleString()} Lines`)).toBeInTheDocument()
     expect(screen.getByText(`${coverageDisplayContent.length.toLocaleString()} Characters`)).toBeInTheDocument()
-    expect(screen.getByText(`~${Math.ceil(coverageDisplayContent.length / 4).toLocaleString()} Tokens (estimate)`)).toBeInTheDocument()
+    expect(screen.getByText(`~${estimateTokens(coverageDisplayContent).toLocaleString()} Tokens (estimate)`)).toBeInTheDocument()
   })
 
   it('shows terminal beads coverage remaining gaps for the latest implementation plan', () => {
@@ -3056,7 +3057,7 @@ items:
     expect(within(voterAGroup).getByRole('button', { name: /voter-a Raw Output/ })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText(`${firstRawResponse.split('\n').length.toLocaleString()} Lines`)).toBeInTheDocument()
     expect(screen.getByText(`${firstRawResponse.length.toLocaleString()} Characters`)).toBeInTheDocument()
-    expect(screen.getByText(`~${Math.ceil(firstRawResponse.length / 4).toLocaleString()} Tokens (estimate)`)).toBeInTheDocument()
+    expect(screen.getByText(`~${estimateTokens(firstRawResponse).toLocaleString()} Tokens (estimate)`)).toBeInTheDocument()
     expect(screen.getByText((_text, element) => element?.tagName === 'PRE' && element.textContent === firstRawResponse)).toBeInTheDocument()
 
     await clickCopyRawOutput()

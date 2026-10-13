@@ -11,27 +11,13 @@ const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 // the server graph) must be inlined, or a global install fails to resolve it.
 const external = Object.keys(pkg.dependencies ?? {})
 
-// The daemon is not an entry: `start` spawns the CLI with `__daemon`.
-const entryPoints = {
-  'server/index': resolve(root, 'server/index.ts'),
-  'server/cli/cli': resolve(root, 'server/cli/cli.ts'),
-}
-
 // Chunk names carry a content hash, so a rebuild never overwrites the previous
 // build's chunks, and `files: ["dist/"]` would publish every one of them.
 rmSync(resolve(root, 'dist/server'), { recursive: true, force: true })
 
-const result = await build({
-  entryPoints,
+const common = {
   outdir: resolve(root, 'dist'),
   bundle: true,
-  // Without splitting, every entry is a self-contained copy of the whole server,
-  // and the CLI's top-level imports load every dependency before any command
-  // runs (drizzle-orm alone takes seconds). Split, the CLI's lazy
-  // `import('./commands')` calls become real chunk boundaries.
-  splitting: true,
-  // One level below `dist/server`, the depth `resolveDefaultClientDir` searches.
-  chunkNames: 'server/chunks/[name]-[hash]',
   platform: 'node',
   format: 'esm',
   target: 'node24',
@@ -52,19 +38,57 @@ const result = await build({
     // make `doctor`'s node check pass on every runtime, silently.
     __LOOPTROOP_NODE_FLOOR__: JSON.stringify(pkg.engines.node),
   },
+}
+
+// The long-running entries are self-contained files. An upgrade replaces
+// `dist/` underneath a daemon that is still running, and a split daemon would
+// then fail on its first lazy `import()` of a chunk the upgrade deleted (the
+// adapter loads `contextBuilder` and ticket storage that way).
+const longRunning = await build({
+  ...common,
+  entryPoints: {
+    'server/index': resolve(root, 'server/index.ts'),
+    'server/cli/daemonProcess': resolve(root, 'server/cli/daemonProcess.ts'),
+  },
 })
 
-const outputs = Object.keys(result.metafile.outputs)
-if (outputs.length === 0) {
-  console.error('[build:server] esbuild produced no output.')
+// The CLI is short-lived, so it is split: its lazy `import('./commands')` calls
+// become real chunk boundaries and `--version` no longer loads every dependency
+// (drizzle-orm alone takes seconds). The daemon it starts is the self-contained
+// file above, reached by the same relative path from `cli/` and `chunks/`.
+const daemonFile = {
+  name: 'daemon-file',
+  setup(builder) {
+    builder.onResolve({ filter: /^\.\/daemonProcess$/ }, () => ({ path: '../cli/daemonProcess.js', external: true }))
+  },
+}
+const cli = await build({
+  ...common,
+  entryPoints: { 'server/cli/cli': resolve(root, 'server/cli/cli.ts') },
+  splitting: true,
+  // A sibling of `dist/server/cli`, so `../cli/daemonProcess.js` resolves the
+  // same from the entry and from a chunk.
+  chunkNames: 'server/chunks/[name]-[hash]',
+  plugins: [daemonFile],
+})
+
+// The plugin is the only thing keeping the daemon out of the split build, and
+// a renamed module would make it match nothing without any error.
+if (Object.keys(cli.metafile.inputs).some((input) => input.endsWith('server/cli/daemonProcess.ts'))) {
+  console.error('[build:server] daemonProcess.ts was bundled into the split CLI build; the daemon must stay self-contained.')
   process.exit(1)
 }
 
-const chunks = outputs.filter((output) => output.includes('server/chunks/'))
-for (const output of outputs.filter((output) => !chunks.includes(output))) {
-  console.log(`[build:server] ${output} (${(result.metafile.outputs[output].bytes / 1024).toFixed(1)} kB)`)
+const outputs = { ...longRunning.metafile.outputs, ...cli.metafile.outputs }
+if (Object.keys(outputs).length === 0) {
+  console.error('[build:server] esbuild produced no output.')
+  process.exit(1)
 }
-const chunkBytes = chunks.reduce((sum, output) => sum + result.metafile.outputs[output].bytes, 0)
+const chunks = Object.keys(outputs).filter((output) => output.includes('server/chunks/'))
+for (const output of Object.keys(outputs).filter((output) => !chunks.includes(output))) {
+  console.log(`[build:server] ${output} (${(outputs[output].bytes / 1024).toFixed(1)} kB)`)
+}
+const chunkBytes = chunks.reduce((sum, output) => sum + outputs[output].bytes, 0)
 console.log(`[build:server] dist/server/chunks/: ${chunks.length} files (${(chunkBytes / 1024).toFixed(1)} kB)`)
 
 // Copied rather than bundled: the launcher must stay ES5 CommonJS so an old

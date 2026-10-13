@@ -171,11 +171,10 @@ describe('production static serving', () => {
 
   /**
    * The default client directory is found by walking up from the module, and
-   * the build can place `server/app.ts` at two depths: `dist/server/index.js`
-   * and a shared chunk in `dist/server/chunks/`. A default that only works from
-   * one of them 404s the whole interface from the code the daemon actually runs,
-   * and nothing catches it in a checkout, where the built client is under cwd
-   * anyway.
+   * `server/app.ts` is inlined into bundles at two depths: `dist/server/index.js`
+   * and `dist/server/cli/daemonProcess.js`. A default that only works from one of
+   * them 404s the whole interface from the bundle the daemon actually runs, and
+   * nothing catches it in a checkout, where the built client is under cwd anyway.
    */
   describe('default client directory', () => {
     function makeDistLayout(): string {
@@ -183,7 +182,7 @@ describe('production static serving', () => {
       tempDirs.push(root)
       mkdirSync(join(root, 'client'))
       writeFileSync(join(root, 'client', 'index.html'), '<!DOCTYPE html><title>LoopTroop</title>')
-      mkdirSync(join(root, 'server', 'chunks'), { recursive: true })
+      mkdirSync(join(root, 'server', 'cli'), { recursive: true })
       return root
     }
 
@@ -193,15 +192,15 @@ describe('production static serving', () => {
       expect(resolveDefaultClientDir(join(root, 'server'))).toBe(join(root, 'client'))
     })
 
-    it('finds the client from a shared chunk one level deeper', () => {
+    it('finds the client from the CLI bundle one level deeper', () => {
       const root = makeDistLayout()
 
-      expect(resolveDefaultClientDir(join(root, 'server', 'chunks'))).toBe(join(root, 'client'))
+      expect(resolveDefaultClientDir(join(root, 'server', 'cli'))).toBe(join(root, 'client'))
     })
 
     it('stops at the package rather than climbing into an unrelated client dir', () => {
       const root = makeDistLayout()
-      const tooDeep = join(root, 'server', 'chunks', 'nested', 'deeper')
+      const tooDeep = join(root, 'server', 'cli', 'nested', 'deeper')
       mkdirSync(tooDeep, { recursive: true })
 
       expect(resolveDefaultClientDir(tooDeep)).not.toBe(join(root, 'client'))

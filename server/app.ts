@@ -64,10 +64,10 @@ export interface CreateAppOptions {
 
 /**
  * How far above this module the built interface may sit. Exactly the two depths
- * the build produces: `dist/server/index.js` is one level below `dist/`, and a
- * shared chunk in `dist/server/chunks/` is two. Bounded deliberately — an
- * unbounded walk would climb out of the package and could find an unrelated
- * `client` directory somewhere above it.
+ * the build produces: `dist/server/index.js` is one level below `dist/`, and
+ * `dist/server/cli/daemonProcess.js` is two. Bounded deliberately — an unbounded
+ * walk would climb out of the package and could find an unrelated `client`
+ * directory somewhere above it.
  */
 const CLIENT_SEARCH_DEPTH = 2
 
@@ -76,13 +76,13 @@ const CLIENT_SEARCH_DEPTH = 2
  * working directory: a globally installed daemon runs from wherever the user
  * happens to be.
  *
- * `dist/client` sits beside `dist/server`, but the build can place this module
- * at either of two depths, so a fixed `../client` that resolves from
- * `dist/server/index.js` points at a directory that does not exist from
- * `dist/server/chunks/` — which is where the daemon actually loads it from.
- * Nothing catches that locally, because the check below finds the built client
- * through the working directory in a checkout; it surfaces only once someone
- * installs the package, as a 404 for the entire interface.
+ * `dist/client` sits beside `dist/server`, but this module is inlined into three
+ * bundles at two depths, so a fixed `../client` resolves correctly from
+ * `dist/server/index.js` and points at a directory that does not exist from
+ * `dist/server/cli/daemonProcess.js` — which is the bundle the daemon actually
+ * runs. Nothing catches that locally, because the check below finds the built
+ * client through the working directory in a checkout; it surfaces only once
+ * someone installs the package, as a 404 for the entire interface.
  *
  * Falls back to the sibling directory when no built client is found, so the
  * caller gets the documented default and the existsSync check below declines to

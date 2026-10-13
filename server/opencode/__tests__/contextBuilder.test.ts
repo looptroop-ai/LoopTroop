@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { encode } from 'gpt-tokenizer'
 import { TEST } from '../../test/factories'
 import { buildMinimalContext, clearContextCache, contextCache } from '../contextBuilder'
+import { estimateTokens } from '@shared/tokenEstimate'
 
 afterEach(() => {
   clearContextCache(TEST.externalId)
@@ -101,7 +101,7 @@ describe('contextBuilder interview_qa context', () => {
       description: 'This mandatory ticket requirement must remain in context.',
       drafts,
     })
-    const tokenCount = encode(parts.map((part) => part.content).join('\n')).length
+    const tokenCount = estimateTokens(parts.map((part) => part.content).join('\n'))
 
     expect(parts.some((part) => part.source === 'ticket_details')).toBe(true)
     expect(parts.filter((part) => part.source === 'draft').length).toBeLessThan(drafts.length)

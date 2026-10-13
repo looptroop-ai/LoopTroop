@@ -317,7 +317,6 @@ export default defineConfig({
     // Kept out of dist/ root so emptyOutDir cannot wipe the server bundle.
     outDir: 'dist/client',
     sourcemap: false,
-    chunkSizeWarningLimit: 2100,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -335,9 +334,6 @@ export default defineConfig({
           }
           if (id.includes('node_modules/lucide-react')) {
             return 'vendor-icons'
-          }
-          if (id.includes('node_modules/gpt-tokenizer')) {
-            return 'vendor-tokenizer'
           }
         },
       },

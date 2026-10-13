@@ -22,7 +22,6 @@ export const FRONTEND_OPTIMIZED_DEPENDENCIES = [
   '@tanstack/react-query',
   'class-variance-authority',
   'clsx',
-  'gpt-tokenizer',
   'js-yaml',
   'lucide-react',
   'react',

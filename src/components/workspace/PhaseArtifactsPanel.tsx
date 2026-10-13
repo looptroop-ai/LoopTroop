@@ -1,5 +1,4 @@
 import { useCallback, useContext, useMemo, useState } from 'react'
-import { encode } from 'gpt-tokenizer'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, FileText, Loader2 } from 'lucide-react'
@@ -57,6 +56,7 @@ import { getSupplementalArtifacts } from './supplementalArtifacts'
 import { getBeadCommitsDiffStats, serializeBeadCommitsDiffContent } from './diffUtils'
 import { isRecord } from '@shared/typeGuards'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { estimateTokens } from '@shared/tokenEstimate'
 
 // Re-export viewer components so existing imports from this module continue to work
 export { RawContentView, InterviewAnswersView, PrdDraftView }
@@ -615,8 +615,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
     }
 
     if (artifact.id === 'relevant-files-scan') {
-      const tokenCount = encode(content).length
-      return { outcome: isCompleted ? 'completed' : 'pending', detail: `${tokenCount.toLocaleString()} tokens` }
+      return { outcome: isCompleted ? 'completed' : 'pending', detail: `~${estimateTokens(content).toLocaleString()} tokens` }
     }
 
     if (artifact.id === 'coverage-report') {

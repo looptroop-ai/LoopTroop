@@ -1,8 +1,8 @@
 import type { PromptPart } from './types'
-import { encode } from 'gpt-tokenizer'
 import { DEFAULT_OPENCODE_TOKEN_BUDGET } from '../lib/constants'
 import { logIfVerbose, warnIfVerbose } from '../runtime'
 import { stripSkipReasonsFromInterviewYaml } from '../structuredOutput/interviewDocument'
+import { estimateTokens } from '@shared/tokenEstimate'
 
 // Phase allowlists — only specified sources are included
 // Phase allowlists derived from cl-prompt.md PROM context_input specs
@@ -77,10 +77,6 @@ const TRIM_PRIORITY: { key: string; sources: string[] }[] = [
   { key: 'execution_setup_profile', sources: ['execution_setup_profile'] },
   { key: 'ticket_details', sources: ['ticket_details'] },
 ]
-
-function estimateTokens(text: string): number {
-  return encode(text).length
-}
 
 // Context slice cache per ticket — avoids redundant file-tree reads within
 // a 5-minute window for the same ticket and context slice.

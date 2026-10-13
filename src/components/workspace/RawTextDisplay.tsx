@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
-import { encode } from 'gpt-tokenizer'
 import { Check, Copy } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { StatPill, StatPillRow } from './artifactViewers/StatPillRow'
+import { estimateTokens } from '@shared/tokenEstimate'
 
 export function CopyButton({ content, className = '', title = 'Copy raw output' }: { content: string; className?: string; title?: string }) {
   const [copied, copyToClipboard, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, content)
@@ -34,7 +34,7 @@ export function CopyButton({ content, className = '', title = 'Copy raw output' 
 }
 
 export function RawDisplayStats({ content }: { content: string }) {
-  const tokenCount = useMemo(() => encode(content).length, [content])
+  const tokenCount = estimateTokens(content)
   const lineCount = content.split('\n').length
   const charCount = content.length
 
@@ -42,7 +42,7 @@ export function RawDisplayStats({ content }: { content: string }) {
     <StatPillRow>
       <StatPill>{lineCount.toLocaleString()} Lines</StatPill>
       <StatPill>{charCount.toLocaleString()} Characters</StatPill>
-      <StatPill>{tokenCount.toLocaleString()} Tokens (GPT-5 tokenizer)</StatPill>
+      <StatPill>~{tokenCount.toLocaleString()} Tokens (estimate)</StatPill>
     </StatPillRow>
   )
 }

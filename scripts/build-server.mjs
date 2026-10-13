@@ -1,5 +1,5 @@
 import { build } from 'esbuild'
-import { copyFileSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,12 +11,11 @@ const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 // the server graph) must be inlined, or a global install fails to resolve it.
 const external = Object.keys(pkg.dependencies ?? {})
 
-// Chunk names carry a content hash, so a rebuild never overwrites the previous
-// build's chunks, and `files: ["dist/"]` would publish every one of them.
-rmSync(resolve(root, 'dist/server'), { recursive: true, force: true })
-
 const common = {
   outdir: resolve(root, 'dist'),
+  // Written below, once both builds have succeeded, so a failed build leaves the
+  // previous output in place.
+  write: false,
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -79,11 +78,21 @@ if (Object.keys(cli.metafile.inputs).some((input) => input.endsWith('server/cli/
   process.exit(1)
 }
 
-const outputs = { ...longRunning.metafile.outputs, ...cli.metafile.outputs }
-if (Object.keys(outputs).length === 0) {
+const outputFiles = [...longRunning.outputFiles, ...cli.outputFiles]
+if (outputFiles.length === 0) {
   console.error('[build:server] esbuild produced no output.')
   process.exit(1)
 }
+
+// Chunk names carry a content hash, so a rebuild never overwrites the previous
+// build's chunks, and `files: ["dist/"]` would publish every one of them.
+rmSync(resolve(root, 'dist/server'), { recursive: true, force: true })
+for (const file of outputFiles) {
+  mkdirSync(dirname(file.path), { recursive: true })
+  writeFileSync(file.path, file.contents)
+}
+
+const outputs = { ...longRunning.metafile.outputs, ...cli.metafile.outputs }
 const chunks = Object.keys(outputs).filter((output) => output.includes('server/chunks/'))
 for (const output of Object.keys(outputs).filter((output) => !chunks.includes(output))) {
   console.log(`[build:server] ${output} (${(outputs[output].bytes / 1024).toFixed(1)} kB)`)

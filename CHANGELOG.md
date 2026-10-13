@@ -9,6 +9,26 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.6.1 (2026-10-13)
+
+
+### 🚀 LoopTroop — What's New Since v0.6.0
+
+A big round of bug fixes, stability improvements, and quality-of-life updates!
+
+1. 🛑 **Stop & Retry AI Models** — Stop or restart slow, stuck, or blocked models individually during multi-model council rounds, without restarting everyone else.
+2. 🔍 **Better Error Pages** — More detailed errors showing what went wrong, which model failed, and useful debugging information.
+3. 🔄 **Smoother Error Recovery** — Fix an issue, retry or continue, and return to your workflow without getting stuck on the error screen.
+4. 🛠️ **More Reliable OpenCode Startup** — Fixed startup failures, port conflicts, and process management issues.
+5. 🤖 **Improved Model Detection** — More reliable model loading, refreshing, and provider detection.
+6. 🐛 **Fewer Unexpected Failures** — Fixed OpenCode v2 issues that could incorrectly block or interrupt workflows.
+7. 🧠 **Smarter AI Response Handling** — Better handling of incorrectly formatted model responses, reducing unnecessary failures.
+8. ⏭️ **Skip All AI Questions** — Skip multiple pending questions across different models in one click, with improved timeout settings.
+9. 💻 **Better Windows & Linux Support** — Fixed installation, compatibility, and reliability issues across platforms.
+10. ⚡ **Up to 20× Faster CLI** — Much faster commands, a smaller package, and lighter builds. [#259](https://github.com/looptroop-ai/LoopTroop/pull/259)
+
+**✨ Overall:** Faster, more stable, easier to recover from errors, and more control over your AI models!
+
 ### Summary
 
 - You can stop or retry one council model while the others keep drafting or voting, instead of waiting for a slow model's timeout.

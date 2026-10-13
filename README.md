@@ -1,5 +1,11 @@
 # LoopTroop
 
+[![Latest release](https://img.shields.io/github/v/release/looptroop-ai/LoopTroop)](https://github.com/looptroop-ai/LoopTroop/releases)
+[![MIT license](https://img.shields.io/github/license/looptroop-ai/LoopTroop)](LICENSE)
+[![Node requirement](https://img.shields.io/node/v/looptroop)](https://www.looptroop.ovh/docs/installation#what-you-need-first-per-channel)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/looptroop-ai/LoopTroop/badge)](https://scorecard.dev/viewer/?uri=github.com/looptroop-ai/LoopTroop)
+[![Total downloads](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fwww.looptroop.ovh%2Fapi%2Fproject-stats&query=%24.downloads.total&label=total%20downloads&color=blue)](https://www.looptroop.ovh/docs/installation#download-statistics)
+
 > **A smart local engine that automates big coding tasks from start to finish.**
 > LLM councils plan it. Ralph loops perfect it. OpenCode worktrees ship it.
 

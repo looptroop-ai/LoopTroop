@@ -15,15 +15,15 @@ frontend packages inlined into the client bundle.
 | --- | --- | --- | --- |
 | `@codemirror/autocomplete` | 6.20.3 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/lang-yaml` | 6.1.3 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@codemirror/language` | 6.12.4 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@codemirror/language` | 6.13.1 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/merge` | 6.12.2 | MIT | Copyright (C) 2018-2022 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/state` | 6.7.6 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@codemirror/view` | 6.43.13 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@codemirror/view` | 6.43.14 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@floating-ui/core` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/dom` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/utils` | 0.2.12 | MIT | Copyright (c) 2021-present Floating UI contributors |
-| `@hono/node-server` | 2.1.3 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
+| `@hono/node-server` | 2.1.4 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
 | `@lezer/common` | 1.5.1 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/highlight` | 1.2.3 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/lr` | 1.4.8 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
@@ -72,7 +72,7 @@ frontend packages inlined into the client bundle.
 | `hono` | 4.13.13 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.4.3 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.52.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.53.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
@@ -156,7 +156,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@codemirror/autocomplete@6.20.3`, `@codemirror/language@6.12.4`, `@codemirror/state@6.7.6`, `@codemirror/view@6.43.13`
+Applies to: `@codemirror/autocomplete@6.20.3`, `@codemirror/language@6.13.1`, `@codemirror/state@6.7.6`, `@codemirror/view@6.43.14`
 
 ```text
 MIT License
@@ -389,7 +389,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@hono/node-server@2.1.3`
+Applies to: `@hono/node-server@2.1.4`
 
 ```text
 MIT License
@@ -1059,7 +1059,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.52.0`
+Applies to: `lucide-react@1.53.0`
 
 ```text
 ISC License

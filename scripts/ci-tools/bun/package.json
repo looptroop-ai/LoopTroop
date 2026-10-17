@@ -2,6 +2,6 @@
   "name": "looptroop-ci-bun",
   "private": true,
   "dependencies": {
-    "bun": "1.4.2"
+    "bun": "1.4.3"
   }
 }

@@ -105,7 +105,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: audit
 
@@ -114,7 +114,7 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
 
@@ -183,7 +183,7 @@ jobs:
             for (const leg of legs) console.log('  ' + leg.name)
           "
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: published-smoke-expected
           path: expected.json
@@ -206,7 +206,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: audit
 
@@ -239,7 +239,7 @@ jobs:
         run: |
           printf '%s\n' "- Release under test: v${RELEASE_VERSION}" "- Smoke driver revision: ${DRIVER_REVISION}" "- CI tooling revision: ${TOOLING_REVISION}" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
 
@@ -431,7 +431,7 @@ jobs:
 
       # Unique per leg: upload-artifact rejects duplicate names, and two legs
       # sharing one would overwrite a result and read as a missing leg.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: published-smoke-${{ matrix.channel }}-${{ matrix.os }}
@@ -466,7 +466,7 @@ jobs:
           PY
 
       - name: Download verified artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: published-smoke-*
           path: ${{ steps.artifact_raw_1.outputs.path }}

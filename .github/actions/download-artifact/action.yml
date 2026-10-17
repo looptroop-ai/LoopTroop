@@ -30,7 +30,7 @@ runs:
     # Keep downloads separate even when extraction merges them: raw ZIPs can
     # have the same filename. GitHub still verifies every artifact's digest.
     - name: Download and verify the ZIPs
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
       with:
         name: ${{ inputs.name }}
         pattern: ${{ inputs.pattern }}

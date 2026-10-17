@@ -73,7 +73,7 @@ jobs:
       # The head SHA, not the branch name: Renovate can push again while this
       # job runs, and the notices must describe the tree they were built from.
       - name: Audit runner network activity
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: audit
 
@@ -82,7 +82,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           # The toolchain pin from .nvmrc, exact rather than floating "24".
           # Not engines.node, which is lower on purpose.
@@ -121,7 +121,7 @@ jobs:
 
       - name: Upload the regenerated notices
         if: steps.changed.outputs.changed == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: third-party-notices
           path: THIRD-PARTY-NOTICES.md
@@ -159,7 +159,7 @@ jobs:
           PY
 
       - name: Download the regenerated notices
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: third-party-notices
           path: ${{ steps.artifact_raw_1.outputs.path }}

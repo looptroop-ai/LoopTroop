@@ -772,7 +772,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
       return 'equivalent'
     }
     if (previous.status === 'corrected') {
-      if (input.candidateCommitSha === previous.candidateCommitSha
+      if ((input.candidateCommitSha === previous.candidateCommitSha || input.candidateCommitSha === previous.correctedCandidateSha)
         && hasPendingCorrectiveCandidate(input.ticketId, readIntegrationArtifact(input.ticketId), input.baseBranch, input.headBranch)) {
         return 'corrected'
       }

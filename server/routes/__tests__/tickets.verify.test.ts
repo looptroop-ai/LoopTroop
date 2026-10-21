@@ -430,6 +430,35 @@ describe('ticketRouter PR review routes', () => {
     expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
   })
 
+  it('uses the current candidate authority when the saved PR report describes an older candidate', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const current = getTicketByRef(ticket.id)!
+    const candidateCommitSha = 'd'.repeat(40)
+    insertPhaseArtifact(ticket.id, {
+      phase: 'INTEGRATING_CHANGES',
+      artifactType: 'integration_report',
+      content: JSON.stringify({
+        status: 'passed',
+        baseBranch: current.runtime.baseBranch,
+        candidateCommitSha,
+        mergeBase: 'remote-base123',
+      }),
+    })
+    refreshPullRequestStateMock.mockResolvedValue({
+      number: 42,
+      state: 'merged',
+      headRefOid: 'abc123def456',
+      mergeCommitSha: 'landed123',
+    })
+    reconcileEarlyMergedPullRequestMock.mockResolvedValueOnce('corrected')
+
+    await syncWaitingPullRequestTicket(ticket.id)
+
+    expect(reconcileEarlyMergedPullRequestMock).toHaveBeenCalledWith(expect.objectContaining({ candidateCommitSha }))
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)?.status).toBe('RUNNING_FINAL_TEST')
+  })
+
   it('blocks on recorded manual early-merge recovery and preserves its evidence', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     const recovery = {

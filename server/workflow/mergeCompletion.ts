@@ -193,8 +193,8 @@ export async function completeTicketMerge(
     throw new Error('A close-without-merge decision is already recorded for this pull request.')
   }
   if (observedPullRequest?.state === 'merged'
-    && (!prReport.candidateCommitSha || observedPullRequest.headRefOid !== prReport.candidateCommitSha)) {
-    const candidateCommitSha = prReport.candidateCommitSha ?? ''
+    && (!ticket.runtime.candidateCommitSha || observedPullRequest.headRefOid !== ticket.runtime.candidateCommitSha)) {
+    const candidateCommitSha = ticket.runtime.candidateCommitSha ?? ''
     const ticketPaths = getTicketPaths(ticketId)
     if (!ticketPaths) throw new Error('Waiting pull request ticket is missing its workspace paths.')
     const result = await reconcileEarlyMergedPullRequest({

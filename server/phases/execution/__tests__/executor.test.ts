@@ -721,7 +721,7 @@ describe('executeBead', () => {
     }
   })
 
-  it('reuses the timed-out session for PROM51 before starting the next coding session', async () => {
+  it('reuses the timed-out session for PROM51 before starting the next coding session', async ({ onTestFinished }) => {
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.promptFailures.set('mock-session-1#1', 'stallUntilAbort')
     adapter.mockResponses.set('mock-session-1#2', 'Timeout note from the stalled session.')
@@ -733,7 +733,13 @@ describe('executeBead', () => {
 
     const bead = buildBead()
     const contextSnapshots: string[] = []
-    const result = await executeBead(
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    let onFirstPromptDispatched!: () => void
+    const firstPromptDispatched = new Promise<void>((resolve) => {
+      onFirstPromptDispatched = resolve
+    })
+    const runPromise = executeBead(
       adapter,
       bead,
       async () => {
@@ -744,7 +750,12 @@ describe('executeBead', () => {
       '/tmp/test',
       2,
       25,
+      undefined,
+      { onPromptDispatched: onFirstPromptDispatched },
     )
+    await firstPromptDispatched
+    await vi.advanceTimersByTimeAsync(25)
+    const result = await runPromise
 
     expect(result.success).toBe(true)
     // Timeout cleanup, the recovery-note prompt's cleanup, and the context

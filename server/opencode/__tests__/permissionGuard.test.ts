@@ -16,6 +16,9 @@ const shell = (command: string, options: { directory?: string; patterns?: string
 describe('getPermissionGuardRejection', () => {
   it.each([
     'gh auth status',
+    'rtk gh pr view 12',
+    'rtk git status --short',
+    'rtk proxy git status --short',
     'gh issue list --repo owner/repo',
     'gh pr view 12 --json title,body',
     'gh pr checks 12',
@@ -60,6 +63,12 @@ describe('getPermissionGuardRejection', () => {
 
   it.each([
     ['gh pr create --title change', 'GitHub'],
+    ['rtk gh pr merge 12', 'GitHub'],
+    ['rtk git push origin HEAD', 'remote repository'],
+    ['rtk proxy git push origin HEAD', 'remote repository'],
+    ['rtk proxy rm -rf .', 'managed ticket worktree'],
+    ['env GIT_DIR=/repo/.git rtk proxy git reset --hard', 'discard local work'],
+    ['rtk proxy env GIT_DIR=/repo/.git git reset --hard', 'discard local work'],
     ['gh issue close 12', 'GitHub'],
     ['gh alias set x pr create', 'GitHub'],
     ['gh codespace ports visibility 3000:public -c my-codespace', 'GitHub'],

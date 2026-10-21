@@ -261,7 +261,14 @@ function unwrapCommand(words: string[]): { commandName?: string; args: string[];
       environment[assignment.slice(0, separator)] = assignment.slice(separator + 1)
     }
   }
+  const skipRtk = () => {
+    while (commandBase(words[index] ?? '') === 'rtk') {
+      index++
+      if (words[index] === 'proxy') index++
+    }
+  }
   readAssignments()
+  skipRtk()
   if (commandBase(words[index] ?? '') === 'env') {
     index++
     while (index < words.length) {
@@ -281,6 +288,7 @@ function unwrapCommand(words: string[]): { commandName?: string; args: string[];
     if (words[index] === '--') index++
     readAssignments()
   }
+  skipRtk()
   const commandName = words[index]
   return { commandName, args: [...prefixArgs, ...words.slice(index + 1)], environment }
 }

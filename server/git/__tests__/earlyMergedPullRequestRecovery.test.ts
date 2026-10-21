@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { reconcileMergedPullRequestCandidate, EarlyMergeRecoveryManualError } from '../earlyMergedPullRequestRecovery'
+import { pinGitLineEndings } from '../../test/tempDir'
 
 const roots: string[] = []
 
@@ -31,6 +32,8 @@ function makeFixture(options: {
   mkdirSync(remotePath)
   execFileSync('git', ['init', '--bare', remotePath], { stdio: 'ignore' })
   execFileSync('git', ['-C', projectPath, 'init'], { stdio: 'ignore' })
+  pinGitLineEndings(remotePath)
+  pinGitLineEndings(projectPath)
   git(projectPath, ['config', 'user.name', 'Test'])
   git(projectPath, ['config', 'user.email', 'test@example.com'])
   writeFileSync(resolve(projectPath, 'shared.txt'), 'first\nsecond\n')

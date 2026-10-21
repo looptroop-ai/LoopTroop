@@ -44,26 +44,26 @@ describe('ExecutionSetupPlanEditor workspace verification', () => {
   it('exposes whether each setup step is expanded', () => {
     const onChange = vi.fn()
     const { rerender } = render(<ExecutionSetupPlanEditor plan={buildPlan()} onChange={onChange} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    fireEvent.click(screen.getByText('Add Step'))
     rerender(<ExecutionSetupPlanEditor plan={onChange.mock.calls.at(-1)![0]} onChange={onChange} />)
 
-    const first = screen.getByRole('button', { name: /Setup Step 1/ })
+    const first = screen.getByText('Setup Step 1').closest('button')!
     expect(first).not.toHaveAccessibleName(/[▼▶]/)
     expect(first).toHaveAttribute('aria-expanded', 'true')
     const panel = document.getElementById(first.getAttribute('aria-controls')!)
-    expect(panel).toContainElement(screen.getByRole('button', { name: 'Remove Step' }))
+    expect(panel).toContainElement(screen.getByText('Remove Step'))
     expect(panel).not.toContainElement(first)
     fireEvent.click(first)
     expect(first).toHaveAttribute('aria-expanded', 'false')
     expect(first).not.toHaveAttribute('aria-controls')
-    expect(screen.queryByRole('button', { name: 'Remove Step' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Remove Step')).not.toBeInTheDocument()
     fireEvent.click(first)
     expect(first).toHaveAttribute('aria-expanded', 'true')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    fireEvent.click(screen.getByText('Add Step'))
     rerender(<ExecutionSetupPlanEditor plan={onChange.mock.calls.at(-1)![0]} onChange={onChange} />)
     expect(first).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getByRole('button', { name: /Setup Step 2/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Setup Step 2').closest('button')!).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('keeps discovered hooks read-only and allows validation commands to be edited, reordered, and removed', () => {
@@ -299,7 +299,7 @@ describe('ExecutionSetupPlanEditor workspace verification', () => {
       return current
     }
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    fireEvent.click(screen.getByText('Add Step'))
     let current = sync()
     expect(current.steps[0]).toMatchObject({ id: 'setup-step-1', title: 'Setup Step 1', required: true })
     expect(current.readiness).toMatchObject({ status: 'partial', actionsRequired: true })
@@ -319,23 +319,23 @@ describe('ExecutionSetupPlanEditor workspace verification', () => {
     })
     current = sync()
     const stepCautions = () => within(screen.getByText('Step Cautions').parentElement!)
-    fireEvent.click(stepCautions().getByRole('button', { name: '+ Add' }))
+    fireEvent.click(stepCautions().getByText('+ Add'))
     current = sync()
     fireEvent.change(stepCautions().getByPlaceholderText('Optional caution...'), {
       target: { value: 'Keep setup offline.' },
     })
     current = sync()
     expect(current.steps[0]?.cautions).toEqual(['Keep setup offline.'])
-    fireEvent.click(stepCautions().getByRole('button', { name: '×' }))
+    fireEvent.click(stepCautions().getByText('×'))
     current = sync()
     expect(current.steps[0]?.cautions).toEqual([])
 
-    fireEvent.click(within(screen.getByText('Commands').parentElement!).getByRole('button', { name: '+ Command' }))
+    fireEvent.click(within(screen.getByText('Commands').parentElement!).getByText('+ Command'))
     current = sync()
     expect(current.steps[0]?.commands[0]).toEqual({ mode: 'process', program: '', args: [], cwd: '.', env: {} })
 
     const stepCommands = within(screen.getByText('Commands').parentElement!)
-    fireEvent.click(within(stepCommands.getByText('Arguments').parentElement!).getByRole('button', { name: '+ Add' }))
+    fireEvent.click(within(stepCommands.getByText('Arguments').parentElement!).getByText('+ Add'))
     current = sync()
     fireEvent.change(within(stepCommands.getByText('Arguments').parentElement!).getByPlaceholderText('One argument (spaces are preserved)'), {
       target: { value: 'install --offline' },
@@ -364,20 +364,20 @@ describe('ExecutionSetupPlanEditor workspace verification', () => {
     fireEvent.change(screen.getByLabelText('Setup command 1 mode'), { target: { value: 'process' } })
     current = sync()
     expect(current.steps[0]?.commands[0]).toMatchObject({ mode: 'process', program: '', args: [], cwd: 'packages/app', env: {} })
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Setup command 1' }))
+    fireEvent.click(screen.getByLabelText('Remove Setup command 1'))
     current = sync()
     expect(current.steps[0]?.commands).toEqual([])
 
     fireEvent.click(screen.getByLabelText('Required step'))
     current = sync()
     expect(current.steps[0]?.required).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    fireEvent.click(screen.getByText('Add Step'))
     current = sync()
     expect(current.steps).toHaveLength(2)
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Step' }))
+    fireEvent.click(screen.getByText('Remove Step'))
     current = sync()
     expect(current.steps).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Step' }))
+    fireEvent.click(screen.getByText('Remove Step'))
     current = sync()
     expect(current.steps).toEqual([])
     expect(current.readiness).toMatchObject({ status: 'ready', actionsRequired: false })

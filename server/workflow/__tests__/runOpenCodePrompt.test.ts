@@ -795,7 +795,7 @@ describe('runOpenCodePrompt', () => {
     expect(callbackOrder).toEqual(['session', 'prompt'])
     expect(dispatchedEvent).toMatchObject({
       session: { id: 'ses-1' },
-      promptText: 'PROM1 body',
+      promptText: '### text\nPROM1 body\n\n### system\nLeave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.',
       promptNumber: 1,
       timeoutKind: 'ai_response',
       timeoutMs: 1_000,
@@ -1505,7 +1505,10 @@ describe('runOpenCodePrompt', () => {
 
     expect(continued.response).toBe('continued response')
     expect(adapter.promptCalls[1]?.sessionId).toBe(initial.session.id)
-    expect(adapter.promptCalls[1]?.parts).toEqual([{ type: 'text', content: 'continue please' }])
+    expect(adapter.promptCalls[1]?.parts).toEqual([
+      { type: 'text', content: 'continue please' },
+      { type: 'system', content: 'Leave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.' },
+    ])
   })
 
   it('sends a custom continuation prompt to the preserved session across setup attempt numbers', async () => {
@@ -1550,7 +1553,10 @@ describe('runOpenCodePrompt', () => {
 
     expect(continued.response).toBe('continued response')
     expect(adapter.promptCalls[1]?.sessionId).toBe(initial.session.id)
-    expect(adapter.promptCalls[1]?.parts).toEqual([{ type: 'text', content: note }])
+    expect(adapter.promptCalls[1]?.parts).toEqual([
+      { type: 'text', content: note },
+      { type: 'system', content: 'Leave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.' },
+    ])
   })
 
   it('retains upgrade guidance after execution-band session creation retries are exhausted', async () => {

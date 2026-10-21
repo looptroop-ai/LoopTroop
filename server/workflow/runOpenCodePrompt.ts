@@ -147,6 +147,7 @@ export interface OpenCodeAttemptMeta {
 }
 
 const TIMEOUT_ERROR_MESSAGE = 'Timeout'
+const GLOBAL_DELIVERY_OWNERSHIP_INSTRUCTION = 'Leave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.'
 const AI_RESPONSE_TIMEOUT_PHASES = new Set([
   'SCANNING_RELEVANT_FILES',
   'COUNCIL_DELIBERATING',
@@ -599,6 +600,10 @@ export async function runOpenCodeSessionPrompt({
   timeoutDeadline,
   workBudget: callerBudget,
 }: OpenCodeRunOptions & { session: Session }): Promise<OpenCodeRunResult> {
+  const dispatchedParts: PromptPart[] = [
+    ...parts,
+    { type: 'system', content: GLOBAL_DELIVERY_OWNERSHIP_INSTRUCTION },
+  ]
   const staticTimeoutDeadline = timeoutDeadline ?? getTimeoutDeadline(timeoutMs)
   /**
    * Every prompt with a ticket and a deadline gets a suspension-aware clock.
@@ -812,8 +817,8 @@ export async function runOpenCodeSessionPrompt({
     const dispatchDeadlineAt = formatTimeoutDeadline(resolvedTimeoutDeadline)
     onPromptDispatched?.({
       session: resolvedSession,
-      parts,
-      promptText: formatPromptText(parts),
+      parts: dispatchedParts,
+      promptText: formatPromptText(dispatchedParts),
       promptNumber,
       timeoutKind: dispatchTimeoutKind,
       ...(timeoutMs !== undefined && timeoutMs > 0 ? { timeoutMs } : {}),
@@ -827,7 +832,7 @@ export async function runOpenCodeSessionPrompt({
     if (deadlineController?.signal.aborted) {
       throw buildDeadlineTimeoutError(deadlineScope, timeoutMs, sessionOwnership)
     }
-    response = await adapter.promptSession(resolvedSession.id, parts, combinedSignal, promptOptions)
+    response = await adapter.promptSession(resolvedSession.id, dispatchedParts, combinedSignal, promptOptions)
     if (openCodeRetryError) {
       throw openCodeRetryError
     }
@@ -982,7 +987,7 @@ export async function runOpenCodeSessionPrompt({
   }
   const completedEvent: OpenCodePromptCompletedEvent = {
     session: resolvedSession,
-    parts,
+    parts: dispatchedParts,
     response,
     messages,
     responseMeta,

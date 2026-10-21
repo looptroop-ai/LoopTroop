@@ -17,6 +17,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - Quoted model-generated YAML scalars beginning with `,`, `]`, or `}` so stricter `js-yaml` parsing preserves their emitted values.
 
+### Changed
+
+- Workflow sessions receive a shared instruction to leave GitHub writes and remote Git changes to LoopTroop and continue local work after refusals.
+
+- Added the delivery instruction at the common prompt dispatch boundary so fresh prompts, retries, continuations, and custom templates all receive it without duplicating it in status prompts.
+
 ## 0.6.1 (2026-10-13)
 
 

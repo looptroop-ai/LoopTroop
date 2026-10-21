@@ -12,16 +12,18 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Summary
 
 - Model-generated YAML values beginning with `,`, `]`, or `}` now parse without changing their text.
+- LoopTroop protects managed workflow delivery and safely handles ticket PRs that merged before the final candidate was ready.
 
 ### Fixed
 
 - Quoted model-generated YAML scalars beginning with `,`, `]`, or `}` so stricter `js-yaml` parsing preserves their emitted values.
 
-### Changed
+- Before pushing a candidate, LoopTroop checks for a matching merged PR, verifies its landed commit on the current remote base, fetches the exact PR head, and compares tree proofs. A matching candidate completes from the original PR and stores the original PR, candidate SHA, and proofs. When the candidate has additional changes, LoopTroop applies only that delta to a recovery worktree on the verified base and reruns final tests, optional Manual QA, integration, and PR creation. It never updates the merged PR.
+- Missing merge proof or a corrective patch conflict preserves the original candidate and any recovery worktree, records manual-recovery details including conflict paths when present, and blocks for resolution without asking an AI to choose a fix.
 
-- Workflow sessions receive a shared instruction to leave GitHub writes and remote Git changes to LoopTroop and continue local work after refusals.
+### Security
 
-- Added the delivery instruction at the common prompt dispatch boundary so fresh prompts, retries, continuations, and custom templates all receive it without duplicating it in status prompts.
+- Every workflow dispatch adds one shared system instruction that tells the model to leave GitHub writes and remote Git changes to LoopTroop, then continue local work after a refusal. OpenCode permission checks refuse direct GitHub writes, remote Git writes, and destructive changes to managed ticket worktrees, Git metadata, and LoopTroop state. Ordinary local code edits and deletions, local work in temporary repositories, and writes to runtime setup and tool-cache paths remain available; the runtime root, execution logs, and approved setup profile stay protected. Refusals report the reason and leave the current workflow session running; LoopTroop's own Git and GitHub operations are unaffected. OpenCode helper sessions may have independent permissions, and scripts, custom clients, or network tools with existing credentials remain outside this check.
 
 ## 0.6.1 (2026-10-13)
 

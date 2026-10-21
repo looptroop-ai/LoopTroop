@@ -741,6 +741,10 @@ export async function reconcileEarlyMergedPullRequest(input: {
   candidateCommitSha: string
   pr: PullRequestInfo
 }): Promise<'equivalent' | 'corrected' | 'skip'> {
+  refreshMergedPullRequestProjection({
+    ...input,
+    message: `Pull request #${input.pr.number} is already merged; checking the candidate before completing delivery.`,
+  })
   const previous = readEarlyMergeRecoveryReport(input.ticketId)
   if (previous?.prNumber === input.pr.number
     && previous.baseBranch === input.baseBranch && previous.headBranch === input.headBranch) {

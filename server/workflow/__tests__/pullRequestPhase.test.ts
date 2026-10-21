@@ -440,6 +440,12 @@ describe('pull request drafting context', () => {
       conflictPaths: ['src/example.ts'],
     })
     expect(report.message).toContain('will not guess or resume automatically')
+    expect(readPullRequestReport(ticket.id)).toMatchObject({
+      prNumber: mergedPr.number,
+      prState: 'merged',
+      prHeadSha: mergedPr.headRefOid,
+      candidateCommitSha: originalCandidate,
+    })
     expect(getLatestPhaseArtifact(ticket.id, 'git_recovery_receipt', 'CREATING_PULL_REQUEST')).toBeDefined()
   })
 

@@ -23,7 +23,7 @@ frontend packages inlined into the client bundle.
 | `@floating-ui/dom` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/utils` | 0.2.12 | MIT | Copyright (c) 2021-present Floating UI contributors |
-| `@hono/node-server` | 2.1.4 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
+| `@hono/node-server` | 2.1.5 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
 | `@lezer/common` | 1.5.1 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/highlight` | 1.2.3 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/lr` | 1.4.8 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
@@ -31,37 +31,37 @@ frontend packages inlined into the client bundle.
 | `@marijn/find-cluster-break` | 1.0.2 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin> |
 | `@opencode-ai/sdk` | 1.19.0 | MIT | - |
 | `@radix-ui/number` | 1.1.3 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/primitive` | 1.1.7 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-collection` | 1.1.16 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/primitive` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-collection` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-compose-refs` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-context` | 1.2.2 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-dialog` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-direction` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-dismissable-layer` | 1.1.20 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-dropdown-menu` | 2.1.25 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-focus-guards` | 1.1.6 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-focus-scope` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-hover-card` | 1.1.24 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-context` | 1.3.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-dialog` | 1.3.1 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-direction` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-dismissable-layer` | 1.2.1 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-dropdown-menu` | 2.2.1 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-focus-guards` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-focus-scope` | 1.3.1 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-hover-card` | 1.2.1 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-id` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-menu` | 2.1.25 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-popper` | 1.3.8 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-portal` | 1.1.18 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-menu` | 2.2.1 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-popper` | 1.4.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-portal` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-presence` | 1.1.11 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-primitive` | 2.1.11 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-roving-focus` | 1.1.20 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-scroll-area` | 1.3.0 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-separator` | 1.1.16 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-slot` | 1.4.0 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-tooltip` | 1.3.0 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-use-callback-ref` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-use-controllable-state` | 1.2.6 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-primitive` | 2.2.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-roving-focus` | 1.2.1 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-scroll-area` | 1.4.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-separator` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-slot` | 1.5.0 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-tooltip` | 1.4.1 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-use-callback-ref` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
+| `@radix-ui/react-use-controllable-state` | 1.3.0 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-effect-event` | 0.0.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-is-hydrated` | 0.1.3 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-visually-hidden` | 1.2.12 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.104.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.104.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@radix-ui/react-visually-hidden` | 1.2.13 | MIT | Copyright (c) 2022 WorkOS |
+| `@tanstack/query-core` | 5.104.2 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.104.2 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `argparse` | 2.0.1 | Python-2.0 | Copyright (c) 1991 - 1995, Stichting Mathematisch Centrum Amsterdam, |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `class-variance-authority` | 0.7.1 | Apache-2.0 | Copyright 2022 Joe Bell |
@@ -72,14 +72,14 @@ frontend packages inlined into the client bundle.
 | `hono` | 4.13.13 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.4.3 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.55.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.57.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.3.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.16 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.19 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `scheduler` | 0.28.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `shebang-command` | 2.0.0 | MIT | Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva) |
 | `shebang-regex` | 3.0.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
@@ -91,7 +91,7 @@ frontend packages inlined into the client bundle.
 | `w3c-keyname` | 2.2.8 | MIT | Copyright (C) 2016 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `which` | 2.0.2 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `xstate` | 5.33.2 | MIT | Copyright (c) 2015 David Khourshid |
-| `zod` | 4.6.5 | MIT | Copyright (c) 2025 Colin McDonnell |
+| `zod` | 4.6.7 | MIT | Copyright (c) 2025 Colin McDonnell |
 
 ## Licence Texts
 
@@ -100,7 +100,7 @@ in the table above and the upstream repository.
 
 ### MIT
 
-Applies to: `@radix-ui/number@1.1.3`, `@radix-ui/primitive@1.1.7`, `@radix-ui/react-collection@1.1.16`, `@radix-ui/react-compose-refs@1.1.5`, `@radix-ui/react-context@1.2.2`, `@radix-ui/react-dialog@1.2.0`, `@radix-ui/react-direction@1.1.5`, `@radix-ui/react-dismissable-layer@1.1.20`, `@radix-ui/react-dropdown-menu@2.1.25`, `@radix-ui/react-focus-guards@1.1.6`, `@radix-ui/react-focus-scope@1.2.0`, `@radix-ui/react-hover-card@1.1.24`, `@radix-ui/react-id@1.1.4`, `@radix-ui/react-menu@2.1.25`, `@radix-ui/react-popper@1.3.8`, `@radix-ui/react-portal@1.1.18`, `@radix-ui/react-presence@1.1.11`, `@radix-ui/react-primitive@2.1.11`, `@radix-ui/react-roving-focus@1.1.20`, `@radix-ui/react-scroll-area@1.3.0`, `@radix-ui/react-separator@1.1.16`, `@radix-ui/react-slot@1.4.0`, `@radix-ui/react-tooltip@1.3.0`, `@radix-ui/react-use-callback-ref@1.1.4`, `@radix-ui/react-use-controllable-state@1.2.6`, `@radix-ui/react-use-effect-event@0.0.5`, `@radix-ui/react-use-is-hydrated@0.1.3`, `@radix-ui/react-use-layout-effect@1.1.4`, `@radix-ui/react-use-size@1.1.5`, `@radix-ui/react-visually-hidden@1.2.12`
+Applies to: `@radix-ui/number@1.1.3`, `@radix-ui/primitive@1.2.0`, `@radix-ui/react-collection@1.2.0`, `@radix-ui/react-compose-refs@1.1.5`, `@radix-ui/react-context@1.3.0`, `@radix-ui/react-dialog@1.3.1`, `@radix-ui/react-direction@1.2.0`, `@radix-ui/react-dismissable-layer@1.2.1`, `@radix-ui/react-dropdown-menu@2.2.1`, `@radix-ui/react-focus-guards@1.2.0`, `@radix-ui/react-focus-scope@1.3.1`, `@radix-ui/react-hover-card@1.2.1`, `@radix-ui/react-id@1.1.4`, `@radix-ui/react-menu@2.2.1`, `@radix-ui/react-popper@1.4.0`, `@radix-ui/react-portal@1.2.0`, `@radix-ui/react-presence@1.1.11`, `@radix-ui/react-primitive@2.2.0`, `@radix-ui/react-roving-focus@1.2.1`, `@radix-ui/react-scroll-area@1.4.0`, `@radix-ui/react-separator@1.2.0`, `@radix-ui/react-slot@1.5.0`, `@radix-ui/react-tooltip@1.4.1`, `@radix-ui/react-use-callback-ref@1.1.5`, `@radix-ui/react-use-controllable-state@1.3.0`, `@radix-ui/react-use-effect-event@0.0.5`, `@radix-ui/react-use-is-hydrated@0.1.3`, `@radix-ui/react-use-layout-effect@1.1.4`, `@radix-ui/react-use-size@1.1.5`, `@radix-ui/react-visually-hidden@1.2.13`
 
 ```text
 MIT License
@@ -267,7 +267,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.104.1`, `@tanstack/react-query@5.104.1`
+Applies to: `@tanstack/query-core@5.104.2`, `@tanstack/react-query@5.104.2`
 
 ```text
 MIT License
@@ -389,7 +389,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@hono/node-server@2.1.4`
+Applies to: `@hono/node-server@2.1.5`
 
 ```text
 MIT License
@@ -1059,7 +1059,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.55.0`
+Applies to: `lucide-react@1.57.0`
 
 ```text
 ISC License
@@ -1109,7 +1109,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.16`
+Applies to: `react-virtuoso@4.18.19`
 
 ```text
 MIT License
@@ -1280,7 +1280,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `zod@4.6.5`
+Applies to: `zod@4.6.7`
 
 ```text
 MIT License

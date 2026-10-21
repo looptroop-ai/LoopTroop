@@ -161,7 +161,7 @@ describe('OpenCode adapter transport refresh', () => {
       { autoApprovePermissions: true },
     )).resolves.toBe('current answer')
 
-    expect(oldTransport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'always', '/worktree', undefined)
+    expect(oldTransport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'once', '/worktree', undefined)
     expect(oldTransport.getSessionMessages).toHaveBeenCalledTimes(2)
     expect(restartedTransport.getSessionMessages).not.toHaveBeenCalled()
     expect(resolutions).toBe(1)

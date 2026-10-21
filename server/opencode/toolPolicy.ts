@@ -1,3 +1,4 @@
+import { isAbsolute, relative } from 'path'
 import type { OpenCodePermissionRule, PromptSessionOptions } from './types'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from './permissions'
 
@@ -135,14 +136,25 @@ const PERMISSION_CACHE = new Map<string, ReadonlyArray<OpenCodePermissionRule>>(
 export function resolveOpenCodePermissions(
   toolPolicy: OpenCodeToolPolicy = 'default',
   questionsAllowed = false,
+  workflowGuardApplies = false,
 ): PromptSessionOptions['permission'] | undefined {
   const base = basePermissionRules(toolPolicy)
   if (!base) return undefined
   const permitted = questionsAllowed && !SILENT_TOOL_POLICIES.has(toolPolicy)
-  const cacheKey = `${toolPolicy}:${permitted ? 'ask' : 'silent'}`
+  const cacheKey = `${toolPolicy}:${permitted ? 'ask' : 'silent'}:${workflowGuardApplies ? 'guarded' : 'unguarded'}`
   const cached = PERMISSION_CACHE.get(cacheKey)
   if (cached) return cached
-  const resolved = withQuestionRule(base, permitted)
+  const guardedRules = workflowGuardApplies && (toolPolicy === 'default' || toolPolicy === 'execution_setup_online')
+    ? [
+        ...base,
+        ...['bash', 'edit', 'write', 'apply_patch'].map((permission) => ({
+          permission,
+          pattern: '*',
+          action: 'ask' as const,
+        })),
+      ]
+    : base
+  const resolved = withQuestionRule(guardedRules, permitted)
   PERMISSION_CACHE.set(cacheKey, resolved)
   return resolved
 }
@@ -165,11 +177,32 @@ export function resolveOpenCodePermissions(
 export function isPermissionDeniedByRules(
   rules: ReadonlyArray<OpenCodePermissionRule> | undefined,
   permission: string | undefined,
+  patterns?: readonly string[],
+  directory?: string,
 ): boolean {
   if (!rules || !permission) return false
-  const specific = rules.findLast((rule) => rule.permission === permission)
-  if (specific) return specific.action === 'deny'
-  return rules.some((rule) => rule.permission === '*' && rule.action === 'deny')
+  const resources = patterns?.length ? patterns : ['*']
+  return resources.some((resource) => {
+    const candidates = [resource]
+    if (directory && isAbsolute(resource)) {
+      const relativeResource = relative(directory, resource)
+      if (relativeResource !== resource) candidates.push(relativeResource)
+    }
+    const matchesResource = (rule: OpenCodePermissionRule) =>
+      candidates.some((candidate) => permissionPatternMatches(rule.pattern, candidate))
+    const specific = rules.findLast((rule) => rule.permission === permission && matchesResource(rule))
+    if (specific) return specific.action === 'deny'
+    const wildcard = rules.findLast((rule) => rule.permission === '*' && matchesResource(rule))
+    return wildcard?.action === 'deny'
+  })
+}
+
+function permissionPatternMatches(pattern: string, resource: string): boolean {
+  const normalizedPattern = pattern.replaceAll('\\', '/')
+  const normalizedResource = resource.replaceAll('\\', '/')
+  if (normalizedPattern.endsWith(' *') && normalizedResource === normalizedPattern.slice(0, -2)) return true
+  const expression = normalizedPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.')
+  return new RegExp(`^${expression}$`, process.platform === 'win32' ? 'is' : 's').test(normalizedResource)
 }
 
 /** True when this policy would let a prompt ask, given the ticket's setting. */

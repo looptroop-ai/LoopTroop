@@ -493,6 +493,47 @@ async function listPullRequests(projectPath: string, repo: GitHubRepoRef, branch
     .sort((left, right) => right.number - left.number)
 }
 
+export async function listPullRequestsForBranch(
+  projectPath: string,
+  branchName: string,
+  baseBranch: string,
+): Promise<PullRequestInfo[]> {
+  assertSafeRefName(branchName, 'Head branch')
+  assertSafeRefName(baseBranch, 'Base branch')
+  return listPullRequests(projectPath, assertGitHubOrigin(projectPath), branchName, baseBranch)
+}
+
+/** Fetches the immutable head ref exposed by GitHub for one pull request. */
+export async function fetchPullRequestHead(projectPath: string, prNumber: number, expectedHeadSha: string): Promise<string> {
+  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+    throw new Error('Pull request number must be a positive safe integer.')
+  }
+  if (!/^[0-9a-f]{40,64}$/i.test(expectedHeadSha)) {
+    throw new Error('A full expected pull request head SHA is required.')
+  }
+  const headRef = `refs/looptroop/pull-heads/${prNumber}/${expectedHeadSha}`
+  await runRemoteGit(projectPath, [
+    'fetch', '--no-tags', '--no-progress', '--no-write-fetch-head', 'origin',
+    `+refs/pull/${prNumber}/head:${headRef}`,
+  ])
+  const head = runGit(projectPath, ['rev-parse', `${headRef}^{commit}`])
+  if (!/^[0-9a-f]{40,64}$/i.test(head)) {
+    throw new Error(`GitHub returned an invalid head commit for pull request #${prNumber}.`)
+  }
+  return head
+}
+
+export function readGitTreeSha(projectPath: string, commitSha: string): string {
+  if (!/^[0-9a-f]{40,64}$/i.test(commitSha)) {
+    throw new Error('A full commit SHA is required to read its tree.')
+  }
+  const treeSha = runGit(projectPath, ['rev-parse', `${commitSha}^{tree}`])
+  if (!/^[0-9a-f]{40,64}$/i.test(treeSha)) {
+    throw new Error(`Git returned an invalid tree SHA for commit ${commitSha}.`)
+  }
+  return treeSha
+}
+
 export async function getPullRequestByNumber(projectPath: string, prNumber: number): Promise<PullRequestInfo> {
   if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error('Pull request number must be a positive safe integer.')
@@ -524,7 +565,8 @@ export async function createOrUpdateDraftPullRequest(params: {
   assertSafeRefName(params.branchName, 'Head branch')
   assertSafeRefName(params.baseBranch, 'Base branch')
   const repo = assertGitHubOrigin(params.projectPath)
-  const existing = (await listPullRequests(params.projectPath, repo, params.branchName, params.baseBranch))[0] ?? null
+  const existing = (await listPullRequests(params.projectPath, repo, params.branchName, params.baseBranch))
+    .find((pullRequest) => pullRequest.state === 'draft' || pullRequest.state === 'open') ?? null
 
   if (existing) {
     const updated = await runGhJson<GitHubPullRecord>(params.projectPath, [

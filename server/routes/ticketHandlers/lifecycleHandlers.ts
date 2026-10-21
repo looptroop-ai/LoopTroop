@@ -636,7 +636,10 @@ async function handleMergeTicketLocked(c: Context, observed: PullRequestInfo) {
   const phase = 'WAITING_PR_REVIEW'
 
   try {
-    await completeTicketMerge(ticket, ticketContext.projectRoot, prReport, false, observed)
+    const result = await completeTicketMerge(ticket, ticketContext.projectRoot, prReport, false, observed)
+    if (result === 'corrected') {
+      return respondWithState(c, ticketId, 'Final tests will run again for the corrected candidate.')
+    }
   } catch (err) {
     const current = getTicketByRef(ticketId)
     if (current && hasVerifiedMergeReport(current)) {

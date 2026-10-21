@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { patchTicket } from '../../storage/tickets'
+import { getTicketPaths } from '../../storage/ticketQueries'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { buildFormattedBatchAnswers } from '../phases/interviewPhase'
@@ -24,7 +25,6 @@ import { deliberateInterview } from '../../phases/interview/deliberate'
 import {
   SILENT_DEFAULT_PERMISSIONS,
   SILENT_DISABLED_PERMISSIONS,
-  SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS,
   SILENT_READ_ONLY_PERMISSIONS,
 } from '../../opencode/toolPolicy'
 import {
@@ -435,7 +435,7 @@ describe('runOpenCodePrompt', () => {
     expect(permissionReplies[0]?.[0]).toMatchObject({
       requestID: 'per-1',
       directory: '/tmp/project',
-      reply: 'always',
+      reply: 'once',
     })
   })
 
@@ -1088,6 +1088,101 @@ describe('runOpenCodePrompt', () => {
     expect(adapter.sessionCreateCalls[0]?.options?.permission).toEqual(OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS)
   })
 
+  it('passes managed ticket paths to the permission guard and asks for shell and edits', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Managed permission guard context',
+    })
+    patchTicket(ticket.id, { status: 'CODING' })
+    const paths = getTicketPaths(ticket.id)!
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+
+    await runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      sessionOwnership: {
+        ticketId: ticket.id,
+        phase: 'CODING',
+      },
+    })
+
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toEqual({
+      worktreePath: paths.worktreePath,
+      projectRoot: paths.projectRoot,
+      ticketDir: paths.ticketDir,
+    })
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'edit', pattern: '*', action: 'ask' },
+      { permission: 'write', pattern: '*', action: 'ask' },
+      { permission: 'apply_patch', pattern: '*', action: 'ask' },
+    ]))
+  })
+
+  it('recovers managed ticket paths for an unowned same-session continuation', async () => {
+    resetTestDb()
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Continued permission guard context',
+    })
+    const sessionId = 'session-owned-continuation'
+    const adapter = new TestOpenCodeAdapter(['initial response', 'continuation response'], {
+      createSession: async () => ({ id: sessionId, projectPath: paths.worktreePath }),
+    })
+    const initial = await runOpenCodePrompt({
+      adapter,
+      projectPath: paths.worktreePath,
+      parts: [{ type: 'text', content: 'Initial prompt' }],
+      toolPolicy: 'execution_setup_online',
+      sessionOwnership: {
+        ticketId: ticket.id,
+        phase: 'RUNNING_FINAL_TEST',
+        keepActive: true,
+      },
+    })
+
+    await runOpenCodeSessionPrompt({
+      adapter,
+      session: { id: initial.session.id },
+      parts: [{ type: 'text', content: 'Continue the same session' }],
+      toolPolicy: 'execution_setup_online',
+      skipSessionValidation: true,
+    })
+
+    expect(adapter.promptCalls[1]?.options?.permissionGuard).toEqual({
+      worktreePath: paths.worktreePath,
+      projectRoot: paths.projectRoot,
+      ticketDir: paths.ticketDir,
+    })
+    expect(adapter.promptCalls[1]?.options?.permission).toEqual(expect.arrayContaining([
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'edit', pattern: '*', action: 'ask' },
+      { permission: 'write', pattern: '*', action: 'ask' },
+      { permission: 'apply_patch', pattern: '*', action: 'ask' },
+    ]))
+    resetTestDb()
+  })
+
+  it('keeps permission checks enabled for unowned prompts without ticket paths', async () => {
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+
+    await runOpenCodeSessionPrompt({
+      adapter,
+      session: { id: 'session-before-worktree' },
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      skipSessionValidation: true,
+      toolPolicy: 'execution_setup_online',
+    })
+
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'edit', pattern: '*', action: 'ask' },
+      { permission: 'write', pattern: '*', action: 'ask' },
+      { permission: 'apply_patch', pattern: '*', action: 'ask' },
+    ]))
+  })
+
   it('retries unowned session creation before prompting', async () => {
     vi.useFakeTimers()
     try {
@@ -1666,12 +1761,14 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DEFAULT_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
     expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
       { permission: 'external_directory', pattern: '*', action: 'allow' },
       { permission: 'doom_loop', pattern: '*', action: 'allow' },
       { permission: 'webfetch', pattern: '*', action: 'deny' },
       { permission: 'websearch', pattern: '*', action: 'deny' },
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'edit', pattern: '*', action: 'ask' },
     ]))
     expect(adapter.promptCalls[0]?.options?.autoApprovePermissions).toBe(true)
   })
@@ -1687,7 +1784,13 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
+      { permission: 'webfetch', pattern: '*', action: 'allow' },
+      { permission: 'websearch', pattern: '*', action: 'allow' },
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'edit', pattern: '*', action: 'ask' },
+    ]))
   })
 
   it('propagates the initial PROM1 interview draft prompt to callers', async () => {

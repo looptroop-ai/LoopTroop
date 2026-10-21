@@ -2732,7 +2732,10 @@ describe("OpenCode v2 fetch transport", () => {
         return jsonResponse({ data: form });
       if (request.url.pathname.endsWith("/form/form-1/reply"))
         return emptyResponse();
-      if (request.url.pathname.endsWith("/permission/permission-1/reply"))
+      if (
+        request.url.pathname.endsWith("/permission/permission-1/reply") ||
+        request.url.pathname.endsWith("/permission/permission-2/reply")
+      )
         return emptyResponse();
       if (
         request.url.pathname.endsWith("/form/form-1") &&
@@ -2764,8 +2767,16 @@ describe("OpenCode v2 fetch transport", () => {
     await transport.replyPermission(
       "session-1",
       "permission-1",
-      "always",
+      "once",
       "/workspace",
+    );
+    await transport.replyPermission(
+      "session-1",
+      "permission-2",
+      "reject",
+      "/workspace",
+      undefined,
+      "LoopTroop denied this guarded operation.",
     );
 
     expect(
@@ -2778,12 +2789,14 @@ describe("OpenCode v2 fetch transport", () => {
       "GET /api/session/session-1/form/form-1",
       "DELETE /api/session/session-1/form/form-1",
       "POST /api/session/session-1/permission/permission-1/reply",
+      "POST /api/session/session-1/permission/permission-2/reply",
     ]);
     expect(requests[0]?.url.searchParams.get("location[directory]")).toBe(
       "/workspace",
     );
     expect(requests[3]?.body).toEqual({ answer: { q0: "prod" } });
-    expect(requests[6]?.body).toEqual({ decision: "always" });
+    expect(requests[6]?.body).toEqual({ decision: "once" });
+    expect(requests[7]?.body).toEqual({ decision: "reject", message: "LoopTroop denied this guarded operation." });
   });
 
   it("refuses to reply to a question form owned by another session", async () => {

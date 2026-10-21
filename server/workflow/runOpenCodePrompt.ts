@@ -15,7 +15,7 @@ import type {
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../opencode/permissions'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { parseModelRef } from '../opencode/types'
-import { SessionManager, type SessionOwnership } from '../opencode/sessionManager'
+import { getSessionPermissionOwnership, SessionManager, type SessionOwnership } from '../opencode/sessionManager'
 import { resolveOpenCodePermissions } from '../opencode/toolPolicy'
 import { PROMPT_MIN_TIMEOUT_MS, PROMPT_MAX_TIMEOUT_MS } from '../lib/constants'
 import { PROM54_CONTINUE_TEXT } from '../prompts/index'
@@ -38,6 +38,7 @@ import {
   WorkflowDeadlineTimeoutError,
 } from '../lib/deadlineErrors'
 import { recordAiTurnMetricFromPrompt } from '../storage/aiTurnMetrics'
+import { getTicketPaths } from '../storage/ticketQueries'
 import { createWorkBudget, type WorkBudget } from './workBudget'
 import { phaseMayAskQuestions } from '@shared/aiQuestions'
 import { ticketAllowsAiQuestions } from './aiQuestionSettings'
@@ -709,20 +710,24 @@ export async function runOpenCodeSessionPrompt({
   let latestContinuableRetryAttempt: number | undefined
   const resolvedRetryPolicy = resolveOpenCodeRetryPolicy(opencodeRetryPolicy)
   const parsedModel = model ? parseModelRef(model) : undefined
-  // Resolved at this boundary rather than at each call site: every direct caller
-  // passes through here, so resolving one level up would leave every retry and
-  // same-session continuation unguarded, and threading a flag through nine
-  // signatures would fail silently the first time someone added a tenth.
-  //
+  // Resolve at this boundary so direct calls, retries, and same-session continuations share the guard.
+  // A continuation may omit ownership, so recover its ticket from the persisted session row.
+  const permissionOwnership = sessionOwnership ?? getSessionPermissionOwnership(resolvedSession.id)
   // Three denials are structural and beat the setting: a prompt with no ticket
   // (the preflight probe, ad-hoc calls) has nobody to ask; the interview
   // produces its own questions, and is excluded by phase because interview
   // drafting shares `council/drafter.ts` with PRD and beads; and a `disabled`
   // policy means the step only reformats text it was handed
   // (`resolveOpenCodePermissions` enforces that one).
-  const questionsPermitted = (questionsAllowed ?? ticketAllowsAiQuestions(sessionOwnership?.ticketId))
-    && phaseMayAskQuestions(sessionOwnership?.phase)
-  const permission = resolveOpenCodePermissions(toolPolicy, questionsPermitted)
+  const questionsPermitted = (questionsAllowed ?? ticketAllowsAiQuestions(permissionOwnership?.ticketId))
+    && phaseMayAskQuestions(permissionOwnership?.phase)
+  const ticketPaths = permissionOwnership ? getTicketPaths(permissionOwnership.ticketId) : undefined
+  const permissionGuard = ticketPaths ? {
+    worktreePath: ticketPaths.worktreePath,
+    projectRoot: ticketPaths.projectRoot,
+    ticketDir: ticketPaths.ticketDir,
+  } : true
+  const permission = resolveOpenCodePermissions(toolPolicy, questionsPermitted, true)
   /**
    * Watchdog for a stream that goes quiet *after the model has finished*.
    *
@@ -744,6 +749,7 @@ export async function runOpenCodeSessionPrompt({
     ...(agent ? { agent } : {}),
     ...(variant ? { variant } : {}),
     ...(permission ? { permission, autoApprovePermissions: true } : {}),
+    permissionGuard,
     ...(stepFinishSafetyMs !== undefined ? { stepFinishSafetyMs } : {}),
   }
   let sessionErrorEvent: SessionErrorStreamEvent | undefined

@@ -553,6 +553,8 @@ export const ticketMachine = setup({
       ],
       on: {
         PULL_REQUEST_READY: { target: "WAITING_PR_REVIEW" },
+        EARLY_MERGE_CORRECTION_READY: { target: "RUNNING_FINAL_TEST" },
+        MERGE_COMPLETE: { target: "CLEANING_ENV" },
         ERROR: { target: "BLOCKED_ERROR", actions: ["recordError"] },
         CANCEL: { target: "CANCELED" },
       },
@@ -566,6 +568,7 @@ export const ticketMachine = setup({
       ],
       on: {
         MERGE_COMPLETE: { target: "CLEANING_ENV" },
+        EARLY_MERGE_CORRECTION_READY: { target: "RUNNING_FINAL_TEST" },
         CLOSE_UNMERGED_COMPLETE: { target: "CLEANING_ENV" },
         ERROR: { target: "BLOCKED_ERROR", actions: ["recordError"] },
         CANCEL: { target: "CANCELED" },

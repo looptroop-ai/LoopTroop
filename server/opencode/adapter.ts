@@ -26,6 +26,7 @@ import {
 import { OpenCodeV1Transport, type OpenCodeV1Client } from "./v1Transport";
 import { parseModelRef } from "./types";
 import { isPermissionDeniedByRules } from "./toolPolicy";
+import { getPermissionGuardRejection } from "./permissionGuard";
 import type { TicketState } from "./contextBuilder";
 import { resolve } from "path";
 import { relative } from "path";
@@ -995,18 +996,41 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const deniedByPolicy = isPermissionDeniedByRules(
           promptOptions.permission,
           streamEvent.permission,
+          streamEvent.patterns,
+          directory,
         );
-        permissionReplyPending = transport
-          .replyPermission(
-            sessionId,
-            streamEvent.permissionId,
-            deniedByPolicy ? "reject" : "always",
-            directory,
-            operationSignal,
-          )
+        const guardRejection = promptOptions.permissionGuard
+          ? getPermissionGuardRejection({
+              permission: streamEvent.permission,
+              patterns: streamEvent.patterns,
+              details: streamEvent.details,
+              ...(promptOptions.permissionGuard === true ? {} : { context: promptOptions.permissionGuard }),
+              directory,
+            })
+          : null;
+        const rejectionMessage = guardRejection ?? (deniedByPolicy
+          ? `LoopTroop denied the ${streamEvent.permission ?? "tool"} request because this workflow's tool policy does not allow it.`
+          : undefined);
+        const permissionReply = rejectionMessage
+          ? transport.replyPermission(
+              sessionId,
+              streamEvent.permissionId,
+              "reject",
+              directory,
+              operationSignal,
+              rejectionMessage,
+            )
+          : transport.replyPermission(
+              sessionId,
+              streamEvent.permissionId,
+              "once",
+              directory,
+              operationSignal,
+            );
+        permissionReplyPending = permissionReply
           .catch(async (error) => {
             permissionReplyFailure = new Error(
-              `Failed to ${deniedByPolicy ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
+              `Failed to ${rejectionMessage ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
               { cause: error },
             );
             Object.assign(permissionReplyFailure, { openCodeOperation: "replying to an OpenCode permission request" });

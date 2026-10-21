@@ -21,6 +21,7 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { ticketRouter } from '../tickets'
 import { listSkipEvents } from '../../workflow/skipReceipts'
 import { hasClosedUnmergedReport, hasVerifiedMergeReport, syncWaitingPullRequestTicket } from '../../workflow/mergeCompletion'
+import { EarlyMergeRecoveryManualError } from '../../git/earlyMergedPullRequestRecovery'
 import { sendTicketEvent } from '../../machines/persistence'
 import * as ticketStorage from '../../storage/tickets'
 
@@ -30,6 +31,7 @@ const {
   refreshPullRequestStateMock,
   buildObservedPullRequestReportMock,
   recordPullRequestRefreshFailureMock,
+  reconcileEarlyMergedPullRequestMock,
   completeMergedPullRequestMock,
   completeCloseUnmergedMock,
 } = vi.hoisted(() => ({
@@ -51,6 +53,7 @@ const {
     message,
   })),
   recordPullRequestRefreshFailureMock: vi.fn(),
+  reconcileEarlyMergedPullRequestMock: vi.fn(),
   completeMergedPullRequestMock: vi.fn(),
   completeCloseUnmergedMock: vi.fn(),
 }))
@@ -61,6 +64,7 @@ vi.mock('../../workflow/phases/pullRequestPhase', () => ({
   refreshPullRequestState: refreshPullRequestStateMock,
   buildObservedPullRequestReport: buildObservedPullRequestReportMock,
   recordPullRequestRefreshFailure: recordPullRequestRefreshFailureMock,
+  reconcileEarlyMergedPullRequest: reconcileEarlyMergedPullRequestMock,
   completeMergedPullRequest: completeMergedPullRequestMock,
   completeCloseUnmerged: completeCloseUnmergedMock,
 }))
@@ -75,6 +79,9 @@ vi.mock('../../machines/persistence', async () => {
       const resolvedTicketRef = String(ticketRef)
       if (event.type === 'MERGE_COMPLETE' || event.type === 'CLOSE_UNMERGED_COMPLETE') {
         storage.patchTicket(resolvedTicketRef, { status: 'CLEANING_ENV' })
+      }
+      if (event.type === 'EARLY_MERGE_CORRECTION_READY') {
+        storage.patchTicket(resolvedTicketRef, { status: 'RUNNING_FINAL_TEST' })
       }
       if (event.type === 'ERROR') {
         storage.patchTicket(resolvedTicketRef, {
@@ -218,6 +225,7 @@ describe('ticketRouter PR review routes', () => {
         prUrl: 'https://github.com/test/repo/pull/42',
         prState: 'merged',
         prHeadSha: 'abc123def456',
+        landedCommitSha: 'landed123',
         localBaseHead: null,
         remoteBaseHead: 'base123',
         remoteBranchDeleteWarning: null,
@@ -334,12 +342,165 @@ describe('ticketRouter PR review routes', () => {
 
   it('finalizes an external merge once without any GET or remote merge request', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
-    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42, headRefOid: 'abc123def456' })
     await Promise.all([syncWaitingPullRequestTicket(ticket.id), syncWaitingPullRequestTicket(ticket.id)])
     expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
     expect(completeMergedPullRequestMock).toHaveBeenCalledWith(expect.objectContaining({ skipRemoteMerge: true }))
     expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
     expect(refreshPullRequestReportMock).not.toHaveBeenCalled()
+  })
+
+  it('restarts final testing when the poller finds an already-merged different head', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/test/repo/pull/42',
+      state: 'merged',
+      headRefOid: 'merged-pr-head',
+      mergeCommitSha: 'landed123',
+    })
+    reconcileEarlyMergedPullRequestMock.mockResolvedValueOnce('corrected')
+
+    await syncWaitingPullRequestTicket(ticket.id)
+
+    expect(reconcileEarlyMergedPullRequestMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: ticket.id,
+      candidateCommitSha: 'abc123def456',
+    }))
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'EARLY_MERGE_CORRECTION_READY' })
+    expect(getTicketByRef(ticket.id)?.status).toBe('RUNNING_FINAL_TEST')
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('replays a stored corrective candidate through the poller after artifacts were written before a crash', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const correctedCandidate = 'c'.repeat(40)
+    const current = getTicketByRef(ticket.id)!
+    const originalCandidate = current.runtime.candidateCommitSha
+    insertPhaseArtifact(ticket.id, {
+      phase: 'INTEGRATING_CHANGES',
+      artifactType: 'integration_report',
+      content: JSON.stringify({
+        status: 'pending_revalidation',
+        baseBranch: current.runtime.baseBranch,
+        candidateCommitSha: correctedCandidate,
+        mergeBase: 'remote-base123',
+      }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_PR_REVIEW',
+      artifactType: 'early_merge_recovery',
+      content: JSON.stringify({
+        status: 'corrected',
+        recordedAt: '2026-01-01T00:00:00.000Z',
+        reason: 'corrective_delta',
+        baseBranch: current.runtime.baseBranch,
+        headBranch: current.branchName,
+        prNumber: 42,
+        prUrl: 'https://github.com/test/repo/pull/42',
+        candidateCommitSha: originalCandidate,
+        correctedCandidateSha: correctedCandidate,
+        candidateTreeSha: 'candidate-tree',
+        prHeadSha: 'merged-pr-head',
+        prHeadTreeSha: 'merged-tree',
+        landedCommitSha: 'landed123',
+        remoteBaseHead: 'remote-base123',
+        recoveryWorktreePath: null,
+        conflictPaths: [],
+        message: 'Corrective candidate is ready for revalidation.',
+      }),
+    })
+    refreshPullRequestStateMock.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/test/repo/pull/42',
+      state: 'merged',
+      headRefOid: 'merged-pr-head',
+      mergeCommitSha: 'landed123',
+    })
+    const actualPhase = await vi.importActual<typeof import('../../workflow/phases/pullRequestPhase')>(
+      '../../workflow/phases/pullRequestPhase',
+    )
+    reconcileEarlyMergedPullRequestMock.mockImplementation(actualPhase.reconcileEarlyMergedPullRequest)
+
+    await Promise.all([syncWaitingPullRequestTicket(ticket.id), syncWaitingPullRequestTicket(ticket.id)])
+
+    expect(reconcileEarlyMergedPullRequestMock).toHaveBeenCalledOnce()
+    expect(sendTicketEvent).toHaveBeenCalledExactlyOnceWith(ticket.id, { type: 'EARLY_MERGE_CORRECTION_READY' })
+    expect(getTicketByRef(ticket.id)?.status).toBe('RUNNING_FINAL_TEST')
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('blocks on recorded manual early-merge recovery and preserves its evidence', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const recovery = {
+      status: 'manual_recovery_required',
+      reason: 'conflict',
+      recoveryWorktreePath: '/tmp/recovery',
+      conflictPaths: ['src/example.ts'],
+      message: 'The corrective patch conflicted; resolve it manually. LoopTroop will not guess or resume automatically.',
+    }
+    const receipt = {
+      step: 'early_merged_pull_request_recovery',
+      branch: ticket.externalId,
+      prNumber: 42,
+      error: recovery.message,
+    }
+    reconcileEarlyMergedPullRequestMock.mockImplementationOnce(async () => {
+      insertPhaseArtifact(ticket.id, {
+        phase: 'WAITING_PR_REVIEW', artifactType: 'early_merge_recovery', content: JSON.stringify(recovery),
+      })
+      insertPhaseArtifact(ticket.id, {
+        phase: 'WAITING_PR_REVIEW', artifactType: 'git_recovery_receipt', content: JSON.stringify(receipt),
+      })
+      throw new EarlyMergeRecoveryManualError({
+        reason: 'conflict',
+        message: recovery.message,
+        recoveryWorktreePath: recovery.recoveryWorktreePath,
+        conflictPaths: recovery.conflictPaths,
+      })
+    })
+    refreshPullRequestStateMock.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/test/repo/pull/42',
+      state: 'merged',
+      headRefOid: 'merged-pr-head',
+      mergeCommitSha: 'landed123',
+    })
+
+    await syncWaitingPullRequestTicket(ticket.id)
+
+    expect(getTicketByRef(ticket.id)).toMatchObject({
+      status: 'BLOCKED_ERROR',
+      errorMessage: expect.stringContaining('will not guess or resume automatically'),
+    })
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, expect.objectContaining({
+      type: 'ERROR',
+      codes: ['EARLY_MERGE_RECOVERY_MANUAL'],
+    }))
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'early_merge_recovery')!.content)).toMatchObject(recovery)
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'git_recovery_receipt', 'WAITING_PR_REVIEW')!.content)).toMatchObject(receipt)
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('leaves transient early-merge proof failures retryable', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/test/repo/pull/42',
+      state: 'merged',
+      headRefOid: 'merged-pr-head',
+      mergeCommitSha: 'landed123',
+    })
+    reconcileEarlyMergedPullRequestMock
+      .mockRejectedValueOnce(new Error('GitHub temporarily unavailable'))
+      .mockResolvedValueOnce('corrected')
+
+    await expect(syncWaitingPullRequestTicket(ticket.id)).rejects.toThrow('GitHub temporarily unavailable')
+
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
+    expect(sendTicketEvent).not.toHaveBeenCalledWith(ticket.id, expect.objectContaining({ type: 'ERROR' }))
+    await syncWaitingPullRequestTicket(ticket.id)
+    expect(getTicketByRef(ticket.id)?.status).toBe('RUNNING_FINAL_TEST')
   })
 
   it('resumes a durable merge after interrupted event dispatch without contacting GitHub', async () => {
@@ -351,6 +512,7 @@ describe('ticketRouter PR review routes', () => {
         status: 'passed', disposition: 'merged', prState: 'merged', prNumber: 42,
         baseBranch: current.runtime.baseBranch, headBranch: current.branchName,
         candidateCommitSha: current.runtime.candidateCommitSha, prHeadSha: current.runtime.candidateCommitSha,
+        landedCommitSha: 'landed123',
         prUrl: 'https://github.com/test/repo/pull/42', message: 'Verified merge', remoteBaseHead: 'verified-base',
       }),
     })
@@ -450,6 +612,7 @@ describe('ticketRouter PR review routes', () => {
       prNumber: kind === 'different-pr' ? 43 : kind === 'unsafe-pr-number' ? Number.MAX_SAFE_INTEGER + 1 : 42,
       prHeadSha: kind === 'different-head' ? 'other-head' : current.runtime.candidateCommitSha,
       prUrl: 'https://github.com/test/repo/pull/42', message: 'Verified merge',
+      landedCommitSha: 'landed123',
       remoteBaseHead: kind === 'unverified' ? null : 'verified-base',
     }
     insertPhaseArtifact(ticket.id, {
@@ -458,6 +621,28 @@ describe('ticketRouter PR review routes', () => {
     })
     expect(hasVerifiedMergeReport(current)).toBe(false)
   })
+
+  it.each([['same-tree', true], ['different-tree', false]] as const)(
+    'requires tree equality when merged and candidate commit IDs differ (%s)',
+    async (treeCase, expected) => {
+      const { ticket } = await createWaitingPrReviewTicket()
+      const current = getTicketByRef(ticket.id)!
+      insertPhaseArtifact(ticket.id, {
+        phase: 'WAITING_PR_REVIEW', artifactType: 'merge_report',
+        content: JSON.stringify({
+          status: 'passed', disposition: 'merged', prState: 'merged',
+          baseBranch: current.runtime.baseBranch, headBranch: current.branchName,
+          candidateCommitSha: current.runtime.candidateCommitSha,
+          prHeadSha: 'merged-head-sha',
+          candidateTreeSha: 'candidate-tree-sha',
+          prHeadTreeSha: treeCase === 'same-tree' ? 'candidate-tree-sha' : 'merged-head-tree-sha',
+          prNumber: 42, prUrl: 'https://github.com/test/repo/pull/42',
+          landedCommitSha: 'landed123', remoteBaseHead: 'verified-base', message: 'Verified merge',
+        }),
+      })
+      expect(hasVerifiedMergeReport(current)).toBe(expected)
+    },
+  )
 
   it('requires independent candidate authority and keeps archived merge checkpoints out of recovery', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
@@ -489,7 +674,7 @@ describe('ticketRouter PR review routes', () => {
 
   it.each(['cancel', 'close-unmerged'])('allows completion during a slow %s body and checks the new state afterwards', async (action) => {
     const { ticket } = await createWaitingPrReviewTicket()
-    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42, headRefOid: 'abc123def456' })
     let bodyStarted!: () => void
     const readingBody = new Promise<void>((resolve) => { bodyStarted = resolve })
     const app = new Hono()
@@ -615,7 +800,7 @@ describe('ticketRouter PR review routes', () => {
 
   it('retries failed background completion without blocking the ticket', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
-    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42, headRefOid: 'abc123def456' })
     completeMergedPullRequestMock.mockRejectedValueOnce(new Error('GitHub temporarily unavailable'))
     await expect(syncWaitingPullRequestTicket(ticket.id)).rejects.toThrow('GitHub temporarily unavailable')
     expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
@@ -631,7 +816,7 @@ describe('ticketRouter PR review routes', () => {
       await new Promise<void>(resolve => { finishCompletion = resolve })
       return complete(input)
     })
-    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42 })
+    refreshPullRequestStateMock.mockResolvedValue({ state: 'merged', number: 42, headRefOid: 'abc123def456' })
     const background = syncWaitingPullRequestTicket(ticket.id)
     await vi.waitFor(() => expect(completeMergedPullRequestMock).toHaveBeenCalledOnce())
     const app = new Hono().route('/api', ticketRouter)
@@ -668,6 +853,31 @@ describe('ticketRouter PR review routes', () => {
       message: 'Merge complete',
     })
     expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
+  })
+
+  it('reports corrective revalidation when merge completion resumes ticket work', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/test/repo/pull/42',
+      state: 'merged',
+      headRefOid: 'merged-pr-head',
+      mergeCommitSha: 'landed123',
+    })
+    reconcileEarlyMergedPullRequestMock.mockResolvedValueOnce('corrected')
+    const app = new Hono().route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      status: 'RUNNING_FINAL_TEST',
+      message: 'Final tests will run again for the corrected candidate.',
+    })
+    expect(reconcileEarlyMergedPullRequestMock).toHaveBeenCalledWith(expect.objectContaining({
+      candidateCommitSha: 'abc123def456',
+      pr: expect.objectContaining({ headRefOid: 'merged-pr-head' }),
+    }))
   })
 
   it.each(['CLEANING_ENV', 'COMPLETED'])('returns recorded Merge success from %s without remote work', async (status) => {

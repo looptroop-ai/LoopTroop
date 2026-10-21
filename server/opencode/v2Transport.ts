@@ -623,9 +623,10 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
   async replyPermission(
     sessionId: string,
     permissionId: string,
-    reply: "always" | "reject",
+    reply: "once" | "always" | "reject",
     _directory?: string,
     signal?: AbortSignal,
+    message?: string,
   ): Promise<void> {
     await this.request(
       `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(permissionId)}/reply`,
@@ -633,7 +634,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         method: "POST",
         signal,
         expectedStatus: 204,
-        body: { decision: reply },
+        body: { decision: reply, ...(message ? { message } : {}) },
       },
     );
   }

@@ -93,6 +93,37 @@ describe('resolveOpenCodePermissions', () => {
     expect(isPermissionDeniedByRules(rules, undefined)).toBe(false)
   })
 
+  it('matches policy rules against the requested resources', () => {
+    const rules: OpenCodePermissionRule[] = [
+      { permission: '*', pattern: '*', action: 'allow' },
+      { permission: 'bash', pattern: 'git push *', action: 'deny' },
+      { permission: 'write', pattern: 'src/**', action: 'deny' },
+    ]
+    expect(isPermissionDeniedByRules(rules, 'bash', ['git push origin main'])).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'bash', ['git push origin\nmain'])).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'bash', ['git status --short'])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'write', ['/worktree/src/app.ts'], '/worktree')).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'write', ['/worktree/docs/app.ts'], '/worktree')).toBe(false)
+  })
+
+  it('asks for shell and edits only on guarded permissive workflows', () => {
+    for (const policy of ['default', 'execution_setup_online'] as const) {
+      const rules = resolveOpenCodePermissions(policy, false, true) as OpenCodePermissionRule[]
+      for (const permission of ['bash', 'edit', 'write', 'apply_patch']) {
+        expect(rules.findLast((rule) => rule.permission === permission)?.action).toBe('ask')
+      }
+    }
+    for (const policy of ['disabled', 'read_only'] as const) {
+      const rules = resolveOpenCodePermissions(policy, false, true) as OpenCodePermissionRule[]
+      expect(rules.some((rule) => rule.permission === 'bash' && rule.action === 'ask')).toBe(false)
+      expect(rules.some((rule) => ['edit', 'write', 'apply_patch'].includes(rule.permission) && rule.action === 'ask')).toBe(false)
+      for (const permission of ['bash', 'edit', 'write', 'apply_patch']) {
+        expect(isPermissionDeniedByRules(rules, permission, ['/worktree/file.ts'], '/worktree')).toBe(true)
+      }
+    }
+    expect(resolveOpenCodePermissions('default', false, true)).not.toBe(resolveOpenCodePermissions('default'))
+  })
+
   it('returns the same frozen array for repeated calls', () => {
     expect(resolveOpenCodePermissions('default', true)).toBe(resolveOpenCodePermissions('default', true))
     expect(resolveOpenCodePermissions('default', true)).not.toBe(resolveOpenCodePermissions('default', false))

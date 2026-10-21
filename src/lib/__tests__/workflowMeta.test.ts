@@ -151,8 +151,8 @@ describe.concurrent('workflow metadata', () => {
     const blockedPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'BLOCKED_ERROR')
     const blockedDetails = blockedPhase?.details
 
-    expect(pullRequestPhase?.description).toContain('durable closed-unmerged report')
-    expect(pullRequestPhase?.details.overview).toContain('fresh remote observation of an already-merged PR')
+    expect(pullRequestPhase?.description).toContain('decisions resume after a restart and cannot be replaced')
+    expect(pullRequestPhase?.details.overview).toContain('Missing proof or patch conflicts preserve the work for manual recovery')
     expect(pullRequestPhase?.details.notes?.join(' ')).toContain('stale checkpoint for a different PR')
     expect(blockedPhase?.description).toContain('recovery actions the server allows')
     expect(blockedPhase?.description).toContain('Failed runtime setup offers setup-plan editing and an extra-note retry')

@@ -164,6 +164,24 @@ describe('server/git/github', () => {
     expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('PUT'))).toBe(true)
   })
 
+  it('fetches a PR head into an internal ref instead of sharing FETCH_HEAD', async () => {
+    const expectedHeadSha = 'a'.repeat(40)
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
+      args.includes('rev-parse')
+        ? makeSpawnResult({ stdout: `${expectedHeadSha}\n` })
+        : makeSpawnResult()
+    ))
+
+    const github = await import('../github')
+    await expect(github.fetchPullRequestHead('/repo', 42, expectedHeadSha)).resolves.toBe(expectedHeadSha)
+
+    const fetchCall = spawnMock.mock.calls.find(([, args]) => (args as string[]).includes('--no-write-fetch-head'))
+    expect(fetchCall?.[1]).toEqual(expect.arrayContaining([
+      '--no-write-fetch-head',
+      `+refs/pull/42/head:refs/looptroop/pull-heads/42/${expectedHeadSha}`,
+    ]))
+  })
+
   it('rejects unsafe diff refs before they can become a Git option', async () => {
     const github = await import('../github')
 
@@ -514,6 +532,34 @@ describe('server/git/github', () => {
       'body=Review the candidate.',
       'draft=true',
     ]))
+  })
+
+  it('creates a new draft instead of adopting or patching a closed merged pull request', async () => {
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      if (args.includes('GET')) return makeSpawnResult({ stdout: JSON.stringify([{
+        ...pullRequestRecord(12),
+        state: 'closed',
+        draft: false,
+        merged_at: '2026-01-01T00:00:00Z',
+        merge_commit_sha: 'landed-sha',
+      }]) })
+      if (args.includes('POST')) return makeSpawnResult({ stdout: JSON.stringify(pullRequestRecord(13)) })
+      return makeSpawnResult()
+    })
+
+    const github = await import('../github')
+    const result = await github.createOrUpdateDraftPullRequest({
+      projectPath: '/repo',
+      branchName: 'ticket-branch',
+      baseBranch: 'main',
+      title: 'Corrected candidate',
+      body: 'Open a new review for the corrective candidate.',
+    })
+
+    expect(result.number).toBe(13)
+    expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('PATCH'))).toBe(false)
+    expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('POST'))).toBe(true)
   })
 
   it('rejects a draft creation response that contains no pull request metadata', async () => {

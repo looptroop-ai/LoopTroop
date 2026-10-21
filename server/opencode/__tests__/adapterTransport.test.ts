@@ -676,6 +676,113 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.replyPermission).not.toHaveBeenCalled()
   })
 
+  it.each(['v1', 'v2'] as const)(
+    'rejects a guarded remote write with feedback, then approves a safe next call once on %s',
+    async (protocol) => {
+      const source = createEventSource()
+      let dispatched = false
+      const replies: unknown[][] = []
+      const permissionEvents = (firstCursor: number) => [
+        {
+          cursor: firstCursor,
+          event: {
+            type: 'permission' as const,
+            sessionId: 'session-1',
+            action: 'asked' as const,
+            permissionId: 'permission-unsafe',
+            permission: 'bash',
+            patterns: ['git push origin feature'],
+          },
+        },
+        {
+          cursor: firstCursor + 1,
+          event: {
+            type: 'permission' as const,
+            sessionId: 'session-1',
+            action: 'asked' as const,
+            permissionId: 'permission-safe',
+            permission: 'bash',
+            patterns: ['git status --short'],
+          },
+        },
+      ]
+      const replyPermission = vi.fn(async (...args: unknown[]) => {
+        replies.push(args)
+      })
+
+      const transport = protocol === 'v2'
+        ? createV2Transport({
+            getSessionMessages: vi.fn(async () => dispatched
+              ? [message('old-assistant', 'stale answer'), message('new-assistant', 'prompt completed')]
+              : [message('old-assistant', 'stale answer')]),
+            subscribeToEvents: vi.fn(async (_sessionId, _directory, signal) => ({
+              events: source.events(signal),
+              cursor: 50,
+              coverageComplete: true,
+            })),
+            replyPermission,
+            dispatchPrompt: vi.fn(async () => {
+              dispatched = true
+              source.push(
+                inboxEvent('inbox_enqueued', 'inbox-own', 51),
+                executionEvent('execution_started', 52),
+                ...permissionEvents(53),
+                inboxEvent('inbox_delivered', 'inbox-own', 55),
+                executionEvent('execution_terminal', 56),
+              )
+              return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+            }),
+          }).transport
+        : createV1Transport({
+            subscribeToEvents: vi.fn(async (_sessionId, _directory, signal) => ({ events: source.events(signal) })),
+            replyPermission,
+            dispatchPrompt: vi.fn(async () => {
+              source.push(...permissionEvents(1))
+              await settleWithin((async () => {
+                while (replies.length < 2) await new Promise(resolve => realSetTimeout(resolve, 0))
+              })(), 'two permission replies')
+              return { kind: 'completed' as const, message: message('assistant-1', 'prompt completed') }
+            }),
+          })
+
+      await expect(createAdapter(transport).promptSession(
+        'session-1',
+        [{ type: 'text', content: 'prompt' }],
+        undefined,
+        {
+          permission: [
+            { permission: 'bash', pattern: '*', action: 'ask' },
+            { permission: 'edit', pattern: '*', action: 'ask' },
+            { permission: 'write', pattern: '*', action: 'ask' },
+          ],
+          permissionGuard: true,
+          autoApprovePermissions: true,
+        },
+      )).resolves.toBe('prompt completed')
+
+      expect(replyPermission).toHaveBeenCalledTimes(2)
+      expect(replyPermission).toHaveBeenNthCalledWith(
+        1,
+        'session-1',
+        'permission-unsafe',
+        'reject',
+        '/worktree',
+        undefined,
+        expect.stringContaining('remote repository'),
+      )
+      expect(replyPermission).toHaveBeenNthCalledWith(
+        2,
+        'session-1',
+        'permission-safe',
+        'once',
+        '/worktree',
+        undefined,
+      )
+      expect(replies[0]?.[2]).toBe('reject')
+      expect(replies[1]?.[2]).toBe('once')
+    },
+  )
+
   it('preserves caller cancellation when an aborted v2 POST has no verifiable receipt', async () => {
     const controller = new AbortController()
     let markDispatchStarted: (() => void) | undefined
@@ -910,7 +1017,7 @@ describe('OpenCode adapter transport orchestration', () => {
       undefined,
       { autoApprovePermissions: true },
     )).resolves.toBe('current answer')
-    expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'always', '/worktree', undefined)
+    expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'once', '/worktree', undefined)
   })
 
   it('does not auto-approve a pending ask after replay finds a competing inbox', async () => {
@@ -1843,7 +1950,7 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(permissionReply).toHaveBeenCalledWith(expect.objectContaining({
       requestID: 'permission-1',
       directory: '/worktree',
-      reply: 'always',
+      reply: 'once',
     }), expect.anything())
 
     const questions = await adapter.listPendingQuestions(undefined, undefined, 'session-1')

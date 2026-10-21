@@ -2,17 +2,19 @@ import { isRecord } from '@shared/typeGuards'
 import { ensureActorForTicket, sendTicketEvent } from '../machines/persistence'
 import { withCommandLoggingAsync } from '../log/commandLogger'
 import { emitRoutePhaseLog } from '../routes/ticketHandlers/routeUtils'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, isDisplayOnlyMockTicket, type PublicTicket } from '../storage/tickets'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, isDisplayOnlyMockTicket, type PublicTicket } from '../storage/tickets'
 import {
   buildObservedPullRequestReport,
   completeMergedPullRequest,
   recordPullRequestRefreshFailure,
   readPullRequestReport,
+  reconcileEarlyMergedPullRequest,
   refreshPullRequestReport,
   refreshPullRequestState,
   type PullRequestReport,
 } from './phases/pullRequestPhase'
 import type { PullRequestInfo, PullRequestState } from '../git/github'
+import { EarlyMergeRecoveryManualError } from '../git/earlyMergedPullRequestRecovery'
 import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from './skipReceipts'
 
 const pending = new Map<string, Promise<unknown>>()
@@ -44,15 +46,20 @@ function readVerifiedMergeReport(ticket: PublicTicket) {
       || report.headBranch !== (ticket.branchName?.trim() || ticket.externalId)
       || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
-      || report.prHeadSha !== report.candidateCommitSha
+      || typeof report.prHeadSha !== 'string' || report.prHeadSha.length === 0
+      || (report.prHeadSha !== report.candidateCommitSha
+        && !(typeof report.candidateTreeSha === 'string' && report.candidateTreeSha.length > 0
+          && report.candidateTreeSha === report.prHeadTreeSha))
       || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
       || report.prNumber !== prReport.prNumber
       || (report.prUrl !== null && typeof report.prUrl !== 'string')
       || typeof report.message !== 'string'
+      || typeof report.landedCommitSha !== 'string' || report.landedCommitSha.length === 0
       || typeof report.remoteBaseHead !== 'string' || report.remoteBaseHead.length === 0) return null
     return {
       prNumber: report.prNumber, prUrl: report.prUrl, prState: 'merged' as const,
-      prHeadSha: report.candidateCommitSha, message: report.message, remoteBaseHead: report.remoteBaseHead,
+      candidateCommitSha: report.candidateCommitSha, prHeadSha: report.prHeadSha,
+      message: report.message, remoteBaseHead: report.remoteBaseHead,
     }
   } catch {
     return null
@@ -178,12 +185,39 @@ export async function completeTicketMerge(
   prReport: PullRequestReport,
   skipRemoteMerge = false,
   observedPullRequest?: PullRequestInfo,
-): Promise<void> {
+): Promise<'merged' | 'corrected'> {
   const ticketId = ticket.id
   const phase = 'WAITING_PR_REVIEW'
-  if (resumeVerifiedMerge(ticket)) return
+  if (resumeVerifiedMerge(ticket)) return 'merged'
   if (hasClosedUnmergedReport(ticket)) {
     throw new Error('A close-without-merge decision is already recorded for this pull request.')
+  }
+  if (observedPullRequest?.state === 'merged'
+    && (!prReport.candidateCommitSha || observedPullRequest.headRefOid !== prReport.candidateCommitSha)) {
+    const candidateCommitSha = prReport.candidateCommitSha ?? ''
+    const ticketPaths = getTicketPaths(ticketId)
+    if (!ticketPaths) throw new Error('Waiting pull request ticket is missing its workspace paths.')
+    const result = await reconcileEarlyMergedPullRequest({
+      ticketId,
+      phase,
+      projectPath: projectRoot,
+      worktreePath: ticketPaths.worktreePath,
+      externalId: ticket.externalId,
+      baseBranch: ticket.runtime.baseBranch,
+      headBranch: ticket.branchName?.trim() || ticket.externalId,
+      candidateCommitSha,
+      pr: observedPullRequest,
+    })
+    if (result === 'equivalent') {
+      ensureActorForTicket(ticketId)
+      sendTicketEvent(ticketId, { type: 'MERGE_COMPLETE' })
+      return 'merged'
+    }
+    if (result === 'corrected') {
+      ensureActorForTicket(ticketId)
+      sendTicketEvent(ticketId, { type: 'EARLY_MERGE_CORRECTION_READY' })
+      return 'corrected'
+    }
   }
   const mergeReport = await withCommandLoggingAsync(
     ticketId,
@@ -203,10 +237,10 @@ export async function completeTicketMerge(
     (cmdPhase, type, content) => emitRoutePhaseLog(ticketId, cmdPhase, type, content),
   )
   const current = getTicketByRef(ticketId)
-  if (!current) return
+  if (!current) return 'merged'
   if (current.status !== phase) {
     emitRoutePhaseLog(ticketId, phase, 'info', `Pull request merge verified; ticket already moved to ${current.status}.`)
-    return
+    return 'merged'
   }
   ensureActorForTicket(ticketId)
   emitRoutePhaseLog(ticketId, phase, 'info', mergeReport.message, {
@@ -217,6 +251,7 @@ export async function completeTicketMerge(
     remoteBaseHead: mergeReport.remoteBaseHead,
   })
   sendTicketEvent(ticketId, { type: 'MERGE_COMPLETE' })
+  return 'merged'
 }
 
 export async function syncWaitingPullRequestTicket(ticketId: string): Promise<void> {
@@ -268,7 +303,19 @@ export async function syncWaitingPullRequestTicket(ticketId: string): Promise<vo
       refreshPullRequestReport(ticketId, updatedReport)
     }
     if (pr.state === 'merged') {
-      await completeTicketMerge(ticket, context.projectRoot, updatedReport, true, pr)
+      try {
+        await completeTicketMerge(ticket, context.projectRoot, updatedReport, true, pr)
+      } catch (error) {
+        if (!(error instanceof EarlyMergeRecoveryManualError)) throw error
+        const message = `Pull request #${pr.number} requires manual recovery: ${error.message}`
+        ensureActorForTicket(ticketId)
+        sendTicketEvent(ticketId, { type: 'ERROR', message, codes: ['EARLY_MERGE_RECOVERY_MANUAL'] })
+        emitRoutePhaseLog(ticketId, 'WAITING_PR_REVIEW', 'error', message, {
+          recoveryReason: error.recovery.reason,
+          recoveryWorktreePath: error.recovery.recoveryWorktreePath,
+          conflictPaths: error.recovery.conflictPaths,
+        })
+      }
     }
   })
 }

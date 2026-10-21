@@ -1,3 +1,5 @@
+import type { PermissionGuardContext } from "./permissionGuard";
+
 export interface Session {
   id: string
   slug?: string
@@ -78,6 +80,8 @@ export interface PromptSessionOptions {
   system?: string
   noReply?: boolean
   permission?: ReadonlyArray<OpenCodePermissionRule>
+  /** `true` enables remote-action checks before the ticket has managed paths. */
+  permissionGuard?: PermissionGuardContext | true
   autoApprovePermissions?: boolean
   onEvent?: (event: StreamEvent) => void
   stepFinishSafetyMs?: number

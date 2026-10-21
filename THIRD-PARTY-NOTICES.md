@@ -24,11 +24,11 @@ frontend packages inlined into the client bundle.
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/utils` | 0.2.12 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@hono/node-server` | 2.1.5 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
-| `@lezer/common` | 1.5.1 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@lezer/highlight` | 1.2.3 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@lezer/lr` | 1.4.8 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@lezer/common` | 1.5.3 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@lezer/highlight` | 1.2.5 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@lezer/lr` | 1.4.11 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/yaml` | 1.0.4 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijnh@gmail.com> and others |
-| `@marijn/find-cluster-break` | 1.0.2 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin> |
+| `@marijn/find-cluster-break` | 1.0.4 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin> |
 | `@opencode-ai/sdk` | 1.19.0 | MIT | - |
 | `@radix-ui/number` | 1.1.3 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/primitive` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
@@ -83,7 +83,7 @@ frontend packages inlined into the client bundle.
 | `scheduler` | 0.28.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `shebang-command` | 2.0.0 | MIT | Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva) |
 | `shebang-regex` | 3.0.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
-| `style-mod` | 4.1.3 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `style-mod` | 4.1.4 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `tailwind-merge` | 3.7.0 | MIT | Copyright (c) 2021 Dany Castillo |
 | `tslib` | 2.8.1 | 0BSD | Copyright (c) Microsoft Corporation. |
 | `use-callback-ref` | 1.3.3 | MIT | Copyright (c) 2017 Anton Korzunov |
@@ -211,7 +211,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@lezer/common@1.5.1`, `@lezer/highlight@1.2.3`, `@lezer/lr@1.4.8`
+Applies to: `@lezer/common@1.5.3`, `@lezer/highlight@1.2.5`, `@lezer/lr@1.4.11`
 
 ```text
 MIT License
@@ -445,7 +445,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@marijn/find-cluster-break@1.0.2`
+Applies to: `@marijn/find-cluster-break@1.0.4`
 
 ```text
 MIT License
@@ -1153,7 +1153,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ### MIT
 
-Applies to: `style-mod@4.1.3`
+Applies to: `style-mod@4.1.4`
 
 ```text
 Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others

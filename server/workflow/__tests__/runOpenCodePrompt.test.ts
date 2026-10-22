@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { patchTicket } from '../../storage/tickets'
 import { getTicketPaths } from '../../storage/ticketQueries'
+import * as ticketQueries from '../../storage/ticketQueries'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { buildFormattedBatchAnswers } from '../phases/interviewPhase'
@@ -258,6 +259,17 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
     this.healthCalls += 1
     return this.options.healthStatus ?? { available: true }
   }
+}
+
+const GUARDED_PROMPT_PERMISSIONS = [
+  { permission: 'bash', pattern: '*', action: 'ask' },
+  { permission: 'edit', pattern: '*', action: 'ask' },
+  { permission: 'write', pattern: '*', action: 'ask' },
+  { permission: 'apply_patch', pattern: '*', action: 'ask' },
+]
+
+function expectGuardedPromptPermissions(adapter: TestOpenCodeAdapter, callIndex: number) {
+  expect(adapter.promptCalls[callIndex]?.options?.permission).toEqual(expect.arrayContaining(GUARDED_PROMPT_PERMISSIONS))
 }
 
 describe('runOpenCodePrompt', () => {
@@ -1112,12 +1124,7 @@ describe('runOpenCodePrompt', () => {
       projectRoot: paths.projectRoot,
       ticketDir: paths.ticketDir,
     })
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
-      { permission: 'bash', pattern: '*', action: 'ask' },
-      { permission: 'edit', pattern: '*', action: 'ask' },
-      { permission: 'write', pattern: '*', action: 'ask' },
-      { permission: 'apply_patch', pattern: '*', action: 'ask' },
-    ]))
+    expectGuardedPromptPermissions(adapter, 0)
   })
 
   it('recovers managed ticket paths for an unowned same-session continuation', async () => {
@@ -1154,12 +1161,7 @@ describe('runOpenCodePrompt', () => {
       projectRoot: paths.projectRoot,
       ticketDir: paths.ticketDir,
     })
-    expect(adapter.promptCalls[1]?.options?.permission).toEqual(expect.arrayContaining([
-      { permission: 'bash', pattern: '*', action: 'ask' },
-      { permission: 'edit', pattern: '*', action: 'ask' },
-      { permission: 'write', pattern: '*', action: 'ask' },
-      { permission: 'apply_patch', pattern: '*', action: 'ask' },
-    ]))
+    expectGuardedPromptPermissions(adapter, 1)
     resetTestDb()
   })
 
@@ -1175,12 +1177,31 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
-      { permission: 'bash', pattern: '*', action: 'ask' },
-      { permission: 'edit', pattern: '*', action: 'ask' },
-      { permission: 'write', pattern: '*', action: 'ask' },
-      { permission: 'apply_patch', pattern: '*', action: 'ask' },
-    ]))
+    expectGuardedPromptPermissions(adapter, 0)
+  })
+
+  it('keeps guarded prompts running when ticket path lookup fails', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Missing guard paths' })
+    patchTicket(ticket.id, { status: 'CODING' })
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+    const paths = vi.spyOn(ticketQueries, 'getTicketPaths').mockImplementation(() => {
+      throw new Error('Ticket paths are unavailable.')
+    })
+
+    try {
+      await runOpenCodePrompt({
+        adapter,
+        projectPath: '/tmp/project',
+        parts: [{ type: 'text', content: 'Prompt body' }],
+        sessionOwnership: { ticketId: ticket.id, phase: 'CODING' },
+      })
+    } finally {
+      paths.mockRestore()
+    }
+
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
+    expectGuardedPromptPermissions(adapter, 0)
   })
 
   it('retries unowned session creation before prompting', async () => {

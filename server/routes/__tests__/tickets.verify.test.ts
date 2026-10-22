@@ -19,8 +19,9 @@ import {
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { ticketRouter } from '../tickets'
+import * as routeUtils from '../ticketHandlers/routeUtils'
 import { listSkipEvents } from '../../workflow/skipReceipts'
-import { hasClosedUnmergedReport, hasVerifiedMergeReport, syncWaitingPullRequestTicket } from '../../workflow/mergeCompletion'
+import { completeTicketMerge, hasClosedUnmergedReport, hasVerifiedMergeReport, syncWaitingPullRequestTicket } from '../../workflow/mergeCompletion'
 import { EarlyMergeRecoveryManualError } from '../../git/earlyMergedPullRequestRecovery'
 import { sendTicketEvent } from '../../machines/persistence'
 import * as ticketStorage from '../../storage/tickets'
@@ -141,7 +142,25 @@ async function createWaitingPrReviewTicket() {
     }),
   })
 
-  return { ticket }
+  return { ticket, repoDir }
+}
+
+function makeObservedMergedPullRequest() {
+  return {
+    number: 42,
+    url: 'https://github.com/test/repo/pull/42',
+    title: 'TEST-1: PR review',
+    body: 'Already merged.',
+    state: 'merged' as const,
+    baseRefName: 'main',
+    headRefName: 'TEST-1',
+    headRefOid: 'merged-pr-head',
+    mergeCommitSha: 'landed123',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    mergedAt: '2026-01-01T00:05:00.000Z',
+    closedAt: null,
+  }
 }
 
 function insertClosedUnmergedCheckpoint(
@@ -556,6 +575,30 @@ describe('ticketRouter PR review routes', () => {
     }))
   })
 
+  it('resumes an equivalent-tree merge checkpoint without contacting GitHub', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const current = getTicketByRef(ticket.id)!
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_PR_REVIEW',
+      artifactType: 'merge_report',
+      content: JSON.stringify({
+        status: 'passed', disposition: 'merged', prState: 'merged',
+        baseBranch: current.runtime.baseBranch, headBranch: current.branchName,
+        candidateCommitSha: current.runtime.candidateCommitSha, prHeadSha: 'equivalent-head',
+        candidateTreeSha: 'same-tree', prHeadTreeSha: 'same-tree',
+        prNumber: 42, prUrl: 'https://github.com/test/repo/pull/42',
+        landedCommitSha: 'landed123', remoteBaseHead: 'verified-base', message: 'Equivalent candidate tree verified.',
+      }),
+    })
+    refreshPullRequestStateMock.mockRejectedValue(new Error('GitHub should not be read during checkpoint recovery'))
+
+    await syncWaitingPullRequestTicket(ticket.id)
+
+    expect(refreshPullRequestStateMock).not.toHaveBeenCalled()
+    expect(sendTicketEvent).toHaveBeenCalledExactlyOnceWith(ticket.id, { type: 'MERGE_COMPLETE' })
+    expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
+  })
+
   it('resumes a durable close decision after interrupted event dispatch without contacting GitHub', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     insertClosedUnmergedCheckpoint(ticket.id)
@@ -907,6 +950,63 @@ describe('ticketRouter PR review routes', () => {
       candidateCommitSha: 'abc123def456',
       pr: expect.objectContaining({ headRefOid: 'merged-pr-head' }),
     }))
+  })
+
+  it('rechecks a merge proof when the latest candidate is missing', async () => {
+    const { ticket, repoDir } = await createWaitingPrReviewTicket()
+    const missingCandidate = { ...ticket, runtime: { ...ticket.runtime, candidateCommitSha: null } }
+
+    await expect(completeTicketMerge(missingCandidate, repoDir, readPullRequestReportMock(), false, makeObservedMergedPullRequest()))
+      .rejects.toThrow('no candidate commit is recorded')
+    expect(reconcileEarlyMergedPullRequestMock).not.toHaveBeenCalled()
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('reports manual merge recovery with the same code and metadata as the poller', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    const recovery = {
+      reason: 'conflict' as const,
+      message: 'The corrective patch conflicted; resolve the recovery checkout manually.',
+      recoveryWorktreePath: '/tmp/recovery',
+      conflictPaths: ['src/example.ts'],
+    }
+    refreshPullRequestStateMock.mockResolvedValue(makeObservedMergedPullRequest())
+    reconcileEarlyMergedPullRequestMock.mockRejectedValueOnce(new EarlyMergeRecoveryManualError(recovery))
+    const log = vi.spyOn(routeUtils, 'emitRoutePhaseLog')
+    const app = new Hono().route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, expect.objectContaining({
+      type: 'ERROR',
+      codes: ['EARLY_MERGE_RECOVERY_MANUAL'],
+      message: expect.stringContaining('requires manual recovery'),
+    }))
+    expect(log).toHaveBeenCalledWith(ticket.id, 'WAITING_PR_REVIEW', 'error', expect.stringContaining(recovery.message), {
+      recoveryReason: recovery.reason,
+      recoveryWorktreePath: recovery.recoveryWorktreePath,
+      conflictPaths: recovery.conflictPaths,
+    })
+    log.mockRestore()
+  })
+
+  it('continues from a merged PR that no longer describes the current candidate', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue(makeObservedMergedPullRequest())
+    reconcileEarlyMergedPullRequestMock.mockResolvedValueOnce('skip')
+    const app = new Hono().route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      status: 'RUNNING_FINAL_TEST',
+      message: expect.stringContaining('before a new pull request is created'),
+    })
+    expect(reconcileEarlyMergedPullRequestMock).toHaveBeenCalledOnce()
+    expect(completeMergedPullRequestMock).not.toHaveBeenCalled()
   })
 
   it.each(['CLEANING_ENV', 'COMPLETED'])('returns recorded Merge success from %s without remote work', async (status) => {

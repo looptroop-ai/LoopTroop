@@ -102,10 +102,8 @@ const SILENT_TOOL_POLICIES: ReadonlySet<OpenCodeToolPolicy> = new Set<OpenCodeTo
 /**
  * Replaces whatever the policy said about `question` with exactly one rule.
  *
- * Filter-then-push rather than append-and-hope: precedence between a wildcard
- * `{ permission: '*' }` rule and a specific `{ permission: 'question' }` one is
- * not documented, so relying on last-wins would be a guess. Removing every
- * existing `question` rule first is correct whichever way OpenCode resolves it.
+ * Remove existing question entries and append one setting-specific rule. This
+ * keeps the output unambiguous and places the setting after the policy rules.
  *
  * Two of the four policies (`disabled`, `read_only`) carry `question: false`
  * today, which is why the switch had no effect on them and only five prompts
@@ -165,8 +163,8 @@ export function resolveOpenCodePermissions(
  * Used where a permission is *asked for* rather than resolved silently. Auto
  * approval exists to keep an unattended run moving, not to override the policy
  * the run was given, so a denied permission has to be refused even there. The
- * specific rule wins over `*`, so an explicit allow is not overturned by a
- * blanket deny.
+ * OpenCode evaluates all matching rules in order and uses the last match, even
+ * when that match is a wildcard rule.
  *
  * Read from the end, because that is how the array is built: the base allow-all
  * table first, then the policy's overrides. Taking the *first* match meant
@@ -190,19 +188,48 @@ export function isPermissionDeniedByRules(
     }
     const matchesResource = (rule: OpenCodePermissionRule) =>
       candidates.some((candidate) => permissionPatternMatches(rule.pattern, candidate))
-    const specific = rules.findLast((rule) => rule.permission === permission && matchesResource(rule))
-    if (specific) return specific.action === 'deny'
-    const wildcard = rules.findLast((rule) => rule.permission === '*' && matchesResource(rule))
-    return wildcard?.action === 'deny'
+    const lastMatch = rules.findLast(
+      (rule) =>
+        (rule.permission === permission || rule.permission === '*') &&
+        matchesResource(rule),
+    )
+    return lastMatch?.action === 'deny'
   })
 }
 
 function permissionPatternMatches(pattern: string, resource: string): boolean {
-  const normalizedPattern = pattern.replaceAll('\\', '/')
-  const normalizedResource = resource.replaceAll('\\', '/')
+  let normalizedPattern = pattern.replaceAll('\\', '/')
+  let normalizedResource = resource.replaceAll('\\', '/')
+  if (process.platform === 'win32') {
+    normalizedPattern = normalizedPattern.toLowerCase()
+    normalizedResource = normalizedResource.toLowerCase()
+  }
   if (normalizedPattern.endsWith(' *') && normalizedResource === normalizedPattern.slice(0, -2)) return true
-  const expression = normalizedPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.')
-  return new RegExp(`^${expression}$`, process.platform === 'win32' ? 'is' : 's').test(normalizedResource)
+
+  // Dynamic regex construction exposed command strings to regex backtracking.
+  // This two-row glob matcher treats only * and ? as operators; all other
+  // characters are literal. Work is bounded by pattern length × resource
+  // length and memory is bounded by the resource length.
+  let previous = new Array<boolean>(normalizedResource.length + 1).fill(false)
+  previous[0] = true
+  for (let patternIndex = 0; patternIndex < normalizedPattern.length; patternIndex++) {
+    const patternCharacter = normalizedPattern[patternIndex]!
+    const current = new Array<boolean>(normalizedResource.length + 1).fill(false)
+    if (patternCharacter === '*') {
+      current[0] = previous[0]!
+      for (let index = 1; index <= normalizedResource.length; index++) {
+        current[index] = previous[index]! || current[index - 1]!
+      }
+    } else {
+      for (let index = 1; index <= normalizedResource.length; index++) {
+        current[index] =
+          previous[index - 1]! &&
+          (patternCharacter === '?' || patternCharacter === normalizedResource[index - 1])
+      }
+    }
+    previous = current
+  }
+  return previous[normalizedResource.length]!
 }
 
 /** True when this policy would let a prompt ask, given the ticket's setting. */

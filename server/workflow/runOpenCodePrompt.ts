@@ -721,7 +721,12 @@ export async function runOpenCodeSessionPrompt({
   // (`resolveOpenCodePermissions` enforces that one).
   const questionsPermitted = (questionsAllowed ?? ticketAllowsAiQuestions(permissionOwnership?.ticketId))
     && phaseMayAskQuestions(permissionOwnership?.phase)
-  const ticketPaths = permissionOwnership ? getTicketPaths(permissionOwnership.ticketId) : undefined
+  let ticketPaths: ReturnType<typeof getTicketPaths>
+  try {
+    ticketPaths = permissionOwnership ? getTicketPaths(permissionOwnership.ticketId) : undefined
+  } catch {
+    // Keep prompts running with the context-free guard when ticket paths are unavailable.
+  }
   const permissionGuard = ticketPaths ? {
     worktreePath: ticketPaths.worktreePath,
     projectRoot: ticketPaths.projectRoot,

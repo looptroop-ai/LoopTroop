@@ -7,6 +7,7 @@ import { classifyWorktreePath } from './worktreeChanges'
 import { parseGitStatusPorcelainZ } from './statusPorcelain'
 import {
   isCommandAvailable,
+  RunCommandTimeoutError,
   runCommand,
   runCommandSync,
   runGit as runGitAsync,
@@ -58,8 +59,15 @@ function trySyncCommand(bin: string, args: string[], options?: RunCommandOptions
   return toAttempt(runCommandSync(bin, args, options))
 }
 
+function throwGitFailure(result: RunCommandResult): never {
+  if (result.timedOut) throw new RunCommandTimeoutError(result.errorDetail)
+  throw new Error(result.errorDetail)
+}
+
 function runGit(projectPath: string, args: string[], options?: RunCommandOptions): string {
-  return runGitSyncOrThrow(projectPath, args, options)
+  const result = runGitSync(projectPath, args, options)
+  if (!result.ok) throwGitFailure(result)
+  return result.stdout
 }
 
 function runGitMutation(projectPath: string, args: string[]): Promise<string> {
@@ -142,6 +150,22 @@ export interface RemoteBaseVerification {
   baseBranch: string
   verifiedCommitSha: string
   remoteBaseHead: string
+}
+
+/** A successful remote fetch disproved the requested ancestry proof. */
+export class RemoteBaseProofError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RemoteBaseProofError'
+  }
+}
+
+/** A successful PR-head fetch did not produce the expected local commit proof. */
+export class PullRequestHeadProofError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PullRequestHeadProofError'
+  }
 }
 
 export interface GitRecoveryReceipt {
@@ -473,9 +497,11 @@ async function runGhJson<T>(
 }
 
 async function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: string, baseBranch: string): Promise<PullRequestInfo[]> {
-  const pulls = await runGhJson<GitHubPullRecord[]>(projectPath, [
+  const pulls = await runGhJson<GitHubPullRecord[][]>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls`,
+    '--paginate',
+    '--slurp',
     '--method',
     'GET',
     '-f',
@@ -487,7 +513,7 @@ async function listPullRequests(projectPath: string, repo: GitHubRepoRef, branch
   ])
 
   if (!Array.isArray(pulls)) return []
-  return pulls
+  return pulls.flat()
     .map((record) => toPullRequestInfo(record))
     .filter((record): record is PullRequestInfo => record !== null)
     .sort((left, right) => right.number - left.number)
@@ -516,9 +542,17 @@ export async function fetchPullRequestHead(projectPath: string, prNumber: number
     'fetch', '--no-tags', '--no-progress', '--no-write-fetch-head', 'origin',
     `+refs/pull/${prNumber}/head:${headRef}`,
   ])
-  const head = runGit(projectPath, ['rev-parse', `${headRef}^{commit}`])
+  const headResult = runGitSync(projectPath, ['rev-parse', `${headRef}^{commit}`])
+  if (!headResult.ok) {
+    if (headResult.timedOut) throw new RunCommandTimeoutError(headResult.errorDetail)
+    throw new PullRequestHeadProofError(headResult.errorDetail ?? `GitHub did not provide a commit for pull request #${prNumber}.`)
+  }
+  const head = headResult.stdout
   if (!/^[0-9a-f]{40,64}$/i.test(head)) {
-    throw new Error(`GitHub returned an invalid head commit for pull request #${prNumber}.`)
+    throw new PullRequestHeadProofError(`GitHub returned an invalid head commit for pull request #${prNumber}.`)
+  }
+  if (head.toLowerCase() !== expectedHeadSha.toLowerCase()) {
+    throw new PullRequestHeadProofError(`GitHub's pull request head ${expectedHeadSha} does not match fetched commit ${head}.`)
   }
   return head
 }
@@ -737,7 +771,9 @@ function readWorktreeStatus(projectPath: string): ReturnType<typeof parseStatusL
   // worktree changed (" M file.ts"). Trimming it shifted both status columns
   // and ate the first character of the path, so a recovery receipt reported
   // ".txt" as a staged file and nothing as unstaged.
-  const raw = runGitSyncOrThrow(projectPath, FILTERED_STATUS_ARGS, { trimOutput: false })
+  const status = runGitSync(projectPath, FILTERED_STATUS_ARGS, { trimOutput: false })
+  if (!status.ok) throwGitFailure(status)
+  const raw = status.stdout
   return {
     ...parseStatusLines(raw),
     raw,
@@ -930,6 +966,7 @@ export function ensureNoUntrackedPathsClobberedBy(
     { trimOutput: false },
   )
   if (!restored.ok) {
+    if (restored.timedOut) throw new RunCommandTimeoutError(restored.errorDetail)
     throw new Error(`Could not compare ${commitish} with HEAD before ${operation}: ${restored.errorDetail}`)
   }
 
@@ -992,6 +1029,7 @@ function listPathsInTree(
       { trimOutput: false },
     )
     if (!tree.ok) {
+      if (tree.timedOut) throw new RunCommandTimeoutError(tree.errorDetail)
       throw new Error(`Could not read ${commitish} before ${operation}: ${tree.errorDetail}`)
     }
     found.push(...tree.stdout.split('\0').filter(Boolean))
@@ -1049,11 +1087,17 @@ export async function verifyRemoteBaseContainsCommit(projectPath: string, baseBr
   await runRemoteGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
 
   const remoteBaseRef = `refs/remotes/origin/${baseBranch}`
-  const remoteBaseHead = runGit(projectPath, ['rev-parse', remoteBaseRef])
+  const remoteBaseResult = runGitSync(projectPath, ['rev-parse', remoteBaseRef])
+  if (!remoteBaseResult.ok) {
+    if (remoteBaseResult.timedOut) throw new RunCommandTimeoutError(remoteBaseResult.errorDetail)
+    throw new RemoteBaseProofError(`Remote origin/${baseBranch} could not be resolved after fetching.`)
+  }
+  const remoteBaseHead = remoteBaseResult.stdout
   assertSafeRefName(remoteBaseHead, 'Remote base ref')
-  const ancestor = tryGit(projectPath, ['merge-base', '--is-ancestor', verifiedCommitSha, remoteBaseHead])
+  const ancestor = runGitSync(projectPath, ['merge-base', '--is-ancestor', verifiedCommitSha, remoteBaseHead])
   if (!ancestor.ok) {
-    throw new Error(`Remote origin/${baseBranch} does not contain commit ${verifiedCommitSha}. Latest remote base is ${remoteBaseHead}.`)
+    if (ancestor.timedOut) throw new RunCommandTimeoutError(ancestor.errorDetail)
+    throw new RemoteBaseProofError(`Remote origin/${baseBranch} does not contain commit ${verifiedCommitSha}. Latest remote base is ${remoteBaseHead}.`)
   }
 
   return {

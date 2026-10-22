@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { isAbsolute, resolve } from "node:path";
 import type {
   HealthStatus,
   Message,
@@ -78,6 +79,194 @@ interface SessionLogScan {
   coverageComplete: boolean;
   hasWatermark: boolean;
   hasUnmappedEvents: boolean;
+}
+
+interface NativeToolCallContext {
+  toolName?: string;
+  input?: RecordValue;
+  inputComplete: boolean;
+}
+
+interface RelatedSessionRoutingState {
+  rootSessionId: string;
+  descendants: Set<string>;
+  directories: Map<string, string>;
+  toolCalls: Map<string, NativeToolCallContext>;
+  toolInputText: Map<string, string>;
+}
+
+function createRelatedSessionRoutingState(
+  rootSessionId: string,
+  directory?: string,
+): RelatedSessionRoutingState {
+  return {
+    rootSessionId,
+    descendants: new Set(),
+    directories: new Map(directory ? [[rootSessionId, directory]] : []),
+    toolCalls: new Map(),
+    toolInputText: new Map(),
+  };
+}
+
+function rawSessionId(raw: RecordValue): string | undefined {
+  const data = asRecord(raw.data);
+  return stringValue(data?.sessionID) ?? stringValue(asRecord(data?.form)?.sessionID);
+}
+
+function validDurableSessionEvent(raw: RecordValue, sessionId: string): boolean {
+  if (raw.durable === undefined && !V2_DURABLE_EVENT_TYPES.has(String(raw.type))) return true;
+  const durable = asRecord(raw.durable);
+  const aggregateID = stringValue(durable?.aggregateID);
+  const sequence = numberValue(durable?.seq);
+  return aggregateID === sessionId &&
+    sequence !== undefined &&
+    Number.isSafeInteger(sequence) &&
+    sequence >= 0 &&
+    (rawSessionId(raw) === undefined || rawSessionId(raw) === aggregateID);
+}
+
+function observeSessionCreated(
+  raw: RecordValue,
+  state: RelatedSessionRoutingState,
+): void {
+  if (raw.type !== "session.created") return;
+  const sessionId = rawSessionId(raw);
+  const info = asRecord(asRecord(raw.data)?.info);
+  const infoId = stringValue(info?.id);
+  const parentId = stringValue(info?.parentID);
+  const directory = stringValue(asRecord(info?.location)?.directory) ?? stringValue(info?.directory);
+  if (
+    !sessionId ||
+    (infoId !== undefined && infoId !== sessionId) ||
+    !validDurableSessionEvent(raw, sessionId)
+  ) return;
+
+  if (sessionId === state.rootSessionId) {
+    if (directory) state.directories.set(sessionId, directory);
+    return;
+  }
+  if (!parentId || (parentId !== state.rootSessionId && !state.descendants.has(parentId))) return;
+  state.descendants.add(sessionId);
+  if (directory) state.directories.set(sessionId, directory);
+  else state.directories.delete(sessionId);
+}
+
+function nativeToolCallKey(sessionId: string, messageId: string, callId: string): string {
+  return JSON.stringify([sessionId, messageId, callId]);
+}
+
+function parseNativeToolInput(value: unknown): RecordValue | null {
+  const direct = asRecord(value);
+  if (direct) return direct;
+  if (typeof value !== "string") return null;
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function observeNativeToolInput(
+  raw: RecordValue,
+  sessionId: string,
+  state: RelatedSessionRoutingState,
+): void {
+  const type = String(raw.type);
+  if (!type.startsWith("session.tool.")) return;
+  const data = asRecord(raw.data);
+  const callId = stringValue(data?.id);
+  const messageId = stringValue(data?.assistantMessageID) ?? stringValue(data?.messageID);
+  if (!data || !callId || !messageId) return;
+  const key = nativeToolCallKey(sessionId, messageId, callId);
+  const context = state.toolCalls.get(key) ?? { inputComplete: false };
+
+  if (type === "session.tool.input.started") {
+    context.toolName = stringValue(data.name) ?? context.toolName;
+    context.input = undefined;
+    context.inputComplete = false;
+  } else if (type === "session.tool.input.delta") {
+    const delta = stringValue(data.delta);
+    if (delta !== undefined) {
+      state.toolInputText.set(key, `${state.toolInputText.get(key) ?? ""}${delta}`);
+    }
+  } else if (type === "session.tool.input.ended") {
+    const input = parseNativeToolInput(data.input) ??
+      parseNativeToolInput(data.text) ??
+      parseNativeToolInput(state.toolInputText.get(key));
+    if (input) {
+      context.input = input;
+      context.inputComplete = true;
+    }
+  } else if (type === "session.tool.called") {
+    const input = parseNativeToolInput(data.input) ??
+      parseNativeToolInput(state.toolInputText.get(key));
+    if (input) {
+      context.input = input;
+      context.inputComplete = true;
+    }
+    context.toolName = stringValue(data.name) ?? context.toolName;
+  }
+
+  state.toolCalls.set(key, context);
+}
+
+function withPermissionDirectory(
+  envelope: OpenCodeTransportEventEnvelope,
+  raw: RecordValue,
+  state: RelatedSessionRoutingState,
+): OpenCodeTransportEventEnvelope {
+  const event = envelope.event;
+  if (event?.type !== "permission" || event.action !== "asked") return envelope;
+  let permissionDirectory = state.directories.get(event.sessionId);
+  let permissionDirectoryUnverified = false;
+  const data = asRecord(raw.data);
+  const source = asRecord(data?.source);
+  if (event.permission === "bash" && source?.type === "tool") {
+    const messageId = stringValue(source.messageID);
+    const callId = stringValue(source.id);
+    const call = messageId && callId
+      ? state.toolCalls.get(nativeToolCallKey(event.sessionId, messageId, callId))
+      : undefined;
+    const isShellCall = call?.toolName === "bash" || call?.toolName === "shell";
+    if (!call || !call.inputComplete || !isShellCall || !call.input) {
+      permissionDirectoryUnverified = true;
+    } else if (Object.hasOwn(call.input, "workdir")) {
+      const workdir = call.input.workdir;
+      if (typeof workdir !== "string" || !workdir.trim()) {
+        permissionDirectoryUnverified = true;
+        permissionDirectory = undefined;
+      } else if (isAbsolute(workdir)) {
+        permissionDirectory = resolve(workdir);
+      } else if (permissionDirectory) {
+        permissionDirectory = resolve(permissionDirectory, workdir);
+      } else {
+        permissionDirectoryUnverified = true;
+      }
+    } else if (!permissionDirectory) {
+      permissionDirectoryUnverified = true;
+    }
+  }
+
+  return {
+    ...envelope,
+    event: {
+      ...event,
+      ...(permissionDirectory ? { permissionDirectory } : {}),
+      ...(permissionDirectoryUnverified ? { permissionDirectoryUnverified: true } : {}),
+    },
+  };
+}
+
+function mapDescendantPermission(
+  raw: RecordValue,
+  sessionId: string,
+  state: RelatedSessionRoutingState,
+): OpenCodeTransportEventEnvelope | null {
+  if (raw.type !== "permission.asked") return null;
+  const mapped = mapV2Event(raw, sessionId);
+  if (mapped?.event?.type !== "permission" || mapped.event.action !== "asked") return null;
+  const enriched = withPermissionDirectory(mapped, raw, state);
+  return { event: enriched.event };
 }
 
 export class V2OpenCodeTransport implements OpenCodeTransport {
@@ -211,7 +400,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
 
   async subscribeToEvents(
     sessionId: string,
-    _directory: string | undefined,
+    directory: string | undefined,
     signal?: AbortSignal,
     _stepFinishSafetyMs?: number,
     afterCursor?: number,
@@ -222,6 +411,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       : cleanupController.signal;
     const connection = await this.openEventStream(streamSignal);
     const ownedConnections = new Set<SseConnection>([connection]);
+    const relatedSessions = createRelatedSessionRoutingState(sessionId, directory);
     const closeConnections = async () => {
       if (!cleanupController.signal.aborted) {
         cleanupController.abort(
@@ -301,6 +491,19 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           const data = asRecord(raw.data);
           const formSessionID = stringValue(asRecord(data?.form)?.sessionID);
           const rawSessionID = stringValue(data?.sessionID) ?? formSessionID;
+          observeSessionCreated(raw, relatedSessions);
+          if (
+            rawSessionID &&
+            rawSessionID !== sessionId &&
+            relatedSessions.descendants.has(rawSessionID)
+          ) {
+            if (validDurableSessionEvent(raw, rawSessionID)) {
+              observeNativeToolInput(raw, rawSessionID, relatedSessions);
+              const childPermission = mapDescendantPermission(raw, rawSessionID, relatedSessions);
+              if (childPermission) liveEvents.push(childPermission);
+            }
+            continue;
+          }
           if (
             rawSessionID !== sessionId &&
             formSessionID !== sessionId &&
@@ -335,21 +538,24 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               streamGap = true;
               break;
             }
+            observeNativeToolInput(raw, sessionId, relatedSessions);
             const mapped = mapV2Event(raw, sessionId, liveState);
             if (!mapped) {
               streamGap = true;
               break;
             }
+            const enriched = withPermissionDirectory(mapped, raw, relatedSessions);
             liveEvents.push(
               sequence === liveCursor + 1
-                ? mapped
-                : { ...mapped, observedAfter: liveCursor },
+                ? enriched
+                : { ...enriched, observedAfter: liveCursor },
             );
             liveSequences.add(sequence);
             liveCursor = sequence;
           } else if (rawSessionID === sessionId) {
+            observeNativeToolInput(raw, sessionId, relatedSessions);
             const mapped = mapV2Event(raw, sessionId, liveState);
-            if (mapped) liveEvents.push(mapped);
+            if (mapped) liveEvents.push(withPermissionDirectory(mapped, raw, relatedSessions));
           }
         }
         coverageComplete = !streamGap && liveCursor >= cursor;
@@ -382,6 +588,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       ownedConnections,
       closeConnections,
       mappingState,
+      relatedSessions,
       afterCursor === undefined
         ? !scan.hasWatermark
         : !coverageComplete || !scan.hasWatermark,
@@ -991,6 +1198,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     ownedConnections: Set<SseConnection>,
     closeConnections: () => Promise<void>,
     state: ReturnType<typeof createV2EventMappingState>,
+    relatedSessions: RelatedSessionRoutingState,
     initialCoverageGap: boolean,
   ): AsyncGenerator<OpenCodeTransportEventEnvelope> {
     let connection = initialConnection;
@@ -1017,6 +1225,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               "OpenCode v2 event stream returned an invalid event",
             );
           if (raw.type === "server.connected") continue;
+          observeSessionCreated(raw, relatedSessions);
           const formSessionId = stringValue(
             asRecord(asRecord(raw.data)?.form)?.sessionID,
           );
@@ -1024,6 +1233,20 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
             stringValue(asRecord(raw.data)?.sessionID) ?? formSessionId;
           const aggregateId = stringValue(asRecord(raw.durable)?.aggregateID);
           const sequence = numberValue(asRecord(raw.durable)?.seq);
+          if (
+            rawSessionId &&
+            rawSessionId !== sessionId &&
+            relatedSessions.descendants.has(rawSessionId)
+          ) {
+            if (validDurableSessionEvent(raw, rawSessionId)) {
+              observeNativeToolInput(raw, rawSessionId, relatedSessions);
+              const childPermission = mapDescendantPermission(raw, rawSessionId, relatedSessions);
+              if (childPermission) yield coverageGap
+                ? { ...childPermission, coverageGap: true }
+                : childPermission;
+            }
+            continue;
+          }
           if (
             rawSessionId !== sessionId &&
             formSessionId !== sessionId &&
@@ -1047,6 +1270,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           if (rawSessionId !== sessionId && aggregateId !== sessionId) continue;
           if (sequence !== undefined && sequence <= baselineCursor) continue;
           if (sequence !== undefined && seen.has(sequence)) continue;
+          observeNativeToolInput(raw, sessionId, relatedSessions);
           const observedAfter = cursor;
           if (sequence !== undefined) {
             if (sequence <= cursor) coverageGap = true;
@@ -1059,12 +1283,13 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
             if (sequence !== undefined) coverageGap = true;
             continue;
           }
+          const enriched = withPermissionDirectory(mapped, raw, relatedSessions);
           if (!coverageGap) reconnects = 0;
           yield coverageGap
-            ? { ...mapped, coverageGap: true }
+            ? { ...enriched, coverageGap: true }
             : sequence !== undefined && sequence > observedAfter + 1
-              ? { ...mapped, observedAfter }
-              : mapped;
+              ? { ...enriched, observedAfter }
+              : enriched;
         } catch (error) {
           if (signal?.aborted) throw signal.reason;
           let reconnectError = error;

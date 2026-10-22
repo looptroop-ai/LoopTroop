@@ -188,7 +188,7 @@ describe('ProfileSetup', () => {
 
     fireEvent.change(waitField, { target: { value: '5' } })
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
-    fireEvent.click(screen.getByRole('radio', { name: /Default ai question wait/i }))
+    fireEvent.click(screen.getByLabelText(/Default ai question wait/i))
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
   })
 

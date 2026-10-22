@@ -1,7 +1,9 @@
+import { resolve } from "node:path";
 import { assert, describe, expect, it, vi } from "vitest";
 import {
   OpenCodePromptReceiptUnavailableError,
   type OpenCodePromptRequest,
+  type OpenCodeTransportEventEnvelope,
 } from "../transport";
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from "../v2Transport";
 import { OpenCodeSDKAdapter } from "../adapter";
@@ -3010,6 +3012,137 @@ describe("OpenCode v2 fetch transport", () => {
       expect(requestSignal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("routes only proven descendant permission asks and binds shell workdir by source IDs", async () => {
+    const child = "child-session";
+    const unrelated = "unrelated-session";
+    const events = [
+      {
+        type: "session.created",
+        data: {
+          sessionID: child,
+          info: { id: child, parentID: "session-1", location: { directory: "/worktree/child" } },
+        },
+        durable: { aggregateID: child, seq: 1 },
+      },
+      {
+        type: "session.created",
+        data: {
+          sessionID: unrelated,
+          info: { id: unrelated, parentID: "another-root", location: { directory: "/other" } },
+        },
+        durable: { aggregateID: unrelated, seq: 1 },
+      },
+      {
+        type: "session.tool.input.started",
+        data: { sessionID: child, assistantMessageID: "message-1", id: "call-1", name: "bash" },
+        durable: { aggregateID: child, seq: 2 },
+      },
+      {
+        type: "session.tool.input.ended",
+        data: {
+          sessionID: child,
+          assistantMessageID: "message-1",
+          id: "call-1",
+          text: JSON.stringify({ command: "git status", workdir: "../other" }),
+        },
+        durable: { aggregateID: child, seq: 3 },
+      },
+      {
+        type: "permission.asked",
+        data: {
+          sessionID: child,
+          id: "child-permission",
+          action: "shell",
+          resources: ["git status"],
+          source: { type: "tool", messageID: "message-1", id: "call-1" },
+        },
+      },
+      {
+        type: "session.text.delta",
+        data: { sessionID: child, assistantMessageID: "child-answer", delta: "child output" },
+      },
+      {
+        type: "permission.asked",
+        data: {
+          sessionID: unrelated,
+          id: "unrelated-permission",
+          action: "shell",
+          source: { type: "tool", messageID: "message-x", id: "call-x" },
+        },
+      },
+    ];
+    const { transport } = publicEventTransport(events, 0);
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    const observed: OpenCodeTransportEventEnvelope[] = [];
+    try {
+      for (let index = 0; index < 20; index++) {
+        const next = await iterator.next();
+        if (next.done) break;
+        observed.push(next.value);
+        if (next.value.event?.type === "permission") break;
+      }
+    } finally {
+      await iterator.return?.();
+    }
+
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      event: {
+        type: "permission",
+        sessionId: child,
+        action: "asked",
+        permissionId: "child-permission",
+        permission: "bash",
+        permissionDirectory: resolve("/worktree/child", "../other"),
+      },
+    });
+    expect(observed[0]?.cursor).toBeUndefined();
+  });
+
+  it("marks a child shell permission unverified when it arrives before matching tool input", async () => {
+    const child = "child-session";
+    const { transport } = publicEventTransport(
+      [
+        {
+          type: "session.created",
+          data: {
+            sessionID: child,
+            info: { id: child, parentID: "session-1", location: { directory: "/worktree/child" } },
+          },
+          durable: { aggregateID: child, seq: 1 },
+        },
+        {
+          type: "permission.asked",
+          data: {
+            sessionID: child,
+            id: "early-permission",
+            action: "shell",
+            resources: ["git push origin feature"],
+            source: { type: "tool", messageID: "message-1", id: "call-not-seen-yet" },
+          },
+        },
+      ],
+      0,
+    );
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            sessionId: child,
+            permissionDirectory: "/worktree/child",
+            permissionDirectoryUnverified: true,
+          },
+        },
+      });
+    } finally {
+      await iterator.return?.();
     }
   });
 });

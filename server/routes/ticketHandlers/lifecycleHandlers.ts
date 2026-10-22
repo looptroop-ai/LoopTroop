@@ -1,3 +1,4 @@
+import { EarlyMergeRecoveryManualError } from '../../git/earlyMergedPullRequestRecovery'
 import { completeTicketMerge, hasClosedUnmergedReport, hasVerifiedMergeReport, withTicketMergeLock } from '../../workflow/mergeCompletion'
 import type { Context } from 'hono'
 import type { z } from 'zod'
@@ -640,6 +641,12 @@ async function handleMergeTicketLocked(c: Context, observed: PullRequestInfo) {
     if (result === 'corrected') {
       return respondWithState(c, ticketId, 'Final tests will run again for the corrected candidate.')
     }
+    if (result === 'already_landed') {
+      return respondWithState(c, ticketId, 'The merged pull request changes are verified on the base branch.')
+    }
+    if (result === 'skipped') {
+      return respondWithState(c, ticketId, 'The merged pull request is older than the current candidate. Final tests will run before a new pull request is created.')
+    }
   } catch (err) {
     const current = getTicketByRef(ticketId)
     if (current && hasVerifiedMergeReport(current)) {
@@ -650,12 +657,19 @@ async function handleMergeTicketLocked(c: Context, observed: PullRequestInfo) {
         details: getErrorMessage(err),
       }, 500)
     }
+    const recovery = err instanceof EarlyMergeRecoveryManualError ? err.recovery : null
     const details = getErrorMessage(err)
-    const message = `Pull request merge failed: ${details}`
-    const codes = ['PULL_REQUEST_MERGE_FAILED']
+    const message = recovery
+      ? `Pull request #${observed.number} requires manual recovery: ${details}`
+      : `Pull request merge failed: ${details}`
+    const codes = [recovery ? 'EARLY_MERGE_RECOVERY_MANUAL' : 'PULL_REQUEST_MERGE_FAILED']
     try {
       ensureActorForTicket(ticketId)
-      emitRoutePhaseLog(ticketId, phase, 'error', message)
+      emitRoutePhaseLog(ticketId, phase, 'error', message, recovery ? {
+        recoveryReason: recovery.reason,
+        recoveryWorktreePath: recovery.recoveryWorktreePath,
+        conflictPaths: recovery.conflictPaths,
+      } : undefined)
       sendTicketEvent(ticketId, {
         type: 'ERROR',
         message,

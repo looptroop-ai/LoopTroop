@@ -48,8 +48,16 @@ function readVerifiedMergeReport(ticket: PublicTicket) {
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
       || typeof report.prHeadSha !== 'string' || report.prHeadSha.length === 0
       || (report.prHeadSha !== report.candidateCommitSha
-        && !(typeof report.candidateTreeSha === 'string' && report.candidateTreeSha.length > 0
-          && report.candidateTreeSha === report.prHeadTreeSha))
+        && (report.proofKind === 'already_landed'
+          ? typeof report.candidateTreeSha !== 'string' || report.candidateTreeSha.length === 0
+            || typeof report.prHeadTreeSha !== 'string' || report.prHeadTreeSha.length === 0
+            || report.candidateTreeSha === report.prHeadTreeSha
+            || typeof report.remoteBaseHead !== 'string' || report.remoteBaseHead.length === 0
+            || typeof report.remoteBaseTreeSha !== 'string' || report.remoteBaseTreeSha.length === 0
+          : (report.proofKind !== undefined && report.proofKind !== 'tree_equivalent')
+            || typeof report.candidateTreeSha !== 'string' || report.candidateTreeSha.length === 0
+            || report.candidateTreeSha !== report.prHeadTreeSha))
+      || (report.proofKind === 'already_landed' && report.prHeadSha === report.candidateCommitSha)
       || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
       || report.prNumber !== prReport.prNumber
       || (report.prUrl !== null && typeof report.prUrl !== 'string')
@@ -185,12 +193,15 @@ export async function completeTicketMerge(
   prReport: PullRequestReport,
   skipRemoteMerge = false,
   observedPullRequest?: PullRequestInfo,
-): Promise<'merged' | 'corrected'> {
+): Promise<'merged' | 'already_landed' | 'corrected' | 'skipped'> {
   const ticketId = ticket.id
   const phase = 'WAITING_PR_REVIEW'
   if (resumeVerifiedMerge(ticket)) return 'merged'
   if (hasClosedUnmergedReport(ticket)) {
     throw new Error('A close-without-merge decision is already recorded for this pull request.')
+  }
+  if (observedPullRequest?.state === 'merged' && !ticket.runtime.candidateCommitSha) {
+    throw new Error(`Cannot verify merged pull request #${observedPullRequest.number} because no candidate commit is recorded.`)
   }
   if (observedPullRequest?.state === 'merged'
     && (!ticket.runtime.candidateCommitSha || observedPullRequest.headRefOid !== ticket.runtime.candidateCommitSha)) {
@@ -208,15 +219,20 @@ export async function completeTicketMerge(
       candidateCommitSha,
       pr: observedPullRequest,
     })
-    if (result === 'equivalent') {
+    if (result === 'equivalent' || result === 'already_landed') {
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, { type: 'MERGE_COMPLETE' })
-      return 'merged'
+      return result === 'already_landed' ? 'already_landed' : 'merged'
     }
     if (result === 'corrected') {
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, { type: 'EARLY_MERGE_CORRECTION_READY' })
       return 'corrected'
+    }
+    if (result === 'skip') {
+      ensureActorForTicket(ticketId)
+      sendTicketEvent(ticketId, { type: 'EARLY_MERGE_CORRECTION_READY' })
+      return 'skipped'
     }
   }
   const mergeReport = await withCommandLoggingAsync(

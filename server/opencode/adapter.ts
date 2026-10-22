@@ -981,23 +981,30 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
       };
       const handledPermissionIds = new Set<string>();
+      const successfullyRejectedPermissionSessions = new Set<string>();
       const pendingPermissionEvents = new Map<
         string,
         { event: StreamEvent; order: number }
       >();
       const replyToPermission = async (streamEvent: StreamEvent) => {
+        const permissionSessionId = streamEvent.sessionId;
+        const permissionKey = streamEvent.type === "permission"
+          ? `${permissionSessionId}\u0000${streamEvent.permissionId}`
+          : "";
         if (
           streamEvent.type !== "permission" ||
           !streamEvent.permissionId ||
-          handledPermissionIds.has(streamEvent.permissionId)
+          handledPermissionIds.has(permissionKey)
         )
           return;
-        handledPermissionIds.add(streamEvent.permissionId);
+        handledPermissionIds.add(permissionKey);
+        const permissionDirectory = streamEvent.permissionDirectory ??
+          (permissionSessionId === sessionId ? directory : undefined);
         const deniedByPolicy = isPermissionDeniedByRules(
           promptOptions.permission,
           streamEvent.permission,
           streamEvent.patterns,
-          directory,
+          permissionDirectory,
         );
         const guardRejection = promptOptions.permissionGuard
           ? getPermissionGuardRejection({
@@ -1005,7 +1012,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               patterns: streamEvent.patterns,
               details: streamEvent.details,
               ...(promptOptions.permissionGuard === true ? {} : { context: promptOptions.permissionGuard }),
-              directory,
+              directory: permissionDirectory,
+              unverifiedDirectory: streamEvent.permissionDirectoryUnverified,
             })
           : null;
         const rejectionMessage = guardRejection ?? (deniedByPolicy
@@ -1013,22 +1021,31 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           : undefined);
         const permissionReply = rejectionMessage
           ? transport.replyPermission(
-              sessionId,
+              permissionSessionId,
               streamEvent.permissionId,
               "reject",
-              directory,
+              permissionDirectory,
               operationSignal,
               rejectionMessage,
             )
           : transport.replyPermission(
-              sessionId,
+              permissionSessionId,
               streamEvent.permissionId,
               "once",
-              directory,
+              permissionDirectory,
               operationSignal,
             );
         permissionReplyPending = permissionReply
+          .then(() => {
+            if (rejectionMessage) {
+              successfullyRejectedPermissionSessions.add(permissionSessionId);
+            }
+          })
           .catch(async (error) => {
+            if (
+              this.isConfirmedSessionNotFoundError(error) &&
+              successfullyRejectedPermissionSessions.has(permissionSessionId)
+            ) return;
             permissionReplyFailure = new Error(
               `Failed to ${rejectionMessage ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
               { cause: error },
@@ -1164,10 +1181,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             streamEvent.action === "asked" &&
             promptOptions.autoApprovePermissions &&
             streamEvent.permissionId &&
-            !handledPermissionIds.has(streamEvent.permissionId)
+            !handledPermissionIds.has(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`)
           ) {
             if (transport.protocol === "v2" || beforeV2Dispatch) {
-              pendingPermissionEvents.set(streamEvent.permissionId, {
+              pendingPermissionEvents.set(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`, {
                 event: streamEvent,
                 order: eventOrder,
               });

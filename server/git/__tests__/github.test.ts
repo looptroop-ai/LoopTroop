@@ -164,6 +164,21 @@ describe('server/git/github', () => {
     expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('PUT'))).toBe(true)
   })
 
+  it('reads all pull request pages before choosing the newest relevant request', async () => {
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      expect(args).toEqual(expect.arrayContaining(['--paginate', '--slurp']))
+      return makeSpawnResult({ stdout: JSON.stringify([
+        [{ ...pullRequestRecord(43), state: 'closed' }],
+        [{ ...pullRequestRecord(42), state: 'closed', merged_at: '2026-01-01T00:00:00Z', merge_commit_sha: 'landed' }],
+      ]) })
+    })
+    const github = await import('../github')
+    expect(await github.listPullRequestsForBranch('/repo', 'ticket-branch', 'main')).toMatchObject([
+      { number: 43, state: 'closed' }, { number: 42, state: 'merged' },
+    ])
+  })
+
   it('fetches a PR head into an internal ref instead of sharing FETCH_HEAD', async () => {
     const expectedHeadSha = 'a'.repeat(40)
     spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
@@ -180,6 +195,14 @@ describe('server/git/github', () => {
       '--no-write-fetch-head',
       `+refs/pull/42/head:refs/looptroop/pull-heads/42/${expectedHeadSha}`,
     ]))
+  })
+
+  it('rejects a fetched PR head that differs from its expected identity', async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => args.includes('rev-parse')
+      ? makeSpawnResult({ stdout: 'b'.repeat(40) }) : makeSpawnResult())
+    const github = await import('../github')
+    await expect(github.fetchPullRequestHead('/repo', 42, 'a'.repeat(40)))
+      .rejects.toBeInstanceOf(github.PullRequestHeadProofError)
   })
 
   it('rejects unsafe diff refs before they can become a Git option', async () => {
@@ -894,10 +917,10 @@ describe('server/git/github', () => {
     })
 
     const github = await import('../github')
-
-    await expect(github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')).rejects.toThrow(
-      'Remote origin/main does not contain commit candidate123. Latest remote base is remote-base-sha.',
-    )
+    const error = await github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123').catch((caught) => caught)
+    expect(error).toBeInstanceOf(github.RemoteBaseProofError)
+    if (!(error instanceof Error)) throw new Error('Expected remote ancestry proof failure')
+    expect(error.message).toBe('Remote origin/main does not contain commit candidate123. Latest remote base is remote-base-sha.')
   })
 
   it('rejects remote merge verification when the candidate SHA is unavailable', async () => {

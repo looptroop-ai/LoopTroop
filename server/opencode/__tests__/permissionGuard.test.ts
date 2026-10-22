@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   getPermissionGuardRejection,
   type PermissionGuardContext,
@@ -14,6 +17,99 @@ const shell = (command: string, options: { directory?: string; patterns?: string
   getPermissionGuardRejection({ permission: 'bash', patterns: options.patterns ?? [command], context: options.context ?? context, directory: options.directory })
 
 describe('getPermissionGuardRejection', () => {
+  it('keeps wrapper directory changes local to that command', () => {
+    expect(shell('env -C /tmp echo ready; rm -rf .')).not.toBeNull()
+    expect(shell('env -C /tmp echo ready; git reset --hard HEAD')).not.toBeNull()
+    expect(shell('env -C /tmp rm -rf ./scratch-cache; gh pr view 12')).toBeNull()
+  })
+
+  it.each([
+    'sudo', 'sudo -n -u root', 'doas -u root', 'command -p', 'exec',
+    'timeout 30', 'timeout --signal=TERM 30', 'nice -n 10', 'nohup', 'time -p',
+    'stdbuf -oL', 'xargs -0 -n 1', 'rtk -vv proxy', 'rtk run',
+    'rtk run --skip-env -c', 'rtk err', 'rtk test', 'rtk summary',
+    'npx --yes', 'pnpm dlx', 'yarn dlx',
+  ])('checks the underlying command for wrapper %s', (wrapper) => {
+    expect(shell(`${wrapper} git push origin HEAD`)).toContain('remote repository')
+    expect(shell(`${wrapper} gh pr merge 12`)).toContain('GitHub')
+    expect(shell(`${wrapper} gh pr view 12`)).toBeNull()
+  })
+
+  it.each([
+    "bash -lc 'git push origin HEAD'", "sh -c 'gh pr merge 12'",
+    'pwsh -NoProfile -Command "git push origin HEAD"', 'cmd /d /c gh pr merge 12',
+    'eval git push origin HEAD', "env -S 'git push origin HEAD'",
+    'rtk proxy -- git push origin HEAD', 'rtk run -c "gh pr merge 12"',
+    'echo `git push origin HEAD`', 'echo "$(gh pr merge 12)"',
+    '$GITCMD push origin HEAD', '{ git push origin HEAD; }',
+    'if true; then git push origin HEAD; fi', 'for remote in origin; do git push $remote; done',
+    'find . -delete', 'find .git -type f -delete', 'find . -exec git push origin HEAD \\;',
+    'find . -exec rm -rf {} +', 'rd /s /q .git', 'unlink .git', 'ren .git old-git',
+    'Clear-Content .git/config', 'Set-Content .git/config content',
+    'Add-Content -LiteralPath .ticket/prd.yaml -Value content',
+    'Out-File -FilePath .ticket/runtime/execution-log.jsonl -InputObject content',
+    'dd if=/dev/zero of=.git/config', 'chmod 777 .git/index.lock',
+    'cp src/config.json .git/config 2>/dev/null',
+    'gh repo clone owner/repo /repo/.looptroop/worktrees/T-2',
+    'gh release download v1.2.3 -D .git', 'gh release download v1.2.3 --output=.git/config',
+  ])('refuses recognized inline bypasses: %s', (command) => {
+    expect(shell(command)).not.toBeNull()
+  })
+
+  it.each([
+    'gh pr view 12 2>&1', 'gh pr checks 12 >/dev/null 2>&1',
+    'git status || gh api repos/owner/repo/pulls',
+    "bash -c 'npm test'", "sh -c 'gh pr view 12'", 'pwsh -Command "gh issue view 12"',
+    'env -C /tmp gh pr view 12', 'gh pr --repo owner/repo view 12',
+    "printf '%s' '`git push origin HEAD`'", 'find dist -type f -delete',
+    'find dist -exec rm -f {} +', 'find . -name package.json',
+    'Set-Content -Path src/new.ts -Value content', 'Clear-Content dist/cache.txt',
+    'Out-File -FilePath dist/output.txt -InputObject content',
+    'gh repo clone owner/scratch /tmp/scratch', 'gh release download v1.2.3 -D dist',
+    'echo status # comment\ngh pr view 12',
+  ])('keeps ordinary wrapped reads and narrow cleanup available: %s', (command) => {
+    expect(shell(command)).toBeNull()
+  })
+
+  it('tracks Git environment across assignments, exports, and nested shell commands', () => {
+    for (const command of [
+      'export GIT_DIR=/repo/.git; git -C /tmp/scratch reset --hard',
+      'GIT_DIR=/repo/.git; git -C /tmp/scratch reset --hard',
+      "GIT_DIR=/repo/.git sh -c 'git -C /tmp/scratch reset --hard'",
+    ]) {
+      expect(shell(command)).not.toBeNull()
+    }
+    expect(shell('echo status # comment\ngit push origin HEAD')).toContain('remote repository')
+  })
+
+  it('refuses relative local mutation targets when the native tool cwd is unknown', () => {
+    const guarded = (command: string) => getPermissionGuardRejection({ permission: 'bash', patterns: [command], context, unverifiedDirectory: true })
+    expect(guarded('rm -rf tickets')).toContain('working directory cannot be verified')
+    expect(guarded('cp src/new.ts config.json')).toContain('working directory cannot be verified')
+    expect(guarded('rm /tmp/scratch.txt')).toBeNull()
+    expect(guarded('gh pr view 12')).toBeNull()
+    expect(guarded('npm test')).toBeNull()
+  })
+
+  it('protects metadata reached through a symlinked ancestor', ({ onTestFinished }) => {
+    const root = mkdtempSync(join(tmpdir(), 'looptroop-guard-symlink-'))
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }))
+    const worktreePath = join(root, 'worktree')
+    const ticketDir = join(worktreePath, '.ticket')
+    const gitDir = join(root, '.git')
+    mkdirSync(ticketDir, { recursive: true })
+    mkdirSync(gitDir)
+    symlinkSync(gitDir, join(worktreePath, 'linked-state'), process.platform === 'win32' ? 'junction' : 'dir')
+    const localContext = { projectRoot: root, worktreePath, ticketDir }
+    expect(shell('tee linked-state/config', { context: localContext })).toContain('Git metadata')
+    expect(getPermissionGuardRejection({ permission: 'write', patterns: ['linked-state/new/config'], context: localContext })).toContain('Git metadata')
+  })
+
+  it('expands the home-directory removal target before protecting managed work', () => {
+    const worktreePath = join(homedir(), 'guard-project', '.looptroop', 'worktrees', 'T-1')
+    expect(shell('rm -rf ~', { context: { projectRoot: join(homedir(), 'guard-project'), worktreePath, ticketDir: join(worktreePath, '.ticket') } })).not.toBeNull()
+  })
+
   it.each([
     'gh auth status',
     'rtk gh pr view 12',

@@ -80,17 +80,20 @@ describe('resolveOpenCodePermissions', () => {
     }
   })
 
-  it('lets a specific allow beat a blanket deny', () => {
-    // `disabled` is `'*': false` plus per-tool rules. A tool it allows must not
-    // be reported as denied just because the wildcard says everything is.
-    const rules: OpenCodePermissionRule[] = [
+  it('uses the last matching specific or wildcard rule', () => {
+    const specificAllowLast: OpenCodePermissionRule[] = [
       { permission: '*', pattern: '*', action: 'deny' },
       { permission: 'read', pattern: '*', action: 'allow' },
     ]
-    expect(isPermissionDeniedByRules(rules, 'read')).toBe(false)
-    expect(isPermissionDeniedByRules(rules, 'bash')).toBe(true)
+    const wildcardDenyLast: OpenCodePermissionRule[] = [
+      { permission: 'read', pattern: '*', action: 'allow' },
+      { permission: '*', pattern: '*', action: 'deny' },
+    ]
+    expect(isPermissionDeniedByRules(specificAllowLast, 'read')).toBe(false)
+    expect(isPermissionDeniedByRules(specificAllowLast, 'bash')).toBe(true)
+    expect(isPermissionDeniedByRules(wildcardDenyLast, 'read')).toBe(true)
     expect(isPermissionDeniedByRules(undefined, 'bash')).toBe(false)
-    expect(isPermissionDeniedByRules(rules, undefined)).toBe(false)
+    expect(isPermissionDeniedByRules(specificAllowLast, undefined)).toBe(false)
   })
 
   it('matches policy rules against the requested resources', () => {
@@ -104,6 +107,14 @@ describe('resolveOpenCodePermissions', () => {
     expect(isPermissionDeniedByRules(rules, 'bash', ['git status --short'])).toBe(false)
     expect(isPermissionDeniedByRules(rules, 'write', ['/worktree/src/app.ts'], '/worktree')).toBe(true)
     expect(isPermissionDeniedByRules(rules, 'write', ['/worktree/docs/app.ts'], '/worktree')).toBe(false)
+  })
+
+  it('treats regex punctuation in permission patterns as literal glob text', () => {
+    const rules: OpenCodePermissionRule[] = [
+      { permission: 'bash', pattern: 'tool.+(arg)[x] *', action: 'deny' },
+    ]
+    expect(isPermissionDeniedByRules(rules, 'bash', ['tool.+(arg)[x] value'])).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'bash', ['toolZZargx value'])).toBe(false)
   })
 
   it('asks for shell and edits only on guarded permissive workflows', () => {

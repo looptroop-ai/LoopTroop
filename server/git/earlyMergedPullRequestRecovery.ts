@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { assertSafeRefName } from './ref'
 import {
@@ -6,13 +7,16 @@ import {
   ensureNoUntrackedPathsClobberedBy,
   ensureNoUntrackedPathsOverwrittenBy,
   fetchPullRequestHead,
+  PullRequestHeadProofError,
   readGitTreeSha,
+  RemoteBaseProofError,
   verifyRemoteBaseContainsCommit,
   type PullRequestInfo,
+  type RemoteBaseVerification,
 } from './github'
 import { getCurrentBranch } from './repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from './hookPolicy'
-import { gitSyncSucceeds, runGit, runGitMutationOrThrow, runGitSyncOrThrow } from './runCommand'
+import { RunCommandTimeoutError, runGitBinarySync, runGitMutationOrThrow, runGitSync, runGitSyncOrThrow, type RunCommandOptions } from './runCommand'
 
 export interface EarlyMergeProof {
   prNumber: number
@@ -26,7 +30,7 @@ export interface EarlyMergeProof {
 }
 
 export interface EarlyMergeManualRecovery {
-  reason: 'missing_proof' | 'conflict'
+  reason: 'missing_proof' | 'conflict' | 'local_work_preserved'
   message: string
   recoveryWorktreePath: string | null
   conflictPaths: string[]
@@ -41,17 +45,47 @@ export class EarlyMergeRecoveryManualError extends Error {
 
 export type EarlyMergeReconciliation =
   | { kind: 'equivalent'; proof: EarlyMergeProof }
+  | { kind: 'already_landed'; proof: EarlyMergeProof; remoteBaseTreeSha: string }
   | { kind: 'corrected'; proof: EarlyMergeProof; correctedCandidateSha: string; recoveryWorktreePath: string | null }
 
-function git(projectPath: string, args: string[]): Promise<string> {
-  return runGit(projectPath, args, { trimOutput: false }).then((result) => {
-    if (!result.ok) throw new Error(result.errorDetail)
-    return result.stdout
-  })
+function gitSync(projectPath: string, args: string[], options?: RunCommandOptions): string {
+  const result = runGitSync(projectPath, args, options)
+  if (!result.ok) {
+    if (result.timedOut) throw new RunCommandTimeoutError(result.errorDetail)
+    throw new Error(result.errorDetail)
+  }
+  return result.stdout
 }
 
-function captureCommitRef(projectPath: string, name: string, sha: string): Promise<void> {
-  return runGitMutationOrThrow(projectPath, ['update-ref', name, sha]).then(() => undefined)
+function gitRefExists(projectPath: string, name: string): boolean {
+  const result = runGitSync(projectPath, ['show-ref', '--verify', '--quiet', name])
+  if (result.ok) return true
+  if (result.timedOut) throw new RunCommandTimeoutError(result.errorDetail)
+  if (result.status === 1 && !result.spawnError) return false
+  throw new Error(result.errorDetail)
+}
+
+async function captureCommitRef(projectPath: string, name: string, sha: string): Promise<void> {
+  try {
+    await runGitMutationOrThrow(projectPath, ['update-ref', '--stdin'], { input: `create ${name} ${sha}\n` })
+  } catch (error) {
+    if (gitRefExists(projectPath, name) && gitSync(projectPath, ['rev-parse', name]) === sha) return
+    throw error
+  }
+}
+
+async function captureCorrectionRefs(projectPath: string, correctedRef: string, correctionRef: string, sha: string, previousSha?: string): Promise<void> {
+  try {
+    await runGitMutationOrThrow(projectPath, ['update-ref', '--stdin'], {
+      input: `start\ncreate ${correctedRef} ${sha}\n${previousSha ? `update ${correctionRef} ${sha} ${previousSha}` : `create ${correctionRef} ${sha}`}\nprepare\ncommit\n`,
+    })
+  } catch (error) {
+    const refsMatch = [correctedRef, correctionRef].every((name) => (
+      gitRefExists(projectPath, name) && gitSync(projectPath, ['rev-parse', name]) === sha
+    ))
+    if (refsMatch) return
+    throw error
+  }
 }
 
 function conflictPaths(projectPath: string): string[] {
@@ -88,6 +122,7 @@ function manualError(input: {
   conflictPaths?: string[]
   detail: string
   proof?: EarlyMergeProof | null
+  originalWorktreePath?: string
 }): EarlyMergeRecoveryManualError {
   const recoveryWorktreePath = input.recoveryWorktreePath ?? null
   const conflictPaths = input.conflictPaths ?? []
@@ -98,7 +133,9 @@ function manualError(input: {
     message: [
       `Pull request #${input.pr.number} was already merged, but LoopTroop could not safely reconcile candidate ${input.candidateCommitSha}.`,
       input.detail,
-      recoveryWorktreePath
+      input.reason === 'local_work_preserved'
+        ? `Local files in the original ticket worktree${input.originalWorktreePath ? ` at ${input.originalWorktreePath}` : ''} were preserved. Review and preserve those files before retrying.${recoveryWorktreePath ? ` The clean corrective checkout remains at ${recoveryWorktreePath}; it has no patch conflicts to resolve.` : ''}`
+        : recoveryWorktreePath
         ? `The ticket worktree was left untouched. A recovery checkout remains at ${recoveryWorktreePath}${conflictPaths.length ? ` (conflicts: ${conflictPaths.join(', ')})` : ''}. Inspect both checkouts and resolve the merge manually; LoopTroop will not guess or resume automatically from that checkout.`
         : 'The original ticket worktree was preserved. Review the merge and candidate manually; LoopTroop will not guess a resolution.',
     ].join(' '),
@@ -116,12 +153,14 @@ function protectTicketWorktreeForCorrectionOrStop(input: {
   try {
     protectTicketWorktreeForCorrection(input.worktreePath, input.candidateCommitSha, input.correctedCandidateSha)
   } catch (error) {
+    if (error instanceof RunCommandTimeoutError) throw error
     throw manualError({
-      reason: 'conflict',
+      reason: 'local_work_preserved',
       pr: input.pr,
       candidateCommitSha: input.candidateCommitSha,
       recoveryWorktreePath: existsSync(input.recoveryWorktreePath) ? input.recoveryWorktreePath : null,
       proof: input.proof,
+      originalWorktreePath: input.worktreePath,
       detail: `The ticket worktree was not reset because local files would be lost or tracked changes are present: ${error instanceof Error ? error.message : String(error)}`,
     })
   }
@@ -133,6 +172,11 @@ function validateMergedPullRequest(input: {
   headBranch: string
   candidateCommitSha: string
 }): void {
+  if (!Number.isSafeInteger(input.pr.number) || input.pr.number <= 0) {
+    throw new Error('The merged pull request number is missing or invalid.')
+  }
+  assertSafeRefName(input.baseBranch, 'Base branch')
+  assertSafeRefName(input.headBranch, 'Head branch')
   if (input.pr.state !== 'merged') throw new Error(`Pull request #${input.pr.number} is not merged.`)
   if (input.pr.baseRefName !== input.baseBranch || input.pr.headRefName !== input.headBranch) {
     throw new Error(`Pull request #${input.pr.number} does not match ticket branch ${input.headBranch} and base ${input.baseBranch}.`)
@@ -160,71 +204,158 @@ export async function reconcileMergedPullRequestCandidate(input: {
 }): Promise<EarlyMergeReconciliation> {
   try {
     validateMergedPullRequest(input)
-    const remote = await verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, input.pr.mergeCommitSha!)
-    const mergedHeadSha = await fetchPullRequestHead(input.projectPath, input.pr.number, input.pr.headRefOid!)
-    if (mergedHeadSha !== input.pr.headRefOid) {
-      throw new Error(`GitHub's pull request head ${input.pr.headRefOid} does not match fetched commit ${mergedHeadSha}.`)
-    }
-    const candidateTreeSha = readGitTreeSha(input.projectPath, input.candidateCommitSha)
-    const mergedHeadTreeSha = readGitTreeSha(input.projectPath, mergedHeadSha)
-    const proof: EarlyMergeProof = {
-      prNumber: input.pr.number,
-      prUrl: input.pr.url,
+  } catch (error) {
+    throw manualError({
+      reason: 'missing_proof',
+      pr: input.pr,
       candidateCommitSha: input.candidateCommitSha,
-      candidateTreeSha,
-      mergedHeadSha,
-      mergedHeadTreeSha,
-      landedCommitSha: input.pr.mergeCommitSha!,
-      remoteBaseHead: remote.remoteBaseHead,
-    }
-    if (candidateTreeSha === mergedHeadTreeSha) return { kind: 'equivalent', proof }
+      detail: error instanceof Error ? error.message : String(error),
+    })
+  }
 
-    assertSafeRefName(input.baseBranch, 'Base branch')
-    if (!/^[0-9a-f]{40,64}$/i.test(remote.remoteBaseHead)) {
-      throw new Error('The fetched remote base did not resolve to a full commit SHA.')
-    }
-    const recoveryWorktreePath = resolve(input.projectPath, '.looptroop', 'merge-recovery', `pr-${input.pr.number}-${input.candidateCommitSha.slice(0, 12)}`)
-    const refRoot = `refs/looptroop/early-merge/pr-${input.pr.number}`
-    const correctionRef = `${refRoot}/corrected-from-${input.candidateCommitSha}`
-    if (gitSyncSucceeds(input.projectPath, ['show-ref', '--verify', '--quiet', correctionRef])) {
-      const correctedCandidateSha = runGitSyncOrThrow(input.projectPath, ['rev-parse', correctionRef])
-      const ticketHead = runGitSyncOrThrow(input.worktreePath, ['rev-parse', 'HEAD'])
-      if (ticketHead !== input.candidateCommitSha && ticketHead !== correctedCandidateSha) {
+  let remote: RemoteBaseVerification
+  try {
+    remote = await verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, input.pr.mergeCommitSha!)
+  } catch (error) {
+    if (!(error instanceof RemoteBaseProofError)) throw error
+    throw manualError({
+      reason: 'missing_proof',
+      pr: input.pr,
+      candidateCommitSha: input.candidateCommitSha,
+      detail: error.message,
+    })
+  }
+
+  let mergedHeadSha: string
+  try {
+    mergedHeadSha = await fetchPullRequestHead(input.projectPath, input.pr.number, input.pr.headRefOid!)
+  } catch (error) {
+    if (!(error instanceof PullRequestHeadProofError)) throw error
+    throw manualError({
+      reason: 'missing_proof',
+      pr: input.pr,
+      candidateCommitSha: input.candidateCommitSha,
+      detail: error.message,
+    })
+  }
+  if (mergedHeadSha !== input.pr.headRefOid) {
+    throw manualError({
+      reason: 'missing_proof',
+      pr: input.pr,
+      candidateCommitSha: input.candidateCommitSha,
+      detail: `GitHub's pull request head ${input.pr.headRefOid} does not match fetched commit ${mergedHeadSha}.`,
+    })
+  }
+
+  let candidateTreeSha: string
+  let mergedHeadTreeSha: string
+  try {
+    candidateTreeSha = readGitTreeSha(input.projectPath, input.candidateCommitSha)
+    mergedHeadTreeSha = readGitTreeSha(input.projectPath, mergedHeadSha)
+  } catch (error) {
+    if (error instanceof RunCommandTimeoutError) throw error
+    throw manualError({
+      reason: 'missing_proof',
+      pr: input.pr,
+      candidateCommitSha: input.candidateCommitSha,
+      detail: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  const proof: EarlyMergeProof = {
+    prNumber: input.pr.number,
+    prUrl: input.pr.url,
+    candidateCommitSha: input.candidateCommitSha,
+    candidateTreeSha,
+    mergedHeadSha,
+    mergedHeadTreeSha,
+    landedCommitSha: input.pr.mergeCommitSha!,
+    remoteBaseHead: remote.remoteBaseHead,
+  }
+  if (candidateTreeSha === mergedHeadTreeSha) return { kind: 'equivalent', proof }
+  if (!/^[0-9a-f]{40,64}$/i.test(remote.remoteBaseHead)) {
+    throw manualError({
+      reason: 'missing_proof',
+      pr: input.pr,
+      candidateCommitSha: input.candidateCommitSha,
+      proof,
+      detail: 'The fetched remote base did not resolve to a full commit SHA.',
+    })
+  }
+
+  const recoveryWorktreePath = resolve(input.projectPath, '.looptroop', 'merge-recovery', `pr-${input.pr.number}-${input.candidateCommitSha}-${remote.remoteBaseHead}`)
+  const refRoot = `refs/looptroop/early-merge/pr-${input.pr.number}`
+  const correctionRef = `${refRoot}/corrected-from-${input.candidateCommitSha}`
+  const correctedCommitRef = (sha: string) => `${refRoot}/candidate-${input.candidateCommitSha}-corrected-${sha}`
+  let previousCorrectionSha: string | undefined
+  let expectedTicketHead = input.candidateCommitSha
+  const patchResult = runGitBinarySync(input.projectPath, [
+    '-c', 'core.quotePath=true',
+    'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames',
+    '--unified=3', '--src-prefix=a/', '--dst-prefix=b/', mergedHeadSha, input.candidateCommitSha,
+  ])
+  if (!patchResult.ok) {
+    if (patchResult.timedOut) throw new RunCommandTimeoutError(patchResult.errorDetail)
+    throw manualError({
+      reason: 'missing_proof', pr: input.pr, candidateCommitSha: input.candidateCommitSha, proof,
+      detail: `Git could not produce the A-to-B patch: ${patchResult.errorDetail}`,
+    })
+  }
+  if (patchResult.stdout.length === 0) {
+    throw manualError({
+      reason: 'missing_proof', pr: input.pr, candidateCommitSha: input.candidateCommitSha, proof,
+      detail: 'The candidate trees differ, but Git produced no A-to-B patch.',
+    })
+  }
+
+  const patchDirectory = mkdtempSync(resolve(tmpdir(), 'looptroop-early-merge-'))
+  const patchPath = resolve(patchDirectory, 'candidate.patch')
+  try {
+    writeFileSync(patchPath, patchResult.stdout)
+    if (gitRefExists(input.projectPath, correctionRef)) {
+      const correctedCandidateSha = gitSync(input.projectPath, ['rev-parse', correctionRef])
+      if (!gitRefExists(input.projectPath, correctedCommitRef(correctedCandidateSha))
+        || gitSync(input.projectPath, ['rev-parse', correctedCommitRef(correctedCandidateSha)]) !== correctedCandidateSha) {
+        throw new Error('The previously prepared correction is missing its matching commit ref.')
+      }
+      const ticketHead = gitSync(input.worktreePath, ['rev-parse', 'HEAD'])
+      const savedTicketHead = gitRefExists(input.projectPath, correctedCommitRef(ticketHead))
+        && gitSync(input.projectPath, ['rev-parse', correctedCommitRef(ticketHead)]) === ticketHead
+      if (ticketHead !== input.candidateCommitSha && !savedTicketHead) {
         throw new Error('A previously prepared correction exists, but the ticket worktree has moved to another commit.')
       }
       if (getCurrentBranch(input.worktreePath) !== input.headBranch) {
         throw new Error('The ticket worktree is no longer on its ticket branch.')
       }
-      if (ticketHead === input.candidateCommitSha) {
-        protectTicketWorktreeForCorrectionOrStop({
-          worktreePath: input.worktreePath,
-          candidateCommitSha: input.candidateCommitSha,
-          correctedCandidateSha,
-          recoveryWorktreePath,
-          pr: input.pr,
-          proof,
-        })
-        await runGitMutationOrThrow(input.worktreePath, ['reset', '--hard', correctedCandidateSha])
+      expectedTicketHead = ticketHead
+      if (gitSync(input.projectPath, ['rev-parse', `${correctedCandidateSha}^`]) === remote.remoteBaseHead) {
+        if (ticketHead !== correctedCandidateSha) {
+          protectTicketWorktreeForCorrectionOrStop({
+            worktreePath: input.worktreePath,
+            candidateCommitSha: input.candidateCommitSha,
+            correctedCandidateSha,
+            recoveryWorktreePath,
+            pr: input.pr,
+            proof,
+          })
+          await runGitMutationOrThrow(input.worktreePath, ['reset', '--hard', correctedCandidateSha])
+        } else {
+          ensureNoTrackedWorktreeChanges(input.worktreePath, 'early-merge candidate correction')
+        }
+        return {
+          kind: 'corrected', proof, correctedCandidateSha,
+          recoveryWorktreePath: existsSync(recoveryWorktreePath) ? recoveryWorktreePath : null,
+        }
       }
-      return {
-        kind: 'corrected', proof, correctedCandidateSha,
-        recoveryWorktreePath: existsSync(recoveryWorktreePath) ? recoveryWorktreePath : null,
-      }
+      previousCorrectionSha = correctedCandidateSha
     }
-    if (existsSync(recoveryWorktreePath)) {
-      throw new Error(`A recovery worktree already exists at ${recoveryWorktreePath}; it was left untouched.`)
-    }
+
     ensureNoTrackedWorktreeChanges(input.worktreePath, 'early-merge candidate correction')
-    if (runGitSyncOrThrow(input.worktreePath, ['rev-parse', 'HEAD']) !== input.candidateCommitSha
+    if (gitSync(input.worktreePath, ['rev-parse', 'HEAD']) !== expectedTicketHead
       || getCurrentBranch(input.worktreePath) !== input.headBranch) {
       throw new Error('The ticket worktree no longer points to the approved candidate on its ticket branch.')
     }
     mkdirSync(dirname(recoveryWorktreePath), { recursive: true })
-
-    const patch = await git(input.projectPath, [
-      'diff', '--binary', '--full-index', '--no-ext-diff', mergedHeadSha, input.candidateCommitSha,
-    ])
-    if (!patch) throw new Error('The candidate trees differ, but Git produced no A-to-B patch.')
 
     for (const [name, sha] of [
       [`${refRoot}/head-${mergedHeadSha}`, mergedHeadSha],
@@ -234,76 +365,111 @@ export async function reconcileMergedPullRequestCandidate(input: {
       await captureCommitRef(input.projectPath, name, sha)
     }
 
-    await runGitMutationOrThrow(input.projectPath, ['worktree', 'add', '--detach', recoveryWorktreePath, remote.remoteBaseHead])
-    try {
-      const applied = await runGit(recoveryWorktreePath, ['apply', '--3way', '--binary'], { input: patch })
-      if (!applied.ok) {
+    if (existsSync(recoveryWorktreePath)) {
+      const worktreeList = gitSync(input.projectPath, ['worktree', 'list', '--porcelain', '-z'], { trimOutput: false })
+      // Git reports forward slashes on Windows; compare native absolute paths.
+      const registered = worktreeList.split('\0').some((entry) =>
+        entry.startsWith('worktree ') && resolve(entry.slice('worktree '.length)) === recoveryWorktreePath)
+      if (!registered) {
         throw manualError({
-          reason: 'conflict',
-          pr: input.pr,
-          candidateCommitSha: input.candidateCommitSha,
-          recoveryWorktreePath,
-          conflictPaths: conflictPaths(recoveryWorktreePath),
-          proof,
-          detail: `The A-to-B patch could not be applied cleanly to origin/${input.baseBranch}@${remote.remoteBaseHead}: ${applied.errorDetail}`,
+          reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
+          recoveryWorktreePath, proof,
+          detail: `A path already exists at ${recoveryWorktreePath}, but it is not the expected Git recovery worktree.`,
         })
       }
+      if (gitSync(recoveryWorktreePath, ['rev-parse', 'HEAD']) !== remote.remoteBaseHead
+        || gitSync(recoveryWorktreePath, ['status', '--porcelain=1', '-z', '--untracked-files=all'], { trimOutput: false })) {
+        throw manualError({
+          reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
+          recoveryWorktreePath, conflictPaths: conflictPaths(recoveryWorktreePath), proof,
+          detail: 'The existing recovery checkout contains work that LoopTroop will preserve instead of retrying automatically.',
+        })
+      }
+    } else {
+      await runGitMutationOrThrow(input.projectPath, ['worktree', 'add', '--detach', recoveryWorktreePath, remote.remoteBaseHead])
+    }
 
-      const bypassHooks = shouldBypassGitHooks(readWorktreeGitHookPolicy(input.worktreePath))
-      await runGitMutationOrThrow(recoveryWorktreePath, [
-        '-c', 'user.name=LoopTroop',
-        '-c', 'user.email=looptroop@local',
-        'commit',
-        ...(bypassHooks ? ['--no-verify'] : []),
-        '-m', `${input.externalId}: carry candidate changes after merged PR #${input.pr.number}`,
-      ])
-      const correctedCandidateSha = runGitSyncOrThrow(recoveryWorktreePath, ['rev-parse', 'HEAD'])
-      if (runGitSyncOrThrow(recoveryWorktreePath, ['rev-parse', 'HEAD^']) !== remote.remoteBaseHead) {
-        throw new Error('The corrected candidate is not based directly on the verified current origin base.')
-      }
-      await captureCommitRef(input.projectPath, `${refRoot}/corrected-${correctedCandidateSha}`, correctedCandidateSha)
-      await captureCommitRef(input.projectPath, correctionRef, correctedCandidateSha)
+    const changedPaths = gitSync(input.projectPath, [
+      'diff', '--name-only', '--no-renames', '-z', mergedHeadSha, input.candidateCommitSha,
+    ], { trimOutput: false }).split('\0').filter(Boolean)
+    ensureNoTrackedWorktreeChanges(recoveryWorktreePath, 'early-merge candidate correction')
+    ensureNoUntrackedPathsOverwrittenBy(recoveryWorktreePath, changedPaths, 'early-merge candidate correction')
 
-      if (runGitSyncOrThrow(input.worktreePath, ['rev-parse', 'HEAD']) !== input.candidateCommitSha
-        || getCurrentBranch(input.worktreePath) !== input.headBranch) {
-        throw new Error('The ticket worktree changed before the corrected candidate could be installed.')
-      }
-      protectTicketWorktreeForCorrectionOrStop({
-        worktreePath: input.worktreePath,
-        candidateCommitSha: input.candidateCommitSha,
-        correctedCandidateSha,
-        recoveryWorktreePath,
-        pr: input.pr,
-        proof,
-      })
-      await runGitMutationOrThrow(input.worktreePath, ['reset', '--hard', correctedCandidateSha])
-      let retainedRecoveryWorktreePath: string | null = recoveryWorktreePath
-      try {
-        await runGitMutationOrThrow(input.projectPath, ['worktree', 'remove', recoveryWorktreePath])
-        retainedRecoveryWorktreePath = null
-      } catch {
-        // The corrected commit is already referenced and installed; a clean recovery checkout is harmless to retain.
-      }
-      return { kind: 'corrected', proof, correctedCandidateSha, recoveryWorktreePath: retainedRecoveryWorktreePath }
+    try {
+      await runGitMutationOrThrow(recoveryWorktreePath, ['-c', 'apply.whitespace=nowarn', 'apply', '--3way', '--binary', '--', patchPath])
     } catch (error) {
-      if (error instanceof EarlyMergeRecoveryManualError) throw error
+      if (error instanceof RunCommandTimeoutError) throw error
       throw manualError({
-        reason: 'missing_proof',
+        reason: 'conflict',
         pr: input.pr,
         candidateCommitSha: input.candidateCommitSha,
-        recoveryWorktreePath: existsSync(recoveryWorktreePath) ? recoveryWorktreePath : null,
-        conflictPaths: existsSync(recoveryWorktreePath) ? conflictPaths(recoveryWorktreePath) : [],
+        recoveryWorktreePath,
+        conflictPaths: conflictPaths(recoveryWorktreePath),
         proof,
-        detail: `Corrective recovery stopped without changing the ticket worktree: ${error instanceof Error ? error.message : String(error)}`,
+        detail: `The A-to-B patch could not be applied cleanly to origin/${input.baseBranch}@${remote.remoteBaseHead}: ${error instanceof Error ? error.message : String(error)}`,
       })
     }
+
+    const recoveryStatus = gitSync(recoveryWorktreePath, ['status', '--porcelain=1', '-z', '--untracked-files=all'], { trimOutput: false })
+    if (!recoveryStatus) {
+      const remoteBaseTreeSha = readGitTreeSha(input.projectPath, remote.remoteBaseHead)
+      try {
+        await runGitMutationOrThrow(input.projectPath, ['worktree', 'remove', recoveryWorktreePath])
+      } catch (error) {
+        if (error instanceof RunCommandTimeoutError) throw error
+        // The verified base is unchanged; a clean checkout can be removed on a later retry.
+      }
+      return { kind: 'already_landed', proof, remoteBaseTreeSha }
+    }
+
+    const bypassHooks = shouldBypassGitHooks(readWorktreeGitHookPolicy(input.worktreePath))
+    await runGitMutationOrThrow(recoveryWorktreePath, [
+      '-c', 'user.name=LoopTroop',
+      '-c', 'user.email=looptroop@local',
+      'commit',
+      ...(bypassHooks ? ['--no-verify'] : []),
+      '-m', `${input.externalId}: carry candidate changes after merged PR #${input.pr.number}`,
+    ])
+    const correctedCandidateSha = gitSync(recoveryWorktreePath, ['rev-parse', 'HEAD'])
+    if (gitSync(recoveryWorktreePath, ['rev-parse', 'HEAD^']) !== remote.remoteBaseHead) {
+      throw new Error('The corrected candidate is not based directly on the verified current origin base.')
+    }
+    await captureCorrectionRefs(input.projectPath, correctedCommitRef(correctedCandidateSha), correctionRef, correctedCandidateSha, previousCorrectionSha)
+
+    if (gitSync(input.worktreePath, ['rev-parse', 'HEAD']) !== expectedTicketHead
+      || getCurrentBranch(input.worktreePath) !== input.headBranch) {
+      throw new Error('The ticket worktree changed before the corrected candidate could be installed.')
+    }
+    protectTicketWorktreeForCorrectionOrStop({
+      worktreePath: input.worktreePath,
+      candidateCommitSha: input.candidateCommitSha,
+      correctedCandidateSha,
+      recoveryWorktreePath,
+      pr: input.pr,
+      proof,
+    })
+    await runGitMutationOrThrow(input.worktreePath, ['reset', '--hard', correctedCandidateSha])
+    let retainedRecoveryWorktreePath: string | null = recoveryWorktreePath
+    try {
+      await runGitMutationOrThrow(input.projectPath, ['worktree', 'remove', recoveryWorktreePath])
+      retainedRecoveryWorktreePath = null
+    } catch (error) {
+      if (error instanceof RunCommandTimeoutError) throw error
+      // The corrected commit is already referenced and installed; a clean recovery checkout is harmless to retain.
+    }
+    return { kind: 'corrected', proof, correctedCandidateSha, recoveryWorktreePath: retainedRecoveryWorktreePath }
   } catch (error) {
-    if (error instanceof EarlyMergeRecoveryManualError) throw error
+    if (error instanceof EarlyMergeRecoveryManualError || error instanceof RunCommandTimeoutError) throw error
     throw manualError({
       reason: 'missing_proof',
       pr: input.pr,
       candidateCommitSha: input.candidateCommitSha,
-      detail: error instanceof Error ? error.message : String(error),
+      recoveryWorktreePath: existsSync(recoveryWorktreePath) ? recoveryWorktreePath : null,
+      conflictPaths: existsSync(recoveryWorktreePath) ? conflictPaths(recoveryWorktreePath) : [],
+      proof,
+      detail: `Corrective recovery stopped without changing the ticket worktree: ${error instanceof Error ? error.message : String(error)}`,
     })
+  } finally {
+    rmSync(patchDirectory, { recursive: true, force: true })
   }
 }

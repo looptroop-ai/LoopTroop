@@ -223,6 +223,12 @@ describe('pull request drafting context', () => {
     ].join('\n')
   }
 
+  function queueValidDrafts(prefix: string) {
+    mocks.runOpenCodePrompt
+      .mockResolvedValueOnce({ session: { id: `${prefix}-audit` }, response: validCandidateAuditResponse(), messages: [] })
+      .mockResolvedValueOnce({ session: { id: `${prefix}-draft` }, response: validPullRequestDraftResponse(), messages: [] })
+  }
+
   function makeMergedPullRequest(number = 42) {
     return {
       number,
@@ -241,43 +247,92 @@ describe('pull request drafting context', () => {
     }
   }
 
+  function makeEarlyMergeProof(pr: ReturnType<typeof makeMergedPullRequest>, candidateCommitSha: string, remoteBaseHead = '2'.repeat(40)) {
+    return {
+      prNumber: pr.number,
+      prUrl: pr.url,
+      candidateCommitSha,
+      candidateTreeSha: 'f'.repeat(40),
+      mergedHeadSha: pr.headRefOid,
+      mergedHeadTreeSha: '1'.repeat(40),
+      landedCommitSha: pr.mergeCommitSha,
+      remoteBaseHead,
+    }
+  }
+
+  function mockCorrectedRecovery(pr: ReturnType<typeof makeMergedPullRequest>, candidateCommitSha: string, correctedCandidateSha: string) {
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
+      kind: 'corrected',
+      correctedCandidateSha,
+      recoveryWorktreePath: null,
+      proof: makeEarlyMergeProof(pr, candidateCommitSha),
+    })
+  }
+
+  function writeIntegrationCandidate(ticketId: string, candidateCommitSha: string, mergeBase = 'e'.repeat(40), record: Record<string, unknown> = {}) {
+    upsertLatestPhaseArtifact(ticketId, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
+      ...record,
+      candidateCommitSha,
+      mergeBase,
+    }))
+  }
+
+  function makeEarlyMergeInput(input: {
+    ticket: { id: string; externalId: string }
+    repoDir: string
+    worktreePath: string
+    candidateCommitSha: string
+    pr: ReturnType<typeof makeMergedPullRequest>
+    phase?: 'CREATING_PULL_REQUEST' | 'WAITING_PR_REVIEW'
+  }): Parameters<typeof reconcileEarlyMergedPullRequest>[0] {
+    return {
+      ticketId: input.ticket.id,
+      phase: input.phase ?? 'CREATING_PULL_REQUEST',
+      projectPath: input.repoDir,
+      worktreePath: input.worktreePath,
+      externalId: input.ticket.externalId,
+      baseBranch: 'main',
+      headBranch: input.ticket.externalId,
+      candidateCommitSha: input.candidateCommitSha,
+      pr: input.pr,
+    }
+  }
+
+  function makeEarlyMergeReport(ticket: { externalId: string }, pr: ReturnType<typeof makeMergedPullRequest>, candidateCommitSha: string, overrides: Record<string, unknown> = {}) {
+    return {
+      status: 'manual_recovery_required',
+      recordedAt: new Date().toISOString(),
+      reason: 'missing_proof',
+      baseBranch: 'main',
+      headBranch: ticket.externalId,
+      prNumber: pr.number,
+      prUrl: pr.url,
+      candidateCommitSha,
+      candidateTreeSha: null,
+      prHeadSha: pr.headRefOid,
+      prHeadTreeSha: null,
+      landedCommitSha: pr.mergeCommitSha,
+      remoteBaseHead: null,
+      correctedCandidateSha: null,
+      recoveryWorktreePath: null,
+      conflictPaths: [],
+      message: 'Manual recovery required.',
+      ...overrides,
+    }
+  }
+
   it('skips an older merged PR after correction and creates a new PR from the revalidated candidate', async () => {
     resetTestDb()
     const { ticket, context, repoDir, paths } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
     const originalCandidate = 'b'.repeat(40)
     const correctedCandidate = 'c'.repeat(40)
     const mergedPr = makeMergedPullRequest()
-    upsertLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
-      candidateCommitSha: originalCandidate,
-      mergeBase: 'e'.repeat(40),
-    }))
-    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
-      kind: 'corrected',
-      correctedCandidateSha: correctedCandidate,
-      recoveryWorktreePath: null,
-      proof: {
-        prNumber: mergedPr.number,
-        prUrl: mergedPr.url,
-        candidateCommitSha: originalCandidate,
-        candidateTreeSha: 'f'.repeat(40),
-        mergedHeadSha: mergedPr.headRefOid,
-        mergedHeadTreeSha: '1'.repeat(40),
-        landedCommitSha: mergedPr.mergeCommitSha,
-        remoteBaseHead: '2'.repeat(40),
-      },
-    })
+    writeIntegrationCandidate(ticket.id, originalCandidate)
+    mockCorrectedRecovery(mergedPr, originalCandidate, correctedCandidate)
 
-    await expect(reconcileEarlyMergedPullRequest({
-      ticketId: ticket.id,
-      phase: 'CREATING_PULL_REQUEST',
-      projectPath: repoDir,
-      worktreePath: paths.worktreePath,
-      externalId: ticket.externalId,
-      baseBranch: 'main',
-      headBranch: ticket.externalId,
-      candidateCommitSha: originalCandidate,
-      pr: mergedPr,
-    })).resolves.toBe('corrected')
+    await expect(reconcileEarlyMergedPullRequest(makeEarlyMergeInput({
+      ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha: originalCandidate, pr: mergedPr,
+    }))).resolves.toBe('corrected')
 
     upsertLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
       status: 'passed',
@@ -294,9 +349,7 @@ describe('pull request drafting context', () => {
       summary: 'Corrective candidate passed final tests.',
     }))
     mocks.listPullRequestsForBranch.mockResolvedValue([mergedPr])
-    mocks.runOpenCodePrompt
-      .mockResolvedValueOnce({ session: { id: 'corrected-candidate-audit' }, response: validCandidateAuditResponse(), messages: [] })
-      .mockResolvedValueOnce({ session: { id: 'corrected-candidate-pr-draft' }, response: validPullRequestDraftResponse(), messages: [] })
+    queueValidDrafts('corrected-candidate')
 
     const sendEvent = vi.fn()
     await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
@@ -306,6 +359,7 @@ describe('pull request drafting context', () => {
     expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledOnce()
     expect(sendEvent).toHaveBeenCalledWith({ type: 'PULL_REQUEST_READY' })
     expect(getLatestPhaseArtifact(ticket.id, 'early_merge_recovery')?.content).toContain('corrected')
+    expect(JSON.stringify(mocks.runOpenCodePrompt.mock.calls)).not.toContain('recoveryWorktreePath')
   })
 
   it('re-dispatches correction readiness after a crash between corrective artifacts and the event', async () => {
@@ -314,36 +368,9 @@ describe('pull request drafting context', () => {
     const originalCandidate = 'b'.repeat(40)
     const correctedCandidate = 'c'.repeat(40)
     const mergedPr = makeMergedPullRequest()
-    upsertLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
-      candidateCommitSha: originalCandidate,
-      mergeBase: 'e'.repeat(40),
-    }))
-    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
-      kind: 'corrected',
-      correctedCandidateSha: correctedCandidate,
-      recoveryWorktreePath: null,
-      proof: {
-        prNumber: mergedPr.number,
-        prUrl: mergedPr.url,
-        candidateCommitSha: originalCandidate,
-        candidateTreeSha: 'f'.repeat(40),
-        mergedHeadSha: mergedPr.headRefOid,
-        mergedHeadTreeSha: '1'.repeat(40),
-        landedCommitSha: mergedPr.mergeCommitSha,
-        remoteBaseHead: '2'.repeat(40),
-      },
-    })
-    const recoveryInput = {
-      ticketId: ticket.id,
-      phase: 'CREATING_PULL_REQUEST' as const,
-      projectPath: repoDir,
-      worktreePath: paths.worktreePath,
-      externalId: ticket.externalId,
-      baseBranch: 'main',
-      headBranch: ticket.externalId,
-      candidateCommitSha: originalCandidate,
-      pr: mergedPr,
-    }
+    writeIntegrationCandidate(ticket.id, originalCandidate)
+    mockCorrectedRecovery(mergedPr, originalCandidate, correctedCandidate)
+    const recoveryInput = makeEarlyMergeInput({ ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha: originalCandidate, pr: mergedPr })
 
     await expect(reconcileEarlyMergedPullRequest(recoveryInput)).resolves.toBe('corrected')
     const pending = JSON.parse(getLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES')!.content)
@@ -365,36 +392,12 @@ describe('pull request drafting context', () => {
     const originalCandidate = 'b'.repeat(40)
     const correctedCandidate = 'c'.repeat(40)
     const mergedPr = makeMergedPullRequest()
-    upsertLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
-      candidateCommitSha: originalCandidate,
-      mergeBase: 'e'.repeat(40),
-    }))
-    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
-      kind: 'corrected',
-      correctedCandidateSha: correctedCandidate,
-      recoveryWorktreePath: null,
-      proof: {
-        prNumber: mergedPr.number,
-        prUrl: mergedPr.url,
-        candidateCommitSha: originalCandidate,
-        candidateTreeSha: 'f'.repeat(40),
-        mergedHeadSha: mergedPr.headRefOid,
-        mergedHeadTreeSha: '1'.repeat(40),
-        landedCommitSha: mergedPr.mergeCommitSha,
-        remoteBaseHead: '2'.repeat(40),
-      },
+    writeIntegrationCandidate(ticket.id, originalCandidate)
+    mockCorrectedRecovery(mergedPr, originalCandidate, correctedCandidate)
+    const recoveryInput = makeEarlyMergeInput({
+      ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha: originalCandidate, pr: mergedPr,
+      phase: 'WAITING_PR_REVIEW',
     })
-    const recoveryInput = {
-      ticketId: ticket.id,
-      phase: 'WAITING_PR_REVIEW' as const,
-      projectPath: repoDir,
-      worktreePath: paths.worktreePath,
-      externalId: ticket.externalId,
-      baseBranch: 'main',
-      headBranch: ticket.externalId,
-      candidateCommitSha: originalCandidate,
-      pr: mergedPr,
-    }
 
     await expect(reconcileEarlyMergedPullRequest(recoveryInput)).resolves.toBe('corrected')
     await expect(reconcileEarlyMergedPullRequest(recoveryInput)).resolves.toBe('corrected')
@@ -409,10 +412,7 @@ describe('pull request drafting context', () => {
     const { ticket, repoDir, paths } = await createPullRequestReadyTicket()
     const originalCandidate = 'b'.repeat(40)
     const mergedPr = makeMergedPullRequest()
-    upsertLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
-      candidateCommitSha: originalCandidate,
-      mergeBase: 'e'.repeat(40),
-    }))
+    writeIntegrationCandidate(ticket.id, originalCandidate)
     mocks.reconcileMergedPullRequestCandidate.mockRejectedValueOnce(new EarlyMergeRecoveryManualError({
       reason: 'conflict',
       message: 'The A-to-B patch conflicted. Recovery checkout remains at /tmp/recovery; resolve it manually. LoopTroop will not guess or resume automatically from that checkout.',
@@ -420,17 +420,9 @@ describe('pull request drafting context', () => {
       conflictPaths: ['src/example.ts'],
     }))
 
-    await expect(reconcileEarlyMergedPullRequest({
-      ticketId: ticket.id,
-      phase: 'CREATING_PULL_REQUEST',
-      projectPath: repoDir,
-      worktreePath: paths.worktreePath,
-      externalId: ticket.externalId,
-      baseBranch: 'main',
-      headBranch: ticket.externalId,
-      candidateCommitSha: originalCandidate,
-      pr: mergedPr,
-    })).rejects.toThrow('will not guess or resume automatically')
+    await expect(reconcileEarlyMergedPullRequest(makeEarlyMergeInput({
+      ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha: originalCandidate, pr: mergedPr,
+    }))).rejects.toThrow('will not guess or resume automatically')
 
     const report = JSON.parse(getLatestPhaseArtifact(ticket.id, 'early_merge_recovery')!.content)
     expect(report).toMatchObject({
@@ -449,21 +441,235 @@ describe('pull request drafting context', () => {
     expect(getLatestPhaseArtifact(ticket.id, 'git_recovery_receipt', 'CREATING_PULL_REQUEST')).toBeDefined()
   })
 
+  it('rechecks missing proof on retry while preserving an existing conflict checkout', async () => {
+    resetTestDb()
+    const { ticket, repoDir, paths } = await createPullRequestReadyTicket()
+    const candidateCommitSha = 'b'.repeat(40)
+    const mergedPr = makeMergedPullRequest()
+    writeIntegrationCandidate(ticket.id, candidateCommitSha)
+    const input = makeEarlyMergeInput({ ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha, pr: mergedPr })
+    upsertLatestPhaseArtifact(ticket.id, 'early_merge_recovery', 'CREATING_PULL_REQUEST', JSON.stringify(
+      makeEarlyMergeReport(ticket, mergedPr, candidateCommitSha, { message: 'Proof is unavailable.' }),
+    ))
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
+      kind: 'equivalent',
+      proof: { ...makeEarlyMergeProof(mergedPr, candidateCommitSha), mergedHeadTreeSha: 'f'.repeat(40) },
+    })
+
+    await expect(reconcileEarlyMergedPullRequest(input)).resolves.toBe('equivalent')
+    expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenCalledOnce()
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')!.content)).toMatchObject({
+      status: 'passed',
+      disposition: 'merged',
+      candidateCommitSha,
+      prHeadSha: mergedPr.headRefOid,
+      candidateTreeSha: 'f'.repeat(40),
+      prHeadTreeSha: 'f'.repeat(40),
+    })
+
+    upsertLatestPhaseArtifact(ticket.id, 'early_merge_recovery', 'CREATING_PULL_REQUEST', JSON.stringify(
+      makeEarlyMergeReport(ticket, mergedPr, candidateCommitSha, {
+        reason: 'conflict',
+        recoveryWorktreePath: paths.ticketDir,
+        conflictPaths: [],
+        message: 'The conflict checkout was resolved manually.',
+      }),
+    ))
+    mocks.reconcileMergedPullRequestCandidate.mockClear()
+
+    await expect(reconcileEarlyMergedPullRequest(input)).rejects.toMatchObject({ recovery: { reason: 'conflict' } })
+    expect(mocks.reconcileMergedPullRequestCandidate).not.toHaveBeenCalled()
+  })
+
+  it.each(['missing', 'malformed', 'incomplete'] as const)(
+    'fails closed when corrective revalidation has a %s recovery artifact',
+    async (artifactState) => {
+      resetTestDb()
+      const { ticket, context, repoDir, paths } = await createPullRequestReadyTicket()
+      const candidateCommitSha = 'b'.repeat(40)
+      const mergedPr = makeMergedPullRequest()
+      writeIntegrationCandidate(ticket.id, candidateCommitSha, 'e'.repeat(40), { status: 'pending_revalidation' })
+      if (artifactState !== 'missing') {
+        upsertLatestPhaseArtifact(ticket.id, 'early_merge_recovery', 'CREATING_PULL_REQUEST', artifactState === 'malformed'
+          ? '{'
+          : JSON.stringify(makeEarlyMergeReport(ticket, mergedPr, candidateCommitSha, {
+            status: 'corrected',
+            reason: 'corrective_delta',
+            correctedCandidateSha: 'c'.repeat(40),
+          })))
+      }
+      const sendEvent = vi.fn()
+
+      await expect(handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal))
+        .rejects.toThrow('pending revalidation')
+      await expect(reconcileEarlyMergedPullRequest(makeEarlyMergeInput({
+        ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha, pr: mergedPr,
+      }))).rejects.toThrow('pending revalidation')
+      expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
+      expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+      expect(mocks.listPullRequestsForBranch).not.toHaveBeenCalled()
+      expect(mocks.reconcileMergedPullRequestCandidate).not.toHaveBeenCalled()
+    },
+  )
+
+  it('records and replays already-landed proof with the actual candidate, PR, and remote-base trees', async () => {
+    resetTestDb()
+    const { ticket, repoDir, paths } = await createPullRequestReadyTicket()
+    const candidateCommitSha = 'b'.repeat(40)
+    const mergedPr = makeMergedPullRequest()
+    writeIntegrationCandidate(ticket.id, candidateCommitSha)
+    const proof = {
+      ...makeEarlyMergeProof(mergedPr, candidateCommitSha, '9'.repeat(40)),
+      candidateTreeSha: '1'.repeat(40),
+      mergedHeadTreeSha: '2'.repeat(40),
+    }
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
+      kind: 'already_landed',
+      proof,
+      remoteBaseTreeSha: '3'.repeat(40),
+    })
+    const input = makeEarlyMergeInput({ ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha, pr: mergedPr })
+
+    await expect(reconcileEarlyMergedPullRequest(input)).resolves.toBe('already_landed')
+
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'early_merge_recovery')!.content)).toMatchObject({
+      status: 'already_landed',
+      reason: 'already_landed',
+      candidateCommitSha,
+      candidateTreeSha: '1'.repeat(40),
+      prHeadSha: mergedPr.headRefOid,
+      prHeadTreeSha: '2'.repeat(40),
+      landedCommitSha: mergedPr.mergeCommitSha,
+      remoteBaseHead: '9'.repeat(40),
+      remoteBaseTreeSha: '3'.repeat(40),
+    })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')!.content)).toMatchObject({
+      proofKind: 'already_landed',
+      candidateTreeSha: '1'.repeat(40),
+      prHeadTreeSha: '2'.repeat(40),
+      remoteBaseHead: '9'.repeat(40),
+      remoteBaseTreeSha: '3'.repeat(40),
+    })
+
+    mocks.reconcileMergedPullRequestCandidate.mockClear()
+    await expect(reconcileEarlyMergedPullRequest(input)).resolves.toBe('already_landed')
+    expect(mocks.reconcileMergedPullRequestCandidate).not.toHaveBeenCalled()
+  })
+
+  it.each(['corrected', 'already_landed'] as const)('uses refreshed proof when rebuilding corrective artifacts after a crash (%s)', async (kind) => {
+    resetTestDb()
+    const { ticket, repoDir, paths } = await createPullRequestReadyTicket()
+    const candidateCommitSha = 'b'.repeat(40)
+    const correctedCandidateSha = 'c'.repeat(40)
+    const mergedPr = makeMergedPullRequest()
+    writeIntegrationCandidate(ticket.id, candidateCommitSha)
+    upsertLatestPhaseArtifact(ticket.id, 'early_merge_recovery', 'CREATING_PULL_REQUEST', JSON.stringify(
+      makeEarlyMergeReport(ticket, mergedPr, candidateCommitSha, {
+        status: 'corrected',
+        reason: 'corrective_delta',
+        candidateTreeSha: '1'.repeat(40),
+        prHeadTreeSha: '2'.repeat(40),
+        remoteBaseHead: '3'.repeat(40),
+        correctedCandidateSha,
+      }),
+    ))
+    const proof = {
+      ...makeEarlyMergeProof(mergedPr, candidateCommitSha, '9'.repeat(40)),
+      candidateTreeSha: 'a'.repeat(40),
+      mergedHeadTreeSha: 'b'.repeat(40),
+    }
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce(kind === 'corrected'
+      ? { kind, correctedCandidateSha, recoveryWorktreePath: null, proof }
+      : { kind, remoteBaseTreeSha: 'd'.repeat(40), proof })
+
+    await expect(reconcileEarlyMergedPullRequest(makeEarlyMergeInput({
+      ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha, pr: mergedPr,
+    }))).resolves.toBe(kind)
+
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'early_merge_recovery')!.content)).toMatchObject({
+      candidateTreeSha: 'a'.repeat(40),
+      prHeadTreeSha: 'b'.repeat(40),
+      remoteBaseHead: '9'.repeat(40),
+    })
+    if (kind === 'corrected') {
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES')!.content))
+        .toMatchObject({ mergeBase: '9'.repeat(40), candidateCommitSha: correctedCandidateSha })
+    } else {
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')!.content))
+        .toMatchObject({ proofKind: 'already_landed', candidateCommitSha, remoteBaseHead: '9'.repeat(40), remoteBaseTreeSha: 'd'.repeat(40) })
+    }
+  })
+
   it('gives a newer open PR precedence over an older merged PR', async () => {
     resetTestDb()
     const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
     const mergedPr = makeMergedPullRequest(42)
     const newerOpenPr = { ...mergedPr, number: 43, state: 'open' as const, headRefOid: 'candidate123', mergeCommitSha: null, mergedAt: null }
     mocks.listPullRequestsForBranch.mockResolvedValue([newerOpenPr, mergedPr])
-    mocks.runOpenCodePrompt
-      .mockResolvedValueOnce({ session: { id: 'newer-open-audit' }, response: validCandidateAuditResponse(), messages: [] })
-      .mockResolvedValueOnce({ session: { id: 'newer-open-draft' }, response: validPullRequestDraftResponse(), messages: [] })
+    queueValidDrafts('newer-open')
 
     await handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)
 
     expect(mocks.reconcileMergedPullRequestCandidate).not.toHaveBeenCalled()
     expect(mocks.pushBranchRef).toHaveBeenCalledOnce()
     expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledOnce()
+  })
+
+  it.each(['equivalent', 'already_landed'] as const)(
+    'finds an older merged PR when the newest PR was closed without merging (%s)', async (proofKind) => {
+      resetTestDb()
+      const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+      const mergedPr = makeMergedPullRequest(42)
+      const newerClosedPr = { ...mergedPr, number: 43, state: 'closed' as const, closedAt: '2026-01-02T00:00:00.000Z' }
+      mocks.listPullRequestsForBranch.mockResolvedValue([newerClosedPr, mergedPr])
+      const proof = {
+        ...makeEarlyMergeProof(mergedPr, 'candidate123'),
+        candidateTreeSha: '1'.repeat(40),
+        mergedHeadTreeSha: proofKind === 'equivalent' ? '1'.repeat(40) : '2'.repeat(40),
+      }
+      mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce(proofKind === 'equivalent'
+        ? { kind: 'equivalent', proof }
+        : { kind: 'already_landed', proof, remoteBaseTreeSha: '3'.repeat(40) })
+
+      const sendEvent = vi.fn()
+      await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
+
+      expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenCalledOnce()
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'MERGE_COMPLETE' })
+      expect(mocks.runOpenCodePrompt).toHaveBeenCalledOnce()
+      expect(mocks.runOpenCodePrompt).toHaveBeenCalledWith(expect.objectContaining({
+        sessionOwnership: expect.objectContaining({ step: 'candidate_file_audit' }),
+      }))
+      expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')!.content)).toMatchObject(
+        proofKind === 'already_landed'
+          ? { proofKind: 'already_landed', candidateTreeSha: '1'.repeat(40), prHeadTreeSha: '2'.repeat(40), remoteBaseTreeSha: '3'.repeat(40) }
+          : { proofKind: 'tree_equivalent', candidateTreeSha: '1'.repeat(40), prHeadTreeSha: '1'.repeat(40) },
+      )
+    },
+  )
+
+  it('rechecks merged PR state after pushing before updating its PR record', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    const mergedPr = { ...makeMergedPullRequest(), headRefOid: 'candidate123' }
+    mocks.listPullRequestsForBranch
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([mergedPr])
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
+      kind: 'equivalent',
+      proof: makeEarlyMergeProof(mergedPr, 'candidate123'),
+    })
+    queueValidDrafts('post-push')
+
+    const sendEvent = vi.fn()
+    await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(mocks.listPullRequestsForBranch).toHaveBeenCalledTimes(3)
+    expect(mocks.pushBranchRef).toHaveBeenCalledOnce()
+    expect(mocks.createOrUpdateDraftPullRequest).not.toHaveBeenCalled()
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'MERGE_COMPLETE' })
   })
 
   it('uses only ticket details and PRD as context while appending reports and diff sections explicitly', async () => {

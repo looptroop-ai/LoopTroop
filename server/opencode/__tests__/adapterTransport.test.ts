@@ -676,6 +676,169 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.replyPermission).not.toHaveBeenCalled()
   })
 
+  it('replies to a descendant permission in that child session and applies unknown-cwd guard state', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            event: {
+              type: 'permission',
+              sessionId: 'child-session',
+              action: 'asked',
+              permissionId: 'child-permission',
+              permission: 'bash',
+              patterns: ['rm -rf tickets'],
+              permissionDirectory: '/worktree/child',
+              permissionDirectoryUnverified: true,
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: 'ask' }],
+        permissionGuard: true,
+        autoApprovePermissions: true,
+      },
+    )).resolves.toBe('current answer')
+
+    expect(transport.replyPermission).toHaveBeenCalledOnce()
+    expect(transport.replyPermission).toHaveBeenCalledWith(
+      'child-session',
+      'child-permission',
+      'reject',
+      '/worktree/child',
+      undefined,
+      expect.stringContaining('working directory cannot be verified'),
+    )
+  })
+
+  it('continues after a rejection consumes sibling permission requests in the same session', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'sibling-permission') {
+          throw Object.assign(new Error('permission request no longer exists'), { status: 404 })
+        }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            cursor: 53,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'rejected-permission',
+              permission: 'bash',
+              patterns: ['git push origin feature'],
+            },
+          },
+          {
+            cursor: 54,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'sibling-permission',
+              permission: 'bash',
+              patterns: ['git status --short'],
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: 'deny' }],
+        autoApprovePermissions: true,
+      },
+    )).resolves.toBe('current answer')
+
+    expect(transport.replyPermission).toHaveBeenNthCalledWith(
+      1, 'session-1', 'rejected-permission', 'reject', '/worktree', undefined,
+      expect.stringContaining('tool policy'),
+    )
+    expect(transport.replyPermission).toHaveBeenNthCalledWith(
+      2, 'session-1', 'sibling-permission', 'reject', '/worktree', undefined,
+      expect.stringContaining('tool policy'),
+    )
+  })
+
+  it.each([
+    { label: 'a 404 without a successful reject', status: 404, rejectFirst: false },
+    { label: 'a non-404 after a successful reject', status: 500, rejectFirst: true },
+  ])('does not swallow $label', async ({ status, rejectFirst }) => {
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'second-permission') {
+          throw Object.assign(new Error(`permission reply failed (${status})`), { status })
+        }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            cursor: 53,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'first-permission',
+              permission: 'bash',
+            },
+          },
+          {
+            cursor: 54,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'second-permission',
+              permission: 'bash',
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    const permissionAction = rejectFirst ? 'deny' : 'ask'
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: permissionAction }],
+        autoApprovePermissions: true,
+      },
+    )).rejects.toThrow('Failed to')
+  })
+
   it.each(['v1', 'v2'] as const)(
     'rejects a guarded remote write with feedback, then approves a safe next call once on %s',
     async (protocol) => {

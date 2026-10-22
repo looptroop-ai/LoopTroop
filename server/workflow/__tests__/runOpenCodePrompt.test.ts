@@ -269,7 +269,9 @@ const GUARDED_PROMPT_PERMISSIONS = [
 ]
 
 function expectGuardedPromptPermissions(adapter: TestOpenCodeAdapter, callIndex: number) {
-  expect(adapter.promptCalls[callIndex]?.options?.permission).toEqual(expect.arrayContaining(GUARDED_PROMPT_PERMISSIONS))
+  const guarded = new Set(['bash', 'edit', 'write', 'apply_patch'])
+  const permission = adapter.promptCalls[callIndex]?.options?.permission ?? []
+  expect(permission.filter((rule) => guarded.has(rule.permission))).toEqual(GUARDED_PROMPT_PERMISSIONS)
 }
 
 describe('runOpenCodePrompt', () => {
@@ -1136,6 +1138,7 @@ describe('runOpenCodePrompt', () => {
     const adapter = new TestOpenCodeAdapter(['initial response', 'continuation response'], {
       createSession: async () => ({ id: sessionId, projectPath: paths.worktreePath }),
     })
+    let continuationDispatch: OpenCodePromptDispatchEvent | null = null
     const initial = await runOpenCodePrompt({
       adapter,
       projectPath: paths.worktreePath,
@@ -1154,6 +1157,7 @@ describe('runOpenCodePrompt', () => {
       parts: [{ type: 'text', content: 'Continue the same session' }],
       toolPolicy: 'execution_setup_online',
       skipSessionValidation: true,
+      onPromptDispatched: (event) => { continuationDispatch = event },
     })
 
     expect(adapter.promptCalls[1]?.options?.permissionGuard).toEqual({
@@ -1162,6 +1166,7 @@ describe('runOpenCodePrompt', () => {
       ticketDir: paths.ticketDir,
     })
     expectGuardedPromptPermissions(adapter, 1)
+    expect(continuationDispatch).toMatchObject({ timeoutKind: 'ai_response' })
     resetTestDb()
   })
 
@@ -1188,6 +1193,7 @@ describe('runOpenCodePrompt', () => {
     const paths = vi.spyOn(ticketQueries, 'getTicketPaths').mockImplementation(() => {
       throw new Error('Ticket paths are unavailable.')
     })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     try {
       await runOpenCodePrompt({
@@ -1196,8 +1202,13 @@ describe('runOpenCodePrompt', () => {
         parts: [{ type: 'text', content: 'Prompt body' }],
         sessionOwnership: { ticketId: ticket.id, phase: 'CODING' },
       })
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(`permission-guard paths for ticket ${ticket.id}`),
+        expect.objectContaining({ message: 'Ticket paths are unavailable.' }),
+      )
     } finally {
       paths.mockRestore()
+      warning.mockRestore()
     }
 
     expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)

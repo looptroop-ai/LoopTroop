@@ -333,7 +333,7 @@ function formatTimeoutDeadline(timeoutDeadline: number | undefined): string | un
 function resolvePromptTimeoutKind(
   timeoutKind: PromptTimeoutKind | undefined,
   deadlineScope: DeadlineScope | undefined,
-  sessionOwnership: OpenCodeSessionOwnership | undefined,
+  sessionOwnership: { phase: string } | undefined,
 ): PromptTimeoutKind {
   if (timeoutKind) return timeoutKind
   if (sessionOwnership?.phase === 'CODING' && deadlineScope === 'workflow') return 'per_iteration'
@@ -724,8 +724,8 @@ export async function runOpenCodeSessionPrompt({
   let ticketPaths: ReturnType<typeof getTicketPaths>
   try {
     ticketPaths = permissionOwnership ? getTicketPaths(permissionOwnership.ticketId) : undefined
-  } catch {
-    // Keep prompts running with the context-free guard when ticket paths are unavailable.
+  } catch (error) {
+    console.warn(`[runOpenCodePrompt] Could not resolve permission-guard paths for ticket ${permissionOwnership?.ticketId}; continuing with the context-free guard:`, error)
   }
   const permissionGuard = ticketPaths ? {
     worktreePath: ticketPaths.worktreePath,
@@ -824,7 +824,7 @@ export async function runOpenCodeSessionPrompt({
   try {
     const promptNumber = (sessionPromptDispatchCounts.get(resolvedSession.id) ?? 0) + 1
     sessionPromptDispatchCounts.set(resolvedSession.id, promptNumber)
-    const dispatchTimeoutKind = resolvePromptTimeoutKind(timeoutKind, deadlineScope, sessionOwnership)
+    const dispatchTimeoutKind = resolvePromptTimeoutKind(timeoutKind, deadlineScope, permissionOwnership)
     const dispatchDeadlineAt = formatTimeoutDeadline(resolvedTimeoutDeadline)
     onPromptDispatched?.({
       session: resolvedSession,

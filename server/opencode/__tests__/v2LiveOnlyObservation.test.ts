@@ -183,6 +183,9 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
       });
     }
 
+    if (url.pathname === "/api/session/session-1/children" && method === "GET")
+      return jsonResponse({ data: [] });
+
     if (url.pathname === "/api/event" && method === "GET") {
       requestOrder.push("event");
       eventConnections++;

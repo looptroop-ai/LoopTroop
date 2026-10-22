@@ -11,6 +11,7 @@ import {
   runCommand,
   runCommandSync,
   runGit as runGitAsync,
+  runGitBinarySync,
   runGitMutationOrThrow,
   runGitSync,
   runGitSyncOrThrow,
@@ -497,23 +498,30 @@ async function runGhJson<T>(
 }
 
 async function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: string, baseBranch: string): Promise<PullRequestInfo[]> {
-  const pulls = await runGhJson<GitHubPullRecord[][]>(projectPath, [
-    'api',
-    `repos/${repo.slug}/pulls`,
-    '--paginate',
-    '--slurp',
-    '--method',
-    'GET',
-    '-f',
-    'state=all',
-    '-f',
-    `head=${repo.owner}:${branchName}`,
-    '-f',
-    `base=${baseBranch}`,
-  ])
+  const pulls: GitHubPullRecord[] = []
+  for (let page = 1; ; page++) {
+    const pagePulls = await runGhJson<GitHubPullRecord[]>(projectPath, [
+      'api',
+      `repos/${repo.slug}/pulls`,
+      '--method',
+      'GET',
+      '-f',
+      'state=all',
+      '-f',
+      `head=${repo.owner}:${branchName}`,
+      '-f',
+      `base=${baseBranch}`,
+      '-f',
+      'per_page=100',
+      '-f',
+      `page=${page}`,
+    ])
+    if (!Array.isArray(pagePulls)) throw new Error('GitHub CLI returned an invalid pull request page')
+    pulls.push(...pagePulls)
+    if (pagePulls.length < 100) break
+  }
 
-  if (!Array.isArray(pulls)) return []
-  return pulls.flat()
+  return pulls
     .map((record) => toPullRequestInfo(record))
     .filter((record): record is PullRequestInfo => record !== null)
     .sort((left, right) => right.number - left.number)
@@ -928,6 +936,37 @@ function findBlockingPath(projectPath: string, repoPath: string): string | null 
   return null
 }
 
+export class GitPathEncodingError extends Error {
+  constructor() {
+    super('Git returned a path that cannot be safely decoded as UTF-8.')
+    this.name = 'GitPathEncodingError'
+  }
+}
+
+export function decodeGitPathList(output: Buffer): string[] {
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  const paths: string[] = []
+  let start = 0
+  for (let end = output.indexOf(0); end >= 0; end = output.indexOf(0, start)) {
+    if (end > start) {
+      try {
+        paths.push(decoder.decode(output.subarray(start, end)))
+      } catch {
+        throw new GitPathEncodingError()
+      }
+    }
+    start = end + 1
+  }
+  if (start < output.length) {
+    try {
+      paths.push(decoder.decode(output.subarray(start)))
+    } catch {
+      throw new GitPathEncodingError()
+    }
+  }
+  return paths
+}
+
 /**
  * Fails when a file on disk sits where `commitish` would write one.
  *
@@ -960,10 +999,9 @@ export function ensureNoUntrackedPathsClobberedBy(
 ): void {
   // `--no-renames` so a rename is reported as the delete it also is: the reset
   // restores the original path too, and a rename would hide it behind an `R`.
-  const restored = runGitSync(
+  const restored = runGitBinarySync(
     projectPath,
     ['diff', '--name-only', '--no-renames', '--diff-filter=D', '-z', commitish, 'HEAD'],
-    { trimOutput: false },
   )
   if (!restored.ok) {
     if (restored.timedOut) throw new RunCommandTimeoutError(restored.errorDetail)
@@ -971,7 +1009,7 @@ export function ensureNoUntrackedPathsClobberedBy(
   }
 
   const collisions = new Set<string>()
-  for (const repoPath of restored.stdout.split('\0').filter(Boolean)) {
+  for (const repoPath of decodeGitPathList(restored.stdout)) {
     // Anything still on disk at a path HEAD does not track is untracked or
     // ignored — the tracked case is `ensureNoTrackedWorktreeChanges`, which
     // runs first and owns it.

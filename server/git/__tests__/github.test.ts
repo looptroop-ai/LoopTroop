@@ -165,18 +165,26 @@ describe('server/git/github', () => {
   })
 
   it('reads all pull request pages before choosing the newest relevant request', async () => {
+    const olderPullRequests = Array.from({ length: 100 }, (_, index) => pullRequestRecord(index + 1))
+    const pageRequests: number[] = []
     spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
       if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
-      expect(args).toEqual(expect.arrayContaining(['--paginate', '--slurp']))
-      return makeSpawnResult({ stdout: JSON.stringify([
-        [{ ...pullRequestRecord(43), state: 'closed' }],
-        [{ ...pullRequestRecord(42), state: 'closed', merged_at: '2026-01-01T00:00:00Z', merge_commit_sha: 'landed' }],
+      const page = Number(args.find((arg) => arg.startsWith('page='))?.slice(5))
+      pageRequests.push(page)
+      expect(args).toEqual(expect.arrayContaining(['per_page=100', `page=${page}`]))
+      expect(args).not.toContain('--slurp')
+      return makeSpawnResult({ stdout: JSON.stringify(page === 1 ? olderPullRequests : [
+        { ...pullRequestRecord(200), state: 'closed' },
+        { ...pullRequestRecord(199), state: 'closed', merged_at: '2026-01-01T00:00:00Z', merge_commit_sha: 'landed' },
       ]) })
     })
     const github = await import('../github')
-    expect(await github.listPullRequestsForBranch('/repo', 'ticket-branch', 'main')).toMatchObject([
-      { number: 43, state: 'closed' }, { number: 42, state: 'merged' },
+    const pulls = await github.listPullRequestsForBranch('/repo', 'ticket-branch', 'main')
+    expect(pulls.slice(0, 2)).toMatchObject([
+      { number: 200, state: 'closed' }, { number: 199, state: 'merged' },
     ])
+    expect(pulls).toHaveLength(102)
+    expect(pageRequests).toEqual([1, 2])
   })
 
   it('fetches a PR head into an internal ref instead of sharing FETCH_HEAD', async () => {
@@ -710,6 +718,11 @@ describe('server/git/github', () => {
     } finally {
       rmSync(projectPath, { recursive: true, force: true })
     }
+  })
+
+  it('fails closed when a NUL-delimited Git path cannot be decoded', async () => {
+    const github = await import('../github')
+    expect(() => github.decodeGitPathList(Buffer.from([0xff, 0]))).toThrow('cannot be safely decoded as UTF-8')
   })
 
   it('allows a candidate checkout to replace a path that HEAD already tracks', async () => {

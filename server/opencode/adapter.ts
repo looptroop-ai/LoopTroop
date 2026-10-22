@@ -1043,7 +1043,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           })
           .catch(async (error) => {
             if (
-              this.isConfirmedSessionNotFoundError(error) &&
+              this.isConfirmedPermissionNotFoundError(error) &&
+              Boolean(rejectionMessage) &&
               successfullyRejectedPermissionSessions.has(permissionSessionId)
             ) return;
             permissionReplyFailure = new Error(
@@ -2572,6 +2573,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     const response = this.getRecord(record?.response);
     const status = this.readHttpStatus(response) ?? this.readHttpStatus(record);
     return status === 404;
+  }
+
+  private isConfirmedPermissionNotFoundError(error: unknown): boolean {
+    const record = this.getRecord(error);
+    const response = this.getRecord(record?.response);
+    const body = this.getRecord(record?.body) ?? this.getRecord(response?.body);
+    const status = this.readHttpStatus(response) ?? this.readHttpStatus(record);
+    return status === 404 && (body?._tag === "PermissionNotFoundError"
+      || /permission request not found/i.test(typeof record?.message === "string" ? record.message : ""));
   }
 
   private readHttpStatus(

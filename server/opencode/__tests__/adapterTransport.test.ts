@@ -387,6 +387,7 @@ describe('OpenCode adapter transport orchestration', () => {
         }] : [] })
       }
       if (url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
+      if (url.pathname === '/api/session/session-1/children') return jsonResponse({ data: [] })
       if (url.pathname === '/api/session/session-1/prompt') {
         promptPosted = true
         promptPostCount += 1
@@ -728,7 +729,7 @@ describe('OpenCode adapter transport orchestration', () => {
     const { transport, source, markDispatched } = createV2Transport({
       replyPermission: vi.fn(async (_sessionId, permissionId) => {
         if (permissionId === 'sibling-permission') {
-          throw Object.assign(new Error('permission request no longer exists'), { status: 404 })
+          throw Object.assign(new Error('Permission request not found: sibling-permission'), { status: 404 })
         }
       }),
       dispatchPrompt: vi.fn(async () => {
@@ -785,14 +786,59 @@ describe('OpenCode adapter transport orchestration', () => {
     )
   })
 
+  it('does not treat a later auto-approval 404 as a consumed rejected permission', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'later-approval') {
+          throw Object.assign(new Error('Permission request not found: later-approval'), { status: 404 })
+        }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            cursor: 53,
+            event: {
+              type: 'permission', sessionId: 'session-1', action: 'asked',
+              permissionId: 'rejected-first', permission: 'bash', patterns: ['git push origin feature'],
+            },
+          },
+          {
+            cursor: 54,
+            event: {
+              type: 'permission', sessionId: 'session-1', action: 'asked',
+              permissionId: 'later-approval', permission: 'read', patterns: ['README.md'],
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: 'deny' }],
+        autoApprovePermissions: true,
+      },
+    )).rejects.toThrow('Failed to auto-approve OpenCode permission read')
+  })
+
   it.each([
-    { label: 'a 404 without a successful reject', status: 404, rejectFirst: false },
-    { label: 'a non-404 after a successful reject', status: 500, rejectFirst: true },
-  ])('does not swallow $label', async ({ status, rejectFirst }) => {
+    { label: 'a 404 without a successful reject', status: 404, rejectFirst: false, message: 'Permission request not found', body: undefined },
+    { label: 'a session 404 after a successful reject', status: 404, rejectFirst: true, message: 'Session not found', body: { _tag: 'SessionNotFoundError' } },
+    { label: 'a non-404 after a successful reject', status: 500, rejectFirst: true, message: 'Permission request not found', body: undefined },
+  ])('does not swallow $label', async ({ status, rejectFirst, message, body }) => {
     const { transport, source, markDispatched } = createV2Transport({
       replyPermission: vi.fn(async (_sessionId, permissionId) => {
         if (permissionId === 'second-permission') {
-          throw Object.assign(new Error(`permission reply failed (${status})`), { status })
+          throw Object.assign(new Error(message), { status, body })
         }
       }),
       dispatchPrompt: vi.fn(async () => {

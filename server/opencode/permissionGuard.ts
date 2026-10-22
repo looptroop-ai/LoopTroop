@@ -97,15 +97,22 @@ function reject(effect: string): string {
 
 function classifyShell(command: string, input: PermissionGuardInput, depth = 0): string | null {
   if (depth > 8) return 'the nested shell command cannot be verified'
+  const escapedVariant = command.replace(/\\([A-Za-z0-9])/g, '$1').replace(/\\\r?\n/g, '')
+  if (escapedVariant !== command) {
+    const effect = classifyShell(escapedVariant, input, depth)
+    if (effect) return effect
+  }
   const segments = scanShell(command)
   if (!segments.length) return 'the requested command cannot be verified'
   let directory = input.directory ?? input.context?.worktreePath
-  const directoryStack: string[] = []
+  let directoryUnverified = Boolean(input.unverifiedDirectory)
+  const directoryStack: Array<{ directory?: string; unverified: boolean }> = []
   const exportedEnvironment: Record<string, string> = { ...input.environment }
 
   for (const segment of segments) {
-    const currentInput = { ...input, directory }
+    const currentInput = { ...input, directory, unverifiedDirectory: directoryUnverified }
     for (const target of segment.redirects) {
+      if (hasShellExpansion(target)) return 'the redirected file target cannot be verified'
       const effect = protectedPathEffect(target, currentInput, false)
       if (effect) return effect
     }
@@ -115,18 +122,19 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     if (unwrapped.error) return unwrapped.error
     const { commandName, args } = unwrapped
     const environment = { ...exportedEnvironment, ...unwrapped.environment }
+    for (const nextDirectory of unwrapped.directories) {
+      const wasUnverified = currentInput.unverifiedDirectory
+      currentInput.directory = normalizePath(nextDirectory, currentInput.directory ?? input.context?.worktreePath)?.path
+      currentInput.unverifiedDirectory = !currentInput.directory
+        || hasShellExpansion(nextDirectory)
+        || (wasUnverified && !isAbsolutePath(nextDirectory))
+    }
     for (const target of unwrapped.mutationPaths) {
+      if (segment.dynamic && hasShellExpansion(target)) return 'the command output path cannot be verified'
       const effect = protectedPathEffect(target, currentInput, true)
       if (effect) return effect
-    }
-    for (const nextDirectory of unwrapped.directories) {
-      currentInput.directory = normalizePath(nextDirectory, currentInput.directory ?? input.context?.worktreePath)?.path
     }
     currentInput.environment = environment
-    for (const target of unwrapped.mutationPaths) {
-      const effect = protectedPathEffect(target, currentInput, true)
-      if (effect) return effect
-    }
     if (!commandName) {
       if (segment.dynamic) return 'a dynamic command cannot be verified'
       Object.assign(exportedEnvironment, unwrapped.environment)
@@ -153,13 +161,30 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     if (['if', 'then', 'elif', 'else', 'while', 'until', 'for', 'do', 'case', 'select', 'function'].includes(basename)) {
       return 'the compound shell command cannot be verified; use separate literal commands'
     }
-    if (['sh', 'bash', 'zsh', 'dash', 'ksh', 'pwsh', 'powershell', 'cmd', 'eval', 'iex', 'invoke-expression'].includes(basename)) {
-      if (args.some((arg) => /^-(?:e|ec|encodedcommand)$/i.test(arg))) return 'the encoded shell command cannot be verified; use a literal command'
-      const flag = args.findIndex((arg) => /^-(?:[a-z]*c|command)$/i.test(arg) || /^\/[ck]$/i.test(arg))
-      const inline = ['eval', 'iex', 'invoke-expression'].includes(basename) ? args.join(' ') : flag >= 0 ? args[flag + 1] : undefined
+    if (['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd', 'eval', 'iex', 'invoke-expression'].includes(basename)) {
+      const isPowerShell = basename === 'pwsh' || basename === 'powershell'
+      if (isPowerShell && args.some((arg) => {
+        const option = arg.toLowerCase().slice(1)
+        return arg.startsWith('-') && (option === 'e' || option === 'ec' || 'encodedcommand'.startsWith(option))
+      })) return 'the encoded shell command cannot be verified; use a literal command'
+      const flag = args.findIndex((arg) => isPowerShell
+        ? arg.startsWith('-') && ('command'.startsWith(arg.slice(1).toLowerCase()) || /^-(?:cw|cwa|commandw[a-z]*)$/i.test(arg))
+        : basename === 'cmd' ? /^\/[ck]$/i.test(arg) : /^-[a-z]*c/i.test(arg))
+      const commandWithArgs = isPowerShell && flag >= 0 && /^-(?:cw|cwa|commandw[a-z]*)$/i.test(args[flag]!)
+      const option = flag >= 0 && !isPowerShell && basename !== 'cmd' ? args[flag]! : undefined
+      const commandIndex = option?.toLowerCase().indexOf('c') ?? -1
+      const inline = ['eval', 'iex', 'invoke-expression'].includes(basename) ? args.join(' ')
+        : flag < 0 ? undefined
+          : commandWithArgs ? args[flag + 1]
+            : option && commandIndex >= 0 && option.length > commandIndex + 1 ? option.slice(commandIndex + 1)
+              : args[flag + 1]
       if (flag >= 0 && inline === undefined) return 'the inline shell command cannot be verified'
+      if (inline === undefined && (segment.piped || segment.inputRedirect)) return 'the shell input cannot be verified; use a literal command'
       if (inline !== undefined) {
-        const script = ['cmd', 'pwsh', 'powershell'].includes(basename) ? args.slice(flag + 1).join(' ') : inline
+        const script = isPowerShell
+          ? commandWithArgs ? inline : args.slice(flag + 1).join(' ')
+          : basename === 'cmd' ? args.slice(flag + 1).join(' ') : inline
+        if (basename === 'cmd' && script.includes('^')) return 'the cmd escape sequence cannot be verified; use a literal command'
         const effect = classifyShell(script, currentInput, depth + 1)
         if (effect) return effect
       }
@@ -167,14 +192,29 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     }
     if (['cd', 'chdir', 'set-location', 'sl', 'pushd', 'push-location'].includes(basename)) {
       const next = args.find((arg) => !arg.startsWith('-'))
-      if (['pushd', 'push-location'].includes(basename) && directory) directoryStack.push(directory)
-      if (next && !segment.dynamic) directory = normalizePath(next, directory ?? input.context?.worktreePath)?.path
-      else if (next) directory = undefined
+      if (['pushd', 'push-location'].includes(basename)) directoryStack.push({ directory, unverified: directoryUnverified })
+      if (next) {
+        directory = normalizePath(next, directory ?? input.context?.worktreePath)?.path
+        directoryUnverified = !directory || hasShellExpansion(next) || (directoryUnverified && !isAbsolutePath(next))
+      } else {
+        directory = undefined
+        directoryUnverified = true
+      }
       continue
     }
     if (basename === 'popd' || basename === 'pop-location') {
-      directory = directoryStack.pop() ?? directory
+      const previous = directoryStack.pop()
+      if (previous) {
+        directory = previous.directory
+        directoryUnverified = previous.unverified
+      }
       continue
+    }
+
+    if (unwrapped.dynamicArguments
+      && (isRemovalCommand(commandName) || isFileMutationCommand(commandName)
+        || ['dd', 'sed', 'tar', 'rsync', 'unzip', '7z', '7za', '7zz', 'cpio'].includes(basename))) {
+      return 'the command target cannot be verified because its arguments come from input'
     }
 
     if (isExecutable(commandName, 'gh')) {
@@ -183,8 +223,29 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     } else if (isExecutable(commandName, 'git')) {
       const effect = classifyGit(args, currentInput, environment, segment.dynamic || unwrapped.dynamicArguments)
       if (effect) return effect
+    } else if (basename === 'start-process') {
+      const effect = classifyStartProcess(args, segment.dynamic, currentInput, depth)
+      if (effect) return effect
     } else if (basename === 'find') {
-      const effect = classifyFind(args, currentInput, depth)
+      const effect = classifyFind(args, currentInput, depth, segment.dynamic)
+      if (effect) return effect
+    } else if (basename === 'tar') {
+      const effect = classifyTar(args, segment.dynamic, currentInput)
+      if (effect) return effect
+    } else if (basename === 'unzip') {
+      const effect = classifyUnzip(args, segment.dynamic, currentInput)
+      if (effect) return effect
+    } else if (['7z', '7za', '7zz'].includes(basename)) {
+      const effect = classify7z(args, segment.dynamic, currentInput)
+      if (effect) return effect
+    } else if (basename === 'cpio') {
+      const effect = classifyCpio(args, segment.dynamic, currentInput)
+      if (effect) return effect
+    } else if (basename === 'sed') {
+      const effect = classifySed(args, segment.dynamic, currentInput)
+      if (effect) return effect
+    } else if (basename === 'rsync') {
+      const effect = classifyRsync(args, segment.dynamic, currentInput)
       if (effect) return effect
     } else if (['set-content', 'add-content', 'clear-content', 'out-file'].includes(basename)) {
       const effect = classifyContentWrite(args, segment.dynamic, currentInput)
@@ -192,6 +253,7 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     } else if (basename === 'dd') {
       const target = args.find((arg) => arg.startsWith('of='))?.slice(3)
       if (target) {
+        if (segment.dynamic && hasShellExpansion(target)) return 'the output file target cannot be verified'
         const effect = protectedPathEffect(target, currentInput, true)
         if (effect) return effect
       }
@@ -347,6 +409,12 @@ function unwrapCommand(words: string[]): {
     stdbuf: ['-i', '-o', '-e', '--input', '--output', '--error'],
     xargs: ['-n', '--max-args', '-s', '--max-chars', '-P', '--max-procs', '-L', '--max-lines', '-I', '--replace', '-d', '--delimiter', '-E', '--eof', '-a', '--arg-file'],
     npx: ['-p', '--package', '-c', '--call'],
+    watch: ['-n', '--interval'],
+    strace: ['-e', '--trace', '-o', '--output', '-s', '--string-limit', '-p', '--attach', '-u', '--user', '-I', '--interruptible', '-P', '--trace-path'],
+    script: ['-c', '--command', '-t', '--timing', '--log-timing', '-O', '--output-limit'],
+    ionice: ['-c', '--class', '-n', '--classdata', '-p', '--pid', '-u', '--uid', '-g', '--pgid'],
+    chrt: ['-p', '--pid', '-P', '--priority', '--sched', '--sched-attr'],
+    flock: ['-w', '--wait', '-E', '--conflict-exit-code', '-c', '--command'],
   }
   const flagOptions: Record<string, string[]> = {
     env: ['-i', '--ignore-environment'], sudo: ['-n', '-E', '-H', '-k', '-K', '-b', '-S'],
@@ -356,6 +424,13 @@ function unwrapCommand(words: string[]): {
     xargs: ['-0', '--null', '-r', '--no-run-if-empty', '-p', '-t', '-x', '--exit'],
     npx: ['-y', '--yes', '--no', '--no-install', '--quiet'],
     setsid: ['-f', '--fork', '-w', '--wait', '-c', '--ctty'],
+    unbuffer: ['-p'],
+    watch: ['-t', '--no-title', '-d', '--differences', '-g', '--chgexit', '-b', '--beep', '-c', '--color', '-x', '--exec', '-p', '--precise'],
+    strace: ['-f', '-ff', '-c', '-C', '-q', '-qq', '-qqq', '-v', '-x', '-xx', '-r', '-t', '-tt', '-ttt', '-T', '-y', '-yy', '-k', '--follow-forks', '--summary-only', '--quiet', '--verbose', '--relative-timestamps', '--decode-fds'],
+    script: ['-q', '--quiet', '-e', '--return', '-f', '--flush', '-a', '--append'],
+    ionice: ['-t', '--ignore', '--help', '--version'],
+    chrt: ['--other', '-o', '--idle', '--batch', '--deadline', '--fifo', '-f', '--rr', '-r', '--reset-on-fork', '-R', '-a', '--all-tasks', '-m', '--max'],
+    flock: ['-s', '--shared', '-x', '--exclusive', '-u', '--unlock', '-n', '--nonblock', '-o', '--close', '-F', '--no-fork', '--verbose'],
   }
   while (index < words.length) {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] ?? '')) {
@@ -364,6 +439,9 @@ function unwrapCommand(words: string[]): {
       environment[assignment.slice(0, separator)] = assignment.slice(separator + 1)
     }
     const name = commandBase(words[index] ?? '')
+    if (['su', 'runuser', 'gosu', 'chroot', 'nsenter'].includes(name)) {
+      return result('the command can change execution identity or root and cannot be verified')
+    }
     if (name === 'rtk') {
       index++
       while (words[index] && (/^-v+$/.test(words[index]!) || ['--verbose', '--ultra-compact', '--skip-env'].includes(words[index]!))) index++
@@ -405,6 +483,8 @@ function unwrapCommand(words: string[]): {
         if ((name === 'env' && ['-C', '--chdir'].includes(key)) || (name === 'sudo' && ['-D', '--chdir'].includes(key))) directories.push(value)
         if (name === 'time' && ['-o', '--output'].includes(key)) mutationPaths.push(value)
         if (name === 'npx' && ['-c', '--call'].includes(key)) return { ...result(), commandName: 'sh', args: ['-c', value] }
+        if (name === 'script' && ['-c', '--command'].includes(key)) return { ...result(), commandName: 'sh', args: ['-c', value] }
+        if (name === 'flock' && ['-c', '--command'].includes(key)) return { ...result(), commandName: 'sh', args: ['-c', value] }
       } else if (!flagOptions[name]?.includes(key) && !(name === 'nice' && /^-\d+$/.test(option))) {
         return result('the command wrapper options cannot be verified')
       }
@@ -412,6 +492,8 @@ function unwrapCommand(words: string[]): {
     }
     if (words[index] === '--') index++
     if (name === 'timeout') index++
+    if (name === 'flock' && words[index]) index++
+    if (name === 'chrt' && words[index]) index++
     if (name === 'xargs') dynamicArguments = true
   }
   return result()
@@ -628,7 +710,10 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
   }
   while (index < args.length) {
     const arg = args[index]!
-    if (arg === '-C' || arg === '-c' || ['--namespace', '--exec-path', '--config-env'].includes(arg)) {
+    if (arg === '--exec-path' || arg.startsWith('--exec-path=')) {
+      return 'a custom Git executable path cannot be verified'
+    }
+    if (arg === '-C' || arg === '-c' || ['--namespace', '--config-env', '--attr-source', '--super-prefix'].includes(arg)) {
       const value = args[index + 1]
       if (!value) return 'the Git command target cannot be verified'
       if (arg === '-C') {
@@ -651,7 +736,7 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
       directory = normalizePath(value, directory)?.path; index++; continue
     }
     if (arg.startsWith('-c') && arg.length > 2) { addGitConfig(arg.slice(2)); index++; continue }
-    if (arg.startsWith('--namespace=') || arg.startsWith('--exec-path=')) { index++; continue }
+    if (arg.startsWith('--namespace=')) { index++; continue }
     if (arg.startsWith('--config-env=')) {
       const value = arg.slice('--config-env='.length)
       const separator = value.indexOf('=')
@@ -683,16 +768,16 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
   const gitArgs = args.slice(index + 1)
   if (!command) return dynamic ? 'the Git command cannot be verified' : null
   if (/[$`]/.test(args[index]!)) return 'the Git subcommand cannot be verified'
-  const action = ['remote', 'worktree', 'stash', 'notes', 'reflog', 'replace', 'lfs', 'subtree'].includes(command)
+  const action = ['remote', 'worktree', 'stash', 'notes', 'reflog', 'replace', 'lfs', 'subtree', 'submodule', 'svn', 'bundle'].includes(command)
     ? gitSubcommand(command, gitArgs)
     : undefined
   if (action && /[$`]/.test(action)) return 'the Git subcommand cannot be verified'
-  if (gitArgs.includes('--help') || gitArgs.includes('-h')) return null
-  if (command === 'push' || command === 'send-pack'
-    || ((command === 'lfs' || command === 'subtree') && action === 'push')) {
-    return 'the Git command would write to a remote repository'
+  if (gitArgs.length === 1 && (gitArgs[0] === '--help' || gitArgs[0] === '-h')) return null
+  if ((command === 'push' || command === 'send-pack')
+    && !gitArgs.some((arg) => arg === '--dry-run' || arg === '-n')) {
+    const target = gitPushRemoteTarget(gitArgs)
+    if (!target || !isLocalGitPushTarget(target)) return 'the Git command would write to a remote repository'
   }
-
   for (const setting of gitConfig) {
     if (dynamic && /[$`]/.test(setting.key)) return 'the Git configuration cannot be verified'
     if (setting.key === 'core.worktree') {
@@ -705,6 +790,21 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
     }
     if (gitConfigCanExecute(setting.key, command)) return 'the Git configuration may run an external command'
   }
+  if (['GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_PARAMETERS']
+    .some((name) => Boolean(environment[name]))) {
+    return 'the Git command may load unverified configuration'
+  }
+  if (['clone', 'fetch', 'ls-remote', 'pull', 'push', 'send-pack', 'submodule']
+    .includes(command) && ['GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_ASKPASS', 'SSH_ASKPASS']
+      .some((name) => Boolean(environment[name]))) {
+    return 'the Git environment may run an external command'
+  }
+  if (['commit', 'tag', 'merge', 'rebase', 'cherry-pick', 'revert']
+    .includes(command) && ['GIT_EDITOR', 'GIT_SEQUENCE_EDITOR']
+      .some((name) => Boolean(environment[name]))
+    && !(command === 'commit' && (gitArgs.includes('-m') || gitArgs.includes('-F') || gitArgs.includes('--message')))) {
+    return 'the Git environment may run an external command'
+  }
   const configuredWorkTree = gitConfig.filter((setting) => setting.key === 'core.worktree').at(-1)?.value
   const creationWorkTree = configuredWorkTree ?? explicitWorkTree ?? environment.GIT_WORK_TREE
 
@@ -713,6 +813,11 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
     if (!creation.verified || dynamicTarget || [creation.destination, creation.separateGitDir].some((target) => /[$`]/.test(target ?? ''))) {
       return 'the Git metadata target cannot be verified'
     }
+    if (creation.unsafeOptions || creation.configurations.some((setting) => {
+      const separator = setting.indexOf('=')
+      const key = separator < 0 ? setting : setting.slice(0, separator)
+      return gitConfigCanExecute(key.toLowerCase(), command)
+    })) return 'the Git creation options may run an external command'
     const creationInput = { ...input, directory }
     const defaultDestination = creation.destination ?? (command === 'init' ? creationWorkTree ?? directory : undefined)
     if ((command === 'init' && !defaultDestination)
@@ -753,21 +858,60 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
     || Boolean(input.unverifiedDirectory && !explicitAbsoluteTarget)
   const scopedBlock = (effect: string) => isManaged || targetUnknown ? effect : null
 
+  if ((command === 'add' || command === 'commit') && isManaged) {
+    const ticketWorktree = input.context ? normalizePath(input.context.worktreePath) : undefined
+    const effectiveWorkTreePath = workTree ?? directory
+    const effectiveWorkTree = effectiveWorkTreePath ? normalizePath(effectiveWorkTreePath) : undefined
+    if (targetUnknown || explicitGitDir || environment.GIT_DIR || commonDir
+      || !ticketWorktree || !effectiveWorkTree || !pathContains(ticketWorktree, effectiveWorkTree)) {
+      return 'the Git command would change the original project checkout or an unverified Git index'
+    }
+  }
+
+  if (['clone', 'fetch', 'ls-remote'].includes(command)
+    && gitArgs.some((arg) => arg === '-u' || arg === '--upload-pack' || arg.startsWith('--upload-pack='))) {
+    return scopedBlock('the Git command may run an external upload-pack program')
+  }
+  if (command === 'archive' && gitArgs.some((arg) => arg === '--exec' || arg.startsWith('--exec='))) {
+    return scopedBlock('the Git command may run an external archive program')
+  }
+  if (['clone', 'fetch', 'ls-remote', 'pull', 'push', 'send-pack'].includes(command)
+    && gitArgs.some((arg) => arg.toLowerCase().startsWith('ext::'))) {
+    return scopedBlock('the Git command may run an external transport program')
+  }
+
+  const output = gitOutputPaths(command, gitArgs)
+  if (!output.verified) return scopedBlock('the Git output path cannot be verified')
+  for (const target of output.paths) {
+    if (dynamic && hasShellExpansion(target)) return 'the Git output path cannot be verified'
+    const effect = protectedPathEffect(target, commandInput, true)
+    if (effect) return effect
+  }
+
+  if (command === 'push' || command === 'send-pack'
+    || ((command === 'lfs' || command === 'subtree') && action === 'push')) {
+    if ((command === 'push' || command === 'send-pack') && gitArgs.some((arg) => arg === '--dry-run' || arg === '-n')) return null
+    const target = command === 'push' || command === 'send-pack' ? gitPushRemoteTarget(gitArgs) : undefined
+    if (target && isLocalGitPushTarget(target)) {
+      if (dynamic && /[$`]/.test(target)) return 'the local Git push target cannot be verified'
+      const state = isManagedGitTarget(target, commandInput)
+      if (state === false) return null
+      return state === true
+        ? 'the local Git push would change managed Git state'
+        : 'the local Git push target cannot be verified'
+    }
+    return 'the Git command would write to a remote repository'
+  }
+
   if (command === 'reset' && gitArgs.some((arg) => ['--hard', '--merge', '--keep'].includes(arg))) {
     return scopedBlock(targetUnknown ? 'the destructive Git reset target cannot be verified' : 'the reset could discard local work in the managed ticket worktree')
   }
   if (command === 'clean' && !gitCleanDryRun(gitArgs)) {
-    const paths: string[] = []
-    let separator = false
-    for (let i = 0; i < gitArgs.length; i++) {
-      const arg = gitArgs[i]!
-      if (arg === '--') { separator = true; continue }
-      if (!separator && (arg === '-e' || arg === '--exclude')) { i++; continue }
-      if (!separator && arg.startsWith('-')) continue
-      paths.push(arg)
-    }
-    if (!paths.length) return scopedBlock(targetUnknown ? 'the Git clean target cannot be verified' : 'the Git clean could remove local files from the managed ticket worktree')
-    for (const target of paths) {
+    const clean = parseGitCleanArguments(gitArgs)
+    if (!clean.verified) return scopedBlock('the Git clean target cannot be verified')
+    const checkedPaths = clean.paths.filter((target) => gitPathspecTarget(target, commandInput, workTree ?? directory))
+    if (!checkedPaths.length) return scopedBlock(targetUnknown ? 'the Git clean target cannot be verified' : 'the Git clean could remove local files from the managed ticket worktree')
+    for (const target of checkedPaths) {
       const effect = gitProtectedPathEffect(target, commandInput, workTree ?? directory, dynamic, scopedBlock)
       if (effect) return effect
     }
@@ -775,11 +919,22 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
   if (command === 'rebase' && !gitArgs.includes('--abort') && !gitArgs.includes('--show-current-patch')) {
     return scopedBlock(targetUnknown ? 'the Git rebase target cannot be verified' : 'the Git rebase could rewrite managed repository history')
   }
+  if (['merge', 'pull', 'cherry-pick', 'revert', 'am', 'checkout-index', 'read-tree', 'filter-branch', 'fast-import'].includes(command)) {
+    return scopedBlock(targetUnknown ? 'the Git worktree target cannot be verified' : 'the command could overwrite managed Git state')
+  }
   if (command === 'apply' && !gitArgs.some((arg) => ['--check', '--stat', '--numstat', '--summary'].includes(arg))) {
     return scopedBlock('the Git patch mutation paths cannot be verified; use explicit file edits')
   }
   if (command === 'fetch' && gitArgs.some((arg) => ['-p', '--prune', '--prune-tags'].includes(arg))) {
     return scopedBlock('the command would prune managed Git metadata')
+  }
+  if (command === 'svn' && ['commit-diff', 'dcommit', 'set-tree'].includes(action ?? '')) {
+    return 'the Git command would write to a remote repository'
+  }
+  if ((command === 'submodule' && ['add', 'absorbgitdirs', 'deinit', 'foreach', 'init', 'sync', 'update'].includes(action ?? ''))
+    || (command === 'lfs' && ['install', 'migrate', 'uninstall'].includes(action ?? ''))
+    || (command === 'subtree' && ['add', 'merge', 'pull', 'split'].includes(action ?? ''))) {
+    return scopedBlock('the command could rewrite managed Git metadata or files')
   }
 
   if (command === 'config' && gitConfigWrites(gitArgs)) {
@@ -855,7 +1010,7 @@ function gitMetadataChange(command: string, args: string[]): boolean {
     ].includes(arg) || arg.startsWith('--sort=') || arg.startsWith('--format='))
       && args.some((arg) => !arg.startsWith('-'))
   }
-  if (command === 'stash') return !['list', 'show'].includes(action ?? '')
+  if (command === 'stash') return !['list', 'show', 'apply', 'pop'].includes(action ?? '')
   if (command === 'replace') return !args.includes('--list') && args.some((arg) => !arg.startsWith('-'))
   if (command === 'notes') return ['add', 'append', 'copy', 'edit', 'merge', 'prune', 'remove'].includes(action ?? '')
   if (command === 'reflog') return ['delete', 'expire', 'write'].includes(action ?? '')
@@ -882,6 +1037,36 @@ function gitSubcommand(command: string, args: string[]): string | undefined {
   return undefined
 }
 
+function gitPushRemoteTarget(args: string[]): string | undefined {
+  const optionsWithValues = new Set(['-o', '--exec', '--push-option', '--receive-pack'])
+  const flags = new Set([
+    '-n', '-f', '-u', '--all', '--atomic', '--delete', '--dry-run', '--follow-tags', '--force',
+    '--force-with-lease', '--ipv4', '--ipv6', '--mirror', '--no-verify', '--porcelain', '--progress',
+    '--prune', '--quiet', '--recurse-submodules', '--repo', '--set-upstream', '--signed', '--tags', '--thin', '--verbose',
+  ])
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '--') return args[i + 1]
+    if (optionsWithValues.has(arg)) { i++; continue }
+    if (arg === '--repo') return args[i + 1]
+    if (arg.startsWith('--repo=')) return arg.slice('--repo='.length)
+    if (arg.startsWith('-')) {
+      const option = arg.split('=', 1)[0]!
+      if (flags.has(option) || arg.includes('=')) continue
+      return undefined
+    }
+    return arg
+  }
+  return undefined
+}
+
+function isLocalGitPushTarget(target: string): boolean {
+  return isAbsolutePath(target) || target.startsWith('./') || target.startsWith('../')
+    || target.startsWith('.\\') || target.startsWith('..\\')
+    || target === '~' || target.startsWith('~/') || target.startsWith('~\\')
+    || /^file:\/\//i.test(target)
+}
+
 function gitConfigWrites(args: string[]): boolean {
   if (args.some((arg) => ['--replace-all', '--add', '--unset', '--unset-all', '--rename-section', '--remove-section', '--edit', '-e'].includes(arg))) return true
   if (args.some((arg) => [
@@ -904,11 +1089,14 @@ function gitConfigCanExecute(key: string, command: string): boolean {
   if ([
     'core.askpass', 'core.editor', 'core.fsmonitor', 'core.gitproxy', 'core.hookspath',
     'core.pager', 'core.sshcommand', 'credential.helper', 'diff.external',
-    'interactive.difffilter', 'sequence.editor',
+    'interactive.difffilter', 'sequence.editor', 'protocol.ext.allow',
   ].includes(key) || key.startsWith('pager.')) return true
   return (key.startsWith('filter.') && ['.clean', '.process', '.smudge'].some((suffix) => key.endsWith(suffix)))
+    || (key.startsWith('diff.') && (key.endsWith('.command') || key.endsWith('.textconv')))
+    || (key.startsWith('difftool.') && key.endsWith('.cmd'))
     || (key.startsWith('merge.') && key.endsWith('.driver'))
     || (key.startsWith('mergetool.') && key.endsWith('.cmd'))
+    || key === 'include.path' || (key.startsWith('includeif.') && key.endsWith('.path'))
 }
 
 function gitEnvironmentConfig(environment: Record<string, string>): Array<{ key: string; value?: string }> {
@@ -935,7 +1123,46 @@ function gitHasShortOption(args: string[], option: string): boolean {
 }
 
 function gitCleanDryRun(args: string[]): boolean {
-  return args.includes('--dry-run') || gitHasShortOption(args, 'n')
+  return parseGitCleanArguments(args).dryRun
+}
+
+function parseGitCleanArguments(args: string[]): { paths: string[]; dryRun: boolean; verified: boolean } {
+  const paths: string[] = []
+  let dryRun = false
+  let verified = true
+  let afterSeparator = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (afterSeparator) {
+      paths.push(arg)
+    } else if (arg === '--') {
+      afterSeparator = true
+    } else if (arg === '--dry-run' || arg === '-n') {
+      dryRun = true
+    } else if (arg === '--exclude' || arg === '-e') {
+      if (args[i + 1] === undefined) verified = false
+      else i++
+    } else if (arg.startsWith('--exclude=')) {
+      continue
+    } else if (arg.startsWith('--')) {
+      verified = false
+    } else if (arg.startsWith('-')) {
+      const options = arg.slice(1)
+      for (let option = 0; option < options.length; option++) {
+        const flag = options[option]!.toLowerCase()
+        if (flag === 'n') dryRun = true
+        else if (flag === 'e') {
+          if (option + 1 < options.length) break
+          if (args[i + 1] === undefined) verified = false
+          else i++
+          break
+        } else if (!'fdxq'.includes(flag)) verified = false
+      }
+    } else {
+      paths.push(arg)
+    }
+  }
+  return { paths, dryRun, verified }
 }
 
 function gitMutationPaths(
@@ -1027,10 +1254,12 @@ function hasShellExpansion(value: string): boolean {
   return false
 }
 
-function gitCreationPaths(command: string, args: string[]): { destination?: string; separateGitDir?: string; verified: boolean } {
+function gitCreationPaths(command: string, args: string[]): { destination?: string; separateGitDir?: string; configurations: string[]; unsafeOptions: boolean; verified: boolean } {
   const operands: string[] = []
-  const optionsWithValues = new Set(['-b', '--branch', '-o', '--origin', '-u', '--upload-pack', '-j', '--jobs', '--depth', '--shallow-since', '--shallow-exclude', '--reference', '--reference-if-able', '--config', '--config-env', '--filter', '--server-option', '--bundle-uri', '--revision', '--template', '--initial-branch', '--object-format', '--ref-format'])
+  const optionsWithValues = new Set(['-b', '--branch', '-o', '--origin', '-u', '--upload-pack', '-j', '--jobs', '--depth', '--shallow-since', '--shallow-exclude', '--reference', '--reference-if-able', '-c', '--config', '--config-env', '--filter', '--server-option', '--bundle-uri', '--revision', '--template', '--initial-branch', '--object-format', '--ref-format'])
   let separateGitDir: string | undefined
+  const configurations: string[] = []
+  let unsafeOptions = false
   let verified = true
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
@@ -1045,12 +1274,24 @@ function gitCreationPaths(command: string, args: string[]): { destination?: stri
       if (!separateGitDir) verified = false
       continue
     }
+    if (arg === '--config' || arg === '--config-env' || arg === '-c') {
+      const setting = args[++i]
+      if (!setting) verified = false
+      else configurations.push(setting)
+      continue
+    }
+    if (arg.startsWith('--config=')) { configurations.push(arg.slice('--config='.length)); continue }
+    if (arg.startsWith('--config-env=')) { configurations.push(arg.slice('--config-env='.length)); continue }
+    if (arg === '--upload-pack' || arg.startsWith('--upload-pack=') || arg === '--template' || arg.startsWith('--template=')) {
+      unsafeOptions = true
+    }
     if (optionsWithValues.has(arg)) {
       if (!args[i + 1]) verified = false
       i++
       continue
     }
-    if (arg.length > 2 && ['b', 'o', 'u', 'j', 'c'].includes(arg[1]!)) continue
+    if (arg.length > 2 && ['b', 'o', 'u', 'j'].includes(arg[1]!)) continue
+    if (arg.startsWith('-c') && arg.length > 2) { configurations.push(arg.slice(2)); continue }
     if (arg.startsWith('-')) continue
     operands.push(arg)
   }
@@ -1058,7 +1299,7 @@ function gitCreationPaths(command: string, args: string[]): { destination?: stri
     ? operands[0]
     : operands[1] ?? defaultCloneDestination(operands[0])
   if (command === 'clone' && !operands[0]) verified = false
-  return { destination, separateGitDir, verified }
+  return { destination, separateGitDir, configurations, unsafeOptions, verified }
 }
 
 function defaultCloneDestination(source: string | undefined): string | undefined {
@@ -1072,6 +1313,38 @@ function defaultCloneDestination(source: string | undefined): string | undefined
   const name = repository.split(/[\\/:]/).at(-1)
   if (!name) return undefined
   return name.toLowerCase().endsWith('.git') ? name.slice(0, -4) || undefined : name
+}
+
+function gitOutputPaths(command: string, args: string[]): { paths: string[]; verified: boolean } {
+  const paths: string[] = []
+  const outputOptions = command === 'format-patch'
+    ? new Set(['-o', '--output-directory'])
+    : new Set(['-o', '--output'])
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (outputOptions.has(arg)) {
+      const path = args[++i]
+      if (!path) return { paths, verified: false }
+      if (path !== '-') paths.push(path)
+    } else if (arg.startsWith('--output=')) {
+      const path = arg.slice('--output='.length)
+      if (!path) return { paths, verified: false }
+      if (path !== '-') paths.push(path)
+    } else if (command === 'format-patch' && arg.startsWith('--output-directory=')) {
+      const path = arg.slice('--output-directory='.length)
+      if (!path) return { paths, verified: false }
+      paths.push(path)
+    } else if (command === 'format-patch' && arg.startsWith('-o') && arg.length > 2) {
+      paths.push(arg.slice(2))
+    }
+  }
+  if (command === 'bundle' && gitSubcommand(command, args) === 'create') {
+    const create = args.indexOf('create')
+    const target = args.slice(create + 1).find((arg) => !arg.startsWith('-'))
+    if (!target) return { paths, verified: false }
+    paths.push(target)
+  }
+  return { paths, verified: true }
 }
 
 function gitRestorePaths(command: string, args: string[]): string[] {
@@ -1124,7 +1397,7 @@ function isManagedGitTarget(target: string, input: PermissionGuardInput): boolea
   return false
 }
 
-function classifyFind(args: string[], input: PermissionGuardInput, depth: number): string | null {
+function classifyFind(args: string[], input: PermissionGuardInput, depth: number, dynamic: boolean): string | null {
   const paths: string[] = []
   let index = 0
   while (['-H', '-L', '-P'].includes(args[index] ?? '')) index++
@@ -1134,12 +1407,26 @@ function classifyFind(args: string[], input: PermissionGuardInput, depth: number
     const effect = classifyRemoval(paths, true, input)
     if (effect) return effect
   }
+  for (let i = index; i < args.length; i++) {
+    if (!['-fprint', '-fprint0', '-fls', '-fprintf'].includes(args[i]!)) continue
+    const target = args[++i]
+    if (!target) return 'the find output path cannot be verified'
+    if (dynamic && hasShellExpansion(target)) return 'the find output path cannot be verified'
+    if (target !== '-') {
+      const effect = protectedPathEffect(target, input, true)
+      if (effect) return effect
+    }
+    if (args[i - 1] === '-fprintf') i++
+  }
   for (; index < args.length; index++) {
     if (!['-exec', '-execdir', '-ok', '-okdir'].includes(args[index]!)) continue
+    const execdir = args[index] === '-execdir' || args[index] === '-okdir'
     const inner: string[] = []
     while (++index < args.length && ![';', '+'].includes(args[index]!)) inner.push(args[index]!)
     for (const target of paths) {
-      const effect = classifyShell(inner.map((word) => word.replaceAll('{}', target)).join(' '), input, depth + 1)
+      const command = inner.map((word) => quoteShellWord(word.replaceAll('{}', target))).join(' ')
+      const commandInput = execdir ? { ...input, unverifiedDirectory: true } : input
+      const effect = classifyShell(command, commandInput, depth + 1)
       if (effect) return effect
     }
   }
@@ -1167,6 +1454,311 @@ function classifyContentWrite(args: string[], dynamic: boolean, input: Permissio
     if (effect) return effect
   }
   return null
+}
+
+function classifySed(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
+  const isInPlace = (arg: string) => arg === '-i' || arg === '-I' || /^-[a-z]*i(?:[a-z]*|\..*)$/i.test(arg)
+    || arg === '--in-place' || /^--inpl[a-z-]*(?:=.*)?$/i.test(arg)
+  if (!args.some(isInPlace)) return null
+
+  const files: string[] = []
+  let scriptSeen = false
+  let afterSeparator = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!afterSeparator && arg === '--') { afterSeparator = true; continue }
+    if (!afterSeparator && ['-e', '--expression', '-f', '--file'].includes(arg)) {
+      scriptSeen = true
+      i++
+      continue
+    }
+    if (!afterSeparator && (/^--(?:expression|file)=/.test(arg) || /^-[ef].+/.test(arg))) {
+      scriptSeen = true
+      continue
+    }
+    if (!afterSeparator && (isInPlace(arg) || arg === '-l' || arg === '--line-length')) {
+      if (arg === '-l' || arg === '--line-length') i++
+      continue
+    }
+    if (!afterSeparator && arg.startsWith('-') && arg !== '-') continue
+    if (!scriptSeen) scriptSeen = true
+    else files.push(arg)
+  }
+  if (!files.length) return 'the sed in-place target cannot be verified'
+  for (const file of files) {
+    if (dynamic && /[$`]/.test(file)) return 'the sed in-place target cannot be verified'
+    const effect = protectedPathEffect(file, input, true)
+    if (effect) return effect
+  }
+  return null
+}
+
+function classifyStartProcess(args: string[], dynamic: boolean, input: PermissionGuardInput, depth: number): string | null {
+  if (dynamic) return 'the process command cannot be verified'
+  let executable: string | undefined
+  let workingDirectory = input.directory
+  const childArguments: string[] = []
+  const valueOptions = new Set(['-argumentlist', '-args', '-filepath', '-path', '-workingdirectory', '-verb', '-windowstyle'])
+  const flagOptions = new Set(['-loaduserprofile', '-nonewwindow', '-passthru', '-usenewenvironment', '-wait', '-whatif', '-confirm'])
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    const separator = arg.search(/[:=]/)
+    const option = (separator < 0 ? arg : arg.slice(0, separator)).toLowerCase()
+    const attachedValue = separator < 0 ? undefined : arg.slice(separator + 1)
+    if (valueOptions.has(option)) {
+      const value = attachedValue ?? args[++i]
+      if (value === undefined) return 'the process command cannot be verified'
+      if (option === '-filepath' || option === '-path') executable = value
+      else if (option === '-workingdirectory') workingDirectory = normalizePath(value, workingDirectory)?.path
+      else if (option === '-argumentlist' || option === '-args') childArguments.push(value.replace(/,+$/, ''))
+      continue
+    }
+    if (flagOptions.has(option)) continue
+    if (arg.startsWith('-')) return 'the process command cannot be verified'
+    if (!executable) executable = arg
+    else childArguments.push(arg.replace(/,+$/, ''))
+  }
+  if (!executable) return 'the process command cannot be verified'
+  const childInput = { ...input, directory: workingDirectory }
+  if (input.unverifiedDirectory && workingDirectory && isAbsolutePath(workingDirectory)) {
+    childInput.unverifiedDirectory = false
+  }
+  const command = [quoteShellWord(executable), ...childArguments].join(' ')
+  return classifyShell(command, childInput, depth + 1)
+}
+
+function quoteShellWord(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
+  let extracting = false
+  let toStdout = false
+  let writingArchive = false
+  let destination: string | undefined
+  let archiveFile: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '--help' || arg === '--version' || arg === '-h') return null
+    if (arg === '--to-stdout' || arg === '-O') toStdout = true
+    if (arg === '--extract' || arg === '--get') extracting = true
+    if (['--create', '--append', '--update', '--delete', '--concatenate', '--catenate'].includes(arg)) writingArchive = true
+    if (arg === '--file') {
+      archiveFile = args[++i]
+      if (!archiveFile) return 'the archive output path cannot be verified'
+      continue
+    }
+    if (arg.startsWith('--file=')) {
+      archiveFile = arg.slice('--file='.length)
+      continue
+    }
+    if (arg === '-C' || arg === '--directory') {
+      destination = args[++i]
+      if (!destination) return 'the archive extraction target cannot be verified'
+      continue
+    }
+    if (arg.startsWith('--directory=')) destination = arg.slice('--directory='.length)
+    if (arg.startsWith('-') && arg.length > 1) {
+      const flags = arg.slice(1)
+      if (flags.includes('x')) extracting = true
+      if (flags.includes('c') || flags.includes('r') || flags.includes('u') || flags.includes('d') || flags.includes('A')) writingArchive = true
+      if (flags.includes('O')) toStdout = true
+      const fileOption = flags.indexOf('f')
+      if (fileOption >= 0) {
+        archiveFile = flags.length > fileOption + 1 ? flags.slice(fileOption + 1) : args[++i]
+        if (!archiveFile) return 'the archive output path cannot be verified'
+      }
+      const directoryOption = flags.indexOf('C')
+      if (directoryOption >= 0 && flags.length > directoryOption + 1) destination = flags.slice(directoryOption + 1)
+      if (directoryOption >= 0 && flags.length === directoryOption + 1) {
+        destination = args[++i]
+        if (!destination) return 'the archive extraction target cannot be verified'
+      }
+    } else if (/^[A-Za-z]+$/.test(arg)) {
+      if (arg[0]?.toLowerCase() === 'x') extracting = true
+      if (['c', 'r', 'u', 'd', 'a'].includes(arg[0]?.toLowerCase() ?? '')) writingArchive = true
+      if (arg.includes('O')) toStdout = true
+      const fileOption = arg.indexOf('f')
+      if (fileOption >= 0) {
+        archiveFile = arg.length > fileOption + 1 ? arg.slice(fileOption + 1) : args[++i]
+        if (!archiveFile) return 'the archive output path cannot be verified'
+      }
+    }
+  }
+  if (writingArchive && archiveFile) {
+    if (dynamic && hasShellExpansion(archiveFile)) return 'the archive output path cannot be verified'
+    const effect = protectedPathEffect(archiveFile, input, true)
+    if (effect) return effect
+  }
+  if (!extracting || toStdout) return null
+  const target = destination ?? '.'
+  if (dynamic && /[$`]/.test(target)) return 'the archive extraction target cannot be verified'
+  if (input.unverifiedDirectory && !isAbsolutePath(target)) return 'the archive extraction target cannot be verified'
+  return protectedPathEffect(target, input, true)
+}
+
+function classifyUnzip(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
+  let destination = '.'
+  let toStdout = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '-p') toStdout = true
+    else if (arg === '-d') destination = args[++i] ?? ''
+    else if (arg.startsWith('-d') && arg.length > 2) destination = arg.slice(2)
+  }
+  if (toStdout) return null
+  if (!destination || (dynamic && hasShellExpansion(destination))) return 'the archive extraction target cannot be verified'
+  return protectedPathEffect(destination, input, true)
+}
+
+function classify7z(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
+  const action = args.find((arg) => !arg.startsWith('-'))?.toLowerCase()
+  if (!['x', 'e', 'extract'].includes(action ?? '')) return null
+  let destination = '.'
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (/^-o$/i.test(arg)) destination = args[++i] ?? ''
+    else if (/^-o/i.test(arg)) destination = arg.slice(2) || destination
+  }
+  if (dynamic && hasShellExpansion(destination)) return 'the archive extraction target cannot be verified'
+  return protectedPathEffect(destination, input, true)
+}
+
+function classifyCpio(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
+  let extracting = false
+  let passThrough = false
+  let destination = '.'
+  let outputFile: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '-D' || arg === '--directory') destination = args[++i] ?? ''
+    else if (/^-D.+/.test(arg)) destination = arg.slice(2)
+    else if (arg === '-F' || arg === '--file') outputFile = args[++i]
+    else if (arg.startsWith('--file=')) outputFile = arg.slice('--file='.length)
+    else if (/^-F.+/.test(arg)) outputFile = arg.slice(2)
+    else if (arg.startsWith('-') && !arg.startsWith('--')) {
+      extracting ||= /[ip]/i.test(arg.slice(1))
+      passThrough ||= /p/i.test(arg.slice(1))
+      const fileOption = arg.indexOf('F', 1)
+      if (fileOption >= 0) outputFile = arg.slice(fileOption + 1) || args[++i]
+    }
+  }
+  if (passThrough) destination = args.find((arg) => !arg.startsWith('-')) ?? ''
+  if (outputFile) {
+    if (dynamic && hasShellExpansion(outputFile)) return 'the archive output path cannot be verified'
+    const effect = protectedPathEffect(outputFile, input, true)
+    if (effect) return effect
+  }
+  if (!extracting) return null
+  if (!destination || (dynamic && hasShellExpansion(destination))) return 'the archive extraction target cannot be verified'
+  return protectedPathEffect(destination, input, true)
+}
+
+function classifyRsync(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
+  const valueOptions = new Set([
+    '--backup-dir', '--block-size', '--bwlimit', '--checksum-choice', '--checksum-seed', '--chmod', '--chown',
+    '--compare-dest', '--compress-choice', '--compress-level', '--compress-threads', '--contimeout',
+    '--copy-dest', '--exclude', '--exclude-from', '--files-from', '--filter', '--groupmap', '--iconv', '--include',
+    '--include-from', '--link-dest', '--log-file', '--log-file-format', '--max-delete', '--only-write-batch',
+    '--max-alloc', '--max-size', '--min-size', '--modify-window', '--out-format', '--outbuf', '--partial-dir',
+    '--password-file', '--port', '--protocol', '--read-batch', '--remote-option', '--rsync-path', '--rsh',
+    '--skip-compress', '--sockopts', '--stop-after', '--stop-at', '--suffix', '--temp-dir', '--timeout', '--usermap',
+    '--write-batch', '--info', '--debug', '--copy-as',
+  ])
+  const outputOptions = new Set(['--backup-dir', '--log-file', '--only-write-batch', '--partial-dir', '--temp-dir', '--write-batch'])
+  const valueShortOptions = new Set(['-B', '-e', '-f', '-M', '-T'])
+  const flagShortOptions = new Set('vqc arRbulLpotD123468Wxzhn iPEJOSHAXINCFds'.replaceAll(' ', '').split(''))
+  const flagOptions = new Set([
+    '--8-bit-output', '--acls', '--archive', '--atimes', '--backup', '--checksum', '--compress', '--copy-links',
+    '--copy-unsafe-links', '--del', '--delete', '--delete-after', '--delete-before', '--delete-delay',
+    '--delete-during', '--delete-excluded', '--delete-missing-args', '--dirs', '--executability', '--existing',
+    '--group', '--hard-links', '--human-readable', '--ignore-errors', '--ignore-existing', '--ignore-missing-args',
+    '--ignore-times', '--inplace', '--itemize-changes', '--keep-dirlinks', '--links', '--mkpath', '--no-implied-dirs',
+    '--no-motd', '--no-whole-file', '--omit-dir-times', '--omit-link-times', '--one-file-system', '--owner',
+    '--partial', '--perms', '--preallocate', '--progress', '--prune-empty-dirs', '--quiet', '--recursive',
+    '--relative', '--remove-source-files', '--safe-links', '--sparse', '--specials', '--stats', '--times',
+    '--update', '--verbose', '--whole-file', '--xattrs', '--dry-run',
+    '--fuzzy', '--human-readable', '--ignore-existing', '--ignore-times', '--itemize-changes', '--links',
+    '--no-implied-dirs', '--no-motd', '--no-whole-file', '--numeric-ids', '--protect-args', '--secluded-args',
+  ])
+  const outputPaths: string[] = []
+  const operands: string[] = []
+  let removeSources = false
+  let deleteDestination = false
+  let dryRun = false
+  let filesFrom = false
+  let afterSeparator = false
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!afterSeparator && arg === '--') { afterSeparator = true; continue }
+    if (!afterSeparator && arg.startsWith('--')) {
+      const equal = arg.indexOf('=')
+      const option = equal < 0 ? arg : arg.slice(0, equal)
+      if (valueOptions.has(option)) {
+        const value = equal < 0 ? args[++i] : arg.slice(equal + 1)
+        if (!value) return 'the rsync option cannot be verified'
+        if (outputOptions.has(option)) outputPaths.push(value)
+        if (option === '--files-from') filesFrom = true
+        continue
+      }
+      if (option === '--remove-source-files') { removeSources = true; continue }
+      if (option.startsWith('--delete')) { deleteDestination = true; continue }
+      if (flagOptions.has(option)) continue
+      return 'the rsync options cannot be verified'
+    }
+    if (!afterSeparator && arg.startsWith('-') && arg !== '-') {
+      const letters = arg.slice(1)
+      let consumed = false
+      for (let j = 0; j < letters.length; j++) {
+        const option = `-${letters[j]!}`
+        if (valueShortOptions.has(option)) {
+          const value = letters.slice(j + 1) || args[++i]
+          if (!value) return 'the rsync option cannot be verified'
+          if (option === '-T') outputPaths.push(value)
+          consumed = true
+          break
+        }
+        if (letters[j] === 'n') dryRun = true
+        if (!flagShortOptions.has(letters[j]!)) return 'the rsync options cannot be verified'
+      }
+      if (consumed || letters.length) continue
+    }
+    operands.push(arg)
+  }
+  if (operands.length < 2) return 'the rsync destination cannot be verified'
+  const destination = operands.at(-1)!
+  if (dynamic && /[$`]/.test(destination)) return 'the rsync destination cannot be verified'
+  if (filesFrom && removeSources) return 'the rsync removal source paths cannot be verified'
+  for (const output of outputPaths) {
+    if (dynamic && /[$`]/.test(output)) return 'the rsync output path cannot be verified'
+    const effect = protectedPathEffect(output, input, true)
+    if (effect) return effect
+  }
+  if (dryRun || args.includes('--dry-run')) return null
+  if (filesFrom && !isRemotePath(destination)) {
+    const effect = protectedPathEffect(destination, input, true)
+    if (effect) return effect
+  }
+  if (deleteDestination) {
+    const effect = classifyRemoval([destination], dynamic, input)
+    if (effect) return effect
+  } else if (!isRemotePath(destination)) {
+    const effect = classifyFileMutation('cp', ['--', ...operands], dynamic, input)
+    if (effect) return effect
+  }
+  if (removeSources) {
+    for (const source of operands.slice(0, -1)) {
+      const effect = classifyRemoval([source], dynamic, input)
+      if (effect) return effect
+    }
+  }
+  return null
+}
+
+function isRemotePath(value: string): boolean {
+  return value.includes(':') && !/^[A-Za-z]:[\\/]/.test(value)
 }
 
 function classifyRemoval(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
@@ -1202,7 +1794,7 @@ function isRemovalCommand(command: string): boolean {
 }
 
 function isFileMutationCommand(command: string): boolean {
-  return ['cp', 'copy', 'copy-item', 'cpi', 'mv', 'move', 'move-item', 'mi', 'ren', 'rename', 'rename-item', 'rni', 'tee', 'tee-object', 'truncate', 'touch', 'chmod', 'chown'].includes(commandBase(command))
+  return ['cp', 'copy', 'copy-item', 'cpi', 'install', 'ln', 'link', 'mklink', 'mv', 'move', 'move-item', 'mi', 'ren', 'rename', 'rename-item', 'rni', 'tee', 'tee-object', 'truncate', 'touch', 'chmod', 'chown', 'mkdir', 'md', 'new-item', 'ni'].includes(commandBase(command))
 }
 
 function classifyFileMutation(commandName: string, args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
@@ -1241,6 +1833,15 @@ function classifyFileMutation(commandName: string, args: string[], dynamic: bool
       continue
     }
     if (!afterSeparator && /^-(?:filepath|file-path)[:=]/.test(option)) {
+      targets.push(arg.slice(arg.search(/[:=]/) + 1))
+      continue
+    }
+    if (!afterSeparator && !copy && !move && ['-path', '-literalpath'].includes(option)) {
+      const target = args[++i]
+      if (target) targets.push(target)
+      continue
+    }
+    if (!afterSeparator && !copy && !move && /^-(?:path|literalpath)[:=]/.test(option)) {
       targets.push(arg.slice(arg.search(/[:=]/) + 1))
       continue
     }
@@ -1320,6 +1921,7 @@ function protectedPathEffect(rawPath: string, input: PermissionGuardInput, broad
 
   const roots: Array<{ path: string; projectState?: boolean; ticketState?: boolean }> = []
   const worktree = context ? normalizePath(context.worktreePath) : undefined
+  const projectRoot = context ? normalizePath(context.projectRoot) : undefined
   if (broad && worktree && pathContains(prefix, worktree)) {
     return 'the command could remove the managed ticket worktree'
   }
@@ -1348,6 +1950,11 @@ function protectedPathEffect(rawPath: string, input: PermissionGuardInput, broad
     return 'the target would change or remove managed LoopTroop state or Git metadata'
   }
 
+  if (projectRoot && pathContains(projectRoot, prefix)
+    && (!worktree || !pathContains(worktree, prefix))) {
+    return 'the command would change the original project checkout outside the managed ticket worktree'
+  }
+
   if (context) {
     const worktree = normalizePath(context.worktreePath)
     const candidateRelative = worktree && pathContains(worktree, prefix) ? relativePath(worktree, prefix) : undefined
@@ -1370,6 +1977,8 @@ function protectedPathEffect(rawPath: string, input: PermissionGuardInput, broad
     const projectRoot = normalizePath(context.projectRoot)
     if (projectRoot && pathContains(prefix, projectRoot)) return 'the command could remove a repository containing managed worktrees'
   }
+  const home = broad ? normalizePath(homedir()) : undefined
+  if (home && pathContains(prefix, home)) return 'the command could remove your home directory'
   return null
 }
 
@@ -1460,7 +2069,7 @@ function hasControlComponent(value: string): boolean {
 }
 
 function isExecutable(value: string, name: string): boolean {
-  return basename(value).toLowerCase() === name || basename(value).toLowerCase() === `${name}.exe`
+  return commandBase(value) === name
 }
 
 function basename(value: string): string {
@@ -1469,7 +2078,7 @@ function basename(value: string): string {
 
 function commandBase(value: string): string {
   const name = basename(value).toLowerCase()
-  return name.endsWith('.exe') ? name.slice(0, -4) : name
+  return name.replace(/\.(?:exe|cmd|bat)$/, '')
 }
 
 function equalsPath(left: string, right: string, windows: boolean): boolean {

@@ -375,6 +375,8 @@ describe('ticketRouter PR review routes', () => {
       number: 42,
       url: 'https://github.com/test/repo/pull/42',
       state: 'merged',
+      baseRefName: 'main',
+      headRefName: ticket.branchName,
       headRefOid: 'merged-pr-head',
       mergeCommitSha: 'landed123',
     })
@@ -433,13 +435,12 @@ describe('ticketRouter PR review routes', () => {
       number: 42,
       url: 'https://github.com/test/repo/pull/42',
       state: 'merged',
+      baseRefName: current.runtime.baseBranch,
+      headRefName: current.branchName,
       headRefOid: 'merged-pr-head',
       mergeCommitSha: 'landed123',
     })
-    const actualPhase = await vi.importActual<typeof import('../../workflow/phases/pullRequestPhase')>(
-      '../../workflow/phases/pullRequestPhase',
-    )
-    reconcileEarlyMergedPullRequestMock.mockImplementation(actualPhase.reconcileEarlyMergedPullRequest)
+    reconcileEarlyMergedPullRequestMock.mockResolvedValueOnce('corrected')
 
     await Promise.all([syncWaitingPullRequestTicket(ticket.id), syncWaitingPullRequestTicket(ticket.id)])
 
@@ -485,7 +486,7 @@ describe('ticketRouter PR review routes', () => {
       reason: 'conflict',
       recoveryWorktreePath: '/tmp/recovery',
       conflictPaths: ['src/example.ts'],
-      message: 'The corrective patch conflicted; resolve it manually. LoopTroop will not guess or resume automatically.',
+      message: 'The corrective patch conflicted. Resolve it in the recovery checkout, stage your changes, commit once, then retry Verify.',
     }
     const receipt = {
       step: 'early_merged_pull_request_recovery',
@@ -519,7 +520,7 @@ describe('ticketRouter PR review routes', () => {
 
     expect(getTicketByRef(ticket.id)).toMatchObject({
       status: 'BLOCKED_ERROR',
-      errorMessage: expect.stringContaining('will not guess or resume automatically'),
+      errorMessage: expect.stringContaining('stage your changes'),
     })
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, expect.objectContaining({
       type: 'ERROR',
@@ -992,6 +993,30 @@ describe('ticketRouter PR review routes', () => {
     log.mockRestore()
   })
 
+  it('keeps transient early-merge failures retryable from the Merge action', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockResolvedValue(makeObservedMergedPullRequest())
+    reconcileEarlyMergedPullRequestMock
+      .mockRejectedValueOnce(new Error('GitHub temporarily unavailable'))
+      .mockResolvedValueOnce('corrected')
+    const app = new Hono().route('/api', ticketRouter)
+
+    const first = await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+
+    expect(first.status).toBe(502)
+    expect(await first.json()).toMatchObject({
+      error: expect.stringContaining('remains available to retry'),
+    })
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
+    expect(sendTicketEvent).not.toHaveBeenCalledWith(ticket.id, expect.objectContaining({ type: 'ERROR' }))
+
+    const retry = await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
+
+    expect(retry.status).toBe(200)
+    expect(getTicketByRef(ticket.id)?.status).toBe('RUNNING_FINAL_TEST')
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'EARLY_MERGE_CORRECTION_READY' })
+  })
+
   it('continues from a merged PR that no longer describes the current candidate', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     refreshPullRequestStateMock.mockResolvedValue(makeObservedMergedPullRequest())
@@ -1174,7 +1199,7 @@ describe('ticketRouter PR review routes', () => {
     expect(completeMergedPullRequestMock).toHaveBeenCalledOnce()
   })
 
-  it('blocks as a merge failure when remote merge verification fails', async () => {
+  it('keeps an unclassified merge verification failure retryable', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
@@ -1184,13 +1209,13 @@ describe('ticketRouter PR review routes', () => {
 
     const response = await app.request(`/api/tickets/${ticket.id}/merge`, { method: 'POST' })
 
-    expect(response.status).toBe(200)
+    expect(response.status).toBe(502)
     const payload = await response.json() as { status?: string; message?: string }
     expect(payload).toMatchObject({
-      status: 'BLOCKED_ERROR',
-      message: 'Merge failed and ticket was blocked',
+      error: expect.stringContaining('remains available to retry'),
     })
-    expect(getTicketByRef(ticket.id)?.errorMessage).toContain('Remote origin/main does not contain commit abc123def456')
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
+    expect(getTicketByRef(ticket.id)?.errorMessage).toBeNull()
   })
 
   it('persists a close-unmerged merge report artifact', async () => {

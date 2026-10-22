@@ -659,17 +659,21 @@ async function handleMergeTicketLocked(c: Context, observed: PullRequestInfo) {
     }
     const recovery = err instanceof EarlyMergeRecoveryManualError ? err.recovery : null
     const details = getErrorMessage(err)
-    const message = recovery
-      ? `Pull request #${observed.number} requires manual recovery: ${details}`
-      : `Pull request merge failed: ${details}`
-    const codes = [recovery ? 'EARLY_MERGE_RECOVERY_MANUAL' : 'PULL_REQUEST_MERGE_FAILED']
+    if (!recovery) {
+      return c.json({
+        error: 'The pull request could not be verified for completion. The ticket remains available to retry.',
+        details,
+      }, 502)
+    }
+    const message = `Pull request #${observed.number} requires manual recovery: ${details}`
+    const codes = ['EARLY_MERGE_RECOVERY_MANUAL']
     try {
       ensureActorForTicket(ticketId)
-      emitRoutePhaseLog(ticketId, phase, 'error', message, recovery ? {
+      emitRoutePhaseLog(ticketId, phase, 'error', message, {
         recoveryReason: recovery.reason,
         recoveryWorktreePath: recovery.recoveryWorktreePath,
         conflictPaths: recovery.conflictPaths,
-      } : undefined)
+      })
       sendTicketEvent(ticketId, {
         type: 'ERROR',
         message,

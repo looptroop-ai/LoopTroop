@@ -130,14 +130,12 @@ function observeSessionCreated(
   state: RelatedSessionRoutingState,
 ): void {
   if (raw.type !== "session.created") return;
+  const data = asRecord(raw.data);
   const sessionId = rawSessionId(raw);
-  const info = asRecord(asRecord(raw.data)?.info);
-  const infoId = stringValue(info?.id);
-  const parentId = stringValue(info?.parentID);
-  const directory = stringValue(asRecord(info?.location)?.directory) ?? stringValue(info?.directory);
+  const parentId = stringValue(data?.parentID);
+  const directory = stringValue(asRecord(data?.location)?.directory) ?? stringValue(data?.directory);
   if (
     !sessionId ||
-    (infoId !== undefined && infoId !== sessionId) ||
     !validDurableSessionEvent(raw, sessionId)
   ) return;
 
@@ -221,9 +219,11 @@ function withPermissionDirectory(
   let permissionDirectoryUnverified = false;
   const data = asRecord(raw.data);
   const source = asRecord(data?.source);
-  if (event.permission === "bash" && source?.type === "tool") {
-    const messageId = stringValue(source.messageID);
-    const callId = stringValue(source.id);
+  if (event.permission === "bash" && source?.type !== "tool") {
+    permissionDirectoryUnverified = true;
+  } else if (event.permission === "bash") {
+    const messageId = stringValue(source?.messageID);
+    const callId = stringValue(source?.id);
     const call = messageId && callId
       ? state.toolCalls.get(nativeToolCallKey(event.sessionId, messageId, callId))
       : undefined;
@@ -246,6 +246,7 @@ function withPermissionDirectory(
       permissionDirectoryUnverified = true;
     }
   }
+  if (!permissionDirectory) permissionDirectoryUnverified = true;
 
   return {
     ...envelope,
@@ -362,6 +363,28 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     return sessions;
   }
 
+  private async hydrateRelatedSessions(
+    rootSessionId: string,
+    state: RelatedSessionRoutingState,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const queue = [rootSessionId];
+    for (let index = 0; index < queue.length; index++) {
+      const parentId = queue[index]!;
+      const children = arrayValue(dataOf(await this.request(
+        `/api/session/${encodeURIComponent(parentId)}/children`,
+        { signal },
+      )));
+      for (const value of children) {
+        const child = mapV2Session(value);
+        if (child.id === rootSessionId || state.descendants.has(child.id)) continue;
+        state.descendants.add(child.id);
+        if (child.directory) state.directories.set(child.id, child.directory);
+        queue.push(child.id);
+      }
+    }
+  }
+
   async getSessionMessages(
     sessionId: string,
     _directory?: string,
@@ -432,12 +455,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     let mappingState = createV2EventMappingState();
     let scan: SessionLogScan;
     try {
+      await this.hydrateRelatedSessions(sessionId, relatedSessions, streamSignal);
       scan = await this.scanSessionLog(
         sessionId,
         afterCursor,
         streamSignal,
         afterCursor === undefined ? undefined : (event) => backlog.push(event),
         mappingState,
+        relatedSessions,
       );
     } catch (error) {
       await closeConnections();
@@ -1106,6 +1131,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     mappingState: ReturnType<
       typeof createV2EventMappingState
     > = createV2EventMappingState(),
+    relatedSessions?: RelatedSessionRoutingState,
   ): Promise<SessionLogScan> {
     const query = new URLSearchParams({ follow: "false" });
     if (after !== undefined) query.set("after", String(after));
@@ -1175,8 +1201,15 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         seen.add(sequence);
         if (sequence !== lastCoveredSequence + 1) coverageComplete = false;
         if (sequence > lastCoveredSequence) lastCoveredSequence = sequence;
+        if (relatedSessions) {
+          observeSessionCreated(event, relatedSessions);
+          const eventSessionId = rawSessionId(event);
+          if (eventSessionId === sessionId || (eventSessionId && relatedSessions.descendants.has(eventSessionId))) {
+            observeNativeToolInput(event, eventSessionId!, relatedSessions);
+          }
+        }
         const mapped = mapV2Event(event, sessionId, mappingState, true);
-        if (mapped) onEvent?.(mapped);
+        if (mapped) onEvent?.(relatedSessions ? withPermissionDirectory(mapped, event, relatedSessions) : mapped);
         else {
           coverageComplete = false;
           hasUnmappedEvents = true;
@@ -1305,12 +1338,15 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               reconnected = await this.openEventStream(signal);
               ownedConnections.add(reconnected);
               const fetchPendingPermissions = !coverageGap;
-              const pendingPermissionsResponse = fetchPendingPermissions
-                ? await this.request(
-                    `/api/session/${encodeURIComponent(sessionId)}/permission`,
-                    { signal },
-                  )
-                : undefined;
+              if (fetchPendingPermissions) {
+                await this.hydrateRelatedSessions(sessionId, relatedSessions, signal);
+              }
+              const permissionSessionIds = fetchPendingPermissions
+                ? [sessionId, ...relatedSessions.descendants]
+                : [];
+              const pendingPermissionsResponses = await Promise.all(permissionSessionIds.map((permissionSessionId) =>
+                this.request(`/api/session/${encodeURIComponent(permissionSessionId)}/permission`, { signal }),
+              ));
               const replayEvents: OpenCodeTransportEventEnvelope[] = [];
               // Failed replay must not consume text/tool state before a retry.
               const replayState = structuredClone(state);
@@ -1320,27 +1356,27 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
                 signal,
                 (event) => replayEvents.push(event),
                 replayState,
+                relatedSessions,
               );
               const replayGap = coverageGap || !replay.coverageComplete;
               const pendingPermissions: OpenCodeTransportEventEnvelope[] = [];
               if (!replayGap && fetchPendingPermissions) {
-                const response = dataOf(pendingPermissionsResponse);
-                if (!Array.isArray(response))
-                  throw new Error(
-                    "OpenCode v2 returned an invalid pending permission list",
-                  );
-                for (const request of response) {
-                  const event = mapV2Event(
-                    { type: "permission.asked", data: request },
-                    sessionId,
-                    replayState,
-                  );
-                  if (!event?.event || event.event.type !== "permission") {
+                for (const [index, permissionSessionId] of permissionSessionIds.entries()) {
+                  const rawRequests = dataOf(pendingPermissionsResponses[index]);
+                  if (!Array.isArray(rawRequests))
                     throw new Error(
-                      "OpenCode v2 returned an invalid pending permission request",
+                      "OpenCode v2 returned an invalid pending permission list",
                     );
+                  for (const request of rawRequests) {
+                    const rawPermission = { type: "permission.asked", data: request };
+                    const event = mapV2Event(rawPermission, permissionSessionId, replayState, true);
+                    if (!event?.event || event.event.type !== "permission") {
+                      throw new Error(
+                        "OpenCode v2 returned an invalid pending permission request",
+                      );
+                    }
+                    pendingPermissions.push(withPermissionDirectory(event, rawPermission, relatedSessions));
                   }
-                  pendingPermissions.push(event);
                 }
               }
               await connection.close();

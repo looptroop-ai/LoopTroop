@@ -50,7 +50,7 @@
     "LICENSE",
     "THIRD-PARTY-NOTICES.md"
   ],
-  "packageManager": "npm@12.2.0",
+  "packageManager": "npm@12.2.1",
   "scripts": {
     "predev": "node scripts/dev-preflight.mjs",
     "dev": "tsx scripts/dev.ts",

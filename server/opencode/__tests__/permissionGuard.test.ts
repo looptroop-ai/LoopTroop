@@ -67,6 +67,8 @@ describe('getPermissionGuardRejection', () => {
     'cp /tmp/config.json /repo/config.json', 'git -C /repo add -A && git -C /repo commit -am update',
     "Start-Process -FilePath git -ArgumentList 'push origin HEAD'",
     "Start-Process -FilePath powershell -ArgumentList '-Command git push origin HEAD'",
+    'pwsh -enc Z2ggcHIgbWVyZ2UgMTI=', 'pwsh -enco Z2ggcHIgbWVyZ2UgMTI=',
+    'powershell -EncodedCommand Z2ggcHIgbWVyZ2UgMTI=',
     'tar -xf archive.tar -C .looptroop', 'tar xvf archive.tar -C .ticket',
     'Clear-Content .git/config', 'Set-Content .git/config content',
     'Add-Content -LiteralPath .ticket/prd.yaml -Value content',

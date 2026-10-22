@@ -76,6 +76,8 @@ describe('getPermissionGuardRejection', () => {
     'Out-File -FilePath .ticket/runtime/execution-log.jsonl -InputObject content',
     'dd if=/dev/zero of=.git/config', 'chmod 777 .git/index.lock',
     'cp src/config.json .git/config 2>/dev/null',
+    "sed -ii.bak 's/old/new/' .ticket/prd.yaml", "sed -ixi.bak 's/old/new/' .git/config",
+    "sed -nii.bak 's/old/new/' .looptroop/guard.json",
     'gh repo clone owner/repo /repo/.looptroop/worktrees/T-2',
     'gh release download v1.2.3 -D .git', 'gh release download v1.2.3 --output=.git/config',
   ])('refuses recognized inline bypasses: %s', (command) => {

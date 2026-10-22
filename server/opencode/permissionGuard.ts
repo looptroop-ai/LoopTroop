@@ -1462,14 +1462,21 @@ function classifySed(args: string[], dynamic: boolean, input: PermissionGuardInp
     }
     if (!arg.startsWith('-') || arg.startsWith('--')) return false
     const flags = arg.slice(1)
-    const inPlaceIndex = flags.toLowerCase().indexOf('i')
-    if (inPlaceIndex < 0) return false
-    const isLetters = (value: string) => [...value].every((character) => {
-      const lower = character.toLowerCase()
-      return lower >= 'a' && lower <= 'z'
-    })
-    const suffix = flags.slice(inPlaceIndex + 1)
-    return isLetters(flags.slice(0, inPlaceIndex)) && (suffix.startsWith('.') || isLetters(suffix))
+    const isLetters = (value: string) => {
+      for (const character of value) {
+        const lower = character.toLowerCase()
+        if (lower < 'a' || lower > 'z') return false
+      }
+      return true
+    }
+    if (isLetters(flags)) return flags.toLowerCase().includes('i')
+    let lettersPrefix = true
+    for (let i = 0; i < flags.length; i++) {
+      const lower = flags[i]!.toLowerCase()
+      if (lower === 'i' && lettersPrefix && flags[i + 1] === '.') return true
+      if (lower < 'a' || lower > 'z') lettersPrefix = false
+    }
+    return false
   }
   if (!args.some(isInPlace)) return null
 

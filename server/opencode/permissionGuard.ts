@@ -1452,8 +1452,25 @@ function classifyContentWrite(args: string[], dynamic: boolean, input: Permissio
 }
 
 function classifySed(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
-  const isInPlace = (arg: string) => arg === '-i' || arg === '-I' || /^-[a-z]*i(?:[a-z]*|\..*)$/i.test(arg)
-    || arg === '--in-place' || /^--inpl[a-z-]*(?:=.*)?$/i.test(arg)
+  const isInPlace = (arg: string) => {
+    if (arg === '-i' || arg === '-I' || arg === '--in-place' || arg.toLowerCase().startsWith('--in-place=')) return true
+    const longOption = arg.toLowerCase()
+    if (longOption.startsWith('--inpl')) {
+      const equal = longOption.indexOf('=')
+      const option = equal < 0 ? longOption : longOption.slice(0, equal)
+      if ([...option.slice('--inpl'.length)].every((character) => character === '-' || (character >= 'a' && character <= 'z'))) return true
+    }
+    if (!arg.startsWith('-') || arg.startsWith('--')) return false
+    const flags = arg.slice(1)
+    const inPlaceIndex = flags.toLowerCase().indexOf('i')
+    if (inPlaceIndex < 0) return false
+    const isLetters = (value: string) => [...value].every((character) => {
+      const lower = character.toLowerCase()
+      return lower >= 'a' && lower <= 'z'
+    })
+    const suffix = flags.slice(inPlaceIndex + 1)
+    return isLetters(flags.slice(0, inPlaceIndex)) && (suffix.startsWith('.') || isLetters(suffix))
+  }
   if (!args.some(isInPlace)) return null
 
   const files: string[] = []
@@ -1506,13 +1523,13 @@ function classifyStartProcess(args: string[], dynamic: boolean, input: Permissio
       if (value === undefined) return 'the process command cannot be verified'
       if (option === '-filepath' || option === '-path') executable = value
       else if (option === '-workingdirectory') workingDirectory = normalizePath(value, workingDirectory)?.path
-      else if (option === '-argumentlist' || option === '-args') childArguments.push(value.replace(/,+$/, ''))
+      else if (option === '-argumentlist' || option === '-args') childArguments.push(stripTrailingCommas(value))
       continue
     }
     if (flagOptions.has(option)) continue
     if (arg.startsWith('-')) return 'the process command cannot be verified'
     if (!executable) executable = arg
-    else childArguments.push(arg.replace(/,+$/, ''))
+    else childArguments.push(stripTrailingCommas(arg))
   }
   if (!executable) return 'the process command cannot be verified'
   const childInput = { ...input, directory: workingDirectory }
@@ -1521,6 +1538,12 @@ function classifyStartProcess(args: string[], dynamic: boolean, input: Permissio
   }
   const command = [quoteShellWord(executable), ...childArguments].join(' ')
   return classifyShell(command, childInput, depth + 1)
+}
+
+function stripTrailingCommas(value: string): string {
+  let end = value.length
+  while (end > 0 && value[end - 1] === ',') end--
+  return value.slice(0, end)
 }
 
 function quoteShellWord(value: string): string {

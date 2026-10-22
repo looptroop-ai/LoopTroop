@@ -171,13 +171,8 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
         ? arg.startsWith('-') && ('command'.startsWith(arg.slice(1).toLowerCase()) || /^-(?:cw|cwa|commandw[a-z]*)$/i.test(arg))
         : basename === 'cmd' ? /^\/[ck]$/i.test(arg) : /^-[a-z]*c/i.test(arg))
       const commandWithArgs = isPowerShell && flag >= 0 && /^-(?:cw|cwa|commandw[a-z]*)$/i.test(args[flag]!)
-      const option = flag >= 0 && !isPowerShell && basename !== 'cmd' ? args[flag]! : undefined
-      const commandIndex = option?.toLowerCase().indexOf('c') ?? -1
       const inline = ['eval', 'iex', 'invoke-expression'].includes(basename) ? args.join(' ')
-        : flag < 0 ? undefined
-          : commandWithArgs ? args[flag + 1]
-            : option && commandIndex >= 0 && option.length > commandIndex + 1 ? option.slice(commandIndex + 1)
-              : args[flag + 1]
+        : flag < 0 ? undefined : args[flag + 1]
       if (flag >= 0 && inline === undefined) return 'the inline shell command cannot be verified'
       if (inline === undefined && (segment.piped || segment.inputRedirect)) return 'the shell input cannot be verified; use a literal command'
       if (inline !== undefined) {

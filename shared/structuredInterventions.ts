@@ -1054,8 +1054,8 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       stage: 'parse',
       category: 'parser_fix',
       title: 'Quoted a reserved-indicator YAML scalar',
-      summary: 'A plain YAML scalar began with a reserved indicator character such as a backtick or `@`, which breaks strict parsing.',
-      why: 'YAML does not allow plain one-line scalars to begin with reserved indicator characters, so the emitted value could not be parsed as structured data.',
+      summary: 'A plain YAML scalar began with a reserved indicator such as a backtick, at sign, comma, closing bracket, or closing brace, which strict parsing treats as syntax.',
+      why: 'A YAML parser can read these leading characters as syntax instead of scalar text, so it cannot parse the emitted value as a string.',
       how: 'LoopTroop wrapped the existing scalar text in double quotes and reparsed the payload without changing the scalar content itself.',
     })
   }

@@ -261,7 +261,7 @@ const WRAPPED_PLAIN_LIST_SCALAR_WARNING = 'Folded wrapped YAML list scalar text 
 const PLAIN_SCALAR_COLON_WARNING = 'Quoted YAML plain scalar values containing colon-space before reparsing.'
 const QUOTED_SCALAR_WARNING = 'Repaired improperly quoted YAML scalar value.'
 const UNBALANCED_QUOTE_WARNING = 'Fixed unbalanced YAML quote before reparsing.'
-const RESERVED_INDICATOR_SCALAR_WARNING = 'Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.'
+const RESERVED_INDICATOR_SCALAR_WARNING = 'Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.'
 const DOUBLE_QUOTED_ESCAPE_WARNING = 'Escaped invalid YAML double-quoted scalar backslash sequences before reparsing.'
 const FREE_TEXT_SCALAR_WARNING = 'Repaired YAML free_text scalar formatting before parsing.'
 const LIST_DASH_SPACE_WARNING = 'Inserted the missing space after a YAML list dash before parsing.'
@@ -638,7 +638,7 @@ function applyInlineRepairPipeline(candidate: string, options?: ParseYamlOrJsonC
 // The test suite hashes the complete yamlRepair/yamlUtils sources after
 // normalising this literal. Keeping only the resulting marker at runtime
 // makes cache invalidation work in bundled builds without reading source files.
-export const REPAIR_PIPELINE_VERSION = '093261e71104cd599ed4a852b81954222396505307fb76efe808d0adc8d4e197'
+export const REPAIR_PIPELINE_VERSION = 'e6c902062057bd1b8d87a1e352b278db16e281aeee75233ff9ea334b0f59a5a7'
 
 /** Parse or reuse a candidate while preserving per-call repairs and mutable result ownership. */
 export function parseYamlOrJsonCandidate(

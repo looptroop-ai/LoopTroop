@@ -184,7 +184,7 @@ describe('parser fix interventions', () => {
   })
 
   it('maps reserved-indicator scalar repair', () => {
-    const i = deriveOne('Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.')
+    const i = deriveOne('Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.')
     expectIntervention(i, { code: 'parser_reserved_indicator_scalar', stage: 'parse', category: 'parser_fix' })
   })
 

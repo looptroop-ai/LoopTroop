@@ -1100,8 +1100,14 @@ describe('repairYamlReservedIndicatorScalars', () => {
   it.each([
     ['mapping value beginning with backticks', 'question: `repo_git_mutex` behavior?', 'question: "`repo_git_mutex` behavior?"'],
     ['mapping value beginning with @', 'owner: @loop-troop', 'owner: "@loop-troop"'],
+    ['mapping value beginning with comma', 'owner: ,loop-troop', 'owner: ",loop-troop"'],
+    ['mapping value beginning with closing bracket', 'owner: ]loop-troop', 'owner: "]loop-troop"'],
+    ['mapping value beginning with closing brace', 'owner: }loop-troop', 'owner: "}loop-troop"'],
     ['list item beginning with backticks', '  - `UIState.theme` allows pink', '  - "`UIState.theme` allows pink"'],
     ['list item beginning with @', '  - @trace/span-id', '  - "@trace/span-id"'],
+    ['list item beginning with comma', '  - ,trace/span-id', '  - ",trace/span-id"'],
+    ['list item beginning with closing bracket', '  - ]trace/span-id', '  - "]trace/span-id"'],
+    ['list item beginning with closing brace', '  - }trace/span-id', '  - "}trace/span-id"'],
   ])('quotes %s', (_, input, expected) => {
     expect(repairYamlReservedIndicatorScalars(input)).toBe(expected)
   })
@@ -1115,6 +1121,9 @@ describe('repairYamlReservedIndicatorScalars', () => {
       '    - @trace/span-id must be propagated to logs.',
       'notes:',
       '  owner: @loop-troop',
+      '  comma: ,value',
+      '  bracket: ]value',
+      '  brace: }value',
     ].join('\n')
 
     const repaired = repairYamlReservedIndicatorScalars(yaml)
@@ -1125,12 +1134,18 @@ describe('repairYamlReservedIndicatorScalars', () => {
       }
       notes: {
         owner: string
+        comma: string
+        bracket: string
+        brace: string
       }
     }
 
     expect(parsed.technical_requirements.data_model[0]).toBe('`UIState.theme` allows `pink` as a valid value.')
     expect(parsed.technical_requirements.reliability_constraints[0]).toBe('@trace/span-id must be propagated to logs.')
     expect(parsed.notes.owner).toBe('@loop-troop')
+    expect(parsed.notes.comma).toBe(',value')
+    expect(parsed.notes.bracket).toBe(']value')
+    expect(parsed.notes.brace).toBe('}value')
   })
 
   it('passes through list-item mappings, already-quoted values, block scalars, and flow values unchanged', () => {

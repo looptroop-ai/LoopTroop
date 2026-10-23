@@ -9,6 +9,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- Model-generated YAML values beginning with `,`, `]`, or `}` now parse without changing their text.
+
+### Fixed
+
+- Quoted model-generated YAML scalars beginning with `,`, `]`, or `}` so stricter `js-yaml` parsing preserves their emitted values.
+
 ## 0.6.1 (2026-10-13)
 
 

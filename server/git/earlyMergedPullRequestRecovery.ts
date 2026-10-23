@@ -102,7 +102,7 @@ async function captureCommitRef(projectPath: string, name: string, sha: string):
 async function captureCorrectionRefs(projectPath: string, correctedRef: string, correctionRef: string, sha: string, previousSha?: string): Promise<void> {
   try {
     await runGitMutationOrThrow(projectPath, ['update-ref', '--stdin'], {
-      input: `start\ncreate ${correctedRef} ${sha}\n${previousSha ? `update ${correctionRef} ${sha} ${previousSha}` : `create ${correctionRef} ${sha}`}\nprepare\ncommit\n`,
+      input: `start\n${gitRefExists(projectPath, correctedRef) ? 'verify' : 'create'} ${correctedRef} ${sha}\n${previousSha ? `update ${correctionRef} ${sha} ${previousSha}` : `create ${correctionRef} ${sha}`}\nprepare\ncommit\n`,
     })
   } catch (error) {
     const refsMatch = [correctedRef, correctionRef].every((name) => (
@@ -350,6 +350,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
     && gitSync(input.projectPath, ['rev-parse', `${savedCorrectionSha}^`]) === remote.remoteBaseHead)
   let previousCorrectionSha: string | undefined
   let previousRecoveryWorktreePath: string | undefined
+  let retainedValidatedRecovery = false
   let expectedTicketHead = input.candidateCommitSha
   let patchBaseSha = mergedHeadSha
   const candidateParent = runGitSync(input.projectPath, ['rev-parse', `${input.candidateCommitSha}^`])
@@ -396,16 +397,36 @@ export async function reconcileMergedPullRequestCandidate(input: {
         throw new Error('The validated correction no longer matches its recorded ticket branch and base.')
       }
       ensureNoTrackedWorktreeChanges(input.worktreePath, 'early-merge candidate correction')
-      await captureCorrectionRefs(input.projectPath, correctedCommitRef(validated), correctionRef, validated, savedCorrectionSha)
-      savedCorrectionSha = validated
-      previousRecoveryBaseHead = baseHead
-      correctionAlreadyRefreshed = baseHead === remote.remoteBaseHead
+      const previousPath = previousRecoveryBaseHead ? recoveryPathForBase(previousRecoveryBaseHead) : undefined
+      if (previousPath && existsSync(previousPath) && !registeredWorktreePath(input.projectPath, previousPath)) {
+        throw manualError({
+          reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
+          recoveryWorktreePath: previousPath, recoveryWorktreeBaseHead: previousRecoveryBaseHead, proof,
+          detail: 'The saved manual recovery checkout is no longer registered with this Git repository.',
+        })
+      }
+      // A previously pinned validation must not replace a later saved resolution.
+      const retainSavedCorrection = savedCorrectionSha !== validated && gitRefExists(input.projectPath, correctedCommitRef(validated))
+      retainedValidatedRecovery = Boolean(previousPath && existsSync(previousPath)
+        && (retainSavedCorrection || previousRecoveryBaseHead !== baseHead
+          || gitSync(previousPath, ['rev-parse', 'HEAD']) !== savedCorrectionSha
+          || gitSync(previousPath, ['status', '--porcelain=1', '-z', '--untracked-files=all'], { trimOutput: false })))
+      if (retainedValidatedRecovery || retainSavedCorrection) {
+        await captureCommitRef(input.projectPath, correctedCommitRef(validated), validated)
+        if (!retainedValidatedRecovery) previousRecoveryBaseHead = gitSync(input.projectPath, ['rev-parse', `${savedCorrectionSha}^`])
+        correctionAlreadyRefreshed = !retainedValidatedRecovery && previousRecoveryBaseHead === remote.remoteBaseHead
+      } else {
+        await captureCorrectionRefs(input.projectPath, correctedCommitRef(validated), correctionRef, validated, savedCorrectionSha)
+        savedCorrectionSha = validated
+        previousRecoveryBaseHead = baseHead
+        correctionAlreadyRefreshed = baseHead === remote.remoteBaseHead
+      }
     }
     writeFileSync(patchPath, patchResult.stdout)
-    if (previousRecoveryBaseHead && previousRecoveryBaseHead !== remote.remoteBaseHead && !correctionAlreadyRefreshed) {
+    if (previousRecoveryBaseHead && (previousRecoveryBaseHead !== remote.remoteBaseHead || retainedValidatedRecovery) && !correctionAlreadyRefreshed) {
       const previousPath = recoveryPathForBase(previousRecoveryBaseHead)
       let previousHead: string | undefined
-      if (existsSync(previousPath) && !input.validatedCandidate) {
+      if (existsSync(previousPath) && (!input.validatedCandidate || retainedValidatedRecovery)) {
         if (!registeredWorktreePath(input.projectPath, previousPath)) {
           throw manualError({
             reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
@@ -467,7 +488,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
         throw new Error('The ticket worktree is no longer on its ticket branch.')
       }
       expectedTicketHead = ticketHead
-      if (gitSync(input.projectPath, ['rev-parse', `${correctedCandidateSha}^`]) === remote.remoteBaseHead) {
+      if (!retainedValidatedRecovery && gitSync(input.projectPath, ['rev-parse', `${correctedCandidateSha}^`]) === remote.remoteBaseHead) {
         if (ticketHead !== correctedCandidateSha) {
           protectTicketWorktreeForCorrectionOrStop({
             worktreePath: input.worktreePath,

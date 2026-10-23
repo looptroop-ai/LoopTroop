@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   getPermissionGuardRejection,
   type PermissionGuardContext,
@@ -18,6 +18,28 @@ const shell = (command: string, options: { directory?: string; patterns?: string
   getPermissionGuardRejection({ permission: 'bash', patterns: options.patterns ?? [command], context: options.context ?? context, directory: options.directory })
 
 describe('getPermissionGuardRejection', () => {
+  it.each([
+    'tar --remove-files -cf /tmp/archive.tar -C /repo src/file.ts',
+    'tar --remove-files -cf /tmp/archive.tar .git/config',
+    'tar --remove-fil -cf /tmp/archive.tar .git/config',
+    'tar -xf archive.tar -C /repo src/file.ts -C /tmp/scratch other.txt',
+    'tar -xf archive.tar --directory=/repo src/file.ts --directory=/tmp/scratch other.txt',
+    'tar -xf archive.tar -C/repo src/file.ts -C/tmp/scratch other.txt',
+    'tar -xf archive.tar -C /tmp first.txt -C ../repo src/file.ts',
+    'tar -xf archive.tar -C /tmp first.txt -C ../repo/.git config',
+  ])('checks every tar extraction directory in order: %s', (command) => {
+    expect(shell(command)).not.toBeNull()
+  })
+
+  it.each([
+    'tar -xf archive.tar -C /tmp/scratch first.txt -C nested second.txt',
+    'tar -xf archive.tar -C /tmp/scratch first.txt -C /tmp/other second.txt',
+    'tar -xOf archive.tar -C /repo src/file.ts -C /tmp/scratch other.txt',
+    'tar -cf /tmp/archive.tar -C /repo src/file.ts -C /tmp/scratch other.txt',
+  ])('keeps verified scratch extraction and archive reads available: %s', (command) => {
+    expect(shell(command)).toBeNull()
+  })
+
   it.each([
     'bash -c --', 'sh -c --', 'bash -c -o pipefail', 'bash -co pipefail',
     'bash -cO extglob', 'bash -cxO extglob', 'sh -co errexit',
@@ -178,6 +200,14 @@ describe('getPermissionGuardRejection', () => {
       expect(shell(command)).not.toBeNull()
     }
     expect(shell('echo status # comment\ngit push origin HEAD')).toContain('remote repository')
+  })
+
+  it.each([
+    String.raw`git push 'C:\scratch-remote' main`,
+    String.raw`git push "C:\scratch-remote" main`,
+    String.raw`git push C:\scratch-remote main`,
+  ])('preserves Windows local push paths during escape checks: %s', (command) => {
+    expect(shell(command)).toContain('Git push destination cannot be verified')
   })
 
   it('keeps local pushes available only when effective Git config cannot redirect them', ({ onTestFinished }) => {
@@ -650,7 +680,8 @@ describe('getPermissionGuardRejection', () => {
     onTestFinished(() => rmSync(root, { recursive: true, force: true }))
     const worktreePath = join(root, 'worktree')
     const ticketDir = join(worktreePath, '.ticket')
-    const scriptPath = join(worktreePath, 'format.sed')
+    const scriptPath = join(worktreePath, String.raw`format\literal.sed`)
+    mkdirSync(dirname(scriptPath), { recursive: true })
     mkdirSync(join(worktreePath, '.git'), { recursive: true })
     mkdirSync(ticketDir)
     const localContext = { projectRoot: root, worktreePath, ticketDir }

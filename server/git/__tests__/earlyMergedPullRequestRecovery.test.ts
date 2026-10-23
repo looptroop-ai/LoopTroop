@@ -2,7 +2,9 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as github from '../github'
+import * as commands from '../runCommand'
 import { reconcileMergedPullRequestCandidate, EarlyMergeRecoveryManualError } from '../earlyMergedPullRequestRecovery'
 import { pinGitLineEndings } from '../../test/tempDir'
 
@@ -146,6 +148,10 @@ function advanceBase(fixture: ReturnType<typeof makeFixture>, file: string, cont
   git(fixture.projectPath, ['push', 'origin', 'main'])
   return head
 }
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 afterAll(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
@@ -639,6 +645,73 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(git(fixture.projectPath, ['rev-parse', `refs/looptroop/early-merge/pr-42/candidate-${fixture.candidateCommitSha}-corrected-${validatedSha}`])).toBe(validatedSha)
   }, 45_000)
 
+  it('reuses an approved correction ref after a refreshed installation was blocked', async () => {
+    const fixture = makeFixture()
+    await reconcileFixture(fixture)
+    const baseHead = git(fixture.worktreePath, ['rev-parse', 'HEAD^'])
+    git(fixture.worktreePath, ['commit', '--amend', '-m', 'validated squash'])
+    const commitSha = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+    const validatedCandidate = { commitSha, baseHead }
+    const input = { ...fixture, externalId: 'TEST-42', baseBranch: 'main', headBranch: 'ticket', pr: pullRequest(fixture), validatedCandidate }
+    await expect(reconcileMergedPullRequestCandidate(input)).resolves.toMatchObject({ correctedCandidateSha: commitSha })
+    const runMutation = commands.runGitMutationOrThrow
+    vi.spyOn(commands, 'runGitMutationOrThrow').mockImplementation(async (path, args, options) => {
+      const result = await runMutation(path, args, options)
+      if (args.includes('commit') && path !== fixture.worktreePath) {
+        const sha = git(path, ['rev-parse', 'HEAD'])
+        git(fixture.projectPath, ['update-ref', `refs/looptroop/early-merge/pr-42/candidate-${fixture.candidateCommitSha}-corrected-${sha}`, sha])
+      }
+      return result
+    })
+    writeFileSync(resolve(fixture.worktreePath, 'later.txt'), 'local draft\n')
+    const latestBase = advanceBase(fixture, 'later.txt', 'new tracked base file\n')
+    const blocked = await reconcileMergedPullRequestCandidate({ ...input, previousRecoveryBaseHead: baseHead }).catch((error: unknown) => error)
+    expect(blocked).toMatchObject({ recovery: { reason: 'local_work_preserved', recoveryWorktreeBaseHead: latestBase } })
+    const refreshed = git(fixture.projectPath, ['rev-parse', `refs/looptroop/early-merge/pr-42/corrected-from-${fixture.candidateCommitSha}`])
+    const backup = resolve(fixture.worktreePath, '..', 'preserved-later.txt')
+    renameSync(resolve(fixture.worktreePath, 'later.txt'), backup)
+
+    await expect(reconcileMergedPullRequestCandidate({ ...input, previousRecoveryBaseHead: latestBase }))
+      .resolves.toMatchObject({ kind: 'corrected', correctedCandidateSha: refreshed })
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(refreshed)
+    expect(readFileSync(backup, 'utf8')).toBe('local draft\n')
+    expect(readFileSync(resolve(fixture.worktreePath, 'later.txt'), 'utf8')).toBe('new tracked base file\n')
+  }, 45_000)
+
+  it.each([false, true])('retains a manual resolution on a validated retry after another base advance (original delta landed: %s)', async (deltaLanded) => {
+    const fixture = makeFixture()
+    await reconcileFixture(fixture)
+    const baseHead = git(fixture.worktreePath, ['rev-parse', 'HEAD^'])
+    git(fixture.worktreePath, ['commit', '--amend', '-m', 'validated squash'])
+    const commitSha = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+    const validatedCandidate = { commitSha, baseHead }
+    const input = { ...fixture, externalId: 'TEST-42', baseBranch: 'main', headBranch: 'ticket', pr: pullRequest(fixture), validatedCandidate }
+    const conflictBase = advanceBase(fixture, 'candidate.txt', 'conflicting base content\n')
+    const conflict = await reconcileMergedPullRequestCandidate({ ...input, previousRecoveryBaseHead: baseHead }).catch((error: unknown) => error)
+    expect(conflict).toBeInstanceOf(EarlyMergeRecoveryManualError)
+    if (!(conflict instanceof EarlyMergeRecoveryManualError)) throw new Error('Expected a preserved conflict')
+    const recoveryPath = conflict.recovery.recoveryWorktreePath!
+    writeFileSync(resolve(recoveryPath, 'candidate.txt'), 'candidate change\n')
+    writeFileSync(resolve(recoveryPath, 'manual.txt'), 'additional manual resolution\n')
+    const latestBase = deltaLanded
+      ? advanceBase(fixture, 'candidate.txt', 'candidate change\n')
+      : advanceBase(fixture, 'later.txt', 'later base content\n')
+    const retryInput = { ...input, previousRecoveryBaseHead: conflictBase }
+    await expect(reconcileMergedPullRequestCandidate(retryInput)).rejects.toMatchObject({ recovery: {
+      reason: 'conflict', recoveryWorktreePath: recoveryPath, recoveryWorktreeBaseHead: conflictBase,
+    } })
+    expect(readFileSync(resolve(recoveryPath, 'manual.txt'), 'utf8')).toBe('additional manual resolution\n')
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(commitSha)
+    git(recoveryPath, ['add', '--', 'candidate.txt', 'manual.txt'])
+    const manualSha = commit(recoveryPath, 'preserve manual conflict resolution')
+
+    await expect(reconcileMergedPullRequestCandidate(retryInput)).resolves.toMatchObject({ kind: 'corrected' })
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(latestBase)
+    expect(readFileSync(resolve(fixture.worktreePath, 'manual.txt'), 'utf8')).toBe('additional manual resolution\n')
+    expect(readFileSync(resolve(fixture.worktreePath, 'candidate.txt'), 'utf8')).toBe('candidate change\n')
+    expect(git(fixture.projectPath, ['rev-parse', manualSha])).toBe(manualSha)
+  }, 45_000)
+
   it('preserves the ticket when the approved correction does not match its recorded base', async () => {
     const fixture = makeFixture()
     await reconcileFixture(fixture)
@@ -806,6 +879,95 @@ describe('reconcileMergedPullRequestCandidate', () => {
     })
   })
 
+  it.each(['missing correction ref', 'mismatched correction ref', 'moved ticket head', 'changed ticket branch'] as const)('refuses to reset a saved correction with %s', async (scenario) => {
+    const fixture = makeFixture()
+    await reconcileFixture(fixture)
+    const correction = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+    const immutableRef = `refs/looptroop/early-merge/pr-42/candidate-${fixture.candidateCommitSha}-corrected-${correction}`
+    if (scenario === 'missing correction ref') git(fixture.projectPath, ['update-ref', '-d', immutableRef])
+    if (scenario === 'mismatched correction ref') git(fixture.projectPath, ['update-ref', immutableRef, fixture.mergedHeadSha])
+    if (scenario === 'moved ticket head') commit(fixture.worktreePath, 'unrelated user commit', true)
+    if (scenario === 'changed ticket branch') git(fixture.worktreePath, ['branch', '-m', 'user-branch'])
+    const headBefore = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+    const branchBefore = git(fixture.worktreePath, ['branch', '--show-current'])
+
+    await expect(reconcileFixture(fixture)).rejects.toMatchObject({ recovery: { reason: 'missing_proof' } })
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(headBefore)
+    expect(git(fixture.worktreePath, ['branch', '--show-current'])).toBe(branchBefore)
+  })
+
+  it.each([false, true])('preserves an unregistered path at the expected recovery location (validated retry: %s)', async (validated) => {
+    const fixture = makeFixture()
+    const base = git(fixture.projectPath, ['rev-parse', 'main'])
+    if (validated) await reconcileFixture(fixture)
+    const validatedCandidate = validated ? { commitSha: git(fixture.worktreePath, ['rev-parse', 'HEAD']), baseHead: base } : undefined
+    const headBefore = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+    const recoveryPath = resolve(fixture.projectPath, '.looptroop', 'merge-recovery', `pr-42-${fixture.candidateCommitSha}-${base}`)
+    mkdirSync(recoveryPath, { recursive: true })
+    writeFileSync(resolve(recoveryPath, 'user.txt'), 'preserve this directory\n')
+
+    const probe = vi.spyOn(commands, 'runGitSync')
+    await expect(reconcileMergedPullRequestCandidate({
+      ...fixture, externalId: 'TEST-42', baseBranch: 'main', headBranch: 'ticket', pr: pullRequest(fixture),
+      validatedCandidate, previousRecoveryBaseHead: validated ? base : undefined,
+    })).rejects.toMatchObject({ recovery: { reason: 'conflict', recoveryWorktreePath: recoveryPath } })
+    expect(readFileSync(resolve(recoveryPath, 'user.txt'), 'utf8')).toBe('preserve this directory\n')
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(headBefore)
+    expect(probe.mock.calls.some(([path]) => path === recoveryPath)).toBe(false)
+  })
+
+  it('rejects a poisoned immutable correction ref without publishing the moving checkpoint', async () => {
+    const fixture = makeFixture()
+    const runMutation = commands.runGitMutationOrThrow
+    let poisonedRef = ''
+    vi.spyOn(commands, 'runGitMutationOrThrow').mockImplementation(async (path, args, options) => {
+      const result = await runMutation(path, args, options)
+      if (args.includes('commit') && path !== fixture.worktreePath) {
+        const sha = git(path, ['rev-parse', 'HEAD'])
+        poisonedRef = `refs/looptroop/early-merge/pr-42/candidate-${fixture.candidateCommitSha}-corrected-${sha}`
+        git(fixture.projectPath, ['update-ref', poisonedRef, fixture.mergedHeadSha])
+      }
+      return result
+    })
+
+    await expect(reconcileFixture(fixture)).rejects.toMatchObject({ recovery: { reason: 'missing_proof' } })
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(fixture.candidateCommitSha)
+    expect(git(fixture.projectPath, ['rev-parse', poisonedRef])).toBe(fixture.mergedHeadSha)
+    expect(git(fixture.projectPath, ['for-each-ref', '--format=%(refname)', `refs/looptroop/early-merge/pr-42/corrected-from-${fixture.candidateCommitSha}`])).toBe('')
+  })
+
+  it('preserves a user commit made while a corrective commit is being prepared', async () => {
+    const fixture = makeFixture()
+    const runMutation = commands.runGitMutationOrThrow
+    let userHead = ''
+    vi.spyOn(commands, 'runGitMutationOrThrow').mockImplementation(async (path, args, options) => {
+      const result = await runMutation(path, args, options)
+      if (args.includes('commit') && path !== fixture.worktreePath) userHead = commit(fixture.worktreePath, 'concurrent user work', true)
+      return result
+    })
+
+    await expect(reconcileFixture(fixture)).rejects.toMatchObject({ recovery: { reason: 'missing_proof' } })
+    expect(userHead).not.toBe('')
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(userHead)
+  })
+
+  it.each([false, true])('retains an installed correction if recovery cleanup fails (timeout: %s)', async (timedOut) => {
+    const fixture = makeFixture()
+    const runMutation = commands.runGitMutationOrThrow
+    const failure = timedOut ? new commands.RunCommandTimeoutError('cleanup timed out') : new Error('checkout busy')
+    vi.spyOn(commands, 'runGitMutationOrThrow').mockImplementation((path, args, options) => {
+      if (args[0] === 'worktree' && args[1] === 'remove') return Promise.reject(failure)
+      return runMutation(path, args, options)
+    })
+    const result = reconcileFixture(fixture)
+    if (timedOut) await expect(result).rejects.toBe(failure)
+    else await expect(result).resolves.toMatchObject({ kind: 'corrected', recoveryWorktreePath: expect.any(String) })
+    const installed = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+    expect(installed).not.toBe(fixture.candidateCommitSha)
+    expect(git(fixture.projectPath, ['rev-parse', `refs/looptroop/early-merge/pr-42/corrected-from-${fixture.candidateCommitSha}`])).toBe(installed)
+    await expect(reconcileFixture(fixture)).resolves.toMatchObject({ kind: 'corrected', correctedCandidateSha: installed })
+  })
+
   it('preserves an untracked file that the new remote base would track', async () => {
     const fixture = makeFixture({ addRemoteOnlyPath: true })
 
@@ -819,4 +981,87 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(fixture.candidateCommitSha)
     expect(readFileSync(resolve(fixture.worktreePath, 'local-only.txt'), 'utf8')).toBe('local-only data\n')
   })
+})
+
+
+describe('early-merge proof failures', () => {
+  const candidateCommitSha = 'a'.repeat(40)
+  const mergedHeadSha = 'b'.repeat(40)
+  const landedCommitSha = 'c'.repeat(40)
+  const remoteBaseHead = 'd'.repeat(40)
+  const fixture = { projectPath: '/unused-proof-project', worktreePath: '/unused-proof-worktree', remotePath: '/unused-proof-origin', candidateCommitSha, mergedHeadSha, landedCommitSha }
+  const input = { ...fixture, externalId: 'TEST-42', baseBranch: 'main', headBranch: 'ticket', pr: pullRequest(fixture) }
+
+  beforeEach(() => {
+    vi.spyOn(github, 'verifyRemoteBaseContainsCommit').mockResolvedValue({ baseBranch: 'main', verifiedCommitSha: landedCommitSha, remoteBaseHead })
+    vi.spyOn(github, 'fetchPullRequestHead').mockResolvedValue(mergedHeadSha)
+    vi.spyOn(github, 'readGitTreeSha').mockImplementation((_path, sha) => sha === candidateCommitSha ? 'e'.repeat(40) : 'f'.repeat(40))
+  })
+
+  it.each([
+    { number: 0 }, { number: 1.5 }, { state: 'open' as const }, { baseRefName: 'other' },
+    { headRefOid: null }, { headRefOid: 'short' }, { mergeCommitSha: null }, { mergeCommitSha: 'short' },
+  ])('rejects invalid PR metadata before fetching: %j', async (metadata) => {
+    await expect(reconcileMergedPullRequestCandidate({ ...input, pr: { ...input.pr, ...metadata } }))
+      .rejects.toMatchObject({ recovery: { reason: 'missing_proof' }, proof: null })
+    expect(github.verifyRemoteBaseContainsCommit).not.toHaveBeenCalled()
+  })
+
+  it('rejects an abbreviated approved candidate before fetching', async () => {
+    await expect(reconcileMergedPullRequestCandidate({ ...input, candidateCommitSha: 'HEAD' }))
+      .rejects.toMatchObject({ recovery: { reason: 'missing_proof' } })
+    expect(github.verifyRemoteBaseContainsCommit).not.toHaveBeenCalled()
+  })
+
+  it.each(['remote', 'head'] as const)('keeps a transient %s fetch failure retryable', async (stage) => {
+    const failure = new commands.RunCommandTimeoutError('fetch timed out')
+    if (stage === 'remote') vi.mocked(github.verifyRemoteBaseContainsCommit).mockRejectedValue(failure)
+    else vi.mocked(github.fetchPullRequestHead).mockRejectedValue(failure)
+    await expect(reconcileMergedPullRequestCandidate(input)).rejects.toBe(failure)
+  })
+
+  it.each(['remote', 'head'] as const)('records a disproved %s fetch as missing proof', async (stage) => {
+    if (stage === 'remote') vi.mocked(github.verifyRemoteBaseContainsCommit).mockRejectedValue(new github.RemoteBaseProofError('landed commit absent'))
+    else vi.mocked(github.fetchPullRequestHead).mockRejectedValue(new github.PullRequestHeadProofError('head SHA mismatch'))
+    await expect(reconcileMergedPullRequestCandidate(input)).rejects.toMatchObject({ recovery: { reason: 'missing_proof' }, proof: null })
+  })
+
+  it('refuses a fetched head that differs from the observed pull request', async () => {
+    vi.mocked(github.fetchPullRequestHead).mockResolvedValue('1'.repeat(40))
+    await expect(reconcileMergedPullRequestCandidate(input)).rejects.toMatchObject({ recovery: { reason: 'missing_proof' }, proof: null })
+    expect(github.readGitTreeSha).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('distinguishes invalid tree evidence from a timed-out probe: %s', async (timedOut) => {
+    const failure = timedOut ? new commands.RunCommandTimeoutError('tree probe timed out') : new Error('candidate object missing')
+    vi.mocked(github.readGitTreeSha).mockImplementation(() => { throw failure })
+    const result = reconcileMergedPullRequestCandidate(input)
+    if (timedOut) await expect(result).rejects.toBe(failure)
+    else await expect(result).rejects.toMatchObject({ recovery: { reason: 'missing_proof' }, proof: null })
+  })
+
+  it('rejects a malformed verified remote base', async () => {
+    vi.mocked(github.verifyRemoteBaseContainsCommit).mockResolvedValue({ baseBranch: 'main', verifiedCommitSha: landedCommitSha, remoteBaseHead: 'HEAD' })
+    await expect(reconcileMergedPullRequestCandidate(input)).rejects.toMatchObject({ recovery: { reason: 'missing_proof' }, proof: { remoteBaseHead: 'HEAD' } })
+  })
+
+  it.each(['ref', 'ref-timeout', 'saved-ref', 'saved-ref-timeout', 'parent-timeout', 'ancestry', 'ancestry-timeout', 'patch', 'patch-timeout', 'empty-patch'])(
+    'stops before mutations when the %s evidence probe fails', async (stage) => {
+      const failure = { ok: false, status: 128, signal: null, timedOut: stage.endsWith('timeout'), stdout: '', stderr: '', errorDetail: 'evidence probe failed' } satisfies commands.RunCommandResult
+      const missing = { ...failure, status: 1, timedOut: false }
+      vi.spyOn(commands, 'runGitSync').mockImplementation((_path, args) => {
+        if (args[0] === 'show-ref') return stage.startsWith('ref') ? failure : stage.startsWith('saved-ref') ? { ...failure, ok: true, status: 0, timedOut: false, errorDetail: undefined } : missing
+        if (stage.startsWith('saved-ref') || stage === 'parent-timeout') return failure
+        if (args[0] === 'merge-base') return stage.startsWith('ancestry') ? failure : missing
+        return { ...failure, ok: true, status: 0, timedOut: false, stdout: remoteBaseHead, errorDetail: undefined }
+      })
+      vi.spyOn(commands, 'runGitBinarySync').mockReturnValue({ ...failure, stdout: Buffer.alloc(0), ok: stage === 'empty-patch', status: stage === 'empty-patch' ? 0 : 128 })
+      const mutation = vi.spyOn(commands, 'runGitMutationOrThrow')
+      const result = reconcileMergedPullRequestCandidate(input)
+      if (stage.endsWith('timeout')) await expect(result).rejects.toBeInstanceOf(commands.RunCommandTimeoutError)
+      else if (stage === 'patch' || stage === 'empty-patch') await expect(result).rejects.toMatchObject({ recovery: { reason: 'missing_proof' } })
+      else await expect(result).rejects.toThrow('evidence probe failed')
+      expect(mutation).not.toHaveBeenCalled()
+    },
+  )
 })

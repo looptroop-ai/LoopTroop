@@ -107,7 +107,10 @@ function reject(effect: string): string {
 
 function classifyShell(command: string, input: PermissionGuardInput, depth = 0): string | null {
   if (depth > 8) return 'the nested shell command cannot be verified'
-  const escapedVariant = command.replace(/\\([A-Za-z0-9])/g, '$1').replace(/\\\r?\n/g, '')
+  const escapedVariant = command.replace(
+    /'[^']*'|"(?:\\.|[^"\\])*"|(?:[A-Za-z]:\\|\\\\)[^\s;&|<>]*|\\([A-Za-z0-9])/g,
+    (match, literal: string | undefined) => literal ?? match,
+  ).replace(/\\\r?\n/g, '')
   if (escapedVariant !== command) {
     const effect = classifyShell(escapedVariant, input, depth)
     if (effect) return effect
@@ -2444,7 +2447,7 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
   let extracting = false
   let toStdout = false
   let writingArchive = false
-  let destination: string | undefined
+  const destinations: string[] = []
   let archiveFile: string | undefined
   let afterSeparator = false
   const legacyModes = new Set(['x', 'c', 'r', 'u', 'd', 'a'])
@@ -2453,6 +2456,7 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
     if (arg === '--') { afterSeparator = true; continue }
     if (!afterSeparator && (arg === '--help' || arg === '--version')) return null
     const [longOption, longValue] = arg.split(/=(.*)/s, 2)
+    if (!afterSeparator && longOption?.startsWith('--') && '--remove-files'.startsWith(longOption)) return 'the tar source deletion paths cannot be verified; archive first and remove explicit paths separately'
     const helperOptions = ['--to-command', '--use-compress-program', '--rmt-command', '--rsh-command', '--info-script', '--new-volume-script']
     if (longOption?.startsWith('--') && helperOptions.some((option) => option.startsWith(longOption))) {
       return 'the tar command may execute an external helper'
@@ -2480,11 +2484,12 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
       continue
     }
     if (arg === '-C' || arg === '--directory') {
-      destination = args[++i]
+      const destination = args[++i]
       if (!destination) return 'the archive extraction target cannot be verified'
+      destinations.push(destination)
       continue
     }
-    if (arg.startsWith('--directory=')) destination = arg.slice('--directory='.length)
+    if (arg.startsWith('--directory=')) destinations.push(arg.slice('--directory='.length))
     if (arg.startsWith('-') && arg.length > 1) {
       const flags = arg.slice(1)
       if (flags.includes('x')) extracting = true
@@ -2496,10 +2501,11 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
         if (!archiveFile) return 'the archive output path cannot be verified'
       }
       const directoryOption = flags.indexOf('C')
-      if (directoryOption >= 0 && flags.length > directoryOption + 1) destination = flags.slice(directoryOption + 1)
+      if (directoryOption >= 0 && flags.length > directoryOption + 1) destinations.push(flags.slice(directoryOption + 1))
       if (directoryOption >= 0 && flags.length === directoryOption + 1) {
-        destination = args[++i]
+        const destination = args[++i]
         if (!destination) return 'the archive extraction target cannot be verified'
+        destinations.push(destination)
       }
     } else if (!extracting && !writingArchive && !archiveFile && /^[A-Za-z]+$/.test(arg)
       && legacyModes.has(arg[0]!.toLowerCase())
@@ -2520,10 +2526,18 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
     if (effect) return effect
   }
   if (!extracting || toStdout) return null
-  const target = destination ?? '.'
-  if (dynamic && /[$`]/.test(target)) return 'the archive extraction target cannot be verified'
-  if (input.unverifiedDirectory && !isAbsolutePath(target)) return 'the archive extraction target cannot be verified'
-  return protectedPathEffect(target, input, true)
+  let directory = input.directory ?? input.context?.worktreePath
+  let unverifiedDirectory = input.unverifiedDirectory
+  for (const target of destinations.length ? destinations : ['.']) {
+    if (!target || (dynamic && /[$`]/.test(target))) return 'the archive extraction target cannot be verified'
+    if (unverifiedDirectory && !isAbsolutePath(target)) return 'the archive extraction target cannot be verified'
+    const effect = protectedPathEffect(target, { ...input, directory, unverifiedDirectory }, true)
+    if (effect) return effect
+    directory = normalizePath(target, directory)?.path
+    if (!directory) return 'the archive extraction target cannot be verified'
+    unverifiedDirectory = false
+  }
+  return null
 }
 
 function classifyUnzip(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {

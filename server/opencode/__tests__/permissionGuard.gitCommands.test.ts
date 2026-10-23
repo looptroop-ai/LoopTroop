@@ -296,3 +296,51 @@ describe('recognized Git commands in the workflow guard', () => {
       .toContain('Git output path cannot be verified')
   })
 })
+
+describe('workflow guard request boundaries', () => {
+  it.each([
+    ['gh api', 'endpoint cannot be verified'],
+    ['gh api repos/owner/repo --header', 'method cannot be verified'],
+    ['gh api repos/owner/repo --field malformed', 'fields cannot be verified'],
+    ['gh api repos/owner/repo --field=malformed', 'fields cannot be verified'],
+    ['gh api repos/owner/repo --field body=@payload.json', 'unknown file'],
+    ['gh api repos/owner/repo --raw-field=body=@payload.json', 'unknown file'],
+    ['gh repo clone', 'clone destination cannot be verified'],
+    ['gh repo clone owner/repo /tmp/one /tmp/two', 'clone destination cannot be verified'],
+    ['gh repo clone --unknown owner/repo /tmp/scratch', 'clone options cannot be verified'],
+    ['gh release download v1 --dir', 'download destination cannot be verified'],
+    ['git rm --pathspec-from-file paths.txt', 'Git pathspec cannot be verified'],
+    ['git mv src/only.ts', 'Git pathspec cannot be verified'],
+    ['git clean -fd --exclude', 'Git clean target cannot be verified'],
+    ['git clean -fd --unknown-option', 'Git clean target cannot be verified'],
+    ['rsync --log-file', 'rsync option cannot be verified'],
+    ['rsync --files-from files.txt --remove-source-files src/ dist/', 'removal source paths cannot be verified'],
+    ['rsync -avT/repo/.looptroop/worktrees/T-1/.ticket src/ /tmp/scratch/', 'ticket state'],
+  ])('refuses incomplete or indirect mutation targets: %s', (command, reason) => {
+    expect(check(command)).toContain(reason)
+  })
+
+  it.each([
+    '"unterminated',
+    '{ viewer { login } }}',
+    '{ viewer { login }',
+    'subscription Events { viewer { login } }',
+    'fragment Fields on User { login }',
+  ])('refuses a GraphQL document without a complete read operation: %s', (query) => {
+    expect(check(`gh api graphql --field 'query=${query}'`)).toContain('GraphQL operation cannot be verified')
+  })
+
+  it.each([
+    '# mutation is only a comment\nquery Read { viewer { login } }',
+    'query Read { viewer { bio(text: """mutation { notAnOperation }""") } }',
+    'query Read { viewer { ...Fields } } fragment Fields on User { login }',
+  ])('keeps quoted text and fragments inside a read-only GraphQL document: %s', (query) => {
+    expect(check(`gh api graphql --raw-field 'query=${query}'`)).toBeNull()
+  })
+
+  it('keeps explicit HEAD requests and directory-scoped Git moves available', () => {
+    expect(check("gh api repos/owner/repo --method=HEAD --include --cache 1h --jq='.name'")).toBeNull()
+    expect(check('git mv src/old.ts src/older.ts dist/')).toBeNull()
+    expect(check('git mv src/old.ts .ticket/')).toContain('ticket state')
+  })
+})

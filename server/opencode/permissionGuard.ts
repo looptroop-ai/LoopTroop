@@ -108,7 +108,7 @@ function reject(effect: string): string {
 
 function classifyShell(command: string, input: PermissionGuardInput, depth = 0): string | null {
   if (depth > 8) return 'the nested shell command cannot be verified'
-  if (!input.posixEscapes && /\\(?:[A-Za-z0-9]|\r?\n)/.test(command)) {
+  if (!input.posixEscapes && command.includes('\\')) {
     const effect = classifyShell(command, { ...input, posixEscapes: true }, depth)
     if (effect) return effect
   }
@@ -463,8 +463,7 @@ function scanShell(source: string, posixEscapes = false): ShellCommand[] {
       const windowsPath = /^[A-Za-z]:/.test(word) || word.startsWith('\\\\')
         || (!word && source[i + 1] === '\\')
       if (posixEscapes && windowsPath) word += character
-      else if (i + 1 < source.length && (/[\s;&|<>()[\]{}'"\\]/.test(source[i + 1]!)
-        || (posixEscapes && /[A-Za-z0-9]/.test(source[i + 1]!)))) escaped = true
+      else if (i + 1 < source.length && (posixEscapes || /[\s;&|<>()[\]{}'"\\]/.test(source[i + 1]!))) escaped = true
       else word += character
       continue
     }

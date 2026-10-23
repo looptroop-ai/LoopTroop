@@ -19,6 +19,24 @@ const shell = (command: string, options: { directory?: string; patterns?: string
 
 describe('getPermissionGuardRejection', () => {
   it.each([
+    String.raw`gh api \-XPUT repos/owner/repo/pulls/12/merge`,
+    String.raw`gh api \--method=POST repos/owner/repo/issues`,
+    String.raw`gh api repos/owner/repo/pulls/12/merge \-XPUT`,
+    String.raw`rm -rf \.git`, String.raw`rm -rf \./.ticket`,
+    String.raw`git \-C /repo rm -- src/file.ts`,
+  ])('decodes punctuation escapes before checking methods and paths: %s', (command) => {
+    expect(shell(command)).not.toBeNull()
+  })
+
+  it.each([
+    String.raw`gh api \-XGET repos/owner/repo/pulls/12`,
+    String.raw`rm -rf dist\-cache`,
+    String.raw`sh -c 'gh api \-XGET repos/owner/repo/pulls/12'`,
+  ])('keeps safe punctuation-escaped reads and local cleanup available: %s', (command) => {
+    expect(shell(command)).toBeNull()
+  })
+
+  it.each([
     String.raw`echo \' ; g\it push origin HEAD ; echo \'`,
     String.raw`echo \" ; g\h pr merge 12 ; echo \"`,
     String.raw`# it's

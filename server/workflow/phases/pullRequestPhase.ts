@@ -1258,7 +1258,8 @@ export async function handleCreatePullRequest(
           ? correctionLineage.activeHeadBranch
           : null
       const headBranch = correctionBranch ?? ticketHeadBranch
-      if (hasPendingCorrectiveCandidate(ticketId, integration, baseBranch, ticketHeadBranch)) {
+      const pendingCorrectiveCandidate = hasPendingCorrectiveCandidate(ticketId, integration, baseBranch, ticketHeadBranch)
+      if (pendingCorrectiveCandidate || (integration.record.status === 'passed' && correctionLineage != null)) {
         const recovery = readEarlyMergeRecoveryReport(ticketId)
         const mergedPullRequest = recovery && (await listPullRequestsForBranch(worktreePath, recovery.activeHeadBranch, baseBranch))
           .find((pr) => pr.number === recovery.prNumber && pr.state === 'merged')
@@ -1279,9 +1280,15 @@ export async function handleCreatePullRequest(
             sendEvent({ type: 'MERGE_COMPLETE' })
             return
           }
+          if (reconciliation === 'corrected') {
+            sendEvent({ type: 'EARLY_MERGE_CORRECTION_READY' })
+            return
+          }
         }
-        sendEvent({ type: 'EARLY_MERGE_CORRECTION_READY' })
-        return
+        if (pendingCorrectiveCandidate) {
+          sendEvent({ type: 'EARLY_MERGE_CORRECTION_READY' })
+          return
+        }
       }
       const fallbackTitle = `${context.externalId}: ${context.title}`
       const { contextParts, finalTestReport, manualQaSummary } = buildPullRequestContext(
@@ -1382,7 +1389,7 @@ export async function handleCreatePullRequest(
 
       const reconcileLatestMergedPullRequest = async (): Promise<boolean> => {
         const latestPullRequest = (await listPullRequestsForBranch(worktreePath, headBranch, baseBranch))
-          .find((pr) => pr.state === 'open' || pr.state === 'merged')
+          .find((pr) => pr.state === 'open' || pr.state === 'draft' || pr.state === 'merged')
         if (latestPullRequest?.state !== 'merged') return false
         const mergedPullRequest = latestPullRequest
         emitPhaseLog(ticketId, context.externalId, 'CREATING_PULL_REQUEST', 'info',

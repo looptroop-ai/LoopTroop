@@ -15,6 +15,7 @@ interface ShellCommand {
   redirects: string[]
   inputRedirect: boolean
   piped: boolean
+  shellStateUnverified: boolean
   dynamic: boolean
   substitution: boolean
 }
@@ -81,6 +82,9 @@ type PermissionGuardInput = Parameters<typeof getPermissionGuardRejection>[0] & 
   protectedDirectory?: string
   environment?: Record<string, string>
   skipGitPager?: boolean
+  ghTerminalPossible?: boolean
+  ghIgnoreInheritedEnvironment?: boolean
+  ghUnsetEnvironment?: string[]
 }
 
 function permissionResources(input: PermissionGuardInput): string[] {
@@ -127,7 +131,24 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     const unwrapped = unwrapCommand(segment.words)
     if (unwrapped.error) return unwrapped.error
     const { commandName, args } = unwrapped
-    const environment = { ...exportedEnvironment, ...unwrapped.environment }
+    const environment = unwrapped.ghIgnoreInheritedEnvironment ? {} : { ...exportedEnvironment }
+    for (const name of unwrapped.ghUnsetEnvironment) {
+      for (const existing of Object.keys(environment)) {
+        if (sameEnvironmentName(existing, name)) delete environment[existing]
+      }
+    }
+    Object.assign(environment, unwrapped.environment)
+    const commandInput: PermissionGuardInput = {
+      ...currentInput,
+      environment,
+      ghTerminalPossible: currentInput.ghTerminalPossible || unwrapped.ghTerminalPossible,
+      ghIgnoreInheritedEnvironment: currentInput.ghIgnoreInheritedEnvironment || unwrapped.ghIgnoreInheritedEnvironment,
+      ghUnsetEnvironment: [...new Set([...(currentInput.ghUnsetEnvironment ?? []), ...unwrapped.ghUnsetEnvironment])],
+    }
+    if (segment.shellStateUnverified && Object.keys(unwrapped.environment).some((name) => name.toUpperCase().startsWith('GIT_')
+      || ['PAGER', 'GH_PAGER', 'GH_FORCE_TTY'].includes(name.toUpperCase()))) {
+      return 'the Git environment cannot be verified'
+    }
     for (const nextDirectory of unwrapped.directories) {
       const wasUnverified = currentInput.unverifiedDirectory
       currentInput.directory = normalizePath(nextDirectory, currentInput.directory ?? input.context?.worktreePath)?.path
@@ -143,35 +164,54 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     currentInput.environment = environment
     if (!commandName) {
       if (segment.dynamic) return 'a dynamic command cannot be verified'
+      if (segment.shellStateUnverified && Object.keys(unwrapped.environment).some((name) => name.toUpperCase().startsWith('GIT_')
+        || ['PAGER', 'GH_PAGER', 'GH_FORCE_TTY'].includes(name.toUpperCase()))) {
+        return 'the Git environment cannot be verified'
+      }
       Object.assign(exportedEnvironment, unwrapped.environment)
       continue
     }
 
     const basename = commandBase(commandName)
+    const guardedCommand = isExecutable(commandName, 'gh') || isExecutable(commandName, 'git')
+    if (guardedCommand && (commandName.includes('/') || commandName.includes('\\')
+      || Object.keys(environment).some(isExecutableEnvironmentOverride))) {
+      return 'the Git or GitHub executable cannot be verified because its path or loader environment changed'
+    }
     if (commandName.startsWith('$env:') && (commandName.includes('=') || args[0] === '=')) {
       const equals = commandName.indexOf('=')
       const name = commandName.slice(5, equals < 0 ? undefined : equals).trim()
-      if (name.toUpperCase() === 'PAGER') {
+      const normalizedName = name.toUpperCase()
+      if (['PAGER', 'GH_PAGER', 'GH_FORCE_TTY'].includes(normalizedName) || isExecutableEnvironmentOverride(normalizedName)) {
+        if (!['PAGER', 'GH_PAGER', 'GH_FORCE_TTY'].includes(normalizedName)) {
+          if (segment.shellStateUnverified) return 'the Git executable path cannot be verified'
+          exportedEnvironment[normalizedName] = 'changed'
+          continue
+        }
+        if (segment.shellStateUnverified) return 'the pager environment cannot be verified'
         const value = equals < 0 ? args.slice(1).join(' ') : [commandName.slice(equals + 1), ...args].join(' ').trim()
         if (value !== '$null' && hasShellExpansion(value)) return 'the pager environment cannot be verified'
-        exportedEnvironment.PAGER = value === '$null' ? '' : value
+        exportedEnvironment[normalizedName] = value === '$null' ? '' : value
         continue
       }
-      if (name.startsWith('GIT_')) return 'the Git environment cannot be verified; use a literal environment prefix'
+      if (normalizedName.startsWith('GIT_')) return 'the Git environment cannot be verified; use a literal environment prefix'
       continue
     }
     if (/[$`{}]/.test(commandName)) return 'the dynamic command cannot be verified'
     if (['export', 'set', 'unset'].includes(basename)) {
       for (const value of args) {
         const name = value.split('=')[0]!
-        if (!name.startsWith('GIT_') && name.toUpperCase() !== 'PAGER') continue
+        const normalizedName = name.toUpperCase()
+        if (!normalizedName.startsWith('GIT_') && !['PAGER', 'GH_PAGER', 'GH_FORCE_TTY'].includes(normalizedName)
+          && !isExecutableEnvironmentOverride(normalizedName)) continue
+        if (segment.shellStateUnverified) return 'the Git environment cannot be verified'
         if (basename === 'unset') {
-          exportedEnvironment[name] = name === 'GIT_PAGER'
+          exportedEnvironment[normalizedName] = normalizedName === 'GIT_PAGER'
             ? exportedEnvironment.PAGER ?? process.env.PAGER ?? ''
             : ''
         }
-        else if (value.includes('=') && !segment.dynamic) exportedEnvironment[name] = value.slice(value.indexOf('=') + 1)
-        else if (name.toUpperCase() === 'PAGER' && !value.includes('=')) continue
+        else if (value.includes('=') && !segment.dynamic) exportedEnvironment[normalizedName] = value.slice(value.indexOf('=') + 1)
+        else if (['PAGER', 'GH_PAGER', 'GH_FORCE_TTY'].includes(normalizedName) && !value.includes('=')) continue
         else return 'the Git environment cannot be verified'
       }
       continue
@@ -189,22 +229,34 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
         return 'the encoded shell command cannot be verified; use a literal command'
       }
       const powershellCommandWithArgs = (arg: string) => /^-(?:cw|cwa|commandw[a-z]*)(?:[:=].*)?$/i.test(arg)
+      const posixOptionFlags = 'abefhiklmnprstuvxBCEHPT'
+      const posixCommandOption = (arg: string) => {
+        const options = arg.startsWith('-') && !arg.startsWith('--') ? arg.slice(1) : ''
+        const commandIndex = options.indexOf('c')
+        return commandIndex >= 0 && [...options.slice(0, commandIndex)].every((option) => posixOptionFlags.includes(option))
+          ? commandIndex
+          : -1
+      }
       const flag = args.findIndex((arg) => isPowerShell
         ? arg.startsWith('-') && (powershellCommandWithArgs(arg)
           || 'command'.startsWith(powershellOption(arg)))
-        : basename === 'cmd' ? /^\/[ck](?:.+)?$/i.test(arg) : /^-[a-z]*c/i.test(arg))
+        : basename === 'cmd' ? /^\/[ck](?:.+)?$/i.test(arg) : posixCommandOption(arg) >= 0)
       const commandWithArgs = isPowerShell && flag >= 0 && powershellCommandWithArgs(args[flag]!)
       const attached = flag < 0 || !isPowerShell ? undefined : args[flag]!.match(/^-[^:=]+[:=](.*)$/)?.[1]
       const posixInline = flag < 0 || isPowerShell || basename === 'cmd' ? undefined : (() => {
-        const tail = args[flag]!.match(/^-[a-z]*c(.*)$/i)?.[1] ?? ''
-        const optionFlags = 'abefhiklmnptuvxBCEHPT'
-        if (tail && [...tail].every((character) => optionFlags.includes(character))) return args[flag + 1]
-        return tail || args[flag + 1]
+        const options = args[flag]!.slice(1)
+        const tail = options.slice(posixCommandOption(args[flag]!) + 1)
+        return tail && ![...tail].every((option) => posixOptionFlags.includes(option))
+          ? tail
+          : args[flag + 1]
       })()
       const inline = ['eval', 'iex', 'invoke-expression'].includes(basename) ? args.join(' ')
         : flag < 0 ? undefined : attached ?? posixInline ?? args[flag + 1]
       if (flag >= 0 && inline === undefined) return 'the inline shell command cannot be verified'
       if (inline === undefined && (segment.piped || segment.inputRedirect)) return 'the shell input cannot be verified; use a literal command'
+      if (inline === undefined && !args.some((arg) => !arg.startsWith('-'))) {
+        return 'an interactive shell cannot be verified; provide a literal command'
+      }
       if (inline !== undefined) {
         const script = ['eval', 'iex', 'invoke-expression'].includes(basename) ? inline : isPowerShell
           ? commandWithArgs ? inline : [inline, ...args.slice(flag + (attached === undefined ? 2 : 1))].join(' ')
@@ -213,12 +265,18 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
             : posixInline
         if (script === undefined) return 'the inline shell command cannot be verified'
         if (basename === 'cmd' && script.includes('^')) return 'the cmd escape sequence cannot be verified; use a literal command'
-        const effect = classifyShell(script, currentInput, depth + 1)
+        const effect = classifyShell(script, commandInput, depth + 1)
         if (effect) return effect
       }
       continue
     }
     if (['cd', 'chdir', 'set-location', 'sl', 'pushd', 'push-location'].includes(basename)) {
+      if (segment.shellStateUnverified) {
+        directory = undefined
+        directoryUnverified = true
+        directoryStack.length = 0
+        continue
+      }
       const next = args.find((arg) => !arg.startsWith('-'))
       if (['pushd', 'push-location'].includes(basename)) directoryStack.push({ directory, unverified: directoryUnverified })
       if (next) {
@@ -231,6 +289,12 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
       continue
     }
     if (basename === 'popd' || basename === 'pop-location') {
+      if (segment.shellStateUnverified) {
+        directory = undefined
+        directoryUnverified = true
+        directoryStack.length = 0
+        continue
+      }
       const previous = directoryStack.pop()
       if (previous) {
         directory = previous.directory
@@ -245,8 +309,12 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
       return 'the command target cannot be verified because its arguments come from input'
     }
 
-    if (isExecutable(commandName, 'gh')) {
-      const effect = classifyGh(args, segment, currentInput)
+    if (basename === 'watch') {
+      if (!args.length) return 'the watch command cannot be verified; run a literal command directly'
+      const effect = classifyShell(args.join(' '), commandInput, depth + 1)
+      if (effect) return effect
+    } else if (isExecutable(commandName, 'gh')) {
+      const effect = classifyGh(args, segment, commandInput, environment)
       if (effect) return effect
     } else if (isExecutable(commandName, 'git')) {
       const effect = classifyGit(args, currentInput, environment, segment.dynamic || unwrapped.dynamicArguments)
@@ -307,12 +375,14 @@ function scanShell(source: string): ShellCommand[] {
   let substitution = false
   let inputRedirect = false
   let piped = false
+  let conditional = false
+  let groupDepth = 0
 
   const flushWord = () => {
     if (word) words.push(word)
     word = ''
   }
-  const finish = (nextIsPipe = false) => {
+  const finish = (separator?: 'pipe' | 'conditional' | 'background') => {
     flushWord()
     const commandWords: string[] = []
     let commandDynamic = dynamic
@@ -337,6 +407,8 @@ function scanShell(source: string): ShellCommand[] {
         redirects: [...redirects],
         inputRedirect,
         piped,
+        shellStateUnverified: conditional || groupDepth > 0 || piped || separator === 'pipe'
+          || separator === 'background' || separator === 'conditional',
         dynamic: commandDynamic,
         substitution,
       })
@@ -346,7 +418,8 @@ function scanShell(source: string): ShellCommand[] {
     inputRedirect = false
     dynamic = false
     substitution = false
-    piped = nextIsPipe
+    conditional = separator === 'conditional'
+    piped = separator === 'pipe'
   }
 
   for (let i = 0; i < source.length; i++) {
@@ -405,11 +478,31 @@ function scanShell(source: string): ShellCommand[] {
       if (operator.length > 1) i++
       continue
     }
-    if (character === ';' || character === '&' || character === '|' || character === '(' || character === ')' || ((character === '{' || character === '}') && !word && source[i + 1] !== '}')) {
+    if (character === ';') {
+      flushWord()
+      finish()
+      continue
+    }
+    if (character === '&' || character === '|') {
       flushWord()
       const next = source[i + 1]
-      if ((character === '&' && next === '&') || (character === '|' && next === '|')) i++
-      finish(character === '|' && next !== '|')
+      if ((character === '&' && next === '&') || (character === '|' && next === '|')) {
+        i++
+        finish('conditional')
+      } else {
+        finish(character === '|' ? 'pipe' : 'background')
+      }
+      continue
+    }
+    if (character === '(' || character === ')') {
+      flushWord()
+      finish()
+      groupDepth = Math.max(0, groupDepth + (character === '(' ? 1 : -1))
+      continue
+    }
+    if ((character === '{' || character === '}') && !word && source[i + 1] !== '}') {
+      finish()
+      groupDepth = Math.max(0, groupDepth + (character === '{' ? 1 : -1))
       continue
     }
     word += character
@@ -421,14 +514,21 @@ function scanShell(source: string): ShellCommand[] {
 
 function unwrapCommand(words: string[]): {
   commandName?: string; args: string[]; environment: Record<string, string>
-  directories: string[]; mutationPaths: string[]; dynamicArguments: boolean; error?: string
+  directories: string[]; mutationPaths: string[]; dynamicArguments: boolean; ghTerminalPossible: boolean
+  ghIgnoreInheritedEnvironment: boolean; ghUnsetEnvironment: string[]; error?: string
 } {
   let index = 0
   const environment: Record<string, string> = {}
   const directories: string[] = []
   const mutationPaths: string[] = []
   let dynamicArguments = false
-  const result = (error?: string) => ({ commandName: words[index], args: words.slice(index + 1), environment, directories, mutationPaths, dynamicArguments, error })
+  let ghTerminalPossible = false
+  let ghIgnoreInheritedEnvironment = false
+  const ghUnsetEnvironment: string[] = []
+  const result = (error?: string) => ({
+    commandName: words[index], args: words.slice(index + 1), environment, directories, mutationPaths,
+    dynamicArguments, ghTerminalPossible, ghIgnoreInheritedEnvironment, ghUnsetEnvironment, error,
+  })
   const valueOptions: Record<string, string[]> = {
     env: ['-u', '--unset', '-C', '--chdir'],
     sudo: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir'],
@@ -472,6 +572,10 @@ function unwrapCommand(words: string[]): {
       environment[assignment.slice(0, separator)] = assignment.slice(separator + 1)
     }
     const name = commandBase(words[index] ?? '')
+    if (['script', 'unbuffer', 'watch'].includes(name)) ghTerminalPossible = true
+    if (name === 'doas' && words.slice(index + 1).some((word) => word === '-s')) {
+      return result('the command can start a privileged shell and cannot be verified')
+    }
     if (['su', 'runuser', 'gosu', 'setpriv', 'chroot', 'nsenter'].includes(name)) {
       return result('the command can change execution identity or root and cannot be verified')
     }
@@ -501,18 +605,19 @@ function unwrapCommand(words: string[]): {
       const option = words[index]!
       const equal = option.indexOf('=')
       const key = equal < 0 ? option : option.slice(0, equal)
+      if (name === 'env' && ['-i', '--ignore-environment'].includes(key)) ghIgnoreInheritedEnvironment = true
       if (name === 'env' && (key === '-S' || key === '--split-string')) {
-        const value = equal >= 0 ? option.slice(equal + 1) : words[++index]
+        const value = equal >= 0 ? option.slice(equal + 1) : words[index + 1]
         const parsed = value ? scanShell(value) : []
         if (parsed.length !== 1 || parsed[0]!.dynamic || parsed[0]!.redirects.length) return result('the environment command string cannot be verified')
-        words = [...words.slice(0, index + 1), ...parsed[0]!.words, ...words.slice(index + 1)]
-        index++
-        break
+        words = [...words.slice(0, index), ...parsed[0]!.words, ...words.slice(index + (equal >= 0 ? 1 : 2))]
+        continue
       }
       const attached = equal < 0 && option.length > 2 && valueOptions[name]?.includes(option.slice(0, 2))
       if (valueOptions[name]?.includes(key) || attached) {
         const value = equal >= 0 ? option.slice(equal + 1) : attached ? option.slice(2) : words[++index]
         if (!value) return result('the command wrapper option cannot be verified')
+        if (name === 'env' && ['-u', '--unset'].includes(key)) ghUnsetEnvironment.push(value)
         if ((name === 'env' && ['-C', '--chdir'].includes(key)) || (name === 'sudo' && ['-D', '--chdir'].includes(key))) directories.push(value)
         const optionKey = attached ? option.slice(0, 2) : key
         if (name === 'time' && ['-o', '--output'].includes(optionKey)) mutationPaths.push(value)
@@ -539,11 +644,32 @@ function unwrapCommand(words: string[]): {
         mutationPaths.push(separator === index ? 'typescript' : words[index]!)
         return { ...result(), commandName: words[separator + 1], args: words.slice(separator + 2) }
       }
+      for (let optionIndex = index; optionIndex < words.length; optionIndex++) {
+        const option = words[optionIndex]!
+        if (option === '-c' || option === '--command' || option.startsWith('--command=')) {
+          const attached = option.startsWith('--command=') ? option.slice('--command='.length) : undefined
+          const command = attached ?? words[optionIndex + 1]
+          if (!command) return result('the script command cannot be verified')
+          const transcript = scriptTranscriptPaths([
+            ...words.slice(index, optionIndex),
+            ...words.slice(optionIndex + (attached === undefined ? 2 : 1)),
+          ])
+          if (!transcript.verified) return result('the script transcript options cannot be verified')
+          mutationPaths.push(...transcript.paths)
+          return { ...result(), commandName: 'sh', args: ['-c', command] }
+        }
+      }
       if (words[index + 1]) {
         mutationPaths.push(words[index]!)
         return { ...result(), commandName: words[index + 1], args: words.slice(index + 2) }
       }
       return result('the interactive script command cannot be verified')
+    }
+    if (name === 'watch') {
+      const child = words.slice(index).join(' ')
+      return child
+        ? { ...result(), commandName: 'sh', args: ['-c', child] }
+        : result('the watch command cannot be verified; run a literal command directly')
     }
     if (words[index] === '--') index++
     if (name === 'timeout') index++
@@ -587,8 +713,40 @@ function scriptTranscriptPaths(args: string[]): { paths: string[]; verified: boo
   return { paths, verified: true }
 }
 
-function classifyGh(args: string[], segment: ShellCommand, input: PermissionGuardInput): string | null {
+function classifyGh(args: string[], segment: ShellCommand, input: PermissionGuardInput, environment: Record<string, string>): string | null {
   if (segment.dynamic) return 'the GitHub CLI request may change remote state or cannot be verified'
+  const getEnvironmentValue = (name: string) => {
+    const key = Object.keys(environment).find((candidate) => sameEnvironmentName(candidate, name))
+    if (key !== undefined) return environment[key]
+    if (input.ghIgnoreInheritedEnvironment || input.ghUnsetEnvironment?.some((unset) => sameEnvironmentName(unset, name))) return undefined
+    return process.env[name]
+  }
+  const ghPager = getEnvironmentValue('GH_PAGER')
+  const pager = ghPager ?? getEnvironmentValue('PAGER')
+  if (pager !== undefined && pager.trim().toLowerCase() !== 'cat') {
+    return 'the GitHub pager cannot be verified'
+  }
+  if (getEnvironmentValue('GH_FORCE_TTY')?.trim()) {
+    return 'forced GitHub terminal output cannot be verified'
+  }
+  const opensBrowser = args.some((arg) => arg === '--web' || arg === '-w' || arg.startsWith('--web=') || arg.startsWith('-w='))
+  if (opensBrowser) return 'the GitHub browser cannot be verified'
+  let safePager = pager?.trim().toLowerCase() === 'cat'
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg !== '--config' && !arg.startsWith('--config=')) continue
+    const setting = arg === '--config' ? args[++i] : arg.slice('--config='.length)
+    const separator = setting?.indexOf('=') ?? -1
+    const key = (separator < 0 ? setting : setting?.slice(0, separator))?.toLowerCase()
+    const value = separator < 0 ? '' : setting?.slice(separator + 1).trim().toLowerCase()
+    if (key === 'pager' && value !== 'cat') return 'the GitHub pager cannot be verified'
+    if (key === 'pager') safePager = true
+    if (key === 'browser' && opensBrowser) return 'the GitHub browser cannot be verified'
+    if (!setting) return 'the GitHub CLI configuration cannot be verified'
+  }
+  if (input.ghTerminalPossible && !safePager) {
+    return 'the GitHub pager configuration cannot be verified in a terminal session'
+  }
   let index = 0
   while (index < args.length && args[index]!.startsWith('-')) {
     const option = args[index++]!
@@ -662,6 +820,10 @@ function classifyGhCodespacePorts(args: string[]): string | null {
     return 'the GitHub CLI command may write GitHub state or is not on the read-only command list'
   }
   return null
+}
+
+function sameEnvironmentName(left: string, right: string): boolean {
+  return process.platform === 'win32' ? left.toUpperCase() === right.toUpperCase() : left === right
 }
 
 function classifyGhApi(args: string[], segment: ShellCommand): string | null {
@@ -780,7 +942,7 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
   let explicitGitDir: string | undefined
   let explicitWorkTree: string | undefined
   let explicitAbsoluteTarget = false
-  let dynamicTarget = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR']
+  let dynamicTarget = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE']
     .some((name) => {
       const value = environment[name]
       return Boolean(value && (/[$`]/.test(value) || (!directory && !isAbsolutePath(value))))
@@ -860,8 +1022,14 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
     'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF', 'GIT_TRACE_REFS', 'GIT_TRACE_FSMONITOR',
   ]) {
     const target = environment[name] ?? process.env[name]
-    if (!target || !isAbsolutePath(target)) continue
+    if (!target || target === '1' || target === '2') continue
     const effect = protectedPathEffect(target, { ...input, directory }, true)
+    if (effect) return effect
+  }
+  const indexFile = environment.GIT_INDEX_FILE ?? process.env.GIT_INDEX_FILE
+  if (indexFile) {
+    if (dynamic && hasShellExpansion(indexFile)) return 'the Git index path cannot be verified'
+    const effect = protectedPathEffect(indexFile, { ...input, directory }, true)
     if (effect) return effect
   }
   if (!input.skipGitPager) {
@@ -886,13 +1054,17 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
     && !gitArgs.some((arg) => arg === '--dry-run' || arg === '-n')) {
     const target = gitPushRemoteTarget(gitArgs)
     if (!target || !isLocalGitPushTarget(target)) return 'the Git command would write to a remote repository'
-    if (gitConfig.some((setting) => gitPushTargetRewritten(target, setting))
-      || gitPushTargetMayBeRewritten(target, directory, environment, Boolean(
-        input.unverifiedDirectory || explicitGitDir || explicitWorkTree
-          || environment.GIT_DIR || environment.GIT_WORK_TREE || environment.GIT_COMMON_DIR,
-      ))) {
+    if (gitConfig.some((setting) => gitPushTargetRewritten(target, setting))) {
       return 'the Git push destination cannot be verified because URL rewriting may change it'
     }
+    const rewritten = gitPushTargetMayBeRewritten(target, directory, environment, Boolean(
+        input.unverifiedDirectory || explicitGitDir || explicitWorkTree
+          || environment.GIT_DIR || environment.GIT_WORK_TREE || environment.GIT_COMMON_DIR,
+      ))
+    if (rewritten === true) {
+      return 'the Git push destination cannot be verified because URL rewriting may change it'
+    }
+    if (rewritten === undefined) return 'the Git push destination cannot be verified'
   }
   for (const setting of gitConfig) {
     if (dynamic && /[$`]/.test(setting.key)) return 'the Git configuration cannot be verified'
@@ -975,6 +1147,10 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
   const targetUnknown = dynamicTarget || targetStates.length === 0 || targetStates.includes(undefined)
     || Boolean(input.unverifiedDirectory && !explicitAbsoluteTarget)
   const scopedBlock = (effect: string) => isManaged || targetUnknown ? effect : null
+
+  if (command === 'stash' && ['apply', 'pop'].includes(action ?? '')) {
+    return scopedBlock('the Git stash could overwrite local files in the protected worktree')
+  }
 
   if (command === 'receive-pack') {
     const target = gitArgs.find((arg) => !arg.startsWith('-'))
@@ -1062,12 +1238,20 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
     return scopedBlock('the command would prune managed Git metadata')
   }
   const configuredFetchRemotes = command === 'fetch' ? gitFetchConfiguredRemotes(gitArgs) : undefined
-  if (command === 'fetch' && (gitFetchWritesLoopTroopRef(gitArgs)
-    || gitConfig.some((setting) => gitFetchConfigApplies(setting.key, configuredFetchRemotes)
-      && Boolean(setting.value && gitFetchWritesLoopTroopRef([setting.value]))))) {
+  const fetchHasExplicitRefspec = command === 'fetch' ? gitFetchHasExplicitRefspec(gitArgs) : undefined
+  const fetchRefmap = command === 'fetch' && gitArgs.some((arg) => arg === '--refmap' || arg.startsWith('--refmap='))
+  if (command === 'fetch' && fetchHasExplicitRefspec === undefined) {
+    return scopedBlock('the Git fetch refspec cannot be verified')
+  }
+  const fetchConfigIsEffective = command === 'fetch' && (!fetchHasExplicitRefspec || !fetchRefmap)
+  const commandFetchConfigWritesLoopTroopRef = fetchConfigIsEffective && gitConfig.some((setting) => (
+    gitFetchConfigApplies(setting.key, configuredFetchRemotes)
+      && Boolean(setting.value && gitFetchWritesLoopTroopRef([setting.value]))
+  ))
+  if (command === 'fetch' && (gitFetchWritesLoopTroopRef(gitArgs) || commandFetchConfigWritesLoopTroopRef)) {
     return scopedBlock('the command would change managed LoopTroop refs')
   }
-  if (command === 'fetch' && !gitArgs.some((arg) => arg === '--refmap' || arg.startsWith('--refmap='))) {
+  if (fetchConfigIsEffective) {
     const configuredRefspecs = gitConfiguredFetchWritesLoopTroopRef(directory, environment, configuredFetchRemotes)
     if (configuredRefspecs === true) return scopedBlock('the command would change managed LoopTroop refs')
     if (configuredRefspecs === undefined) return scopedBlock('the configured Git fetch refspec cannot be verified')
@@ -1192,7 +1376,7 @@ function gitPushRemoteTarget(args: string[]): string | undefined {
   let repository: string | undefined
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
-    if (arg === '--') { target ??= args[i + 1]; break }
+    if (arg === '--') { if (!repository && !target) target = args[i + 1]; break }
     if (arg === '--repo') { repository = args[++i]; if (!repository) return undefined; continue }
     if (arg.startsWith('--repo=')) { repository = arg.slice('--repo='.length); if (!repository) return undefined; continue }
     if (optionsWithValues.has(arg)) { if (!args[i + 1]) return undefined; i++; continue }
@@ -1207,7 +1391,7 @@ function gitPushRemoteTarget(args: string[]): string | undefined {
     }
     target ??= arg
   }
-  return repository ?? target
+  return target ?? repository
 }
 
 function gitHasPushHelper(args: string[]): boolean {
@@ -1227,24 +1411,32 @@ function gitPushTargetMayBeRewritten(
   directory: string | undefined,
   environment: Record<string, string>,
   unverifiedGitContext: boolean,
-): boolean {
-  if (!directory || unverifiedGitContext) return true
-  const env = { ...process.env, ...environment }
+): boolean | undefined {
+  if (!directory || unverifiedGitContext) return undefined
+  const env = gitProbeEnvironment(environment)
+  if (!env) return undefined
   const resolution = resolveTrustedProgram('git', { env })
-  if (resolution.path === undefined) return true
+  if (resolution.path === undefined) return undefined
   const launch = planProgramLaunch(resolution.path, ['-C', directory, 'config', '--includes', '--null', '--get-regexp', '^url\\.'], { env })
-  if (launch.reason !== undefined) return true
+  if (launch.reason !== undefined) return undefined
   const config = spawnSync(launch.file, launch.args, {
     encoding: 'utf8', env, timeout: 1500, windowsHide: true, shell: false,
     windowsVerbatimArguments: launch.windowsVerbatimArguments,
   })
-  if (config.error || (config.status !== 0 && config.status !== 1)) return true
+  if (config.error || (config.status !== 0 && config.status !== 1)) return undefined
   return config.stdout.split('\0').some((entry) => {
     const separator = entry.indexOf('\n')
     return separator >= 0 && gitPushTargetRewritten(target, {
       key: entry.slice(0, separator), value: entry.slice(separator + 1),
     })
   })
+}
+
+function gitProbeEnvironment(environment: Record<string, string>): NodeJS.ProcessEnv | undefined {
+  const allowed = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|GLOBAL|SYSTEM|NOSYSTEM|PARAMETERS)$/
+  if (Object.keys(environment).some((name) => !allowed.test(name))) return undefined
+  const trusted = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(?:LD_|DYLD_)/i.test(name)))
+  return { ...trusted, ...environment }
 }
 
 function gitFetchWritesLoopTroopRef(args: string[]): boolean {
@@ -1264,13 +1456,13 @@ function gitFetchWritesLoopTroopRef(args: string[]): boolean {
 function gitFetchConfiguredRemotes(args: string[]): Set<string> | null | undefined {
   const valueOptions = new Set([
     '--depth', '--deepen', '--shallow-since', '--shallow-exclude', '--filter', '--upload-pack',
-    '--negotiation-tip', '--server-option', '--jobs', '-j',
+    '--negotiation-tip', '--server-option', '--jobs', '-j', '--refmap',
   ])
   const flagOptions = new Set([
     '-a', '--append', '--atomic', '--no-atomic', '--dry-run', '--force', '-f', '--keep', '-k',
     '--prefetch', '--no-tags', '--tags', '-p', '--prune', '--prune-tags', '--no-prune',
     '--verbose', '-v', '--quiet', '-q', '--update-head-ok', '--write-fetch-head',
-    '--no-write-fetch-head', '--auto-maintenance', '--no-auto-maintenance', '--auto-gc',
+    '--no-write-fetch-head', '--auto-maintenance', '--no-auto-maintenance', '--auto-gc', '-t',
     '--no-auto-gc', '--write-commit-graph', '--no-write-commit-graph', '--no-recurse-submodules',
   ])
   const remotes: string[] = []
@@ -1308,6 +1500,41 @@ function gitFetchConfiguredRemotes(args: string[]): Set<string> | null | undefin
   return new Set([remote.toLowerCase()])
 }
 
+function gitFetchHasExplicitRefspec(args: string[]): boolean | undefined {
+  const valueOptions = new Set([
+    '--depth', '--deepen', '--shallow-since', '--shallow-exclude', '--filter', '--upload-pack',
+    '--negotiation-tip', '--server-option', '--jobs', '-j', '--refmap',
+  ])
+  const flagOptions = new Set([
+    '-a', '--append', '--atomic', '--no-atomic', '--dry-run', '--force', '-f', '--keep', '-k',
+    '--prefetch', '--no-tags', '--tags', '-t', '-p', '--prune', '--prune-tags', '--no-prune',
+    '--verbose', '-v', '--quiet', '-q', '--update-head-ok', '--write-fetch-head',
+    '--no-write-fetch-head', '--auto-maintenance', '--no-auto-maintenance', '--auto-gc',
+    '--no-auto-gc', '--write-commit-graph', '--no-write-commit-graph', '--no-recurse-submodules',
+  ])
+  let positionals = 0
+  let multiple = false
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (arg === '--') return !multiple && positionals + args.length - index - 1 > 1
+    if (!arg.startsWith('-')) { positionals++; continue }
+    const option = arg.split('=', 1)[0]!
+    if (option === '--all' || option === '--no-all') return false
+    if (option === '--multiple') { multiple = true; continue }
+    if (valueOptions.has(option)) {
+      if (!arg.includes('=')) {
+        if (!args[index + 1]) return undefined
+        index++
+      }
+      continue
+    }
+    if (flagOptions.has(arg) || /^-j\d+$/.test(arg)
+      || ['--recurse-submodules', '--no-recurse-submodules'].includes(option)) continue
+    return undefined
+  }
+  return !multiple && positionals > 1
+}
+
 function gitFetchConfigApplies(key: string, remotes: Set<string> | null | undefined): boolean {
   const match = /^remote\.(.+)\.fetch$/i.exec(key)
   return Boolean(match && remotes !== null && (!remotes || remotes.has(match[1]!.toLowerCase())))
@@ -1319,11 +1546,12 @@ function gitConfiguredFetchWritesLoopTroopRef(
   remotes: Set<string> | null | undefined,
 ): boolean | undefined {
   if (!directory) return undefined
-  const env = { ...process.env, ...environment }
+  const env = gitProbeEnvironment(environment)
+  if (!env) return undefined
   const resolution = resolveTrustedProgram('git', { env })
   if (resolution.path === undefined) return undefined
   const launch = planProgramLaunch(resolution.path, [
-    '-C', directory, 'config', '--includes', '--null', '--get-regexp', '^remote\\..*\\.fetch$',
+    '-C', directory, 'config', '--includes', '--null', '--get-regexp', '^(remote\\..*\\.fetch|remotes\\..*)$',
   ], { env })
   if (launch.reason !== undefined) return undefined
   const config = spawnSync(launch.file, launch.args, {
@@ -1335,9 +1563,17 @@ function gitConfiguredFetchWritesLoopTroopRef(
     const separator = entry.indexOf('\n')
     return separator < 0 ? [] : [{ key: entry.slice(0, separator), value: entry.slice(separator + 1) }]
   })
-  const scopedEntries = remotes === null ? [] : entries.filter(({ key }) => gitFetchConfigApplies(key, remotes))
-  const effectiveEntries = scopedEntries.length || remotes === null ? scopedEntries : entries
-  return effectiveEntries.some(({ value }) => gitFetchWritesLoopTroopRef([value]))
+  const remoteGroups = new Map<string, string[]>()
+  for (const { key, value } of entries) {
+    const match = /^remotes\.(.+)$/i.exec(key)
+    if (match) remoteGroups.set(match[1]!.toLowerCase(), value.split(/\s+/).filter(Boolean).map((remote) => remote.toLowerCase()))
+  }
+  const effectiveRemotes = remotes && new Set(remotes)
+  if (effectiveRemotes) {
+    for (const remote of remotes) for (const member of remoteGroups.get(remote) ?? []) effectiveRemotes.add(member)
+  }
+  const scopedEntries = remotes === null ? [] : entries.filter(({ key }) => gitFetchConfigApplies(key, effectiveRemotes))
+  return scopedEntries.some(({ value }) => gitFetchWritesLoopTroopRef([value]))
 }
 
 function classifyGitMergeFile(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
@@ -1474,6 +1710,7 @@ function gitMutationPaths(
   const operands: string[] = []
   let afterSeparator = false
   let verified = true
+  let dryRun = false
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (arg === '--') { afterSeparator = true; continue }
@@ -1482,10 +1719,14 @@ function gitMutationPaths(
       if (arg === '--pathspec-from-file') i++
       continue
     }
+    if (!afterSeparator && (arg === '--dry-run' || arg === '-n')) { dryRun = true; continue }
+    if (!afterSeparator && arg.startsWith('-') && !arg.startsWith('--') && gitHasShortOption([arg], 'n')) {
+      dryRun = true
+      continue
+    }
     if (!afterSeparator && arg.startsWith('-')) continue
     operands.push(arg)
   }
-  const dryRun = args.includes('--dry-run') || gitHasShortOption(args, 'n')
   if (command === 'rm') return { paths: operands, verified: verified && operands.length > 0, dryRun }
   if (operands.length < 2) return { paths: operands, verified: false, dryRun }
   const sources = operands.slice(0, -1)
@@ -1776,6 +2017,7 @@ function classifySed(args: string[], dynamic: boolean, input: PermissionGuardInp
   let scriptSeen = false
   let afterSeparator = false
   const isExpressionOption = (option: string) => option.length >= '--e'.length && '--expression'.startsWith(option)
+  const isFileOption = (option: string) => option === '--file' || (option.length >= 4 && '--file'.startsWith(option))
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (!afterSeparator && arg === '--') { afterSeparator = true; continue }
@@ -1787,7 +2029,7 @@ function classifySed(args: string[], dynamic: boolean, input: PermissionGuardInp
       scriptSeen = true
       continue
     }
-    if (!afterSeparator && (isExpressionOption(arg) || ['-f', '--file'].includes(arg))) {
+    if (!afterSeparator && (isExpressionOption(arg) || arg === '-f' || isFileOption(arg))) {
       const script = args[++i]
       if (!script) return 'the sed script cannot be verified'
       if (isExpressionOption(arg)) scripts.push(script)
@@ -1795,8 +2037,8 @@ function classifySed(args: string[], dynamic: boolean, input: PermissionGuardInp
       scriptSeen = true
       continue
     }
-    if (!afterSeparator && arg.includes('=') && isExpressionOption(arg.slice(0, arg.indexOf('=')))
-      || !afterSeparator && /^--file=/.test(arg)) {
+    if (!afterSeparator && arg.includes('=')
+      && (isExpressionOption(arg.slice(0, arg.indexOf('='))) || isFileOption(arg.slice(0, arg.indexOf('=')))) ) {
       const equal = arg.indexOf('=')
       const value = arg.slice(equal + 1)
       if (!value) return 'the sed script cannot be verified'
@@ -1826,10 +2068,17 @@ function classifySed(args: string[], dynamic: boolean, input: PermissionGuardInp
   for (const scriptFile of scriptFiles) {
     if (hasShellExpansion(scriptFile)) return 'the sed script path cannot be verified'
     const base = input.directory ?? input.context?.worktreePath
-    if (!isAbsolutePath(scriptFile) && !base) return 'the sed script path cannot be verified'
+    if (!base) return 'the sed script path cannot be verified'
     try {
-      const file = path.resolve(base ?? '', scriptFile)
-      if (statSync(file).size > 1_000_000) return 'the sed script is too large to verify'
+      const root = realpathSync(base)
+      const file = realpathSync(path.resolve(base, scriptFile))
+      const relative = path.relative(root, file)
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        return 'the sed script must be inside the protected directory'
+      }
+      const stat = statSync(file)
+      if (!stat.isFile()) return 'the sed script must be a regular file'
+      if (stat.size > 1_000_000) return 'the sed script is too large to verify'
       scripts.push(new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(file)))
     } catch {
       return 'the sed script cannot be read for verification'
@@ -2046,7 +2295,8 @@ function sedScriptEffects(script: string): { executes: boolean; writes: string[]
             }
             return false
           }
-          if (!readList() || !readList()) return false
+          if (!readList()) return false
+          if (!readList()) return false
           break
         }
         case ':': case 'b': case 't': case 'T':
@@ -2136,28 +2386,32 @@ function splitStartProcessArguments(value: string): string[] | undefined {
     argument = ''
   }
 
-  for (let i = 0; i < value.length; i++) {
-    const character = value[i]!
+  let index = 0
+  while (index < value.length) {
+    const character = value[index]!
     if (character === '\\') {
-      let end = i
+      let end = index
       while (value[end + 1] === '\\') end++
-      const count = end - i + 1
+      const count = end - index + 1
       if (value[end + 1] === '"') {
         argument += '\\'.repeat(Math.floor(count / 2))
         if (count % 2) argument += '"'
         else quoted = !quoted
-        i = end + 1
+        index = end + 2
       } else {
         argument += '\\'.repeat(count)
-        i = end
+        index = end + 1
       }
-    } else if (character === '"') {
+      continue
+    }
+    if (character === '"') {
       quoted = !quoted
     } else if (!quoted && (character === ',' || /\s/.test(character))) {
       finishArgument()
     } else {
       argument += character
     }
+    index++
   }
   if (quoted) return undefined
   finishArgument()
@@ -2174,15 +2428,20 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
   let writingArchive = false
   let destination: string | undefined
   let archiveFile: string | undefined
+  let afterSeparator = false
+  const legacyModes = new Set(['x', 'c', 'r', 'u', 'd', 'a'])
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
-    if (arg === '--help' || arg === '--version' || arg === '-h') return null
+    if (arg === '--') { afterSeparator = true; continue }
+    if (!afterSeparator && (arg === '--help' || arg === '--version')) return null
     const [longOption, longValue] = arg.split(/=(.*)/s, 2)
     const helperOptions = ['--to-command', '--use-compress-program', '--rmt-command', '--rsh-command', '--info-script', '--new-volume-script']
     if (longOption?.startsWith('--') && helperOptions.some((option) => option.startsWith(longOption))) {
       return 'the tar command may execute an external helper'
     }
-    if (arg === '-I' || arg.startsWith('-I')) return 'the tar command may execute an external compressor'
+    const shortOptions = arg.startsWith('-') && !arg.startsWith('--') ? arg.slice(1)
+      : i === 0 && /^[A-Za-z]+$/.test(arg) ? arg : ''
+    if (shortOptions.includes('I')) return 'the tar command may execute an external compressor'
     if (longOption && '--checkpoint-action'.startsWith(longOption)) {
       const action = longValue ?? args[i + 1]
       if (!action) return 'the tar checkpoint action cannot be verified'
@@ -2224,7 +2483,9 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
         destination = args[++i]
         if (!destination) return 'the archive extraction target cannot be verified'
       }
-    } else if (/^[A-Za-z]+$/.test(arg)) {
+    } else if (!extracting && !writingArchive && !archiveFile && /^[A-Za-z]+$/.test(arg)
+      && legacyModes.has(arg[0]!.toLowerCase())
+      && ![...arg.slice(1)].some((flag) => legacyModes.has(flag.toLowerCase()))) {
       if (arg[0]?.toLowerCase() === 'x') extracting = true
       if (['c', 'r', 'u', 'd', 'a'].includes(arg[0]?.toLowerCase() ?? '')) writingArchive = true
       if (arg.includes('O')) toStdout = true
@@ -2415,7 +2676,7 @@ function isRemotePath(value: string): boolean {
 }
 
 function classifyRemoval(args: string[], dynamic: boolean, input: PermissionGuardInput): string | null {
-  if (args.some((arg) => arg === '--help' || arg === '-h' || arg === '--version')) return null
+  if (args.length === 1 && ['--help', '--version'].includes(args[0]!)) return null
   const targets: string[] = []
   const optionsWithValues = new Set(['-path', '-literalpath', '-include', '-exclude', '-filter', '-stream'])
   let afterSeparator = false
@@ -2471,7 +2732,7 @@ function classifyFileMutation(commandName: string, args: string[], dynamic: bool
     const arg = args[i]!
     const option = arg.toLowerCase()
     if (!afterSeparator && arg === '--') { afterSeparator = true; continue }
-    if (!afterSeparator && ['--help', '-h', '--version'].includes(option)) return null
+    if (!afterSeparator && ['--help', '--version'].includes(option)) return null
     if (!afterSeparator && ['-destination', '-dest'].includes(option)) {
       namedDestination = args[++i]
       continue
@@ -2732,6 +2993,12 @@ function basename(value: string): string {
 function commandBase(value: string): string {
   const name = basename(value).toLowerCase()
   return name.replace(/\.(?:exe|cmd|bat)$/, '')
+}
+
+function isExecutableEnvironmentOverride(name: string): boolean {
+  const normalized = name.toUpperCase()
+  return normalized === 'PATH' || normalized === 'PATHEXT' || normalized === 'GIT_EXEC_PATH'
+    || normalized.startsWith('LD_') || normalized.startsWith('DYLD_')
 }
 
 function equalsPath(left: string, right: string, windows: boolean): boolean {

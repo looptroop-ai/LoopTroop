@@ -41,6 +41,17 @@ describe('getPermissionGuardRejection', () => {
     expect(shell(`${wrapper} gh pr view 12`)).toBeNull()
   })
 
+  it('does not apply shell directory or Git environment changes from conditional or isolated commands', () => {
+    expect(shell('true || cd /tmp; rm -rf .')).toContain('working directory cannot be verified')
+    expect(shell('(cd /tmp); rm -rf .')).toContain('working directory cannot be verified')
+    expect(shell('cd /tmp | true; git reset --hard')).not.toBeNull()
+    expect(shell('cd /tmp &; rm -rf .')).toContain('working directory cannot be verified')
+    expect(shell('cd /not-a-real-directory || true; git reset --hard')).toContain('cannot be verified')
+    expect(shell('true || GIT_DIR=/tmp/scratch git reset --hard')).not.toBeNull()
+    expect(shell("true || export PAGER='gh pr merge 12'; git --paginate log"))
+      .toContain('Git environment cannot be verified')
+  })
+
   it.each([
     "bash -lc 'git push origin HEAD'", "sh -c 'gh pr merge 12'",
     'pwsh -NoProfile -Command "git push origin HEAD"',
@@ -49,10 +60,15 @@ describe('getPermissionGuardRejection', () => {
     "sh -cx 'gh pr merge 12'", 'cmd /d /c gh pr merge 12',
     'pwsh -enc Z2l0IHB1c2g=', 'powershell -enco Z2l0IHB1c2g=',
     'git.cmd push origin HEAD', 'rm.cmd -rf .git',
+    "bash -cs 'git push origin HEAD'", "sh -cr 'gh pr merge 12'",
+    "bash -csx 'git push origin HEAD'", "bash -crs 'gh pr merge 12'",
     'cmd /c g^i^t push origin HEAD', 'fish -c "gh pr merge 12"',
     String.raw`g\it push origin HEAD`, String.raw`r\m -rf .git`, String.raw`git p\ush origin HEAD`,
     'watch -n 1 git push origin HEAD', 'strace -f git push origin HEAD',
     "script -c 'gh pr merge 12' /dev/null", 'ionice -c3 git push origin HEAD',
+    "script /dev/null -c 'git push origin HEAD'",
+    "script /tmp/typescript --command 'gh pr merge 12'",
+    "script -q /dev/null -c 'git push origin HEAD'",
     'chrt -f 1 git push origin HEAD', 'flock /tmp/guard-lock git push origin HEAD',
     "flock -c 'git push origin HEAD'",
     'eval git push origin HEAD', "env -S 'git push origin HEAD'",
@@ -112,6 +128,7 @@ describe('getPermissionGuardRejection', () => {
     "Start-Process -FilePath npm -ArgumentList 'test'",
     "Start-Process -FilePath git -ArgumentList 'status --short'", 'tar -xf archive.tar -C dist',
     "saps -FilePath npm -ArgumentList 'test'",
+    'watch -n 1 git status',
     'Set-Content -Path src/new.ts -Value content', 'Clear-Content dist/cache.txt',
     'Out-File -FilePath dist/output.txt -InputObject content',
     'gh repo clone owner/scratch /tmp/scratch', 'gh release download v1.2.3 -D dist',
@@ -138,6 +155,7 @@ describe('getPermissionGuardRejection', () => {
     onTestFinished(() => rmSync(root, { recursive: true, force: true }))
     const worktreePath = join(root, 'worktree')
     const target = `${root}-scratch-remote`
+    const targetArgument = `"${target}"`
     mkdirSync(worktreePath)
     execFileSync('git', ['-C', worktreePath, 'init'], { stdio: 'ignore' })
     const globalConfig = join(root, 'global-config')
@@ -147,12 +165,16 @@ describe('getPermissionGuardRejection', () => {
     process.env.GIT_CONFIG_GLOBAL = globalConfig
     process.env.GIT_CONFIG_NOSYSTEM = '1'
     const localContext = { projectRoot: root, worktreePath, ticketDir: join(worktreePath, '.ticket') }
-    const check = () => getPermissionGuardRejection({
-      permission: 'bash', patterns: [`git push ${target} main`], context: localContext, directory: worktreePath,
+    const check = (command = `git push ${targetArgument} main`) => getPermissionGuardRejection({
+      permission: 'bash', patterns: [command], context: localContext, directory: worktreePath,
     })
 
     try {
       expect(check()).toBeNull()
+      if (process.platform === 'win32') expect(check('git push "C:\\scratch-remote" main')).toBeNull()
+      expect(check(`git push ${targetArgument} --repo=origin main`)).toBeNull()
+      expect(check(`git push --repo=origin ${targetArgument} main`)).toBeNull()
+      expect(check(`git push --repo=${targetArgument} "${join(root, '.git')}" main`)).toContain('managed Git state')
       execFileSync('git', [
         '-C', worktreePath, 'config', '--local', 'url.https://example.test/.pushInsteadOf', target,
       ], { stdio: 'ignore' })
@@ -163,6 +185,14 @@ describe('getPermissionGuardRejection', () => {
       if (previousNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM
       else process.env.GIT_CONFIG_NOSYSTEM = previousNoSystem
     }
+  })
+
+  it.each([
+    'LD_PRELOAD=/tmp/guard-payload.so git push ./scratch main',
+    'DYLD_INSERT_LIBRARIES=/tmp/guard-payload.dylib git fetch origin',
+    'PATH=/tmp git push ./scratch main',
+  ])('refuses Git probes when a command supplies an untrusted process environment: %s', (command) => {
+    expect(shell(command)).toContain('cannot be verified')
   })
 
   it('checks effective fetch refspecs before updating managed refs', ({ onTestFinished }) => {
@@ -268,7 +298,7 @@ describe('getPermissionGuardRejection', () => {
     'git status --short',
     'git add src/new.ts && git commit -m update',
     'git -C /tmp/test-repo init && git -C /tmp/test-repo commit -m test && git -C /tmp/test-repo reset --hard',
-    'cd /tmp/scratch && git reset --hard',
+    'git -C /tmp/scratch reset --hard',
     'git init /tmp/scratch-repo',
     'git clone https://example.test/repo.git /tmp/scratch-repo',
     'git clone https://example.test/scratch-repo.git',
@@ -560,6 +590,8 @@ describe('getPermissionGuardRejection', () => {
     'taskset -c 0 git push origin HEAD',
     'setpriv --reuid=0 git push origin HEAD',
     'prlimit --nofile=64 git push origin HEAD',
+    'watch "gh pr merge 12"', 'watch -x "gh pr merge 12"',
+    'doas -s', 'bash', 'bash -i', 'sh -s',
     "script -c 'git status' .git/transcript",
     "script -c 'git status' -- .git/transcript",
     'script -c "git status" -O .git/transcript',
@@ -575,6 +607,8 @@ describe('getPermissionGuardRejection', () => {
   it('checks comma-separated Start-Process arguments as child arguments', () => {
     expect(shell("Start-Process -FilePath git -ArgumentList 'push','origin','HEAD'"))
       .toContain('remote repository')
+    expect(shell("Start-Process -FilePath git -ArgumentList 'push origin HEAD'"))
+      .toContain('remote repository')
   })
 
   it('allows ordinary sed substitutions', () => {
@@ -586,7 +620,7 @@ describe('getPermissionGuardRejection', () => {
     onTestFinished(() => rmSync(root, { recursive: true, force: true }))
     const worktreePath = join(root, 'worktree')
     const ticketDir = join(worktreePath, '.ticket')
-    const scriptPath = join(root, 'format.sed')
+    const scriptPath = join(worktreePath, 'format.sed')
     mkdirSync(join(worktreePath, '.git'), { recursive: true })
     mkdirSync(ticketDir)
     const localContext = { projectRoot: root, worktreePath, ticketDir }
@@ -600,6 +634,21 @@ describe('getPermissionGuardRejection', () => {
     expect(checkScript()).toContain('Git metadata')
     writeFileSync(scriptPath, 'e cat .git/config\n')
     expect(checkScript()).toContain('external command')
+    expect(getPermissionGuardRejection({
+      permission: 'bash', patterns: [`sed --fi='${scriptPath}' source.txt`], context: localContext, directory: worktreePath,
+    })).toContain('external command')
+
+    const outsideScriptPath = join(root, 'outside.sed')
+    writeFileSync(outsideScriptPath, 's/old/new/\n')
+    expect(getPermissionGuardRejection({
+      permission: 'bash', patterns: [`sed -f '${outsideScriptPath}' source.txt`], context: localContext, directory: worktreePath,
+    })).toContain('inside the protected directory')
+    expect(getPermissionGuardRejection({
+      permission: 'bash', patterns: [`sed -f '${worktreePath}' source.txt`], context: localContext, directory: worktreePath,
+    })).toContain('regular file')
+    expect(getPermissionGuardRejection({
+      permission: 'bash', patterns: ['sed -f /dev/stdin source.txt'], context: localContext, directory: worktreePath,
+    })).not.toBeNull()
   })
 
   it.each([

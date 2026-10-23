@@ -366,9 +366,15 @@ describe('pull request drafting context', () => {
     }))
     upsertLatestPhaseArtifact(ticket.id, 'final_test_report', 'RUNNING_FINAL_TEST', JSON.stringify({
       status: 'passed',
-      candidateCommitSha: correctedCandidate,
+      candidateCommitSha: resquashedCandidate,
       summary: 'Corrective candidate passed final tests.',
     }))
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
+      kind: 'corrected',
+      correctedCandidateSha: resquashedCandidate,
+      recoveryWorktreePath: null,
+      proof: makeEarlyMergeProof(mergedPr, originalCandidate),
+    })
     mocks.listPullRequestsForBranch.mockImplementation(async (_worktree, branch) =>
       branch === ticket.externalId ? [mergedPr] : [])
     queueValidDrafts('corrected-candidate')
@@ -376,7 +382,7 @@ describe('pull request drafting context', () => {
     const sendEvent = vi.fn()
     await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
 
-    expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenCalledOnce()
+    expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenCalledTimes(2)
     expect(mocks.pushBranchRef).toHaveBeenCalledWith(expect.objectContaining({
       sourceRef: resquashedCandidate,
       destinationBranch: correctionBranch,
@@ -774,6 +780,72 @@ describe('pull request drafting context', () => {
       .toMatchObject({ status: 'pending_revalidation', candidateCommitSha: refreshedCandidate })
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'final_test_report', 'RUNNING_FINAL_TEST')!.content))
       .toMatchObject({ status: 'pending', candidateCommitSha: refreshedCandidate })
+  })
+
+  it('refreshes a passed correction before pushing when the base advances during validation', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket()
+    const originalCandidate = 'b'.repeat(40)
+    const validatedCorrection = 'c'.repeat(40)
+    const refreshedCandidate = 'd'.repeat(40)
+    const mergedPr = makeMergedPullRequest()
+    const correctionBranch = `looptroop/early-merge/pr-${mergedPr.number}-${originalCandidate.slice(0, 12)}`
+    writeIntegrationCandidate(ticket.id, validatedCorrection, '2'.repeat(40), {
+      status: 'passed', earlyMergeCorrectionBranch: correctionBranch,
+    })
+    upsertLatestPhaseArtifact(ticket.id, 'early_merge_recovery', 'CREATING_PULL_REQUEST', JSON.stringify(
+      makeEarlyMergeReport(ticket, mergedPr, originalCandidate, {
+        status: 'corrected',
+        reason: 'corrective_delta',
+        candidateTreeSha: 'f'.repeat(40),
+        prHeadTreeSha: '1'.repeat(40),
+        remoteBaseHead: '2'.repeat(40),
+        correctedCandidateSha: validatedCorrection,
+      }),
+    ))
+    mocks.listPullRequestsForBranch.mockResolvedValueOnce([mergedPr])
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce({
+      kind: 'corrected',
+      correctedCandidateSha: refreshedCandidate,
+      recoveryWorktreePath: null,
+      proof: makeEarlyMergeProof(mergedPr, originalCandidate, '3'.repeat(40)),
+    })
+
+    const sendEvent = vi.fn()
+    await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenCalledWith(expect.objectContaining({
+      candidateCommitSha: originalCandidate,
+    }))
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES')!.content))
+      .toMatchObject({ status: 'pending_revalidation', candidateCommitSha: refreshedCandidate })
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'final_test_report', 'RUNNING_FINAL_TEST')!.content))
+      .toMatchObject({ status: 'pending', candidateCommitSha: refreshedCandidate })
+    expect(sendEvent).toHaveBeenCalledExactlyOnceWith({ type: 'EARLY_MERGE_CORRECTION_READY' })
+    expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+    expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
+  })
+
+  it('does not treat an older merged PR as current when a newer draft exists', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    const newerDraft = {
+      ...makeMergedPullRequest(43),
+      state: 'draft' as const,
+      headRefName: ticket.externalId,
+      mergeCommitSha: null,
+      mergedAt: null,
+    }
+    mocks.listPullRequestsForBranch.mockResolvedValue([newerDraft, makeMergedPullRequest(42)])
+    queueValidDrafts('newer-draft')
+
+    const sendEvent = vi.fn()
+    await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(mocks.reconcileMergedPullRequestCandidate).not.toHaveBeenCalled()
+    expect(mocks.pushBranchRef).toHaveBeenCalledOnce()
+    expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledOnce()
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'PULL_REQUEST_READY' })
   })
 
   it('retries a saved manual conflict against its recorded base and skips an unrelated candidate', async () => {

@@ -176,6 +176,8 @@ const serverIntegrationTests = [
   'server/log/__tests__/executionLog.test.ts',
   'server/lib/__tests__/openPath.test.ts',
   'server/opencode/__tests__/manualQaFileParts.test.ts',
+  'server/opencode/__tests__/permissionGuard.test.ts',
+  'server/opencode/__tests__/permissionGuard.gitCommands.test.ts',
   'server/opencode/__tests__/adapterCoverage.test.ts',
   'server/opencode/__tests__/modelValidation.test.ts',
   'server/opencode/__tests__/providerCatalog.test.ts',

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { assert, describe, expect, it, vi } from "vitest";
+import { SESSION_LIST_LIMIT } from "../../lib/constants";
 import {
   OpenCodePromptReceiptUnavailableError,
   type OpenCodePromptRequest,
@@ -50,7 +51,7 @@ function createTransport(
     requests.push(request);
     if (request.method === "GET" && url.pathname === "/api/session" && url.searchParams.has("parentID")) {
       const parentId = url.searchParams.get("parentID")!;
-      const fixture = childSessions[parentId] ?? [];
+      const fixture = childSessions[parentId] ?? childSessions["*"] ?? [];
       if (typeof fixture === "function") return jsonResponse(fixture(request));
       const offset = Number(url.searchParams.get("cursor") ?? 0);
       const limit = Number(url.searchParams.get("limit") ?? fixture.length) || 100;
@@ -3476,6 +3477,40 @@ describe("OpenCode v2 fetch transport", () => {
 
     await expect(transport.subscribeToEvents("session-1", "/worktree"))
       .rejects.toThrow("repeated child session cursor");
+  });
+
+  it("bounds child discovery when every page returns a new cursor", async () => {
+    let pages = 0;
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event")
+        return eventStream([{ type: "server.connected" }]);
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": () => ({ data: [], cursor: { next: `page-${++pages}` } }),
+    });
+
+    await expect(transport.subscribeToEvents("session-1", "/worktree"))
+      .rejects.toThrow("too many child session pages");
+    expect(pages).toBe(Math.ceil(SESSION_LIST_LIMIT / 100));
+  });
+
+  it("bounds total child discovery across an endless parent chain", async () => {
+    let childRequests = 0;
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event")
+        return eventStream([{ type: "server.connected" }]);
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "*": (request) => {
+        childRequests++;
+        const parentId = request.url.searchParams.get("parentID")!;
+        return { data: [{ id: `child-${parentId}` }], cursor: {} };
+      },
+    });
+
+    await expect(transport.subscribeToEvents("session-1", "/worktree"))
+      .rejects.toThrow("too many related child sessions");
+    expect(childRequests).toBe(SESSION_LIST_LIMIT + 1);
   });
 
   it("re-fetches pending permissions for hydrated child sessions after reconnect", async () => {

@@ -378,6 +378,8 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       const parentId = queue[index]!;
       for (const child of await this.listChildSessions(parentId, signal)) {
         if (visited.has(child.id)) continue;
+        if (descendants.size >= SESSION_LIST_LIMIT)
+          throw new Error("OpenCode v2 returned too many related child sessions");
         visited.add(child.id);
         descendants.add(child.id);
         const directory = child.directory ?? state.directories.get(child.id);
@@ -395,9 +397,12 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
   ): Promise<Session[]> {
     const sessions: Session[] = [];
     const seenCursors = new Set<string>();
+    const pageLimit = Math.ceil(SESSION_LIST_LIMIT / LIST_PAGE_SIZE);
     let cursor: string | undefined;
+    let pageCount = 0;
 
-    while (true) {
+    while (pageCount < pageLimit) {
+      pageCount++;
       const query = new URLSearchParams({
         parentID: parentId,
         limit: String(LIST_PAGE_SIZE),
@@ -418,6 +423,8 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       if (typeof next !== "string" || !next) break;
       if (seenCursors.has(next))
         throw new Error("OpenCode v2 returned a repeated child session cursor");
+      if (pageCount >= pageLimit)
+        throw new Error("OpenCode v2 returned too many child session pages");
       seenCursors.add(next);
       cursor = next;
     }

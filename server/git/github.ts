@@ -944,7 +944,7 @@ export class GitPathEncodingError extends Error {
 }
 
 export function decodeGitPathList(output: Buffer): string[] {
-  const decoder = new TextDecoder('utf-8', { fatal: true })
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
   const paths: string[] = []
   let start = 0
   for (let end = output.indexOf(0); end >= 0; end = output.indexOf(0, start)) {

@@ -132,7 +132,7 @@ async function createWaitingPrReviewTicket() {
     status: 'WAITING_PR_REVIEW',
     branchName: ticket.externalId,
   })
-  const ticketBranch = ticket.branchName?.trim() || ticket.externalId
+  const ticketBranch = getTicketByRef(ticket.id)?.branchName?.trim() || ticket.externalId
   readPullRequestReportMock.mockReturnValue({ ...readPullRequestReportMock(), headBranch: ticketBranch })
   refreshPullRequestStateMock.mockResolvedValue({
     number: 42,
@@ -613,6 +613,29 @@ describe('ticketRouter PR review routes', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe('CLEANING_ENV')
   })
 
+  it('resumes a merge checkpoint when correction lineage is no longer available', async () => {
+    const { ticket, repoDir } = await createWaitingPrReviewTicket()
+    const correctionBranch = `${ticket.externalId}-correction-1`
+    const report = readPullRequestReportMock()
+    readPullRequestReportMock.mockReturnValue({ ...report, headBranch: correctionBranch })
+    completeMergedPullRequestMock({ ticketId: ticket.id, headBranch: correctionBranch })
+    const resolveHeadBranch = resolvePullRequestHeadBranchMock.getMockImplementation()!
+    resolvePullRequestHeadBranchMock.mockImplementation(() => {
+      throw new Error('Integration report not found')
+    })
+    try {
+      await expect(completeTicketMerge(
+        getTicketByRef(ticket.id)!, repoDir, readPullRequestReportMock(),
+      )).resolves.toBe('merged')
+
+      expect(resolvePullRequestHeadBranchMock).not.toHaveBeenCalled()
+      expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'MERGE_COMPLETE' })
+    } finally {
+      resolvePullRequestHeadBranchMock.mockReset()
+      resolvePullRequestHeadBranchMock.mockImplementation(resolveHeadBranch)
+    }
+  })
+
   it('resumes a durable close decision after interrupted event dispatch without contacting GitHub', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     insertClosedUnmergedCheckpoint(ticket.id)
@@ -639,11 +662,11 @@ describe('ticketRouter PR review routes', () => {
       url: 'https://github.com/test/repo/pull/42',
       state: 'open',
       baseRefName: ticket.runtime.baseBranch,
-      headRefName: ticket.branchName ?? ticket.externalId,
+      headRefName: getTicketByRef(ticket.id)?.branchName?.trim() || ticket.externalId,
       headRefOid: 'new-remote-head',
     })
     const dispatch = vi.mocked(sendTicketEvent).getMockImplementation()!
-    vi.mocked(sendTicketEvent).mockImplementationOnce(() => { throw new Error('Interrupted dispatch') })
+    vi.mocked(sendTicketEvent).mockImplementation(() => { throw new Error('Interrupted dispatch') })
     const app = new Hono().route('/api', ticketRouter)
 
     try {

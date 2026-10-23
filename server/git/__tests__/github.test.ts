@@ -725,6 +725,11 @@ describe('server/git/github', () => {
     expect(() => github.decodeGitPathList(Buffer.from([0xff, 0]))).toThrow('cannot be safely decoded as UTF-8')
   })
 
+  it('preserves a BOM when decoding a Git path', async () => {
+    const github = await import('../github')
+    expect(github.decodeGitPathList(Buffer.from([0xef, 0xbb, 0xbf, 0x66, 0x69, 0x6c, 0x65, 0]))).toEqual(['\uFEFFfile'])
+  })
+
   it('allows a candidate checkout to replace a path that HEAD already tracks', async () => {
     const projectPath = mkdtempSync(join(tmpdir(), 'looptroop-github-overwrite-'))
     try {

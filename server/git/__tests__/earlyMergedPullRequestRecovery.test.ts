@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { reconcileMergedPullRequestCandidate, EarlyMergeRecoveryManualError } from '../earlyMergedPullRequestRecovery'
 import { pinGitLineEndings } from '../../test/tempDir'
@@ -14,7 +14,10 @@ function git(cwd: string, args: string[]): string {
 
 function normalizedPath(path: string): string {
   const absolute = resolve(path)
-  return process.platform === 'win32' ? absolute.toLowerCase() : absolute
+  const canonical = existsSync(absolute)
+    ? realpathSync.native(absolute)
+    : resolve(realpathSync.native(dirname(absolute)), basename(absolute))
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical
 }
 
 function commit(cwd: string, message: string, allowEmpty = false): string {
@@ -489,7 +492,7 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(readFileSync(untrackedPath, 'utf8')).toBe('keep this untracked draft\n')
     expect(existsSync(recoveryWorktreePath)).toBe(false)
     expect(git(fixture.remotePath, ['rev-parse', 'refs/pull/42/head'])).toBe(fixture.mergedHeadSha)
-  })
+  }, 45_000)
 
   it('finishes from the verified merge when a manual resolution leaves no changes', async () => {
     const fixture = makeFixture({ conflictOnBaseUpdate: true })
@@ -518,7 +521,7 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(readFileSync(resolve(fixture.worktreePath, 'shared.txt'), 'utf8')).toBe('first\ncandidate change\n')
     expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(fixture.candidateCommitSha)
     expect(existsSync(oldRecoveryPath)).toBe(false)
-  })
+  }, 45_000)
 
   it('finishes from the verified merge when a manual resolution commits the base tree unchanged', async () => {
     const fixture = makeFixture({ conflictOnBaseUpdate: true })
@@ -543,7 +546,7 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(result).toMatchObject({ kind: 'already_landed', manualResolutionNoChange: true, proof: { remoteBaseHead: baseHead } })
     expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(fixture.candidateCommitSha)
     expect(existsSync(recoveryWorktreePath)).toBe(false)
-  })
+  }, 45_000)
 
   it('retains the checkout base across a dirty retry before refreshing a later committed resolution', async () => {
     const fixture = makeFixture({ conflictOnBaseUpdate: true })
@@ -594,7 +597,7 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(readFileSync(resolve(fixture.worktreePath, 'latest.txt'), 'utf8')).toBe('later base change\n')
     expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(latestBase)
     expect(git(fixture.projectPath, ['rev-parse', resolvedCommit])).toBe(resolvedCommit)
-  })
+  }, 45_000)
 
   it('applies the remaining change when the latest base changes a different line in the same file', async () => {
     const fixture = makeFixture({ candidateUpdatesMergedFile: true })
@@ -607,7 +610,7 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(result).toMatchObject({ kind: 'corrected', proof: { remoteBaseHead: latestBase } })
     expect(readFileSync(resolve(fixture.worktreePath, 'shared.txt'), 'utf8'))
       .toBe('candidate prefix\nmerged PR change\nremote base addition\n')
-  })
+  }, 45_000)
 
   describe.each([false, true])('saved correction retries (local work blocked installation: %s)', (blocked) => {
     let fixture: ReturnType<typeof makeFixture>

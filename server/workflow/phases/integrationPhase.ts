@@ -68,7 +68,7 @@ export async function handleIntegration(
 
   let earlyMergeCorrectionBranch: string | undefined
   try {
-    const previous = JSON.parse(getLatestPhaseArtifact(ticketId, 'integration_report', 'INTEGRATING_CHANGES')?.content ?? 'null')
+    const previous = JSON.parse(getLatestPhaseArtifact(ticketId, 'integration_report')?.content ?? 'null')
     if (typeof previous?.earlyMergeCorrectionBranch === 'string'
       && /^looptroop\/early-merge\/pr-\d+-[0-9a-f]{12}$/.test(previous.earlyMergeCorrectionBranch)) {
       earlyMergeCorrectionBranch = previous.earlyMergeCorrectionBranch

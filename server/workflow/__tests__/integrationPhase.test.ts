@@ -152,7 +152,7 @@ describe('handleIntegration', () => {
     expect(emitPhaseLogMock).toHaveBeenCalled()
   })
 
-  it('preserves early-merge correction lineage across re-integration squash', async () => {
+  it('preserves early-merge correction lineage across re-integration attempts', async () => {
     getLatestPhaseArtifactMock.mockImplementation((_ticketId: string, artifactType: string) => (
       artifactType === 'integration_report'
         ? { content: JSON.stringify({ earlyMergeCorrectionBranch: 'looptroop/early-merge/pr-42-123456789abc' }) }
@@ -161,6 +161,7 @@ describe('handleIntegration', () => {
 
     await handleIntegration(TEST.ticketId, context, vi.fn())
 
+    expect(getLatestPhaseArtifactMock).toHaveBeenCalledWith(TEST.ticketId, 'integration_report')
     const report = JSON.parse(insertPhaseArtifactMock.mock.calls[0]![1].content)
     expect(report).toMatchObject({
       candidateCommitSha: 'abc1234',

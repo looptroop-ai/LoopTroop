@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { getPermissionGuardRejection } from '../permissionGuard'
 
@@ -26,6 +30,7 @@ describe('recognized Git commands in the workflow guard', () => {
     'git reset --soft HEAD~1', 'git reset HEAD~1', 'git branch -f main HEAD~1',
     'git checkout --force HEAD', 'git checkout -B ticket main', 'git switch -C ticket main',
     'git switch --discard-changes main', 'git rm -rf .', 'git rm .ticket/prd.yaml',
+    'git rm -rf --ignore-unmatch -- . -n',
     'git mv .git/config /tmp/config', 'git rm --cached .',
     'git merge main', 'git pull origin main', 'git cherry-pick HEAD~1', 'git revert HEAD',
     'git am update.patch', 'git checkout-index -f -a', 'git read-tree --reset -u HEAD',
@@ -36,6 +41,8 @@ describe('recognized Git commands in the workflow guard', () => {
     "git clean -fdx -- ':!dist'", 'git clean -fdx -enode_modules',
     'git clean -fdx -- . --help', 'git clean -fdx -e -h',
     'git rm -rf --ignore-unmatch -- . -h',
+    'git -C /repo stash apply', 'git -C /repo stash pop',
+    'git -C /repo/.looptroop/worktrees/T-1 stash apply', 'git -C /repo/.looptroop/worktrees/T-1 stash pop',
     'git -C /repo add -A', 'git -C /repo commit -am change',
     'git fetch --upload-pack=helper origin', 'git archive --remote=origin --exec=helper',
     'git ls-remote ext::printf',
@@ -47,17 +54,19 @@ describe('recognized Git commands in the workflow guard', () => {
     'git submodule init', 'git submodule sync', 'git lfs install',
     'git subtree pull origin main --prefix=vendor', 'git svn dcommit',
     'git push /repo/.git main', 'git push /repo/.looptroop/worktrees/T-2/.git main',
+    'git push --repo=/tmp/scratch /repo/.git HEAD',
     'git init .', 'gh repo clone owner/repo .',
     'gh repo clone -u upstream owner/repo /repo/.looptroop/worktrees/T-2',
     'gh repo clone owner/repo /tmp/scratch -- --separate-git-dir=/repo/.git',
     "su -c 'rm -rf /repo/.git'", 'runuser -u root -- rm -rf /repo/.git',
     'gosu root rm -rf /repo/.git', 'chroot /tmp/root /bin/rm -rf /repo/.git',
     "nsenter --mount=/proc/1/ns/mnt sh -c 'rm -rf /repo/.git'",
-    'ln -sf payload /repo/.git/hooks/pre-commit', 'link payload /repo/.git/config',
+    'ln -sf payload /repo/.git/hooks/pre-commit', 'ln -h -sf /tmp/replacement /repo/.git/config',
+    'link payload /repo/.git/config',
     'mklink /repo/.git/config payload', 'tar -xzf archive.tar -C /repo/.git',
     'unzip archive.zip -d /repo/.git', '7z x archive.7z -o/repo/.git',
     'cpio -idm -D /repo/.git', 'cpio -p /repo/.git', 'cpio -oF /repo/.git/archive.cpio',
-    'tar -cf /repo/.git/archive.tar file.txt',
+    'tar -cf /repo/.git/archive.tar file.txt', 'tar -h -xf archive.tar -C /repo',
   ])('refuses unsafe Git shape: %s', (command) => {
     expect(check(command)).not.toBeNull()
   })
@@ -88,6 +97,8 @@ describe('recognized Git commands in the workflow guard', () => {
     'PAGER=less git --paginate log',
     'git clone -c user.name=LoopTroop https://example.test/repo.git /tmp/scratch',
     'git clone https://example.test/repo.git /tmp/scratch',
+    'tar -cf archive.tar xdata',
+    'rm --help', 'rm --version',
     'gh repo clone owner/repo /tmp/scratch -- --depth=1',
     'unzip archive.zip -d /tmp/unpacked', 'unzip -p archive.zip file.txt',
     '7z x archive.7z -o/tmp/unpacked',
@@ -96,11 +107,12 @@ describe('recognized Git commands in the workflow guard', () => {
   })
 
   it.each([
-    ['git push ./scratch --repo=origin', 'remote repository'],
+    ['git push ./scratch --repo=origin', 'destination cannot be verified'],
     ['git -c url.https://example.test/.pushInsteadOf=./ push ./scratch', 'URL rewriting'],
     ['GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://example.test/.pushInsteadOf GIT_CONFIG_VALUE_0=./ git push ./scratch', 'URL rewriting'],
     ["GIT_PAGER='gh pr merge 12' git --paginate log", 'GitHub'],
     ['GIT_TRACE=/repo/.git/config git status', 'Git metadata'],
+    ['GIT_TRACE=../../../.git/config git status', 'Git metadata'],
     ['git push --receive-pack=helper /tmp/scratch', 'external receive-pack'],
     ['git push --exec=helper /tmp/scratch', 'external receive-pack'],
     ['git fetch --upload-pack=helper origin', 'external upload-pack'],
@@ -133,6 +145,111 @@ describe('recognized Git commands in the workflow guard', () => {
     expect(check('git reset --hard', true)).not.toBeNull()
     expect(check('git -C /tmp/scratch reset --hard', true)).toBeNull()
     expect(check('git status', true)).toBeNull()
+  })
+
+  it('blocks Git and GitHub when executable lookup or loader settings change', () => {
+    expect(check('PATH=/tmp/evil git status')).toContain('executable cannot be verified')
+    expect(check('export PATH=/tmp/evil; gh pr view 12')).toContain('executable cannot be verified')
+    expect(check('LD_PRELOAD=/tmp/payload.so gh pr view 12')).toContain('executable cannot be verified')
+    expect(check('GIT_EXEC_PATH=/tmp/payload git custom-helper')).toContain('executable cannot be verified')
+    expect(check('export GIT_EXEC_PATH=/tmp/payload; git custom-helper')).toContain('executable cannot be verified')
+    expect(check('/tmp/evil/git status')).toContain('executable cannot be verified')
+    expect(check('export PATH=/tmp/evil; npm test')).toBeNull()
+  })
+
+  it('blocks GitHub pager and browser helpers while keeping ordinary reads available', () => {
+    expect(check('GH_PAGER=/tmp/payload.sh GH_FORCE_TTY=1 gh pr diff 12')).toContain('GitHub pager')
+    expect(check('GH_PAGER=cat gh pr diff 12')).toBeNull()
+    expect(check('gh pr view 12 --web')).toContain('GitHub browser')
+    expect(check('GH_BROWSER=/tmp/payload.sh gh pr view 12 --web')).toContain('GitHub browser')
+    expect(check('BROWSER=/tmp/payload.sh gh pr view 12 --web')).toContain('GitHub browser')
+    expect(check('GH_CONFIG_DIR=/tmp/gh-config gh pr view 12 --web')).toContain('GitHub browser')
+    expect(check('GH_CONFIG_DIR=/tmp/gh-config gh pr view 12')).toBeNull()
+    expect(check('gh --config pager=/tmp/payload.sh pr view 12')).toContain('GitHub pager')
+    expect(check('gh pr view 12 --config pager=/tmp/payload.sh')).toContain('GitHub pager')
+    expect(check('gh pr view 12 --config pager=cat')).toBeNull()
+    expect(check('gh pr diff 12 --config pager=cat')).toBeNull()
+    expect(check('gh --config pager=cat pr diff 12')).toBeNull()
+    expect(check('gh pr view 12 --config browser=/tmp/payload.sh --web')).toContain('GitHub browser')
+    expect(check('GH_BROWSER=/tmp/payload.sh gh pr view 12 --web=true')).toContain('GitHub browser')
+    expect(check('BROWSER=/tmp/payload.sh gh pr view 12 -w=true')).toContain('GitHub browser')
+    expect(check('gh pr view 12')).toBeNull()
+  })
+
+  it('checks inherited GitHub helpers and commands that can create a terminal', () => {
+    const names = ['GH_PAGER', 'PAGER', 'GH_FORCE_TTY', 'GH_CONFIG_DIR'] as const
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+    try {
+      for (const name of names) delete process.env[name]
+      expect(check('script -- gh pr diff 12')).toContain('pager configuration')
+      expect(check("script -c 'gh pr diff 12' /dev/null")).toContain('pager configuration')
+      expect(check("script -c 'GH_PAGER=cat gh pr diff 12' /dev/null")).toBeNull()
+      expect(check('unbuffer -p gh pr diff 12')).toContain('pager configuration')
+      expect(check('watch gh pr diff 12')).toContain('pager configuration')
+
+      process.env.GH_CONFIG_DIR = '/tmp/gh-config'
+      expect(check('script -- gh pr diff 12')).toContain('pager configuration')
+      process.env.GH_PAGER = '/tmp/payload.sh'
+      expect(check('gh pr view 12')).toContain('GitHub pager')
+      process.env.GH_PAGER = 'cat'
+      expect(check('gh pr view 12')).toBeNull()
+      expect(check("export GH_PAGER='/tmp/payload.sh'; gh pr view 12")).toContain('GitHub pager')
+      expect(check('export GH_PAGER=cat; gh pr view 12')).toBeNull()
+      expect(check("$env:GH_PAGER='/tmp/payload.sh'; gh pr view 12")).toContain('GitHub pager')
+      expect(check('$env:GH_PAGER=cat; gh pr view 12')).toBeNull()
+      expect(check('export GH_FORCE_TTY=1; gh pr view 12')).toContain('forced GitHub terminal output')
+      expect(check('$env:GH_FORCE_TTY=1; gh pr view 12')).toContain('forced GitHub terminal output')
+      expect(check('GH_PAGER=cat GH_FORCE_TTY=1 gh pr view 12')).toContain('forced GitHub terminal output')
+      delete process.env.GH_PAGER
+      process.env.PAGER = '/tmp/payload.sh'
+      expect(check('gh pr view 12')).toContain('GitHub pager')
+      process.env.PAGER = 'cat'
+      process.env.GH_FORCE_TTY = '1'
+      expect(check('gh pr view 12')).toContain('forced GitHub terminal output')
+
+      process.env.GH_PAGER = 'cat'
+      expect(check('env -u GH_PAGER PAGER=/tmp/payload.sh script -- gh pr diff 12')).toContain('GitHub pager')
+      expect(check('env -u GH_PAGER -u GH_FORCE_TTY PAGER=cat script -- gh pr diff 12')).toBeNull()
+      expect(check('env -i GH_PAGER=cat script -- gh pr diff 12')).toBeNull()
+      expect(check('env -i PAGER=/tmp/payload.sh script -- gh pr diff 12')).toContain('GitHub pager')
+      expect(check('env -i script -- gh pr diff 12')).toContain('pager configuration')
+      expect(check("env -S '-u GH_PAGER PAGER=/tmp/payload.sh script -- gh pr diff 12'")).toContain('GitHub pager')
+      expect(check('env -u GH_FORCE_TTY GH_PAGER=cat gh pr view 12')).toBeNull()
+      process.env.GH_PAGER = '/tmp/payload.sh'
+      const lowerCaseUnset = check('env -u gh_pager -u GH_FORCE_TTY PAGER=cat script -- gh pr diff 12')
+      if (process.platform === 'win32') expect(lowerCaseUnset).toBeNull()
+      else expect(lowerCaseUnset).toContain('GitHub pager')
+    } finally {
+      for (const name of names) {
+        const value = previous[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
+
+  it('protects the Git index path and permits scratch indexes', () => {
+    expect(check('GIT_INDEX_FILE=/repo/.git/index git add -A')).toContain('Git metadata')
+    expect(check('GIT_INDEX_FILE=/tmp/scratch/index git -C /tmp/scratch add -A')).toBeNull()
+  })
+
+  it('checks effective fetch refspecs only for the selected remote and when they apply', ({ onTestFinished }) => {
+    const root = mkdtempSync(join(tmpdir(), 'looptroop-guard-fetch-'))
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }))
+    execFileSync('git', ['init', '-q', root])
+    execFileSync('git', ['-C', root, 'config', 'remote.origin.url', 'https://example.test/origin.git'])
+    execFileSync('git', ['-C', root, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/looptroop/pull-heads/*'])
+    execFileSync('git', ['-C', root, 'config', 'remote.upstream.url', 'https://example.test/upstream.git'])
+    execFileSync('git', ['-C', root, 'config', 'remote.upstream.fetch', '+refs/heads/*:refs/remotes/upstream/*'])
+    const localCheck = (command: string) => getPermissionGuardRejection({
+      permission: 'bash', patterns: [command], directory: root,
+      context: { projectRoot: root, worktreePath: root, ticketDir: join(root, '.ticket') },
+    })
+
+    expect(localCheck('git fetch upstream')).toBeNull()
+    expect(localCheck('git fetch origin')).toContain('LoopTroop refs')
+    expect(localCheck('git fetch --refmap=refs/heads/*:refs/remotes/origin/* origin')).toContain('LoopTroop refs')
+    expect(localCheck('git fetch --refmap=refs/heads/*:refs/remotes/origin/* origin main')).toBeNull()
   })
 
   it('checks inherited Git trace destinations against protected paths', () => {

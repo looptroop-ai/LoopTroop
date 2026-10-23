@@ -39,8 +39,6 @@ function readVerifiedMergeReport(ticket: PublicTicket) {
   const prReport = readPullRequestReport(ticket.id)
   if (!artifact || !prReport) return null
   try {
-    const ticketBranch = ticket.branchName?.trim() || ticket.externalId
-    const activeHeadBranch = resolvePullRequestHeadBranch(ticket.id, ticketBranch, prReport)
     const report: unknown = JSON.parse(artifact.content)
     const baseTreeProof = isRecord(report)
       && (report.proofKind === 'already_landed' || report.proofKind === 'manual_resolution_no_change')
@@ -48,7 +46,8 @@ function readVerifiedMergeReport(ticket: PublicTicket) {
       || report.status !== 'passed' || report.disposition !== 'merged' || report.prState !== 'merged'
       || typeof report.baseBranch !== 'string' || report.baseBranch.length === 0
       || report.baseBranch !== ticket.runtime.baseBranch
-      || report.headBranch !== activeHeadBranch
+      || typeof report.headBranch !== 'string' || report.headBranch.length === 0
+      || report.headBranch !== prReport.headBranch
       || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
       || typeof report.prHeadSha !== 'string' || report.prHeadSha.length === 0
@@ -85,8 +84,6 @@ function readClosedUnmergedReport(ticket: PublicTicket) {
   const prReport = readPullRequestReport(ticket.id)
   if (!artifact || !prReport) return null
   try {
-    const ticketBranch = ticket.branchName?.trim() || ticket.externalId
-    const activeHeadBranch = resolvePullRequestHeadBranch(ticket.id, ticketBranch, prReport)
     const report: unknown = JSON.parse(artifact.content)
     const prState = isRecord(report) && (report.prState === null
       || report.prState === 'draft'
@@ -110,7 +107,8 @@ function readClosedUnmergedReport(ticket: PublicTicket) {
       || prState === undefined
       || prHeadSha === undefined
       || typeof report.baseBranch !== 'string' || report.baseBranch !== ticket.runtime.baseBranch
-      || report.headBranch !== activeHeadBranch
+      || typeof report.headBranch !== 'string' || report.headBranch.length === 0
+      || report.headBranch !== prReport.headBranch
       || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
       || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
@@ -204,11 +202,11 @@ export async function completeTicketMerge(
   const ticketId = ticket.id
   const phase = 'WAITING_PR_REVIEW'
   const ticketBranch = ticket.branchName?.trim() || ticket.externalId
-  const activeHeadBranch = resolvePullRequestHeadBranch(ticketId, ticketBranch, prReport)
   if (resumeVerifiedMerge(ticket)) return 'merged'
   if (hasClosedUnmergedReport(ticket)) {
     throw new Error('A close-without-merge decision is already recorded for this pull request.')
   }
+  const activeHeadBranch = resolvePullRequestHeadBranch(ticketId, ticketBranch, prReport)
   if (observedPullRequest?.state === 'merged' && !ticket.runtime.candidateCommitSha) {
     throw new Error(`Cannot verify merged pull request #${observedPullRequest.number} because no candidate commit is recorded.`)
   }

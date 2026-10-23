@@ -19,14 +19,47 @@ const shell = (command: string, options: { directory?: string; patterns?: string
 
 describe('getPermissionGuardRejection', () => {
   it.each([
+    String.raw`echo \' ; g\it push origin HEAD ; echo \'`,
+    String.raw`echo \" ; g\h pr merge 12 ; echo \"`,
+    String.raw`# it's
+    g\it push origin HEAD
+    # '`,
+    String.raw`# it's
+    g\h pr merge 12
+    # '`,
+    "g\\\nit push origin HEAD", "git pu\\\r\nsh origin HEAD",
+    "sh -c 'g\\it push origin HEAD'",
+    "env -S 'g\\it push origin HEAD'",
+    "Start-Process -FilePath git -ArgumentList 'p\\ush origin HEAD'",
+    "g\"\\\n\"it push origin HEAD",
+    String.raw`rm .git\config`,
+  ])('checks escapes with the shell lexer: %s', (command) => {
+    expect(shell(command)).not.toBeNull()
+  })
+
+  it.each([
+    String.raw`echo 'g\it push origin HEAD'`,
+    String.raw`echo "g\it push origin HEAD"`,
+    String.raw`echo \' ; git status ; echo \'`,
+    String.raw`# it's g\it push # '
+    git status`,
+    "echo 'g\\\nit push origin HEAD'",
+    "g'\\\n'it push origin HEAD",
+  ])('keeps quoted and commented backslashes literal: %s', (command) => {
+    expect(shell(command)).toBeNull()
+  })
+
+  it.each([
     'tar --remove-files -cf /tmp/archive.tar -C /repo src/file.ts',
     'tar --remove-files -cf /tmp/archive.tar .git/config',
     'tar --remove-fil -cf /tmp/archive.tar .git/config',
     'tar -xf archive.tar -C /repo src/file.ts -C /tmp/scratch other.txt',
     'tar -xf archive.tar --directory=/repo src/file.ts --directory=/tmp/scratch other.txt',
+    'tar -xf archive.tar --directory=/repo/Output src/file.ts',
+    'tar -xf archive.tar --directory=/repo/Output src/file.ts -C /tmp/scratch other.txt',
     'tar -xf archive.tar -C/repo src/file.ts -C/tmp/scratch other.txt',
-    'tar -xf archive.tar -C /tmp first.txt -C ../repo src/file.ts',
-    'tar -xf archive.tar -C /tmp first.txt -C ../repo/.git config',
+    'tar -xf archive.tar -C /repo-scratch first.txt -C ../repo src/file.ts',
+    'tar -xf archive.tar -C /repo-scratch first.txt -C ../repo/.git config',
   ])('checks every tar extraction directory in order: %s', (command) => {
     expect(shell(command)).not.toBeNull()
   })

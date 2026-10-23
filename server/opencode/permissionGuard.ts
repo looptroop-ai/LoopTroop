@@ -80,6 +80,7 @@ export function getPermissionGuardRejection(input: {
 
 type PermissionGuardInput = Parameters<typeof getPermissionGuardRejection>[0] & {
   protectedDirectory?: string
+  posixEscapes?: boolean
   environment?: Record<string, string>
   skipGitPager?: boolean
   ghTerminalPossible?: boolean
@@ -107,15 +108,11 @@ function reject(effect: string): string {
 
 function classifyShell(command: string, input: PermissionGuardInput, depth = 0): string | null {
   if (depth > 8) return 'the nested shell command cannot be verified'
-  const escapedVariant = command.replace(
-    /'[^']*'|"(?:\\.|[^"\\])*"|(?:[A-Za-z]:\\|\\\\)[^\s;&|<>]*|\\([A-Za-z0-9])/g,
-    (match, literal: string | undefined) => literal ?? match,
-  ).replace(/\\\r?\n/g, '')
-  if (escapedVariant !== command) {
-    const effect = classifyShell(escapedVariant, input, depth)
+  if (!input.posixEscapes && /\\(?:[A-Za-z0-9]|\r?\n)/.test(command)) {
+    const effect = classifyShell(command, { ...input, posixEscapes: true }, depth)
     if (effect) return effect
   }
-  const segments = scanShell(command)
+  const segments = scanShell(command, input.posixEscapes)
   if (!segments.length) return 'the requested command cannot be verified'
   let directory = input.directory ?? input.context?.worktreePath
   let directoryUnverified = Boolean(input.unverifiedDirectory)
@@ -131,7 +128,7 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
     }
 
     if (segment.substitution) return 'inline command substitution cannot be verified; use separate literal commands'
-    const unwrapped = unwrapCommand(segment.words)
+    const unwrapped = unwrapCommand(segment.words, input.posixEscapes)
     if (unwrapped.error) return unwrapped.error
     const { commandName, args } = unwrapped
     const environment = unwrapped.ghIgnoreInheritedEnvironment ? {} : { ...exportedEnvironment }
@@ -379,7 +376,7 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
   return null
 }
 
-function scanShell(source: string): ShellCommand[] {
+function scanShell(source: string, posixEscapes = false): ShellCommand[] {
   const words: string[] = []
   const redirects: string[] = []
   const segments: ShellCommand[] = []
@@ -444,6 +441,10 @@ function scanShell(source: string): ShellCommand[] {
       escaped = false
       continue
     }
+    if (posixEscapes && quote !== "'" && character === '\\') {
+      if (source[i + 1] === '\n') { i++; continue }
+      if (source[i + 1] === '\r' && source[i + 2] === '\n') { i += 2; continue }
+    }
     if (quote) {
       if (character === quote) {
         quote = ''
@@ -459,7 +460,11 @@ function scanShell(source: string): ShellCommand[] {
       continue
     }
     if (character === '\\') {
-      if (i + 1 < source.length && /[\s;&|<>()[\]{}'"\\]/.test(source[i + 1]!)) escaped = true
+      const windowsPath = /^[A-Za-z]:/.test(word) || word.startsWith('\\\\')
+        || (!word && source[i + 1] === '\\')
+      if (posixEscapes && windowsPath) word += character
+      else if (i + 1 < source.length && (/[\s;&|<>()[\]{}'"\\]/.test(source[i + 1]!)
+        || (posixEscapes && /[A-Za-z0-9]/.test(source[i + 1]!)))) escaped = true
       else word += character
       continue
     }
@@ -527,7 +532,7 @@ function scanShell(source: string): ShellCommand[] {
   return segments
 }
 
-function unwrapCommand(words: string[]): {
+function unwrapCommand(words: string[], posixEscapes = false): {
   commandName?: string; args: string[]; environment: Record<string, string>
   directories: string[]; mutationPaths: string[]; dynamicArguments: boolean; ghTerminalPossible: boolean
   ghIgnoreInheritedEnvironment: boolean; ghUnsetEnvironment: string[]; error?: string
@@ -623,7 +628,7 @@ function unwrapCommand(words: string[]): {
       if (name === 'env' && ['-i', '--ignore-environment'].includes(key)) ghIgnoreInheritedEnvironment = true
       if (name === 'env' && (key === '-S' || key === '--split-string')) {
         const value = equal >= 0 ? option.slice(equal + 1) : words[index + 1]
-        const parsed = value ? scanShell(value) : []
+        const parsed = value ? scanShell(value, posixEscapes) : []
         if (parsed.length !== 1 || parsed[0]!.dynamic || parsed[0]!.redirects.length) return result('the environment command string cannot be verified')
         words = [...words.slice(0, index), ...parsed[0]!.words, ...words.slice(index + (equal >= 0 ? 1 : 2))]
         continue
@@ -2490,7 +2495,7 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
       continue
     }
     if (arg.startsWith('--directory=')) destinations.push(arg.slice('--directory='.length))
-    if (arg.startsWith('-') && arg.length > 1) {
+    if (arg.startsWith('-') && !arg.startsWith('--') && arg.length > 1) {
       const flags = arg.slice(1)
       if (flags.includes('x')) extracting = true
       if (flags.includes('c') || flags.includes('r') || flags.includes('u') || flags.includes('d') || flags.includes('A')) writingArchive = true

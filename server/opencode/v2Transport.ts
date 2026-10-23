@@ -369,20 +369,59 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     signal?: AbortSignal,
   ): Promise<void> {
     const queue = [rootSessionId];
+    const visited = new Set(queue);
+    const descendants = new Set<string>();
+    const directories = new Map<string, string>();
+    const rootDirectory = state.directories.get(rootSessionId);
+    if (rootDirectory) directories.set(rootSessionId, rootDirectory);
     for (let index = 0; index < queue.length; index++) {
       const parentId = queue[index]!;
-      const children = arrayValue(dataOf(await this.request(
-        `/api/session/${encodeURIComponent(parentId)}/children`,
-        { signal },
-      )));
-      for (const value of children) {
-        const child = mapV2Session(value);
-        if (child.id === rootSessionId || state.descendants.has(child.id)) continue;
-        state.descendants.add(child.id);
-        if (child.directory) state.directories.set(child.id, child.directory);
+      for (const child of await this.listChildSessions(parentId, signal)) {
+        if (visited.has(child.id)) continue;
+        visited.add(child.id);
+        descendants.add(child.id);
+        const directory = child.directory ?? state.directories.get(child.id);
+        if (directory) directories.set(child.id, directory);
         queue.push(child.id);
       }
     }
+    state.descendants = descendants;
+    state.directories = directories;
+  }
+
+  private async listChildSessions(
+    parentId: string,
+    signal?: AbortSignal,
+  ): Promise<Session[]> {
+    const sessions: Session[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+
+    while (true) {
+      const query = new URLSearchParams({
+        parentID: parentId,
+        limit: String(LIST_PAGE_SIZE),
+      });
+      if (cursor) query.set("cursor", cursor);
+      const page = asRecord(
+        await this.request("/api/session", { query, signal }),
+      );
+      if (!page || !Array.isArray(page.data))
+        throw new Error("OpenCode v2 returned an invalid child session list");
+      sessions.push(...page.data.map(mapV2Session));
+      const pageCursor = asRecord(page.cursor);
+      if (!pageCursor)
+        throw new Error("OpenCode v2 returned an invalid child session cursor");
+      const next = pageCursor.next;
+      if (next !== undefined && next !== null && typeof next !== "string")
+        throw new Error("OpenCode v2 returned an invalid child session cursor");
+      if (typeof next !== "string" || !next) break;
+      if (seenCursors.has(next))
+        throw new Error("OpenCode v2 returned a repeated child session cursor");
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return sessions;
   }
 
   async getSessionMessages(
@@ -1344,9 +1383,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               const permissionSessionIds = fetchPendingPermissions
                 ? [sessionId, ...relatedSessions.descendants]
                 : [];
-              const pendingPermissionsResponses = await Promise.all(permissionSessionIds.map((permissionSessionId) =>
-                this.request(`/api/session/${encodeURIComponent(permissionSessionId)}/permission`, { signal }),
-              ));
+              const pendingPermissionsResponses = await Promise.all(permissionSessionIds.map(async (permissionSessionId) => {
+                try {
+                  return await this.request(`/api/session/${encodeURIComponent(permissionSessionId)}/permission`, { signal });
+                } catch (error) {
+                  if (permissionSessionId !== sessionId && isSessionNotFound(error)) return null;
+                  throw error;
+                }
+              }));
               const replayEvents: OpenCodeTransportEventEnvelope[] = [];
               // Failed replay must not consume text/tool state before a retry.
               const replayState = structuredClone(state);
@@ -1362,7 +1406,9 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               const pendingPermissions: OpenCodeTransportEventEnvelope[] = [];
               if (!replayGap && fetchPendingPermissions) {
                 for (const [index, permissionSessionId] of permissionSessionIds.entries()) {
-                  const rawRequests = dataOf(pendingPermissionsResponses[index]);
+                  const response = pendingPermissionsResponses[index];
+                  if (response === null) continue;
+                  const rawRequests = dataOf(response);
                   if (!Array.isArray(rawRequests))
                     throw new Error(
                       "OpenCode v2 returned an invalid pending permission list",

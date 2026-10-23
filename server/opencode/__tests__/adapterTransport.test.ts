@@ -358,6 +358,9 @@ describe('OpenCode adapter transport orchestration', () => {
     }), { headers: { 'content-type': 'text/event-stream' } })
     const fetcher: typeof fetch = async (input, init = {}) => {
       const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
+      const method = init.method ?? (input instanceof Request ? input.method : 'GET')
+      if (method === 'GET' && url.pathname === '/api/session' && url.searchParams.get('parentID') === 'session-1')
+        return jsonResponse({ data: [], cursor: {} })
       if (url.pathname === '/api/session/session-1') {
         return jsonResponse({ data: { id: 'session-1', location: { directory: '/workspace' } } })
       }

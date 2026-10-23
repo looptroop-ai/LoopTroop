@@ -11,6 +11,7 @@ import {
   reconcileEarlyMergedPullRequest,
   refreshPullRequestReport,
   refreshPullRequestState,
+  resolvePullRequestHeadBranch,
   type PullRequestReport,
 } from './phases/pullRequestPhase'
 import type { PullRequestInfo, PullRequestState } from '../git/github'
@@ -38,17 +39,21 @@ function readVerifiedMergeReport(ticket: PublicTicket) {
   const prReport = readPullRequestReport(ticket.id)
   if (!artifact || !prReport) return null
   try {
+    const ticketBranch = ticket.branchName?.trim() || ticket.externalId
+    const activeHeadBranch = resolvePullRequestHeadBranch(ticket.id, ticketBranch, prReport)
     const report: unknown = JSON.parse(artifact.content)
+    const baseTreeProof = isRecord(report)
+      && (report.proofKind === 'already_landed' || report.proofKind === 'manual_resolution_no_change')
     if (!isRecord(report)
       || report.status !== 'passed' || report.disposition !== 'merged' || report.prState !== 'merged'
       || typeof report.baseBranch !== 'string' || report.baseBranch.length === 0
       || report.baseBranch !== ticket.runtime.baseBranch
-      || report.headBranch !== (ticket.branchName?.trim() || ticket.externalId)
+      || report.headBranch !== activeHeadBranch
       || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
       || typeof report.prHeadSha !== 'string' || report.prHeadSha.length === 0
       || (report.prHeadSha !== report.candidateCommitSha
-        && (report.proofKind === 'already_landed'
+        && (baseTreeProof
           ? typeof report.candidateTreeSha !== 'string' || report.candidateTreeSha.length === 0
             || typeof report.prHeadTreeSha !== 'string' || report.prHeadTreeSha.length === 0
             || report.candidateTreeSha === report.prHeadTreeSha
@@ -57,7 +62,7 @@ function readVerifiedMergeReport(ticket: PublicTicket) {
           : (report.proofKind !== undefined && report.proofKind !== 'tree_equivalent')
             || typeof report.candidateTreeSha !== 'string' || report.candidateTreeSha.length === 0
             || report.candidateTreeSha !== report.prHeadTreeSha))
-      || (report.proofKind === 'already_landed' && report.prHeadSha === report.candidateCommitSha)
+      || (baseTreeProof && report.prHeadSha === report.candidateCommitSha)
       || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
       || report.prNumber !== prReport.prNumber
       || (report.prUrl !== null && typeof report.prUrl !== 'string')
@@ -80,6 +85,8 @@ function readClosedUnmergedReport(ticket: PublicTicket) {
   const prReport = readPullRequestReport(ticket.id)
   if (!artifact || !prReport) return null
   try {
+    const ticketBranch = ticket.branchName?.trim() || ticket.externalId
+    const activeHeadBranch = resolvePullRequestHeadBranch(ticket.id, ticketBranch, prReport)
     const report: unknown = JSON.parse(artifact.content)
     const prState = isRecord(report) && (report.prState === null
       || report.prState === 'draft'
@@ -103,7 +110,7 @@ function readClosedUnmergedReport(ticket: PublicTicket) {
       || prState === undefined
       || prHeadSha === undefined
       || typeof report.baseBranch !== 'string' || report.baseBranch !== ticket.runtime.baseBranch
-      || report.headBranch !== (ticket.branchName?.trim() || ticket.externalId)
+      || report.headBranch !== activeHeadBranch
       || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
       || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
@@ -196,6 +203,8 @@ export async function completeTicketMerge(
 ): Promise<'merged' | 'already_landed' | 'corrected' | 'skipped'> {
   const ticketId = ticket.id
   const phase = 'WAITING_PR_REVIEW'
+  const ticketBranch = ticket.branchName?.trim() || ticket.externalId
+  const activeHeadBranch = resolvePullRequestHeadBranch(ticketId, ticketBranch, prReport)
   if (resumeVerifiedMerge(ticket)) return 'merged'
   if (hasClosedUnmergedReport(ticket)) {
     throw new Error('A close-without-merge decision is already recorded for this pull request.')
@@ -215,7 +224,8 @@ export async function completeTicketMerge(
       worktreePath: ticketPaths.worktreePath,
       externalId: ticket.externalId,
       baseBranch: ticket.runtime.baseBranch,
-      headBranch: ticket.branchName?.trim() || ticket.externalId,
+      headBranch: activeHeadBranch,
+      ticketBranch,
       candidateCommitSha,
       pr: observedPullRequest,
     })
@@ -244,7 +254,7 @@ export async function completeTicketMerge(
       externalId: ticket.externalId,
       projectPath: projectRoot,
       baseBranch: ticket.runtime.baseBranch,
-      headBranch: ticket.branchName?.trim() || ticket.externalId,
+      headBranch: activeHeadBranch,
       candidateCommitSha: ticket.runtime.candidateCommitSha,
       prReport,
       skipRemoteMerge,
@@ -295,7 +305,7 @@ export async function syncWaitingPullRequestTicket(ticketId: string): Promise<vo
       ticketId,
       projectPath: input.projectRoot,
       baseBranch: input.ticket.runtime.baseBranch,
-      headBranch: input.ticket.branchName?.trim() || input.ticket.externalId,
+      headBranch: input.report.headBranch,
       candidateCommitSha: input.ticket.runtime.candidateCommitSha,
       prNumber: input.report.prNumber,
       error,

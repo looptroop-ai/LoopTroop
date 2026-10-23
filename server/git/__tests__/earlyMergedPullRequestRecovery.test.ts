@@ -12,6 +12,11 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim()
 }
 
+function normalizedPath(path: string): string {
+  const absolute = resolve(path)
+  return process.platform === 'win32' ? absolute.toLowerCase() : absolute
+}
+
 function commit(cwd: string, message: string, allowEmpty = false): string {
   git(cwd, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', ...(allowEmpty ? ['--allow-empty'] : []), '-m', message])
   return git(cwd, ['rev-parse', 'HEAD'])
@@ -148,6 +153,39 @@ describe('reconcileMergedPullRequestCandidate', () => {
     const fixture = makeFixture({ squashMerge: true })
 
     await expect(reconcileFixture(fixture)).resolves.toMatchObject({ kind: 'corrected' })
+  })
+
+  it('validates a correction PR head while keeping the local checkout on the ticket branch', async () => {
+    const fixture = makeFixture()
+    const correctionBranch = `looptroop/early-merge/pr-42-${fixture.candidateCommitSha.slice(0, 12)}`
+
+    const result = await reconcileMergedPullRequestCandidate({
+      ...fixture,
+      externalId: 'TEST-42',
+      baseBranch: 'main',
+      headBranch: correctionBranch,
+      ticketBranch: 'ticket',
+      pr: { ...pullRequest(fixture), headRefName: correctionBranch },
+    })
+
+    expect(result.kind).toBe('corrected')
+    expect(git(fixture.worktreePath, ['branch', '--show-current'])).toBe('ticket')
+  })
+
+  it('records permanent merged PR proof mismatches as manual recovery', async () => {
+    const fixture = makeFixture()
+    const error = await reconcileMergedPullRequestCandidate({
+      ...fixture,
+      externalId: 'TEST-42',
+      baseBranch: 'main',
+      headBranch: 'ticket',
+      pr: { ...pullRequest(fixture), headRefName: 'different-branch' },
+    }).catch((caught) => caught)
+
+    expect(error).toBeInstanceOf(EarlyMergeRecoveryManualError)
+    if (!(error instanceof EarlyMergeRecoveryManualError)) throw new Error('Expected a permanent proof mismatch')
+    expect(error.recovery).toMatchObject({ reason: 'missing_proof' })
+    expect(error.message).toContain('does not match head branch ticket')
   })
 
   it('completes when different commits have the same tree and retains both commit identities', async () => {
@@ -338,6 +376,33 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(remoteBaseHead)
   })
 
+  it('restarts recovery when a conflict checkout disappears before any resolution was saved', async () => {
+    const fixture = makeFixture({ conflictOnBaseUpdate: true })
+    const error = await reconcileFixture(fixture).catch((caught) => caught)
+    expect(error).toBeInstanceOf(EarlyMergeRecoveryManualError)
+    if (!(error instanceof EarlyMergeRecoveryManualError) || !error.proof) throw new Error('Expected a proven manual conflict')
+    const oldBase = error.proof.remoteBaseHead
+    const oldRecoveryPath = error.recovery.recoveryWorktreePath!
+    git(fixture.projectPath, ['worktree', 'remove', '--force', oldRecoveryPath])
+    const latestBase = advanceBase(fixture, 'shared.txt', 'first\nmerged PR change\n')
+
+    const retry = await reconcileMergedPullRequestCandidate({
+      ...fixture,
+      externalId: 'TEST-42',
+      baseBranch: 'main',
+      headBranch: 'ticket',
+      previousRecoveryBaseHead: oldBase,
+      pr: pullRequest(fixture),
+    })
+
+    expect(retry).toMatchObject({ kind: 'corrected', proof: { remoteBaseHead: latestBase } })
+    if (retry.kind !== 'corrected') throw new Error('Expected recovery to restart from the original candidate')
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(retry.correctedCandidateSha)
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(latestBase)
+    expect(readFileSync(resolve(fixture.worktreePath, 'shared.txt'), 'utf8')).toBe('first\ncandidate change\n')
+    expect(existsSync(oldRecoveryPath)).toBe(false)
+  })
+
   it('recognizes a recovery checkout through a symlinked project path', async () => {
     const fixture = makeFixture()
     const projectAlias = resolve(fixture.projectPath, '..', 'project-alias')
@@ -384,8 +449,11 @@ describe('reconcileMergedPullRequestCandidate', () => {
     await expect(reconcileFixture(fixture)).resolves.toMatchObject({ kind: 'corrected' })
     expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(remoteBaseHead)
     const worktrees = git(fixture.projectPath, ['worktree', 'list', '--porcelain'])
-    expect(worktrees).not.toContain(recoveryWorktreePath)
-    expect(worktrees).toContain(unrelatedStaleWorktree)
+    const listedWorktrees = worktrees.split(/\r?\n/)
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => normalizedPath(line.slice('worktree '.length)))
+    expect(listedWorktrees).not.toContain(normalizedPath(recoveryWorktreePath))
+    expect(listedWorktrees).toContain(normalizedPath(unrelatedStaleWorktree))
   })
 
   it('adopts a committed manual resolution on retry and preserves the original merged PR ref', async () => {
@@ -423,15 +491,14 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(git(fixture.remotePath, ['rev-parse', 'refs/pull/42/head'])).toBe(fixture.mergedHeadSha)
   })
 
-  it('refreshes a committed manual resolution onto a newer base', async () => {
+  it('finishes from the verified merge when a manual resolution leaves no changes', async () => {
     const fixture = makeFixture({ conflictOnBaseUpdate: true })
     const error = await reconcileFixture(fixture).catch((caught) => caught)
     expect(error).toBeInstanceOf(EarlyMergeRecoveryManualError)
     if (!(error instanceof EarlyMergeRecoveryManualError) || !error.proof) throw new Error('Expected a proven manual conflict')
     const oldBase = error.proof.remoteBaseHead
     const oldRecoveryPath = error.recovery.recoveryWorktreePath!
-    const manualResolution = 'first\nremote base update\n'
-    writeFileSync(resolve(oldRecoveryPath, 'shared.txt'), manualResolution)
+    writeFileSync(resolve(oldRecoveryPath, 'shared.txt'), 'first\nremote base update\n')
     git(oldRecoveryPath, ['add', '--', 'shared.txt'])
     commit(oldRecoveryPath, 'keep the current base version', true)
     const latestBase = advanceBase(fixture, 'latest.txt', 'later base change\n')
@@ -445,12 +512,88 @@ describe('reconcileMergedPullRequestCandidate', () => {
       pr: pullRequest(fixture),
     })
 
-    expect(result).toMatchObject({ kind: 'corrected', proof: { remoteBaseHead: latestBase } })
+    expect(result).toMatchObject({
+      kind: 'already_landed', manualResolutionNoChange: true, proof: { remoteBaseHead: latestBase },
+    })
+    expect(readFileSync(resolve(fixture.worktreePath, 'shared.txt'), 'utf8')).toBe('first\ncandidate change\n')
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(fixture.candidateCommitSha)
+    expect(existsSync(oldRecoveryPath)).toBe(false)
+  })
+
+  it('finishes from the verified merge when a manual resolution commits the base tree unchanged', async () => {
+    const fixture = makeFixture({ conflictOnBaseUpdate: true })
+    const error = await reconcileFixture(fixture).catch((caught) => caught)
+    expect(error).toBeInstanceOf(EarlyMergeRecoveryManualError)
+    if (!(error instanceof EarlyMergeRecoveryManualError) || !error.proof) throw new Error('Expected a proven manual conflict')
+    const recoveryWorktreePath = error.recovery.recoveryWorktreePath!
+    const baseHead = error.proof.remoteBaseHead
+    writeFileSync(resolve(recoveryWorktreePath, 'shared.txt'), 'first\nremote base update\n')
+    git(recoveryWorktreePath, ['add', '--', 'shared.txt'])
+    commit(recoveryWorktreePath, 'keep the base version', true)
+
+    const result = await reconcileMergedPullRequestCandidate({
+      ...fixture,
+      externalId: 'TEST-42',
+      baseBranch: 'main',
+      headBranch: 'ticket',
+      previousRecoveryBaseHead: baseHead,
+      pr: pullRequest(fixture),
+    })
+
+    expect(result).toMatchObject({ kind: 'already_landed', manualResolutionNoChange: true, proof: { remoteBaseHead: baseHead } })
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(fixture.candidateCommitSha)
+    expect(existsSync(recoveryWorktreePath)).toBe(false)
+  })
+
+  it('retains the checkout base across a dirty retry before refreshing a later committed resolution', async () => {
+    const fixture = makeFixture({ conflictOnBaseUpdate: true })
+    const firstError = await reconcileFixture(fixture).catch((caught) => caught)
+    expect(firstError).toBeInstanceOf(EarlyMergeRecoveryManualError)
+    if (!(firstError instanceof EarlyMergeRecoveryManualError) || !firstError.proof) {
+      throw new Error('Expected a proven manual conflict')
+    }
+    const recoveryWorktreePath = firstError.recovery.recoveryWorktreePath!
+    const recoveryBaseHead = firstError.proof.remoteBaseHead
+    expect(firstError.recovery.recoveryWorktreeBaseHead).toBe(recoveryBaseHead)
+
+    const latestBase = advanceBase(fixture, 'latest.txt', 'later base change\n')
+    const dirtyRetry = await reconcileMergedPullRequestCandidate({
+      ...fixture,
+      externalId: 'TEST-42',
+      baseBranch: 'main',
+      headBranch: 'ticket',
+      previousRecoveryBaseHead: recoveryBaseHead,
+      pr: pullRequest(fixture),
+    }).catch((caught) => caught)
+
+    expect(dirtyRetry).toBeInstanceOf(EarlyMergeRecoveryManualError)
+    if (!(dirtyRetry instanceof EarlyMergeRecoveryManualError) || !dirtyRetry.proof) {
+      throw new Error('Expected the dirty recovery checkout to remain manual')
+    }
+    expect(dirtyRetry.proof.remoteBaseHead).toBe(latestBase)
+    expect(dirtyRetry.recovery).toMatchObject({
+      recoveryWorktreePath,
+      recoveryWorktreeBaseHead: recoveryBaseHead,
+    })
+
+    const manualResolution = 'manual resolution preserved\n'
+    writeFileSync(resolve(recoveryWorktreePath, 'shared.txt'), manualResolution)
+    git(recoveryWorktreePath, ['add', '--', 'shared.txt'])
+    const resolvedCommit = commit(recoveryWorktreePath, 'resolve early merge conflict')
+    const result = await reconcileMergedPullRequestCandidate({
+      ...fixture,
+      externalId: 'TEST-42',
+      baseBranch: 'main',
+      headBranch: 'ticket',
+      previousRecoveryBaseHead: dirtyRetry.recovery.recoveryWorktreeBaseHead!,
+      pr: pullRequest(fixture),
+    })
+
+    expect(result).toMatchObject({ kind: 'corrected', correctedCandidateSha: expect.any(String), proof: { remoteBaseHead: latestBase } })
     expect(readFileSync(resolve(fixture.worktreePath, 'shared.txt'), 'utf8')).toBe(manualResolution)
     expect(readFileSync(resolve(fixture.worktreePath, 'latest.txt'), 'utf8')).toBe('later base change\n')
-    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^{tree}']))
-      .toBe(git(fixture.projectPath, ['rev-parse', `${latestBase}^{tree}`]))
-    expect(existsSync(oldRecoveryPath)).toBe(false)
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(latestBase)
+    expect(git(fixture.projectPath, ['rev-parse', resolvedCommit])).toBe(resolvedCommit)
   })
 
   it('applies the remaining change when the latest base changes a different line in the same file', async () => {
@@ -526,6 +669,36 @@ describe('reconcileMergedPullRequestCandidate', () => {
         expect(readFileSync(resolve(fixture.worktreePath, 'local-only.txt'), 'utf8')).toBe('local-only data\n')
       })
     }
+
+    if (!blocked) {
+      it('refreshes the saved correction after the base history is rewritten', async () => {
+        const originalCorrectionHead = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+
+        git(fixture.projectPath, ['checkout', '--detach', fixture.landedCommitSha])
+        git(fixture.projectPath, ['checkout', '-b', 'rewritten-main'])
+        writeFileSync(resolve(fixture.projectPath, 'replacement-base.txt'), 'replacement base\n')
+        git(fixture.projectPath, ['add', '--', 'replacement-base.txt'])
+        commit(fixture.projectPath, 'replacement base history')
+        git(fixture.projectPath, ['push', '--force', 'origin', 'rewritten-main:main'])
+
+        const result = await reconcileMergedPullRequestCandidate({
+          ...fixture,
+          externalId: 'TEST-42',
+          baseBranch: 'main',
+          headBranch: 'ticket',
+          previousRecoveryBaseHead: originalBase,
+          pr: pullRequest(fixture),
+        })
+
+        expect(result).toMatchObject({ kind: 'corrected', proof: { remoteBaseHead: expect.any(String) } })
+        if (result.kind !== 'corrected') throw new Error('Expected the saved correction to refresh')
+        expect(result.proof.remoteBaseHead).not.toBe(originalBase)
+        expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(result.correctedCandidateSha)
+        expect(result.correctedCandidateSha).not.toBe(originalCorrectionHead)
+        expect(readFileSync(resolve(fixture.worktreePath, 'candidate.txt'), 'utf8')).toBe('candidate change\n')
+        expect(readFileSync(resolve(fixture.worktreePath, 'replacement-base.txt'), 'utf8')).toBe('replacement base\n')
+      })
+    }
   })
 
   describe('retrying an installed correction', () => {
@@ -538,15 +711,30 @@ describe('reconcileMergedPullRequestCandidate', () => {
 
     it('resumes a refreshed correction after local files prevented its installation', async () => {
       const originalInstalledHead = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+      const originalBase = git(fixture.worktreePath, ['rev-parse', 'HEAD^'])
       writeFileSync(resolve(fixture.worktreePath, 'later.txt'), 'local draft to preserve\n')
       const latestBase = advanceBase(fixture, 'later.txt', 'newer tracked base file\n')
-      await expect(reconcileFixture(fixture)).rejects.toMatchObject({ recovery: { reason: 'local_work_preserved' } })
+      await expect(reconcileMergedPullRequestCandidate({
+        ...fixture,
+        externalId: 'TEST-42',
+        baseBranch: 'main',
+        headBranch: 'ticket',
+        previousRecoveryBaseHead: originalBase,
+        pr: pullRequest(fixture),
+      })).rejects.toMatchObject({ recovery: { reason: 'local_work_preserved' } })
       expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(originalInstalledHead)
       const refreshedHead = git(fixture.projectPath, ['rev-parse', `refs/looptroop/early-merge/pr-42/corrected-from-${fixture.candidateCommitSha}`])
       const backup = resolve(fixture.worktreePath, '..', 'preserved-later.txt')
       renameSync(resolve(fixture.worktreePath, 'later.txt'), backup)
 
-      await expect(reconcileFixture(fixture)).resolves.toMatchObject({
+      await expect(reconcileMergedPullRequestCandidate({
+        ...fixture,
+        externalId: 'TEST-42',
+        baseBranch: 'main',
+        headBranch: 'ticket',
+        previousRecoveryBaseHead: originalBase,
+        pr: pullRequest(fixture),
+      })).resolves.toMatchObject({
         kind: 'corrected', correctedCandidateSha: refreshedHead, proof: { remoteBaseHead: latestBase },
       })
 
@@ -556,11 +744,21 @@ describe('reconcileMergedPullRequestCandidate', () => {
     })
 
     it('completes when the newer base already contains the saved correction delta', async () => {
+      const originalCorrection = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+      const originalBase = git(fixture.worktreePath, ['rev-parse', 'HEAD^'])
       const latestBase = advanceBase(fixture, 'candidate.txt', 'candidate change\n')
 
-      await expect(reconcileFixture(fixture)).resolves.toMatchObject({
+      await expect(reconcileMergedPullRequestCandidate({
+        ...fixture,
+        externalId: 'TEST-42',
+        baseBranch: 'main',
+        headBranch: 'ticket',
+        previousRecoveryBaseHead: originalBase,
+        pr: pullRequest(fixture),
+      })).resolves.toMatchObject({
         kind: 'already_landed', proof: { remoteBaseHead: latestBase },
       })
+      expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(originalCorrection)
     })
   })
 

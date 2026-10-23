@@ -28,6 +28,7 @@ import {
   type CandidateFileAuditReport,
 } from '../../phases/integration/candidateFileAudit'
 import { pushBranchRef } from '../../git/push'
+import { assertSafeRefName } from '../../git/ref'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
 import { parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
 import {
@@ -142,7 +143,7 @@ export interface MergeCompletionReport {
   candidateTreeSha?: string | null
   prHeadTreeSha?: string | null
   /** Identifies the proof used when candidate and merged PR commit IDs differ. */
-  proofKind?: 'tree_equivalent' | 'already_landed'
+  proofKind?: 'tree_equivalent' | 'already_landed' | 'manual_resolution_no_change'
   /** Tree of remoteBaseHead; required for the already-landed A-to-B proof. */
   remoteBaseTreeSha?: string | null
   localBaseHead: string | null
@@ -156,9 +157,11 @@ export interface MergeCompletionReport {
 export interface EarlyMergeRecoveryReport {
   status: 'equivalent' | 'already_landed' | 'corrected' | 'manual_recovery_required'
   recordedAt: string
-  reason: 'tree_equivalent' | 'already_landed' | 'corrective_delta' | 'missing_proof' | 'conflict' | 'local_work_preserved'
+  reason: 'tree_equivalent' | 'already_landed' | 'manual_resolution_no_change' | 'corrective_delta' | 'missing_proof' | 'conflict' | 'local_work_preserved'
   baseBranch: string
-  headBranch: string
+  ticketBranch: string
+  /** Branch of the merged PR currently being reconciled. */
+  activeHeadBranch: string
   prNumber: number
   prUrl: string
   candidateCommitSha: string
@@ -169,7 +172,10 @@ export interface EarlyMergeRecoveryReport {
   remoteBaseHead: string | null
   remoteBaseTreeSha: string | null
   correctedCandidateSha: string | null
+  correctionBranch: string | null
   recoveryWorktreePath: string | null
+  /** Base commit the retained checkout is actually based on, independent of the latest remote proof. */
+  recoveryWorktreeBaseHead: string | null
   conflictPaths: string[]
   message: string
 }
@@ -545,10 +551,21 @@ function readEarlyMergeRecoveryReport(ticketId: string): EarlyMergeRecoveryRepor
       || typeof value.prNumber !== 'number' || !Number.isSafeInteger(value.prNumber)
       || typeof value.candidateCommitSha !== 'string'
       || typeof value.recordedAt !== 'string'
-      || typeof value.baseBranch !== 'string' || typeof value.headBranch !== 'string'
+      || typeof value.baseBranch !== 'string' || typeof value.activeHeadBranch !== 'string'
+      || typeof value.ticketBranch !== 'string'
+      || (value.reason !== 'tree_equivalent' && value.reason !== 'already_landed'
+        && value.reason !== 'manual_resolution_no_change' && value.reason !== 'corrective_delta'
+        && value.reason !== 'missing_proof' && value.reason !== 'conflict' && value.reason !== 'local_work_preserved')
+      || (value.correctionBranch !== null && typeof value.correctionBranch !== 'string')
+      || (value.recoveryWorktreePath !== null && typeof value.recoveryWorktreePath !== 'string')
+      || (value.recoveryWorktreeBaseHead !== null && typeof value.recoveryWorktreeBaseHead !== 'string')
       || typeof value.prUrl !== 'string' || typeof value.message !== 'string'
       || value.candidateCommitSha.trim().length === 0
       || !Array.isArray(value.conflictPaths) || !value.conflictPaths.every((path) => typeof path === 'string')) return null
+    assertSafeRefName(value.activeHeadBranch, 'Head branch')
+    if (value.recoveryWorktreePath === null && value.recoveryWorktreeBaseHead !== null
+      || typeof value.recoveryWorktreePath === 'string'
+        && (typeof value.recoveryWorktreeBaseHead !== 'string' || value.recoveryWorktreeBaseHead.length === 0)) return null
     if ((value.status === 'equivalent' || value.status === 'already_landed' || value.status === 'corrected')
       && (typeof value.candidateTreeSha !== 'string' || value.candidateTreeSha.length === 0
         || typeof value.prHeadSha !== 'string' || value.prHeadSha.length === 0
@@ -559,9 +576,18 @@ function readEarlyMergeRecoveryReport(ticketId: string): EarlyMergeRecoveryRepor
       && (typeof value.remoteBaseTreeSha !== 'string' || value.remoteBaseTreeSha.length === 0
         || value.candidateTreeSha === value.prHeadTreeSha
         || value.candidateCommitSha === value.prHeadSha)) return null
+    if (value.status === 'already_landed'
+      && value.reason !== 'already_landed' && value.reason !== 'manual_resolution_no_change') return null
     if (value.status === 'equivalent' && value.candidateTreeSha !== value.prHeadTreeSha) return null
     if (value.status === 'corrected'
       && (typeof value.correctedCandidateSha !== 'string' || value.correctedCandidateSha.length === 0)) return null
+    if (value.status === 'corrected'
+      && (typeof value.correctionBranch !== 'string' || value.correctionBranch !== earlyMergeCorrectionBranch(value as unknown as EarlyMergeRecoveryReport))) return null
+    if (value.correctionBranch !== null
+      && (value.status !== 'corrected' && value.status !== 'manual_recovery_required'
+        || typeof value.correctionBranch !== 'string'
+        || value.correctionBranch !== earlyMergeCorrectionBranch(value as unknown as EarlyMergeRecoveryReport)
+        || typeof value.correctedCandidateSha !== 'string' || value.correctedCandidateSha.length === 0)) return null
     return value as unknown as EarlyMergeRecoveryReport
   } catch {
     return null
@@ -572,23 +598,60 @@ function earlyMergeCorrectionBranch(report: EarlyMergeRecoveryReport): string {
   return `looptroop/early-merge/pr-${report.prNumber}-${report.candidateCommitSha.slice(0, 12)}`
 }
 
-function hasPendingCorrectiveCandidate(
+function readCorrectiveCandidateLineage(
   ticketId: string,
   integration: ReturnType<typeof readIntegrationArtifact>,
   baseBranch: string,
   headBranch: string,
-): boolean {
+): EarlyMergeRecoveryReport | null {
   const recovery = readEarlyMergeRecoveryReport(ticketId)
-  const pending = integration.record.status === 'pending_revalidation'
-  const matches = pending
-    && recovery?.status === 'corrected'
+  const correctionBranch = integration.record.earlyMergeCorrectionBranch
+  const recoveryTracksCurrentCorrection = typeof correctionBranch === 'string'
+    && (recovery?.correctionBranch === correctionBranch || recovery?.activeHeadBranch === correctionBranch)
+  return (recovery?.status === 'corrected' || recovery?.status === 'manual_recovery_required'
+    || recovery?.status === 'equivalent' || recovery?.status === 'already_landed')
     && recovery.baseBranch === baseBranch
-    && recovery.headBranch === headBranch
-    && recovery.correctedCandidateSha === integration.candidateCommitSha
+    && recovery.ticketBranch === headBranch
+    && recoveryTracksCurrentCorrection
+    ? recovery
+    : null
+}
+
+function hasPendingCorrectiveCandidate(
+  ticketId: string,
+  integration: ReturnType<typeof readIntegrationArtifact>,
+  baseBranch: string,
+  ticketBranch: string,
+): boolean {
+  const pending = integration.record.status === 'pending_revalidation'
+  const matches = pending && readCorrectiveCandidateLineage(ticketId, integration, baseBranch, ticketBranch) !== null
   if (pending && !matches) {
     throw new Error('Corrective candidate is pending revalidation, but its early-merge recovery proof is missing or invalid.')
   }
   return matches
+}
+
+export function resolvePullRequestHeadBranch(
+  ticketId: string,
+  ticketBranch: string,
+  report: Pick<PullRequestReport, 'baseBranch' | 'headBranch' | 'prNumber' | 'candidateCommitSha'>,
+): string {
+  if (report.headBranch === ticketBranch) return ticketBranch
+  const integration = readIntegrationArtifact(ticketId)
+  const recovery = readCorrectiveCandidateLineage(ticketId, integration, report.baseBranch, ticketBranch)
+  const reportMatchesActiveRecovery = recovery != null
+    && report.prNumber === recovery.prNumber
+    && report.candidateCommitSha === recovery.candidateCommitSha
+    && report.headBranch === recovery.activeHeadBranch
+  const reportMatchesNextCorrectivePr = recovery != null
+    && report.prNumber != null
+    && report.prNumber !== recovery.prNumber
+    && report.candidateCommitSha === integration.candidateCommitSha
+    && report.headBranch === recovery.correctionBranch
+  if (!recovery || !reportMatchesActiveRecovery && !reportMatchesNextCorrectivePr) {
+    throw new Error(`Pull request report head ${report.headBranch} has no matching stored early-merge correction proof.`)
+  }
+  return report.headBranch
 }
 
 function saveEarlyMergeRecoveryReport(ticketId: string, phase: WorkflowPhaseId, report: EarlyMergeRecoveryReport) {
@@ -600,12 +663,15 @@ function buildEarlyMergeRecoveryReport(input: {
   reason: EarlyMergeRecoveryReport['reason']
   baseBranch: string
   headBranch: string
+  ticketBranch?: string
   pr: PullRequestInfo
   candidateCommitSha: string
   proof?: EarlyMergeProof | null
   remoteBaseTreeSha?: string | null
   correctedCandidateSha?: string | null
+  correctionBranch?: string | null
   recoveryWorktreePath?: string | null
+  recoveryWorktreeBaseHead?: string | null
   conflictPaths?: string[]
   message: string
 }): EarlyMergeRecoveryReport {
@@ -614,7 +680,8 @@ function buildEarlyMergeRecoveryReport(input: {
     recordedAt: new Date().toISOString(),
     reason: input.reason,
     baseBranch: input.baseBranch,
-    headBranch: input.headBranch,
+    ticketBranch: input.ticketBranch ?? input.headBranch,
+    activeHeadBranch: input.headBranch,
     prNumber: input.pr.number,
     prUrl: input.pr.url,
     candidateCommitSha: input.candidateCommitSha,
@@ -625,7 +692,13 @@ function buildEarlyMergeRecoveryReport(input: {
     remoteBaseHead: input.proof?.remoteBaseHead ?? null,
     remoteBaseTreeSha: input.remoteBaseTreeSha ?? null,
     correctedCandidateSha: input.correctedCandidateSha ?? null,
+    correctionBranch: input.status === 'corrected'
+      ? `looptroop/early-merge/pr-${input.pr.number}-${input.candidateCommitSha.slice(0, 12)}`
+      : input.correctionBranch ?? null,
     recoveryWorktreePath: input.recoveryWorktreePath ?? null,
+    recoveryWorktreeBaseHead: input.recoveryWorktreePath
+      ? input.recoveryWorktreeBaseHead ?? input.proof?.remoteBaseHead ?? null
+      : null,
     conflictPaths: input.conflictPaths ?? [],
     message: input.message,
   }
@@ -667,11 +740,13 @@ function writeEarlyMergeCompletion(input: {
   proof: EarlyMergeProof
 } & (
   | { proofKind: 'tree_equivalent' }
-  | { proofKind: 'already_landed'; remoteBaseTreeSha: string }
+  | { proofKind: 'already_landed' | 'manual_resolution_no_change'; remoteBaseTreeSha: string }
 )) {
-  const message = input.proofKind === 'already_landed'
-    ? `Pull request #${input.pr.number} was already merged. Its exact candidate delta is already present on verified origin/${input.baseBranch} at ${input.proof.remoteBaseHead} (tree ${input.remoteBaseTreeSha}).`
-    : `Pull request #${input.pr.number} was already merged into origin/${input.baseBranch}; candidate ${input.proof.candidateCommitSha} has the same tree as merged head ${input.proof.mergedHeadSha}.`
+  const message = input.proofKind === 'manual_resolution_no_change'
+    ? `Pull request #${input.pr.number} was already merged. The manual resolution left no additional changes to deliver, so the verified merge completes the ticket.`
+    : input.proofKind === 'already_landed'
+      ? `Pull request #${input.pr.number} was already merged. Its exact candidate delta is present on verified origin/${input.baseBranch} at ${input.proof.remoteBaseHead} (tree ${input.remoteBaseTreeSha}).`
+      : `Pull request #${input.pr.number} was already merged into origin/${input.baseBranch}; candidate ${input.proof.candidateCommitSha} has the same tree as merged head ${input.proof.mergedHeadSha}.`
   const report: MergeCompletionReport = {
     status: 'passed',
     completedAt: new Date().toISOString(),
@@ -687,7 +762,7 @@ function writeEarlyMergeCompletion(input: {
     candidateTreeSha: input.proof.candidateTreeSha,
     prHeadTreeSha: input.proof.mergedHeadTreeSha,
     proofKind: input.proofKind,
-    remoteBaseTreeSha: input.proofKind === 'already_landed' ? input.remoteBaseTreeSha : null,
+    remoteBaseTreeSha: input.proofKind === 'tree_equivalent' ? null : input.remoteBaseTreeSha,
     localBaseHead: null,
     remoteBaseHead: input.proof.remoteBaseHead,
     remoteBranchDeleteWarning: 'Remote ticket branch was left untouched during early-merge reconciliation.',
@@ -730,6 +805,7 @@ function writeCorrectiveCandidateArtifacts(input: {
     baseBranch: input.baseBranch,
     mergeBase: input.report.remoteBaseHead,
     candidateCommitSha: correctedCandidateSha,
+    earlyMergeCorrectionBranch: input.report.correctionBranch,
     pushed: false,
     pushDeferred: true,
     pushError: null,
@@ -775,33 +851,40 @@ export async function reconcileEarlyMergedPullRequest(input: {
   externalId: string
   baseBranch: string
   headBranch: string
+  ticketBranch?: string
   candidateCommitSha: string
   pr: PullRequestInfo
 }): Promise<'equivalent' | 'already_landed' | 'corrected' | 'skip'> {
+  const ticketBranch = input.ticketBranch ?? input.headBranch
   // The PR report is a GitHub observation; merge_report remains proof-gated.
   refreshMergedPullRequestProjection({
     ...input,
     message: `Pull request #${input.pr.number} is already merged; checking the candidate before completing delivery.`,
   })
   const previous = readEarlyMergeRecoveryReport(input.ticketId)
-  let reconciliationInput = input
+  let reconciliationInput = { ...input, ticketBranch }
   let refreshingValidatedCorrection = false
   if (getLatestPhaseArtifact(input.ticketId, 'integration_report', 'INTEGRATING_CHANGES')?.content) {
     const integration = readIntegrationArtifact(input.ticketId)
     const pending = integration.record.status === 'pending_revalidation'
-      && hasPendingCorrectiveCandidate(input.ticketId, integration, input.baseBranch, input.headBranch)
-    const correctionMatches = previous?.status === 'corrected'
+      && hasPendingCorrectiveCandidate(input.ticketId, integration, input.baseBranch, ticketBranch)
+    const recoveryBranchMatchesCorrection = previous != null
+      && (previous.correctionBranch === integration.record.earlyMergeCorrectionBranch
+        || previous.activeHeadBranch === integration.record.earlyMergeCorrectionBranch)
+    const correctionMatches = (previous?.status === 'corrected'
+      || previous?.status === 'manual_recovery_required')
       && previous.prNumber === input.pr.number
       && previous.baseBranch === input.baseBranch
-      && previous.headBranch === input.headBranch
-      && (integration.candidateCommitSha === previous.correctedCandidateSha || pending)
+      && previous.ticketBranch === ticketBranch
+      && recoveryBranchMatchesCorrection
     if (correctionMatches && previous) {
-      reconciliationInput = { ...input, candidateCommitSha: previous.candidateCommitSha }
-      refreshingValidatedCorrection = !pending && integration.candidateCommitSha === previous.correctedCandidateSha
+      reconciliationInput = { ...input, ticketBranch, candidateCommitSha: previous.candidateCommitSha }
+      refreshingValidatedCorrection = !pending
     }
   }
   if (previous?.prNumber === input.pr.number
-    && previous.baseBranch === input.baseBranch && previous.headBranch === input.headBranch) {
+    && previous.baseBranch === input.baseBranch && previous.activeHeadBranch === input.headBranch
+    && previous.ticketBranch === ticketBranch) {
     if (previous.status === 'equivalent'
       && previous.candidateCommitSha === reconciliationInput.candidateCommitSha
       && previous.prHeadSha === input.pr.headRefOid
@@ -846,14 +929,18 @@ export async function reconcileEarlyMergedPullRequest(input: {
           landedCommitSha: previous.landedCommitSha!,
           remoteBaseHead: previous.remoteBaseHead!,
         },
-        proofKind: 'already_landed',
+        proofKind: previous.reason === 'manual_resolution_no_change' ? 'manual_resolution_no_change' : 'already_landed',
         remoteBaseTreeSha: previous.remoteBaseTreeSha!,
       })
       return 'already_landed'
     }
-    if (previous.status === 'corrected') {
+    if (previous.status === 'corrected' || previous.status === 'manual_recovery_required') {
+      const integration = readIntegrationArtifact(input.ticketId)
+      const correctionBranchMatches = previous.correctionBranch === integration.record.earlyMergeCorrectionBranch
+        || previous.activeHeadBranch === integration.record.earlyMergeCorrectionBranch
       if (input.candidateCommitSha !== previous.candidateCommitSha
-        && input.candidateCommitSha !== previous.correctedCandidateSha) return 'skip'
+        && input.candidateCommitSha !== previous.correctedCandidateSha
+        && !correctionBranchMatches) return 'skip'
     }
   }
 
@@ -864,7 +951,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
         && (previous.status === 'corrected'
           || (previous.status === 'manual_recovery_required'
             && (previous.reason === 'conflict' || previous.reason === 'local_work_preserved')))
-        ? previous.remoteBaseHead ?? undefined
+        ? previous.recoveryWorktreeBaseHead ?? previous.remoteBaseHead ?? undefined
         : undefined,
     })
     if (result.kind === 'equivalent') {
@@ -884,9 +971,14 @@ export async function reconcileEarlyMergedPullRequest(input: {
       return 'equivalent'
     }
     if (result.kind === 'already_landed') {
-      const message = `Pull request #${input.pr.number} was already merged and its exact candidate delta is verified on origin/${input.baseBranch}.`
+      const manualResolutionNoChange = result.manualResolutionNoChange === true
+      const message = manualResolutionNoChange
+        ? `Pull request #${input.pr.number} was already merged. The manual resolution left no additional changes to deliver, so the verified merge completes the ticket.`
+        : `Pull request #${input.pr.number} was already merged and its exact candidate delta is verified on origin/${input.baseBranch}.`
       const report = buildEarlyMergeRecoveryReport({
-        status: 'already_landed', reason: 'already_landed', ...reconciliationInput, proof: result.proof,
+        status: 'already_landed',
+        reason: manualResolutionNoChange ? 'manual_resolution_no_change' : 'already_landed',
+        ...reconciliationInput, proof: result.proof,
         remoteBaseTreeSha: result.remoteBaseTreeSha, message,
       })
       saveEarlyMergeRecoveryReport(input.ticketId, input.phase, report)
@@ -896,7 +988,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
         headBranch: input.headBranch,
         pr: input.pr,
         proof: result.proof,
-        proofKind: 'already_landed',
+        proofKind: manualResolutionNoChange ? 'manual_resolution_no_change' : 'already_landed',
         remoteBaseTreeSha: result.remoteBaseTreeSha,
       })
       return 'already_landed'
@@ -914,12 +1006,19 @@ export async function reconcileEarlyMergedPullRequest(input: {
     return 'corrected'
   } catch (error) {
     if (!(error instanceof EarlyMergeRecoveryManualError)) throw error
+    const previousCorrectionMatches = previous?.prNumber === input.pr.number
+      && previous.candidateCommitSha === reconciliationInput.candidateCommitSha
+      && previous.correctionBranch === earlyMergeCorrectionBranch(previous)
     const report = buildEarlyMergeRecoveryReport({
       status: 'manual_recovery_required',
       reason: error.recovery.reason,
       ...reconciliationInput,
+      ticketBranch,
       proof: error.proof,
+      correctedCandidateSha: previousCorrectionMatches ? previous.correctedCandidateSha : null,
+      correctionBranch: previousCorrectionMatches ? previous.correctionBranch : null,
       recoveryWorktreePath: error.recovery.recoveryWorktreePath,
+      recoveryWorktreeBaseHead: error.recovery.recoveryWorktreeBaseHead,
       conflictPaths: error.recovery.conflictPaths,
       message: error.message,
     })
@@ -1150,15 +1249,18 @@ export async function handleCreatePullRequest(
       const ticketHeadBranch = ticket.branchName?.trim() || context.externalId
       const baseBranch = paths.baseBranch
       const integration = readIntegrationArtifact(ticketId)
-      const priorRecovery = readEarlyMergeRecoveryReport(ticketId)
-      const headBranch = priorRecovery?.status === 'corrected'
-        && priorRecovery.headBranch === ticketHeadBranch
-        && priorRecovery.correctedCandidateSha === integration.candidateCommitSha
-        ? earlyMergeCorrectionBranch(priorRecovery)
-        : ticketHeadBranch
+      const correctionLineage = readCorrectiveCandidateLineage(ticketId, integration, baseBranch, ticketHeadBranch)
+      const correctionBranch = correctionLineage != null
+        && correctionLineage.correctionBranch === integration.record.earlyMergeCorrectionBranch
+        ? correctionLineage.correctionBranch
+        : correctionLineage != null
+          && correctionLineage.activeHeadBranch === integration.record.earlyMergeCorrectionBranch
+          ? correctionLineage.activeHeadBranch
+          : null
+      const headBranch = correctionBranch ?? ticketHeadBranch
       if (hasPendingCorrectiveCandidate(ticketId, integration, baseBranch, ticketHeadBranch)) {
         const recovery = readEarlyMergeRecoveryReport(ticketId)
-        const mergedPullRequest = recovery && (await listPullRequestsForBranch(worktreePath, ticketHeadBranch, baseBranch))
+        const mergedPullRequest = recovery && (await listPullRequestsForBranch(worktreePath, recovery.activeHeadBranch, baseBranch))
           .find((pr) => pr.number === recovery.prNumber && pr.state === 'merged')
         if (mergedPullRequest) {
           const reconciliation = await reconcileEarlyMergedPullRequest({
@@ -1168,7 +1270,8 @@ export async function handleCreatePullRequest(
             worktreePath,
             externalId: context.externalId,
             baseBranch,
-            headBranch: ticketHeadBranch,
+            headBranch: recovery.activeHeadBranch,
+            ticketBranch: ticketHeadBranch,
             candidateCommitSha: integration.candidateCommitSha,
             pr: mergedPullRequest,
           })
@@ -1293,6 +1396,7 @@ export async function handleCreatePullRequest(
           externalId: context.externalId,
           baseBranch,
           headBranch,
+          ticketBranch: ticketHeadBranch,
           candidateCommitSha,
           pr: mergedPullRequest,
         })

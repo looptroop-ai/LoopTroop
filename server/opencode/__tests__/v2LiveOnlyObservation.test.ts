@@ -183,6 +183,9 @@ function createLiveOnlyServer(options: LiveOnlyServerOptions = {}) {
       });
     }
 
+    if (url.pathname === "/api/session" && method === "GET" && url.searchParams.get("parentID") === "session-1")
+      return jsonResponse({ data: [], cursor: {} });
+
     if (url.pathname === "/api/session/session-1/children" && method === "GET")
       return jsonResponse({ data: [] });
 

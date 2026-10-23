@@ -61,6 +61,7 @@ import {
   completeCloseUnmerged,
   recordPullRequestRefreshFailure,
   readPullRequestReport,
+  resolvePullRequestHeadBranch,
   refreshPullRequestReport,
   refreshPullRequestState,
 } from '../../workflow/phases/pullRequestPhase'
@@ -593,7 +594,7 @@ export async function handleMergeTicket(c: Context) {
         ticketId,
         projectPath: ticketContext.projectRoot,
         baseBranch: ticket.runtime.baseBranch,
-        headBranch: ticket.branchName?.trim() || ticket.externalId,
+        headBranch: prReport.headBranch,
         candidateCommitSha: ticket.runtime.candidateCommitSha,
         prNumber: prReport.prNumber,
         error,
@@ -730,7 +731,7 @@ export async function handleCloseUnmergedTicket(c: Context) {
         ticketId,
         projectPath: context.projectRoot,
         baseBranch: ticket.runtime.baseBranch,
-        headBranch: ticket.branchName?.trim() || ticket.externalId,
+        headBranch: prReport.headBranch,
         candidateCommitSha: ticket.runtime.candidateCommitSha,
         prNumber: prReport.prNumber,
         error,
@@ -782,12 +783,21 @@ async function handleCloseUnmergedTicketLocked(
 
   const closeReason = normalizeSkipReason(options.reason)
   const statusBeforeClose = ticket.status
+  let headBranch: string
+  try {
+    headBranch = resolvePullRequestHeadBranch(ticketId, ticket.branchName?.trim() || ticket.externalId, currentPrReport)
+  } catch (error) {
+    return c.json({ error: 'The active pull request does not match the ticket or its recorded corrective recovery.', details: getErrorMessage(error) }, 409)
+  }
+  if (observed.baseRefName !== ticket.runtime.baseBranch || observed.headRefName !== headBranch) {
+    return c.json({ error: 'The pull request changed while it was being verified. Reload and try again.' }, 409)
+  }
 
   try {
     const report = completeCloseUnmerged({
       ticketId,
       baseBranch: ticket.runtime.baseBranch,
-      headBranch: ticket.branchName?.trim() || ticket.externalId,
+      headBranch,
       candidateCommitSha: ticket.runtime.candidateCommitSha,
       prReport: buildObservedPullRequestReport(currentPrReport, observed),
       reason: closeReason,

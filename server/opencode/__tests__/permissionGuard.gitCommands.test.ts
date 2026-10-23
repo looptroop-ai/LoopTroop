@@ -66,15 +66,14 @@ describe('recognized Git commands in the workflow guard', () => {
     'git --namespace foo status', 'git config --global user.name',
     'git config --show-origin user.name', 'git config --global --get alias.ship',
     'git config --list', 'git config get user.name', 'git branch --list',
-    'git tag --list', 'git notes list', 'git reflog show', 'git fetch origin',
+    'git tag --list', 'git notes list', 'git reflog show',
     'git add src/a.ts && git commit -m change', 'git checkout -- src/a.ts',
     'git reset -- src/a.ts', 'git rm src/old.ts', 'git mv src/old.ts src/new.ts',
     'git clean --help', 'git status -h',
     'git clean -fd -- src/generated', 'git clean -ndx', 'git clean -fdx -n -- .',
     'git clean -fdx -e node_modules -- src/generated', 'git apply --check update.patch',
     'git -C /repo status --short',
-    'git push --dry-run origin main', 'git push /tmp/scratch-remote main',
-    'git push --repo=/tmp/scratch-remote main',
+    'git push --dry-run origin main',
     'git -C /tmp/scratch reset --hard', 'git -C /tmp/scratch switch -C main',
     'git -C /tmp/scratch config user.name Test', 'git init /tmp/scratch',
     'git -C /tmp/scratch merge main', 'git -C /tmp/scratch pull origin main',
@@ -84,6 +83,9 @@ describe('recognized Git commands in the workflow guard', () => {
     'git -C /tmp/scratch filter-branch --force --tree-filter clean HEAD',
     'git -C /tmp/scratch fast-import --force',
     'git -C /tmp/scratch stash apply', 'git -C /tmp/scratch stash pop',
+    'GIT_PAGER=less git --paginate log', 'GIT_TRACE=2 git status',
+    'GIT_TRACE=/tmp/git-trace.log git status',
+    'PAGER=less git --paginate log',
     'git clone -c user.name=LoopTroop https://example.test/repo.git /tmp/scratch',
     'git clone https://example.test/repo.git /tmp/scratch',
     'gh repo clone owner/repo /tmp/scratch -- --depth=1',
@@ -93,10 +95,70 @@ describe('recognized Git commands in the workflow guard', () => {
     expect(check(command)).toBeNull()
   })
 
+  it.each([
+    ['git push ./scratch --repo=origin', 'remote repository'],
+    ['git -c url.https://example.test/.pushInsteadOf=./ push ./scratch', 'URL rewriting'],
+    ['GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://example.test/.pushInsteadOf GIT_CONFIG_VALUE_0=./ git push ./scratch', 'URL rewriting'],
+    ["GIT_PAGER='gh pr merge 12' git --paginate log", 'GitHub'],
+    ['GIT_TRACE=/repo/.git/config git status', 'Git metadata'],
+    ['git push --receive-pack=helper /tmp/scratch', 'external receive-pack'],
+    ['git push --exec=helper /tmp/scratch', 'external receive-pack'],
+    ['git fetch --upload-pack=helper origin', 'external upload-pack'],
+    ['git receive-pack /repo/.git', 'Git metadata'],
+    ['git fetch origin +refs/heads/main:refs/looptroop/pull-heads/42/head', 'LoopTroop refs'],
+    ['git -c remote.origin.fetch=+refs/heads/main:refs/looptroop/pull-heads/42/head fetch origin', 'LoopTroop refs'],
+    ['git merge-file .git/config base other', 'Git metadata'],
+    ['GIT_SSH_VARIANT=ssh git fetch origin', 'external command'],
+    ['GIT_EDITOR=helper git add -e src/file.ts', 'external command'],
+  ])('refuses direct Git helper or protected-ref bypass: %s', (command, explanation) => {
+    expect(check(command)).toContain(explanation)
+  })
+
+  it('checks literal PAGER changes while keeping safe pager commands available', () => {
+    const previousGitPager = process.env.GIT_PAGER
+    delete process.env.GIT_PAGER
+    try {
+      expect(check("PAGER='gh pr merge 12' git --paginate log")).toContain('GitHub')
+      expect(check("export PAGER='gh pr merge 12'; git --paginate log")).toContain('GitHub')
+      expect(check("$env:PAGER='gh pr merge 12'; git --paginate log")).toContain('GitHub')
+      expect(check("export PAGER='less'; git --paginate log")).toBeNull()
+      expect(check("$env:PAGER='less'; git --paginate log")).toBeNull()
+    } finally {
+      if (previousGitPager === undefined) delete process.env.GIT_PAGER
+      else process.env.GIT_PAGER = previousGitPager
+    }
+  })
+
   it('requires a known directory for relative Git mutations', () => {
     expect(check('git reset --hard', true)).not.toBeNull()
     expect(check('git -C /tmp/scratch reset --hard', true)).toBeNull()
     expect(check('git status', true)).toBeNull()
+  })
+
+  it('checks inherited Git trace destinations against protected paths', () => {
+    const previousTrace = process.env.GIT_TRACE
+    process.env.GIT_TRACE = '/repo/.git/config'
+    try {
+      expect(check('git status')).toContain('Git metadata')
+    } finally {
+      if (previousTrace === undefined) delete process.env.GIT_TRACE
+      else process.env.GIT_TRACE = previousTrace
+    }
+  })
+
+  it('checks the fallback pager after GIT_PAGER is unset', () => {
+    const previousGitPager = process.env.GIT_PAGER
+    const previousPager = process.env.PAGER
+    process.env.GIT_PAGER = 'less'
+    process.env.PAGER = 'gh pr merge 12'
+    try {
+      expect(check('unset GIT_PAGER; git --paginate log')).toContain('GitHub')
+    } finally {
+      if (previousGitPager === undefined) delete process.env.GIT_PAGER
+      else process.env.GIT_PAGER = previousGitPager
+      if (previousPager === undefined) delete process.env.PAGER
+      else process.env.PAGER = previousPager
+    }
   })
 
   it('blocks Git output paths that can escape a scratch repository through shell expansion', () => {

@@ -34,6 +34,7 @@ export interface EarlyMergeManualRecovery {
   reason: 'missing_proof' | 'conflict' | 'local_work_preserved'
   message: string
   recoveryWorktreePath: string | null
+  recoveryWorktreeBaseHead?: string | null
   conflictPaths: string[]
 }
 
@@ -48,7 +49,7 @@ class LocalWorkProtectionError extends Error {}
 
 export type EarlyMergeReconciliation =
   | { kind: 'equivalent'; proof: EarlyMergeProof }
-  | { kind: 'already_landed'; proof: EarlyMergeProof; remoteBaseTreeSha: string }
+  | { kind: 'already_landed'; proof: EarlyMergeProof; remoteBaseTreeSha: string; manualResolutionNoChange?: boolean }
   | { kind: 'corrected'; proof: EarlyMergeProof; correctedCandidateSha: string; recoveryWorktreePath: string | null }
 
 function gitSync(projectPath: string, args: string[], options?: RunCommandOptions): string {
@@ -163,6 +164,7 @@ function manualError(input: {
   pr: PullRequestInfo
   candidateCommitSha: string
   recoveryWorktreePath?: string | null
+  recoveryWorktreeBaseHead?: string | null
   conflictPaths?: string[]
   detail: string
   proof?: EarlyMergeProof | null
@@ -173,6 +175,7 @@ function manualError(input: {
   return new EarlyMergeRecoveryManualError({
     reason: input.reason,
     recoveryWorktreePath,
+    recoveryWorktreeBaseHead: recoveryWorktreePath ? input.recoveryWorktreeBaseHead ?? null : null,
     conflictPaths,
     message: [
       `Pull request #${input.pr.number} was already merged, but LoopTroop could not safely reconcile candidate ${input.candidateCommitSha}.`,
@@ -203,6 +206,7 @@ function protectTicketWorktreeForCorrectionOrStop(input: {
       pr: input.pr,
       candidateCommitSha: input.candidateCommitSha,
       recoveryWorktreePath: existsSync(input.recoveryWorktreePath) ? input.recoveryWorktreePath : null,
+      recoveryWorktreeBaseHead: input.proof.remoteBaseHead,
       proof: input.proof,
       originalWorktreePath: input.worktreePath,
       detail: `The ticket worktree was not reset because local files would be lost or tracked changes are present: ${error instanceof Error ? error.message : String(error)}`,
@@ -223,7 +227,7 @@ function validateMergedPullRequest(input: {
   assertSafeRefName(input.headBranch, 'Head branch')
   if (input.pr.state !== 'merged') throw new Error(`Pull request #${input.pr.number} is not merged.`)
   if (input.pr.baseRefName !== input.baseBranch || input.pr.headRefName !== input.headBranch) {
-    throw new Error(`Pull request #${input.pr.number} does not match ticket branch ${input.headBranch} and base ${input.baseBranch}.`)
+    throw new Error(`Pull request #${input.pr.number} does not match head branch ${input.headBranch} and base ${input.baseBranch}.`)
   }
   if (!/^[0-9a-f]{40,64}$/i.test(input.candidateCommitSha)) {
     throw new Error('The approved candidate commit SHA is missing or invalid.')
@@ -243,10 +247,12 @@ export async function reconcileMergedPullRequestCandidate(input: {
   externalId: string
   baseBranch: string
   headBranch: string
+  ticketBranch?: string
   candidateCommitSha: string
   pr: PullRequestInfo
   previousRecoveryBaseHead?: string
 }): Promise<EarlyMergeReconciliation> {
+  const ticketBranch = input.ticketBranch ?? input.headBranch
   try {
     validateMergedPullRequest(input)
   } catch (error) {
@@ -334,17 +340,15 @@ export async function reconcileMergedPullRequestCandidate(input: {
   const correctionRef = `${refRoot}/corrected-from-${input.candidateCommitSha}`
   const correctedCommitRef = (sha: string) => `${refRoot}/candidate-${input.candidateCommitSha}-corrected-${sha}`
   const hasSavedCorrection = gitRefExists(input.projectPath, correctionRef)
-  if (input.previousRecoveryBaseHead === remote.remoteBaseHead
-    && !existsSync(recoveryWorktreePath) && !hasSavedCorrection) {
-    throw manualError({
-      reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-      recoveryWorktreePath, proof,
-      detail: 'The saved conflict checkout is missing, so LoopTroop cannot safely recover the manual resolution.',
-    })
-  }
+  let previousRecoveryBaseHead = input.previousRecoveryBaseHead
+  if (previousRecoveryBaseHead
+    && !existsSync(recoveryPathForBase(previousRecoveryBaseHead))
+    && !hasSavedCorrection) previousRecoveryBaseHead = undefined
+  const savedCorrectionSha = hasSavedCorrection ? gitSync(input.projectPath, ['rev-parse', correctionRef]) : undefined
+  const correctionAlreadyRefreshed = Boolean(savedCorrectionSha
+    && gitSync(input.projectPath, ['rev-parse', `${savedCorrectionSha}^`]) === remote.remoteBaseHead)
   let previousCorrectionSha: string | undefined
   let previousRecoveryWorktreePath: string | undefined
-  let savedManualResolution = false
   let expectedTicketHead = input.candidateCommitSha
   let patchBaseSha = mergedHeadSha
   const candidateParent = runGitSync(input.projectPath, ['rev-parse', `${input.candidateCommitSha}^`])
@@ -383,66 +387,54 @@ export async function reconcileMergedPullRequestCandidate(input: {
   const patchPath = resolve(patchDirectory, 'candidate.patch')
   try {
     writeFileSync(patchPath, patchResult.stdout)
-    if (input.previousRecoveryBaseHead && input.previousRecoveryBaseHead !== remote.remoteBaseHead) {
-      const previousPath = recoveryPathForBase(input.previousRecoveryBaseHead)
-      let previousHead: string
-      savedManualResolution = true
+    if (previousRecoveryBaseHead && previousRecoveryBaseHead !== remote.remoteBaseHead && !correctionAlreadyRefreshed) {
+      const previousPath = recoveryPathForBase(previousRecoveryBaseHead)
+      let previousHead: string | undefined
       if (existsSync(previousPath)) {
         if (!registeredWorktreePath(input.projectPath, previousPath)) {
           throw manualError({
             reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-            recoveryWorktreePath: previousPath, proof,
+            recoveryWorktreePath: previousPath, recoveryWorktreeBaseHead: previousRecoveryBaseHead, proof,
             detail: 'The saved manual recovery checkout is no longer registered with this Git repository.',
           })
         }
         previousHead = gitSync(previousPath, ['rev-parse', 'HEAD'])
         const previousStatus = gitSync(previousPath, ['status', '--porcelain=1', '-z', '--untracked-files=all'], { trimOutput: false })
         const parent = gitSync(previousPath, ['rev-parse', `${previousHead}^`])
-        if (previousStatus || parent !== input.previousRecoveryBaseHead) {
+        if (previousStatus || parent !== previousRecoveryBaseHead) {
           throw manualError({
             reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-            recoveryWorktreePath: previousPath, proof,
+            recoveryWorktreePath: previousPath, recoveryWorktreeBaseHead: previousRecoveryBaseHead, proof,
             detail: 'The saved manual resolution must be clean and committed once on its recorded base before it can be refreshed.',
           })
         }
         previousRecoveryWorktreePath = previousPath
       } else if (hasSavedCorrection) {
-        previousHead = gitSync(input.projectPath, ['rev-parse', correctionRef])
-        if (gitSync(input.projectPath, ['rev-parse', `${previousHead}^`]) !== input.previousRecoveryBaseHead) {
+        previousHead = savedCorrectionSha
+        if (gitSync(input.projectPath, ['rev-parse', `${previousHead}^`]) !== previousRecoveryBaseHead) {
           throw manualError({
             reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
             proof,
             detail: 'The saved correction is not based on its recorded base commit.',
           })
         }
-      } else {
-        throw manualError({
-          reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-          recoveryWorktreePath: previousPath, proof,
-          detail: 'The saved manual resolution is missing, so LoopTroop cannot safely refresh it on the latest base.',
-        })
       }
-      const baseAdvanced = runGitSync(input.projectPath, ['merge-base', '--is-ancestor', input.previousRecoveryBaseHead, remote.remoteBaseHead])
-      if (!baseAdvanced.ok) {
-        throw manualError({
-          reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-          recoveryWorktreePath: existsSync(previousPath) ? previousPath : null, proof,
-          detail: 'The base used for the saved manual resolution is no longer part of the current base history.',
-        })
+      if (previousHead) {
+        const manualPatch = runGitBinarySync(input.projectPath, [
+          '-c', 'core.quotePath=true', 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv',
+          '--no-color', '--no-renames', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/',
+          previousRecoveryBaseHead, previousHead,
+        ])
+        if (!manualPatch.ok) {
+          throw manualError({
+            reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
+            recoveryWorktreePath: existsSync(previousPath) ? previousPath : null,
+            recoveryWorktreeBaseHead: previousRecoveryBaseHead, proof,
+            detail: 'Git could not produce the saved manual resolution for checking against the current base.',
+          })
+        }
+        writeFileSync(patchPath, manualPatch.stdout)
       }
-      const manualPatch = runGitBinarySync(input.projectPath, [
-        '-c', 'core.quotePath=true', 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv',
-        '--no-color', '--no-renames', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/',
-        input.previousRecoveryBaseHead, previousHead,
-      ])
-      if (!manualPatch.ok) {
-        throw manualError({
-          reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-          recoveryWorktreePath: existsSync(previousPath) ? previousPath : null, proof,
-          detail: 'Git could not produce the saved manual resolution for checking against the current base.',
-        })
-      }
-      writeFileSync(patchPath, manualPatch.stdout)
     }
     if (gitRefExists(input.projectPath, correctionRef)) {
       const correctedCandidateSha = gitSync(input.projectPath, ['rev-parse', correctionRef])
@@ -456,7 +448,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
       if (ticketHead !== input.candidateCommitSha && !savedTicketHead) {
         throw new Error('A previously prepared correction exists, but the ticket worktree has moved to another commit.')
       }
-      if (getCurrentBranch(input.worktreePath) !== input.headBranch) {
+      if (getCurrentBranch(input.worktreePath) !== ticketBranch) {
         throw new Error('The ticket worktree is no longer on its ticket branch.')
       }
       expectedTicketHead = ticketHead
@@ -484,7 +476,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
 
     ensureNoTrackedWorktreeChanges(input.worktreePath, 'early-merge candidate correction')
     if (gitSync(input.worktreePath, ['rev-parse', 'HEAD']) !== expectedTicketHead
-      || getCurrentBranch(input.worktreePath) !== input.headBranch) {
+      || getCurrentBranch(input.worktreePath) !== ticketBranch) {
       throw new Error('The ticket worktree no longer points to the approved candidate on its ticket branch.')
     }
     mkdirSync(dirname(recoveryWorktreePath), { recursive: true })
@@ -501,7 +493,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
       if (!registeredWorktreePath(input.projectPath, recoveryWorktreePath)) {
         throw manualError({
           reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-          recoveryWorktreePath, proof,
+          recoveryWorktreePath, recoveryWorktreeBaseHead: remote.remoteBaseHead, proof,
           detail: `A path already exists at ${recoveryWorktreePath}, but it is not the expected Git recovery worktree.`,
         })
       }
@@ -511,15 +503,21 @@ export async function reconcileMergedPullRequestCandidate(input: {
       if (recoveryStatus || (recoveryHead !== remote.remoteBaseHead && parent !== remote.remoteBaseHead)) {
         throw manualError({
           reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
-          recoveryWorktreePath, conflictPaths: conflictPaths(recoveryWorktreePath), proof,
+          recoveryWorktreePath, recoveryWorktreeBaseHead: remote.remoteBaseHead,
+          conflictPaths: conflictPaths(recoveryWorktreePath), proof,
           detail: 'Resolve the conflict in the recovery checkout, stage the result, and commit it once on the current base before retrying.',
         })
       }
       if (recoveryHead !== remote.remoteBaseHead) {
+        const remoteBaseTreeSha = readGitTreeSha(input.projectPath, remote.remoteBaseHead)
+        if (gitSync(recoveryWorktreePath, ['rev-parse', 'HEAD^{tree}']) === remoteBaseTreeSha) {
+          await runGitMutationOrThrow(input.projectPath, ['worktree', 'remove', recoveryWorktreePath])
+          return { kind: 'already_landed', proof, remoteBaseTreeSha, manualResolutionNoChange: true }
+        }
         const correctedCandidateSha = recoveryHead
         await captureCorrectionRefs(input.projectPath, correctedCommitRef(correctedCandidateSha), correctionRef, correctedCandidateSha, previousCorrectionSha)
         if (gitSync(input.worktreePath, ['rev-parse', 'HEAD']) !== expectedTicketHead
-          || getCurrentBranch(input.worktreePath) !== input.headBranch) {
+          || getCurrentBranch(input.worktreePath) !== ticketBranch) {
           throw new Error('The ticket worktree changed before the resolved candidate could be installed.')
         }
         protectTicketWorktreeForCorrectionOrStop({
@@ -570,6 +568,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
           pr: input.pr,
           candidateCommitSha: input.candidateCommitSha,
           recoveryWorktreePath,
+          recoveryWorktreeBaseHead: remote.remoteBaseHead,
           conflictPaths: conflictPaths(recoveryWorktreePath),
           proof,
           detail: `The A-to-B patch could not be applied cleanly to origin/${input.baseBranch}@${remote.remoteBaseHead}: ${error instanceof Error ? error.message : String(error)}`,
@@ -578,8 +577,29 @@ export async function reconcileMergedPullRequestCandidate(input: {
     }
 
     const recoveryStatus = gitSync(recoveryWorktreePath, ['status', '--porcelain=1', '-z', '--untracked-files=all'], { trimOutput: false })
-    const emptySavedResolution = savedManualResolution && recoveryStatus === ''
-    if (!recoveryStatus && !savedManualResolution) {
+    const savedManualResolutionIsEmpty = Boolean(previousRecoveryBaseHead && readFileSync(patchPath).length === 0)
+    if (savedManualResolutionIsEmpty && recoveryStatus) {
+      throw manualError({
+        reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,
+        recoveryWorktreePath, recoveryWorktreeBaseHead: remote.remoteBaseHead,
+        conflictPaths: conflictPaths(recoveryWorktreePath), proof,
+        detail: 'The saved manual resolution leaves no candidate changes, but the recovery checkout still has local files that must be preserved.',
+      })
+    }
+    if (savedManualResolutionIsEmpty) {
+      const remoteBaseTreeSha = readGitTreeSha(input.projectPath, remote.remoteBaseHead)
+      for (const cleanWorktreePath of [recoveryWorktreePath, previousRecoveryWorktreePath]) {
+        if (!cleanWorktreePath || !existsSync(cleanWorktreePath)) continue
+        try {
+          await runGitMutationOrThrow(input.projectPath, ['worktree', 'remove', cleanWorktreePath])
+        } catch (error) {
+          if (error instanceof RunCommandTimeoutError) throw error
+          // A failed cleanup leaves only a clean recovery checkout.
+        }
+      }
+      return { kind: 'already_landed', proof, remoteBaseTreeSha, manualResolutionNoChange: true }
+    }
+    if (!recoveryStatus) {
       const remoteBaseTreeSha = readGitTreeSha(input.projectPath, remote.remoteBaseHead)
       try {
         await runGitMutationOrThrow(input.projectPath, ['worktree', 'remove', recoveryWorktreePath])
@@ -595,7 +615,6 @@ export async function reconcileMergedPullRequestCandidate(input: {
       '-c', 'user.name=LoopTroop',
       '-c', 'user.email=looptroop@local',
       'commit',
-      ...(emptySavedResolution ? ['--allow-empty'] : []),
       ...(bypassHooks ? ['--no-verify'] : []),
       '-m', `${input.externalId}: carry candidate changes after merged PR #${input.pr.number}`,
     ])
@@ -606,7 +625,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
     await captureCorrectionRefs(input.projectPath, correctedCommitRef(correctedCandidateSha), correctionRef, correctedCandidateSha, previousCorrectionSha)
 
     if (gitSync(input.worktreePath, ['rev-parse', 'HEAD']) !== expectedTicketHead
-      || getCurrentBranch(input.worktreePath) !== input.headBranch) {
+      || getCurrentBranch(input.worktreePath) !== ticketBranch) {
       throw new Error('The ticket worktree changed before the corrected candidate could be installed.')
     }
     protectTicketWorktreeForCorrectionOrStop({
@@ -641,6 +660,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
       pr: input.pr,
       candidateCommitSha: input.candidateCommitSha,
       recoveryWorktreePath: existsSync(recoveryWorktreePath) ? recoveryWorktreePath : null,
+      recoveryWorktreeBaseHead: existsSync(recoveryWorktreePath) ? remote.remoteBaseHead : null,
       conflictPaths: existsSync(recoveryWorktreePath) ? conflictPaths(recoveryWorktreePath) : [],
       proof,
       detail: `Corrective recovery stopped without changing the ticket worktree: ${error instanceof Error ? error.message : String(error)}`,

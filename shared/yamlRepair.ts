@@ -2106,8 +2106,9 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
 /**
  * Quote plain YAML scalars that begin with reserved indicator characters.
  *
- * YAML rejects plain one-line scalars that begin with reserved indicators such
- * as backticks or `@`. Models sometimes emit values like:
+ * YAML parsers reject plain one-line scalars that begin with reserved
+ * indicators such as backticks, `@`, `,`, `]`, or `}`. Models sometimes emit
+ * values like:
  *   question: `repo_git_mutex` behavior?
  *   - @trace/span-id
  * This repair wraps the full visible scalar in double quotes while preserving
@@ -2116,7 +2117,7 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
 export function repairYamlReservedIndicatorScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const RESERVED_INDICATOR_START = /^[`@]/
+  const RESERVED_INDICATOR_START = /^[`@,\]}]/
   let blockScalarBaseIndent = -1
 
   for (const line of lines) {

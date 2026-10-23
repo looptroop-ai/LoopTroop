@@ -58,7 +58,7 @@ const PRD_OUTPUT_FORMAT = [
   '`technical_requirements` keys: `architecture_constraints`, `data_model`, `api_contracts`, `security_constraints`, `performance_constraints`, `reliability_constraints`, `error_handling_rules`, `tooling_assumptions`.',
   '`epics` must be a non-empty list. Each epic: `id`, `title`, `objective`, `implementation_steps`, `user_stories`.',
   'Each user story: `id`, `title`, `acceptance_criteria`, `implementation_steps`, `verification.required_commands`. Every command is a structured process or current-host shell command; prefer direct process execution.',
-  'YAML Safety: Any one-line scalar or list item that begins with backticks or `@`, or contains `: ` in plain text, must be double-quoted.',
+  'YAML Safety: Any one-line scalar or list item that begins with a backtick, `@`, `,`, `]`, or `}`, or contains `: ` in plain text, must be double-quoted.',
   'Example:',
   '```yaml',
   'schema_version: 1',

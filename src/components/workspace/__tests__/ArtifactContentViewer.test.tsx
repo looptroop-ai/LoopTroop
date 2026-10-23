@@ -4122,7 +4122,7 @@ items:
   it('keeps reserved-scalar parser fixes separate from retry interventions in parser notices', () => {
     const copy = buildArtifactProcessingNoticeCopy(futureStructuredOutput({
       repairApplied: true,
-      repairWarnings: ['Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.'],
+      repairWarnings: ['Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.'],
       autoRetryCount: 1,
       validationError: 'PRD parser rejected the first pass.',
     }), 'prd-draft')

@@ -199,6 +199,19 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     expect(parseYamlOrJsonCandidate(content)).toEqual(expected)
   })
 
+  it.each([
+    ['mapping value beginning with comma', 'value: ,text', { value: ',text' }],
+    ['mapping value beginning with closing bracket', 'value: ]text', { value: ']text' }],
+    ['mapping value beginning with closing brace', 'value: }text', { value: '}text' }],
+    ['list item beginning with comma', 'items:\n  - ,text', { items: [',text'] }],
+    ['list item beginning with closing bracket', 'items:\n  - ]text', { items: [']text'] }],
+    ['list item beginning with closing brace', 'items:\n  - }text', { items: ['}text'] }],
+  ] as const)('parses %s without changing the scalar text', (_caseName, content, expected) => {
+    const repairWarnings: string[] = []
+    expect(parseYamlOrJsonCandidate(content, { repairWarnings })).toEqual(expected)
+    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.')
+  })
+
   it('reports all stripped XML-style lines when there are several', () => {
     const repairWarnings: string[] = []
     const parsed = parseYamlOrJsonCandidate([
@@ -400,7 +413,7 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
       after: 1,
     })
     expect(repairWarnings).toContain('Removed duplicate YAML mapping keys before parsing.')
-    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.')
+    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.')
   })
 
   it('preserves literal content in a standalone block scalar', () => {
@@ -451,7 +464,7 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
       owner: '@team',
       free_text: 'false',
     })
-    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.')
+    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.')
     expect(repairWarnings).toContain('Repaired inconsistent YAML indentation for nested mapping children.')
     expect(repairWarnings).toContain('Repaired YAML free_text scalar formatting before parsing.')
   })
@@ -494,7 +507,7 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     ].join('\n'), { repairWarnings })).toEqual({
       items: [{ body: 'text\n', owner: '@loop-troop' }],
     })
-    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.')
+    expect(repairWarnings).toContain('Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.')
   })
 
   it('repairs compact inline interview mappings before YAML can accept the wrong scalar shape', () => {

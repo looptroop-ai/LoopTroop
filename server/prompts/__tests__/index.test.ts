@@ -160,7 +160,7 @@ describe.concurrent('structured prompt hardening', () => {
     expect(PROM10b.outputFormat).toContain('schema_version')
     expect(PROM10b.outputFormat).toContain('technical_requirements')
     expect(PROM10b.outputFormat).toContain('required_commands')
-    expect(PROM10b.outputFormat).toContain('begins with backticks or `@`, or contains `: ` in plain text, must be double-quoted')
+    expect(PROM10b.outputFormat).toContain('begins with a backtick, `@`, `,`, `]`, or `}`, or contains `: ` in plain text, must be double-quoted')
     expect(PROM10b.outputFormat).not.toContain('PROM13.output_file')
 
     const draftPrompt = buildPromptFromTemplate(PROM10b, [])
@@ -173,7 +173,7 @@ describe.concurrent('structured prompt hardening', () => {
     expect(draftPrompt).toContain('Every epic must include at least one fully populated `user_stories` entry')
     expect(draftPrompt).toContain('Begin the artifact at `schema_version` and end at `approval.approved_at`')
     expect(draftPrompt).toContain('shorten field text instead of truncating later epics')
-    expect(draftPrompt).toContain('Any one-line scalar or list item that begins with backticks or `@`, or contains `: ` in plain text, must be double-quoted')
+    expect(draftPrompt).toContain('Any one-line scalar or list item that begins with a backtick, `@`, `,`, `]`, or `}`, or contains `: ` in plain text, must be double-quoted')
     expect(draftPrompt).toContain('Never repeat prompt scaffolding or placeholder schema lines from `## Expected Output Format`, `## Context`, or `# Ticket:`')
     expect(draftPrompt).toContain('Never output implementation plans, diffs, next steps, acknowledgements, commentary')
 

@@ -2749,7 +2749,7 @@ describe.concurrent('structured output normalization', () => {
     if (!result.ok) return
     expect(result.repairApplied).toBe(true)
     expect(result.repairWarnings).toEqual([
-      'Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.',
+      'Quoted plain YAML scalars that began with reserved indicator characters (backtick, at sign, comma, closing bracket, or closing brace) before reparsing.',
     ])
     expect(result.value.gaps).toEqual([
       'Missing rollback behavior',

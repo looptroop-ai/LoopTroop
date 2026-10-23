@@ -383,6 +383,10 @@ describe('pull request drafting context', () => {
     await handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
 
     expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenCalledTimes(2)
+    expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenLastCalledWith(expect.objectContaining({
+      candidateCommitSha: originalCandidate,
+      validatedCandidate: { commitSha: resquashedCandidate, baseHead: '2'.repeat(40) },
+    }))
     expect(mocks.pushBranchRef).toHaveBeenCalledWith(expect.objectContaining({
       sourceRef: resquashedCandidate,
       destinationBranch: correctionBranch,
@@ -780,6 +784,42 @@ describe('pull request drafting context', () => {
       .toMatchObject({ status: 'pending_revalidation', candidateCommitSha: refreshedCandidate })
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'final_test_report', 'RUNNING_FINAL_TEST')!.content))
       .toMatchObject({ status: 'pending', candidateCommitSha: refreshedCandidate })
+  })
+
+  it.each(['equivalent', 'already_landed'] as const)('records the delivered corrective candidate when proof uses an earlier candidate (%s)', async (kind) => {
+    resetTestDb()
+    const { ticket, repoDir, paths } = await createPullRequestReadyTicket()
+    const originalCandidate = 'b'.repeat(40)
+    const validatedCandidate = 'd'.repeat(40)
+    const mergedPr = makeMergedPullRequest()
+    const correctionBranch = `looptroop/early-merge/pr-${mergedPr.number}-${originalCandidate.slice(0, 12)}`
+    writeIntegrationCandidate(ticket.id, validatedCandidate, '2'.repeat(40), {
+      status: 'passed', earlyMergeCorrectionBranch: correctionBranch,
+    })
+    upsertLatestPhaseArtifact(ticket.id, 'early_merge_recovery', 'CREATING_PULL_REQUEST', JSON.stringify(
+      makeEarlyMergeReport(ticket, mergedPr, originalCandidate, {
+        status: 'corrected', reason: 'corrective_delta', correctedCandidateSha: 'c'.repeat(40),
+        candidateTreeSha: 'f'.repeat(40), prHeadTreeSha: '1'.repeat(40), remoteBaseHead: '2'.repeat(40),
+      }),
+    ))
+    const proof = makeEarlyMergeProof(mergedPr, originalCandidate)
+    mocks.reconcileMergedPullRequestCandidate.mockResolvedValueOnce(kind === 'equivalent'
+      ? { kind, proof: { ...proof, candidateTreeSha: proof.mergedHeadTreeSha } }
+      : { kind, proof, remoteBaseTreeSha: '3'.repeat(40) })
+    const input = makeEarlyMergeInput({
+      ticket, repoDir, worktreePath: paths.worktreePath, candidateCommitSha: validatedCandidate, pr: mergedPr,
+    })
+
+    await expect(reconcileEarlyMergedPullRequest(input)).resolves.toBe(kind)
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, MERGE_REPORT_ARTIFACT, 'WAITING_PR_REVIEW')!.content))
+      .toMatchObject({ candidateCommitSha: validatedCandidate })
+    expect(readPullRequestReport(ticket.id)?.candidateCommitSha).toBe(validatedCandidate)
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'early_merge_recovery')!.content))
+      .toMatchObject({ candidateCommitSha: originalCandidate })
+    expect(mocks.reconcileMergedPullRequestCandidate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      candidateCommitSha: originalCandidate,
+      validatedCandidate: { commitSha: validatedCandidate, baseHead: '2'.repeat(40) },
+    }))
   })
 
   it('refreshes a passed correction before pushing when the base advances during validation', async () => {

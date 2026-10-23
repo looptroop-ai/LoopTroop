@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { getPermissionGuardRejection } from '../permissionGuard'
 
 const context = {
@@ -15,6 +15,15 @@ const check = (command: string, unverifiedDirectory = false) => getPermissionGua
 })
 
 describe('recognized Git commands in the workflow guard', () => {
+  it.each(['rm -r', 'restore', 'checkout', 'reset'])('checks exclusion-only pathspecs as a whole checkout for git %s', (command) => {
+    for (const exclusion of [':!dist', ':^dist', ':(exclude)dist', ':(top,exclude)dist', ':(^)dist']) {
+      expect(check(`git -C /repo ${command} -- '${exclusion}'`)).not.toBeNull()
+      expect(check(`git ${command} -- '${exclusion}'`)).not.toBeNull()
+      expect(check(`git -C /tmp/scratch ${command} -- '${exclusion}'`)).toBeNull()
+      expect(check(`git ${command} -- src/file.ts '${exclusion}'`)).toBeNull()
+    }
+  })
+
   it.each([
     'git --namespace foo push origin HEAD', 'git --exec-path /tmp push origin HEAD',
     'git --exec-path=/tmp/evil status', 'git --exec-path /tmp/evil unknown-helper',
@@ -69,6 +78,15 @@ describe('recognized Git commands in the workflow guard', () => {
     'tar -cf /repo/.git/archive.tar file.txt', 'tar -h -xf archive.tar -C /repo',
   ])('refuses unsafe Git shape: %s', (command) => {
     expect(check(command)).not.toBeNull()
+  })
+
+  it.each(['rm -r', 'restore', 'checkout', 'reset'])('checks exclusion-only pathspecs as a whole checkout for git %s', (command) => {
+    for (const exclusion of [':!dist', ':^dist', ':(exclude)dist', ':(top,exclude)dist', ':(^)dist']) {
+      expect(check(`git -C /repo ${command} -- '${exclusion}'`)).not.toBeNull()
+      expect(check(`git ${command} -- '${exclusion}'`)).not.toBeNull()
+      expect(check(`git -C /tmp/scratch ${command} -- '${exclusion}'`)).toBeNull()
+      expect(check(`git ${command} -- src/file.ts '${exclusion}'`)).toBeNull()
+    }
   })
 
   it.each([
@@ -178,9 +196,8 @@ describe('recognized Git commands in the workflow guard', () => {
 
   it('checks inherited GitHub helpers and commands that can create a terminal', () => {
     const names = ['GH_PAGER', 'PAGER', 'GH_FORCE_TTY', 'GH_CONFIG_DIR'] as const
-    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]))
     try {
-      for (const name of names) delete process.env[name]
+      for (const name of names) vi.stubEnv(name, undefined)
       expect(check('script -- gh pr diff 12')).toContain('pager configuration')
       expect(check("script -c 'gh pr diff 12' /dev/null")).toContain('pager configuration')
       expect(check("script -c 'GH_PAGER=cat gh pr diff 12' /dev/null")).toBeNull()
@@ -220,11 +237,7 @@ describe('recognized Git commands in the workflow guard', () => {
       if (process.platform === 'win32') expect(lowerCaseUnset).toBeNull()
       else expect(lowerCaseUnset).toContain('GitHub pager')
     } finally {
-      for (const name of names) {
-        const value = previous[name]
-        if (value === undefined) delete process.env[name]
-        else process.env[name] = value
-      }
+      vi.unstubAllEnvs()
     }
   })
 
@@ -235,7 +248,7 @@ describe('recognized Git commands in the workflow guard', () => {
 
   it('checks effective fetch refspecs only for the selected remote and when they apply', ({ onTestFinished }) => {
     const root = mkdtempSync(join(tmpdir(), 'looptroop-guard-fetch-'))
-    onTestFinished(() => rmSync(root, { recursive: true, force: true }))
+    onTestFinished(() => { rmSync(root, { recursive: true, force: true }) })
     execFileSync('git', ['init', '-q', root])
     execFileSync('git', ['-C', root, 'config', 'remote.origin.url', 'https://example.test/origin.git'])
     execFileSync('git', ['-C', root, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/looptroop/pull-heads/*'])

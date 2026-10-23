@@ -50,7 +50,7 @@
     "LICENSE",
     "THIRD-PARTY-NOTICES.md"
   ],
-  "packageManager": "npm@12.2.0",
+  "packageManager": "npm@12.2.1",
   "scripts": {
     "predev": "node scripts/dev-preflight.mjs",
     "dev": "tsx scripts/dev.ts",
@@ -103,7 +103,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.5",
-    "@opencode-ai/sdk": "^1.19.0",
+    "@opencode-ai/sdk": "^1.19.2",
     "drizzle-orm": "1.0.0-rc.4",
     "hono": "^4.13.13",
     "js-yaml": "^5.5.0",

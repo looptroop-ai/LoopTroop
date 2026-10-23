@@ -18,6 +18,28 @@ const shell = (command: string, options: { directory?: string; patterns?: string
   getPermissionGuardRejection({ permission: 'bash', patterns: options.patterns ?? [command], context: options.context ?? context, directory: options.directory })
 
 describe('getPermissionGuardRejection', () => {
+  it.each([
+    'bash -c --', 'sh -c --', 'bash -c -o pipefail', 'bash -co pipefail',
+    'bash -cO extglob', 'bash -cxO extglob', 'sh -co errexit',
+    'bash -oc pipefail', 'bash -Oc extglob', 'bash -c +o pipefail',
+    'bash -c -O extglob', 'bash -c -o pipefail -O extglob --', 'zsh -c -o errexit',
+  ])('finds the inline script after POSIX shell options: %s', (prefix) => {
+    expect(shell(`${prefix} 'git push origin HEAD'`)).toContain('remote repository')
+    expect(shell(`${prefix} 'gh pr merge 12'`)).toContain('GitHub')
+    expect(shell(`${prefix} 'git status'`)).toBeNull()
+  })
+
+  it.each([
+    "zsh -coerrexit 'git push origin HEAD' 'git status'",
+    "zsh -c -oerrexit 'gh pr merge 12' 'git status'",
+    "sh -coerrexit 'git push origin HEAD' 'git status'",
+    "zsh -c -d 'git push origin HEAD'", "zsh -dc 'gh pr merge 12'",
+    "bash -c -D 'git push origin HEAD'", "bash -Dc 'gh pr merge 12'",
+    'bash -c -o', 'bash -co', 'bash -cO', 'bash -c -o -x', 'bash -c --',
+  ])('refuses an unresolved POSIX inline script: %s', (command) => {
+    expect(shell(command)).toContain('inline shell command cannot be verified')
+  })
+
   it.each(['pwsh', 'powershell'])('%s rejects -ec as EncodedCommand and still parses -c commands', (shellName) => {
     expect(shell(`${shellName} -ec Zg==`)).toContain('encoded shell command')
     expect(shell(`${shellName} -c 'git push origin HEAD'`)).toContain('remote repository')
@@ -27,6 +49,14 @@ describe('getPermissionGuardRejection', () => {
     expect(shell('env -C /tmp echo ready; rm -rf .')).not.toBeNull()
     expect(shell('env -C /tmp echo ready; git reset --hard HEAD')).not.toBeNull()
     expect(shell('env -C /tmp rm -rf ./scratch-cache; gh pr view 12')).toBeNull()
+  })
+
+  it.each(['env -C /repo', 'env --chdir=/repo'])('checks nested shells in the wrapper directory: %s', (wrapper) => {
+    expect(shell(`${wrapper} sh -c 'rm src/file.ts'`)).not.toBeNull()
+    expect(shell(`${wrapper} watch rm src/file.ts`)).not.toBeNull()
+    expect(shell(`${wrapper} sh -c 'git restore -- src/file.ts'`)).not.toBeNull()
+    expect(shell(`${wrapper} sh -c 'git status'`)).toBeNull()
+    expect(shell("env -C /tmp sh -c 'rm scratch-cache'")).toBeNull()
   })
 
   it.each([
@@ -118,7 +148,7 @@ describe('getPermissionGuardRejection', () => {
     "bash -c 'npm test'", "bash -ec 'npm test'", "bash -ce 'npm test'", "sh -cx 'npm test'", 'sh -e ./build.sh',
     "sh -c 'gh pr view 12'", 'pwsh -Command "gh issue view 12"',
     'pwsh -CommandWithArgs "npm test"', 'pwsh -cwa "npm test"',
-    'env -C /tmp gh pr view 12', 'gh pr --repo owner/repo view 12', 'script -- gh pr view 12',
+    'env -C /tmp gh pr view 12', 'gh pr --repo owner/repo view 12', 'env GH_PAGER=cat script -- gh pr view 12',
     "printf '%s' '`git push origin HEAD`'", 'find dist -type f -delete',
     'find dist -exec rm -f {} +', 'find . -name package.json',
     "sed -i 's/old/new/' src/file.ts", "sed -e 's/old/new/' src/file.ts",

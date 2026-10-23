@@ -733,6 +733,7 @@ function refreshMergedPullRequestProjection(input: {
 }
 
 function writeEarlyMergeCompletion(input: {
+  candidateCommitSha: string
   ticketId: string
   baseBranch: string
   headBranch: string
@@ -753,7 +754,7 @@ function writeEarlyMergeCompletion(input: {
     disposition: 'merged',
     baseBranch: input.baseBranch,
     headBranch: input.headBranch,
-    candidateCommitSha: input.proof.candidateCommitSha,
+    candidateCommitSha: input.candidateCommitSha,
     prNumber: input.pr.number,
     prUrl: input.pr.url,
     prState: 'merged',
@@ -778,7 +779,7 @@ function writeEarlyMergeCompletion(input: {
     ticketId: input.ticketId,
     baseBranch: input.baseBranch,
     headBranch: input.headBranch,
-    candidateCommitSha: input.proof.candidateCommitSha,
+    candidateCommitSha: input.candidateCommitSha,
     pr: input.pr,
     message,
   })
@@ -862,7 +863,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
     message: `Pull request #${input.pr.number} is already merged; checking the candidate before completing delivery.`,
   })
   const previous = readEarlyMergeRecoveryReport(input.ticketId)
-  let reconciliationInput = { ...input, ticketBranch }
+  let reconciliationInput: typeof input & { ticketBranch: string; validatedCandidate?: { commitSha: string; baseHead: string } } = { ...input, ticketBranch }
   let refreshingValidatedCorrection = false
   if (getLatestPhaseArtifact(input.ticketId, 'integration_report', 'INTEGRATING_CHANGES')?.content) {
     const integration = readIntegrationArtifact(input.ticketId)
@@ -880,6 +881,9 @@ export async function reconcileEarlyMergedPullRequest(input: {
     if (correctionMatches && previous) {
       reconciliationInput = { ...input, ticketBranch, candidateCommitSha: previous.candidateCommitSha }
       refreshingValidatedCorrection = !pending
+      if (integration.record.status === 'passed' && integration.candidateCommitSha === input.candidateCommitSha) {
+        reconciliationInput.validatedCandidate = { commitSha: input.candidateCommitSha, baseHead: integration.mergeBase }
+      }
     }
   }
   if (previous?.prNumber === input.pr.number
@@ -891,6 +895,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
       && previous.landedCommitSha === input.pr.mergeCommitSha
       && previous.prUrl === input.pr.url) {
       writeEarlyMergeCompletion({
+        candidateCommitSha: input.candidateCommitSha,
         ticketId: input.ticketId,
         baseBranch: input.baseBranch,
         headBranch: input.headBranch,
@@ -915,6 +920,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
       && previous.landedCommitSha === input.pr.mergeCommitSha
       && previous.prUrl === input.pr.url) {
       writeEarlyMergeCompletion({
+        candidateCommitSha: input.candidateCommitSha,
         ticketId: input.ticketId,
         baseBranch: input.baseBranch,
         headBranch: input.headBranch,
@@ -961,6 +967,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
       })
       saveEarlyMergeRecoveryReport(input.ticketId, input.phase, report)
       writeEarlyMergeCompletion({
+        candidateCommitSha: input.candidateCommitSha,
         ticketId: input.ticketId,
         baseBranch: input.baseBranch,
         headBranch: input.headBranch,
@@ -983,6 +990,7 @@ export async function reconcileEarlyMergedPullRequest(input: {
       })
       saveEarlyMergeRecoveryReport(input.ticketId, input.phase, report)
       writeEarlyMergeCompletion({
+        candidateCommitSha: input.candidateCommitSha,
         ticketId: input.ticketId,
         baseBranch: input.baseBranch,
         headBranch: input.headBranch,

@@ -404,7 +404,7 @@ describe('reconcileMergedPullRequestCandidate', () => {
     expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(latestBase)
     expect(readFileSync(resolve(fixture.worktreePath, 'shared.txt'), 'utf8')).toBe('first\ncandidate change\n')
     expect(existsSync(oldRecoveryPath)).toBe(false)
-  })
+  }, 45_000)
 
   it('recognizes a recovery checkout through a symlinked project path', async () => {
     const fixture = makeFixture()
@@ -612,6 +612,47 @@ describe('reconcileMergedPullRequestCandidate', () => {
       .toBe('candidate prefix\nmerged PR change\nremote base addition\n')
   }, 45_000)
 
+  it.each([false, true])('preserves an approved re-squashed correction (base advanced: %s)', async (advance) => {
+    const fixture = makeFixture()
+    const first = await reconcileFixture(fixture)
+    expect(first.kind).toBe('corrected')
+    const baseHead = git(fixture.worktreePath, ['rev-parse', 'HEAD^'])
+    writeFileSync(resolve(fixture.worktreePath, 'candidate.txt'), 'validated candidate content\n')
+    git(fixture.worktreePath, ['add', '--', 'candidate.txt'])
+    git(fixture.worktreePath, ['reset', '--soft', baseHead])
+    const validatedSha = commit(fixture.worktreePath, 'validated squash candidate')
+    const latestBase = advance ? advanceBase(fixture, 'later.txt', 'later base work\n') : baseHead
+
+    const result = await reconcileMergedPullRequestCandidate({
+      ...fixture, externalId: 'TEST-42', baseBranch: 'main', headBranch: 'ticket',
+      previousRecoveryBaseHead: baseHead,
+      validatedCandidate: { commitSha: validatedSha, baseHead },
+      pr: pullRequest(fixture),
+    })
+
+    expect(result.kind).toBe('corrected')
+    if (result.kind !== 'corrected') throw new Error('Expected an approved corrective candidate')
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(result.correctedCandidateSha)
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD^'])).toBe(latestBase)
+    expect(readFileSync(resolve(fixture.worktreePath, 'candidate.txt'), 'utf8')).toBe('validated candidate content\n')
+    if (!advance) expect(result.correctedCandidateSha).toBe(validatedSha)
+    expect(git(fixture.projectPath, ['rev-parse', `refs/looptroop/early-merge/pr-42/candidate-${fixture.candidateCommitSha}-corrected-${validatedSha}`])).toBe(validatedSha)
+  }, 45_000)
+
+  it('preserves the ticket when the approved correction does not match its recorded base', async () => {
+    const fixture = makeFixture()
+    await reconcileFixture(fixture)
+    const validatedSha = git(fixture.worktreePath, ['rev-parse', 'HEAD'])
+    const error = await reconcileMergedPullRequestCandidate({
+      ...fixture, externalId: 'TEST-42', baseBranch: 'main', headBranch: 'ticket',
+      validatedCandidate: { commitSha: validatedSha, baseHead: fixture.mergedHeadSha },
+      pr: pullRequest(fixture),
+    }).catch((failure: unknown) => failure)
+
+    expect(error).toMatchObject({ recovery: { reason: 'missing_proof' } })
+    expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(validatedSha)
+  })
+
   describe.each([false, true])('saved correction retries (local work blocked installation: %s)', (blocked) => {
     let fixture: ReturnType<typeof makeFixture>
     let originalCorrection: string
@@ -744,7 +785,7 @@ describe('reconcileMergedPullRequestCandidate', () => {
       expect(git(fixture.worktreePath, ['rev-parse', 'HEAD'])).toBe(refreshedHead)
       expect(readFileSync(backup, 'utf8')).toBe('local draft to preserve\n')
       expect(readFileSync(resolve(fixture.worktreePath, 'later.txt'), 'utf8')).toBe('newer tracked base file\n')
-    })
+    }, 45_000)
 
     it('completes when the newer base already contains the saved correction delta', async () => {
       const originalCorrection = git(fixture.worktreePath, ['rev-parse', 'HEAD'])

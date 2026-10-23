@@ -251,6 +251,7 @@ export async function reconcileMergedPullRequestCandidate(input: {
   candidateCommitSha: string
   pr: PullRequestInfo
   previousRecoveryBaseHead?: string
+  validatedCandidate?: { commitSha: string; baseHead: string }
 }): Promise<EarlyMergeReconciliation> {
   const ticketBranch = input.ticketBranch ?? input.headBranch
   try {
@@ -344,8 +345,8 @@ export async function reconcileMergedPullRequestCandidate(input: {
   if (previousRecoveryBaseHead
     && !existsSync(recoveryPathForBase(previousRecoveryBaseHead))
     && !hasSavedCorrection) previousRecoveryBaseHead = undefined
-  const savedCorrectionSha = hasSavedCorrection ? gitSync(input.projectPath, ['rev-parse', correctionRef]) : undefined
-  const correctionAlreadyRefreshed = Boolean(savedCorrectionSha
+  let savedCorrectionSha = hasSavedCorrection ? gitSync(input.projectPath, ['rev-parse', correctionRef]) : undefined
+  let correctionAlreadyRefreshed = Boolean(savedCorrectionSha
     && gitSync(input.projectPath, ['rev-parse', `${savedCorrectionSha}^`]) === remote.remoteBaseHead)
   let previousCorrectionSha: string | undefined
   let previousRecoveryWorktreePath: string | undefined
@@ -386,11 +387,25 @@ export async function reconcileMergedPullRequestCandidate(input: {
   const patchDirectory = mkdtempSync(resolve(tmpdir(), 'looptroop-early-merge-'))
   const patchPath = resolve(patchDirectory, 'candidate.patch')
   try {
+    if (input.validatedCandidate) {
+      const { commitSha: validated, baseHead } = input.validatedCandidate
+      if (!hasSavedCorrection || !/^[0-9a-f]{40,64}$/i.test(validated)
+        || gitSync(input.worktreePath, ['rev-parse', 'HEAD']) !== validated
+        || getCurrentBranch(input.worktreePath) !== ticketBranch
+        || gitSync(input.projectPath, ['rev-parse', `${validated}^`]) !== baseHead) {
+        throw new Error('The validated correction no longer matches its recorded ticket branch and base.')
+      }
+      ensureNoTrackedWorktreeChanges(input.worktreePath, 'early-merge candidate correction')
+      await captureCorrectionRefs(input.projectPath, correctedCommitRef(validated), correctionRef, validated, savedCorrectionSha)
+      savedCorrectionSha = validated
+      previousRecoveryBaseHead = baseHead
+      correctionAlreadyRefreshed = baseHead === remote.remoteBaseHead
+    }
     writeFileSync(patchPath, patchResult.stdout)
     if (previousRecoveryBaseHead && previousRecoveryBaseHead !== remote.remoteBaseHead && !correctionAlreadyRefreshed) {
       const previousPath = recoveryPathForBase(previousRecoveryBaseHead)
       let previousHead: string | undefined
-      if (existsSync(previousPath)) {
+      if (existsSync(previousPath) && !input.validatedCandidate) {
         if (!registeredWorktreePath(input.projectPath, previousPath)) {
           throw manualError({
             reason: 'conflict', pr: input.pr, candidateCommitSha: input.candidateCommitSha,

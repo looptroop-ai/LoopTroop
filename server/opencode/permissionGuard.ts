@@ -138,13 +138,6 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
       }
     }
     Object.assign(environment, unwrapped.environment)
-    const commandInput: PermissionGuardInput = {
-      ...currentInput,
-      environment,
-      ghTerminalPossible: currentInput.ghTerminalPossible || unwrapped.ghTerminalPossible,
-      ghIgnoreInheritedEnvironment: currentInput.ghIgnoreInheritedEnvironment || unwrapped.ghIgnoreInheritedEnvironment,
-      ghUnsetEnvironment: [...new Set([...(currentInput.ghUnsetEnvironment ?? []), ...unwrapped.ghUnsetEnvironment])],
-    }
     if (segment.shellStateUnverified && Object.keys(unwrapped.environment).some((name) => name.toUpperCase().startsWith('GIT_')
       || ['PAGER', 'GH_PAGER', 'GH_FORCE_TTY'].includes(name.toUpperCase()))) {
       return 'the Git environment cannot be verified'
@@ -155,6 +148,13 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
       currentInput.unverifiedDirectory = !currentInput.directory
         || hasShellExpansion(nextDirectory)
         || (wasUnverified && !isAbsolutePath(nextDirectory))
+    }
+    const commandInput: PermissionGuardInput = {
+      ...currentInput,
+      environment,
+      ghTerminalPossible: currentInput.ghTerminalPossible || unwrapped.ghTerminalPossible,
+      ghIgnoreInheritedEnvironment: currentInput.ghIgnoreInheritedEnvironment || unwrapped.ghIgnoreInheritedEnvironment,
+      ghUnsetEnvironment: [...new Set([...(currentInput.ghUnsetEnvironment ?? []), ...unwrapped.ghUnsetEnvironment])],
     }
     for (const target of unwrapped.mutationPaths) {
       if (segment.dynamic && hasShellExpansion(target)) return 'the command output path cannot be verified'
@@ -229,13 +229,10 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
         return 'the encoded shell command cannot be verified; use a literal command'
       }
       const powershellCommandWithArgs = (arg: string) => /^-(?:cw|cwa|commandw[a-z]*)(?:[:=].*)?$/i.test(arg)
-      const posixOptionFlags = 'abefhiklmnprstuvxBCEHPT'
+      const posixOptionFlags = 'abefhiklmnoprstuvxBCEHOPT'
       const posixCommandOption = (arg: string) => {
         const options = arg.startsWith('-') && !arg.startsWith('--') ? arg.slice(1) : ''
-        const commandIndex = options.indexOf('c')
-        return commandIndex >= 0 && [...options.slice(0, commandIndex)].every((option) => posixOptionFlags.includes(option))
-          ? commandIndex
-          : -1
+        return options.indexOf('c')
       }
       const flag = args.findIndex((arg) => isPowerShell
         ? arg.startsWith('-') && (powershellCommandWithArgs(arg)
@@ -244,11 +241,26 @@ function classifyShell(command: string, input: PermissionGuardInput, depth = 0):
       const commandWithArgs = isPowerShell && flag >= 0 && powershellCommandWithArgs(args[flag]!)
       const attached = flag < 0 || !isPowerShell ? undefined : args[flag]!.match(/^-[^:=]+[:=](.*)$/)?.[1]
       const posixInline = flag < 0 || isPowerShell || basename === 'cmd' ? undefined : (() => {
-        const options = args[flag]!.slice(1)
-        const tail = options.slice(posixCommandOption(args[flag]!) + 1)
-        return tail && ![...tail].every((option) => posixOptionFlags.includes(option))
-          ? tail
-          : args[flag + 1]
+        for (let index = flag; index < args.length; index++) {
+          const arg = args[index]!
+          if (arg === '--') return args[index + 1]
+          if (!/^[+-]/.test(arg)) return arg
+          if (arg.startsWith('--')) return undefined
+          const options = arg.slice(1)
+          for (let optionIndex = 0; optionIndex < options.length; optionIndex++) {
+            const option = options[optionIndex]!
+            if (option === 'o' || option === 'O') {
+              // Other shells can treat the remaining letters as an attached option name.
+              if (basename !== 'bash' && optionIndex < options.length - 1) return undefined
+              const value = args[++index]
+              if (value === undefined || /^[+-]/.test(value)) return undefined
+            } else if (option !== 'c' && !posixOptionFlags.includes(option)) {
+              const tail = options.slice(optionIndex)
+              return index === flag && optionIndex > options.indexOf('c') && /\s/.test(tail) ? tail : undefined
+            }
+          }
+        }
+        return undefined
       })()
       const inline = ['eval', 'iex', 'invoke-expression'].includes(basename) ? args.join(' ')
         : flag < 0 ? undefined : attached ?? posixInline ?? args[flag + 1]
@@ -1288,6 +1300,9 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
     const mutation = gitMutationPaths(command, gitArgs, commandInput, workTree ?? directory)
     if (mutation.dryRun) return null
     if (!mutation.verified) return scopedBlock('the Git pathspec cannot be verified')
+    if (mutation.paths.every((target) => !gitPathspecTarget(target, commandInput, workTree ?? directory))) {
+      return scopedBlock('the exclusion-only Git pathspec could change the whole managed checkout')
+    }
     for (const targetPath of mutation.paths) {
       const effect = gitProtectedPathEffect(targetPath, commandInput, workTree ?? directory, dynamic, scopedBlock)
       if (effect) return effect
@@ -1299,6 +1314,9 @@ function classifyGit(args: string[], input: PermissionGuardInput, environment: R
       return scopedBlock('the Git pathspec cannot be verified')
     }
     const paths = gitRestorePaths(command, gitArgs)
+    if (paths.length && paths.every((target) => !gitPathspecTarget(target, commandInput, workTree ?? directory))) {
+      return scopedBlock('the exclusion-only Git pathspec could change the whole managed checkout')
+    }
     for (const targetPath of paths) {
       const effect = gitProtectedPathEffect(targetPath, commandInput, workTree ?? directory, dynamic, scopedBlock)
       if (effect) return effect
@@ -1772,7 +1790,7 @@ function gitPathspecTarget(
     const closing = value.indexOf(')')
     if (closing < 0) return { path: value, input }
     const magic = value.slice(2, closing).toLowerCase().split(',')
-    if (magic.includes('exclude') || magic.includes('!')) return undefined
+    if (magic.includes('exclude') || magic.includes('!') || magic.includes('^')) return undefined
     top = magic.includes('top')
     icase = magic.includes('icase')
     value = value.slice(closing + 1)

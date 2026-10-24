@@ -19,6 +19,24 @@ const shell = (command: string, options: { directory?: string; patterns?: string
 
 describe('getPermissionGuardRejection', () => {
   it.each([
+    'tar -xf archive.tar --sparse -C /repo',
+    'tar -xf archive.tar --xattrs -C /repo',
+    'tar -cf /tmp/archive.tar --set-mtime-command="git push origin HEAD" src/file.ts',
+    'tar -cf /tmp/archive.tar --set-mtime-c="git push origin HEAD" src/file.ts',
+    'tar -xf archive.tar --set-mtime-format -O -C /repo',
+  ])('preserves exact tar flag precedence and refuses mtime helpers: %s', (command) => {
+    expect(shell(command, { directory: '/tmp/scratch' })).not.toBeNull()
+  })
+
+  it.each([
+    'tar -xf archive.tar --sparse -C /tmp/scratch',
+    'tar -xf archive.tar --xattrs -C /tmp/scratch',
+    'tar -cf /tmp/archive.tar --set-mtime-format %s src/file.ts',
+  ])('keeps exact no-value tar options and mtime formats available: %s', (command) => {
+    expect(shell(command)).toBeNull()
+  })
+
+  it.each([
     'tar -xf archive.tar -- -C /tmp .git/config',
     'tar -xf archive.tar -- -C /tmp -O .git/config',
     'tar -xf archive.tar -T -O -C /repo',

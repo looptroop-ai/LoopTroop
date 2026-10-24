@@ -2453,7 +2453,7 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
   let writingArchive = false
   const destinations: string[] = []
   const archiveFiles: string[] = []
-  const helperOptions = ['--to-command', '--use-compress-program', '--rmt-command', '--rsh-command', '--info-script', '--new-volume-script']
+  const helperOptions = ['--to-command', '--use-compress-program', '--rmt-command', '--rsh-command', '--info-script', '--new-volume-script', '--set-mtime-command']
   const indirectOptions = [
     '--files-from', '--listed-incremental', '--transform', '--xform', '--one-top-level', '--chroot',
     '--options', '--index-file', '--volno-file', '--absolute-names', '--absolute-paths', '--insecure',
@@ -2465,12 +2465,12 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
     '--group', '--group-map', '--owner', '--owner-map', '--mode', '--mtime', '--sort', '--pax-option',
     '--xattrs-exclude', '--xattrs-include', '--starting-file', '--newer', '--newer-mtime', '--after-date',
     '--suffix', '--strip-components', '--no-quote-chars', '--quote-chars', '--quoting-style', '--warning',
-    '--gid', '--gname', '--uid', '--uname', '--include', '--passphrase',
+    '--gid', '--gname', '--uid', '--uname', '--include', '--passphrase', '--set-mtime-format',
     '--newer-ctime', '--newer-ctime-than', '--newer-mtime-than', '--newer-than',
     '--older', '--older-ctime', '--older-ctime-than', '--older-mtime', '--older-mtime-than', '--older-than',
   ]
   const knownOptions = [...helperOptions, ...indirectOptions, ...valueOptions,
-    '--file', '--directory', '--cd', '--list', '--checkpoint', '--checkpoint-action', '--remove-files',
+    '--file', '--directory', '--cd', '--list', '--sparse', '--xattrs', '--checkpoint', '--checkpoint-action', '--remove-files',
     '--to-stdout', '--extract', '--get', '--create', '--append', '--update', '--delete', '--concatenate', '--catenate',
   ]
   let afterSeparator = false

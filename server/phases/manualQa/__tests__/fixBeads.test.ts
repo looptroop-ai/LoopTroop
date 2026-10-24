@@ -358,12 +358,26 @@ describe('Manual QA fix-bead generation contracts', () => {
     ])
   })
 
-  it('rejects missing groups, invented PRD refs, unsafe paths, and forward dependencies', () => {
+  it.each([
+    [],
+    ['/outside/settings.json'],
+    ['C:/Users/User/settings.json'],
+    ['../shared/settings.json'],
+  ].map((targetFiles) => ({ targetFiles })))('accepts explicit repair-bead targets %j', ({ targetFiles }) => {
+    const groups = buildManualQaFixGroups(checklist, draft)
+    const response = validResponse.replace(
+      '["src/preferences/store.ts", "src/preferences/store.test.ts"]',
+      JSON.stringify(targetFiles),
+    )
+    expect(parseManualQaFixBeadsOutput(response, groups)[0]?.targetFiles).toEqual(targetFiles)
+  })
+
+  it('rejects missing groups, invented PRD refs, malformed targets, and forward dependencies', () => {
     const groups = buildManualQaFixGroups(checklist, draft)
     expect(() => parseManualQaFixBeadsOutput(validResponse.replace('EPIC-1/STORY-1/AC-1', 'EPIC-9/STORY-9/AC-9'), groups))
       .toThrow('preserve exactly its supplied PRD references')
-    expect(() => parseManualQaFixBeadsOutput(validResponse.replace('src/preferences/store.ts', '../outside.ts'), groups))
-      .toThrow('invalid target file path')
+    expect(() => parseManualQaFixBeadsOutput(validResponse.replace('    targetFiles: ["src/preferences/store.ts", "src/preferences/store.test.ts"]', '    targetFiles: null'), groups))
+      .toThrow()
     expect(() => parseManualQaFixBeadsOutput(validResponse.replace('blockedByGroupIds: []', 'blockedByGroupIds: ["item:qa-v1-001"]'), groups))
       .toThrow('only on an earlier merge group')
     expect(() => parseManualQaFixBeadsOutput('<MANUAL_QA_FIX_BEADS>\nbeads: []\n</MANUAL_QA_FIX_BEADS>', groups))

@@ -526,6 +526,28 @@ describe('CodingView', () => {
   })
 
   describe('adaptive grid layout', () => {
+    it('marks external targets on the executing bead and keeps the paths visible in its details', () => {
+      renderCoding({ runtime: { beads: [
+        { id: 'external', title: 'Check configuration', status: 'in_progress', iteration: 0, targetFiles: ['../shared/config.json'] },
+        { id: 'internal', title: 'Project work', status: 'pending', iteration: 0, targetFiles: ['src/app.txt'] },
+      ] } })
+      const externalBead = screen.getByRole('button', { name: /Check configuration/ })
+      expect(externalBead).toHaveTextContent('External files')
+      expect(screen.getByRole('button', { name: /Project work/ })).not.toHaveTextContent('External files')
+      fireEvent.click(externalBead)
+      fireEvent.click(screen.getByRole('button', { name: 'Details' }))
+      expect(screen.getByText('../shared/config.json')).toBeInTheDocument()
+    })
+
+    it('keeps an external-file indicator on compact numbered beads', () => {
+      const beads = Array.from({ length: 20 }, (_, index) => ({
+        id: `bead-${index + 1}`, title: `Bead number ${index + 1}`, status: 'pending', iteration: 0,
+        targetFiles: index === 0 ? ['/home/user/config.json'] : [],
+      }))
+      renderCoding({ runtime: { beads } })
+      expect(screen.getByRole('button', { name: 'Bead 1: Bead number 1, external files' }).querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+    })
+
     it('renders chips with titles for small bead count (≤15)', () => {
       renderCoding({
         runtime: {

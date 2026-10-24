@@ -94,6 +94,26 @@ describe('executeBeadsExpandStep', () => {
     runOpenCodePromptMock.mockReset()
   })
 
+  it.each([
+    { targetFiles: [] },
+    { targetFiles: ['C:/Users/User/.config/tool/settings.json'] },
+    { targetFiles: ['/home/user/.config/tool/settings.json'] },
+  ])('hydrates an explicit target list $targetFiles without rerolling the plan', async ({ targetFiles }) => {
+    queueResponses([response({ targetFiles })])
+
+    const result = await executeBeadsExpandStep(params())
+
+    expect(result.hydratedBeads[0]).toMatchObject({
+      targetFiles,
+      description: subset.description,
+      acceptanceCriteria: subset.acceptanceCriteria,
+      tests: subset.tests,
+    })
+    expect(JSON.parse(result.hydratedContent).targetFiles).toEqual(targetFiles)
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(1)
+    expect(result.structuredMeta.autoRetryCount).toBe(0)
+  })
+
   it('returns hydrated beads and forwards prompt, session, and stream events', async () => {
     queueResponses([response()])
     const input = params()

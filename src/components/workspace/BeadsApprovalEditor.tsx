@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { NormalizedBead } from '@/lib/beadsDocument'
 import { CommandSpecListEditor } from './CommandSpecListEditor'
+import { ExternalFilesBadge } from './ExternalFilesBadge'
 
 
 interface BeadsApprovalEditorProps {
@@ -125,6 +126,7 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
                 #{index + 1}
               </span>
               <span className="text-xs font-medium truncate flex-1">{bead.title || `Bead ${index + 1}`}</span>
+              <ExternalFilesBadge targetFiles={bead.targetFiles} />
               <Badge variant="outline" className="text-[10px] h-4">{String(bead.status || 'pending')}</Badge>
               <span className="text-muted-foreground text-[10px]">{isExpanded ? '▼' : '▶'}</span>
             </button>

@@ -75,9 +75,21 @@ describe('resolveOpenCodePermissions', () => {
     // had, on the only two permissions where the tables actually collide.
     for (const permission of ['doom_loop', 'external_directory']) {
       expect(isPermissionDeniedByRules(SILENT_DISABLED_PERMISSIONS, permission)).toBe(true)
-      expect(isPermissionDeniedByRules(SILENT_READ_ONLY_PERMISSIONS, permission)).toBe(true)
+      expect(isPermissionDeniedByRules(SILENT_READ_ONLY_PERMISSIONS, permission)).toBe(permission === 'doom_loop')
       expect(isPermissionDeniedByRules(SILENT_DEFAULT_PERMISSIONS, permission)).toBe(false)
     }
+  })
+
+  it('allows external file access while preserving each step\'s tool policy', () => {
+    for (const policy of ['default', 'execution_setup_online', 'read_only'] as const) {
+      const rules = resolveOpenCodePermissions(policy)
+      expect(isPermissionDeniedByRules(rules, 'external_directory', ['/outside/project'])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, 'read', ['/outside/project/settings.json'])).toBe(false)
+      for (const permission of ['edit', 'write', 'bash']) {
+        expect(isPermissionDeniedByRules(rules, permission, ['/outside/project/settings.json'])).toBe(policy === 'read_only')
+      }
+    }
+    expect(isPermissionDeniedByRules(SILENT_DISABLED_PERMISSIONS, 'external_directory')).toBe(true)
   })
 
   it('uses the last matching specific or wildcard rule', () => {

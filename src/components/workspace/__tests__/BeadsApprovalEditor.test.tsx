@@ -24,6 +24,19 @@ function ControlledEditor() {
 }
 
 describe('BeadsApprovalEditor accessibility', () => {
+  it('marks external targets on their bead before opening the editor', () => {
+    render(<BeadsApprovalEditor beads={[
+      { ...bead, targetFiles: ['src/app.txt', 'C:/Users/user/config.json'] },
+      { ...bead, id: 'B-2', title: 'Repository bead', targetFiles: ['src/app.txt'] },
+    ]} onChange={() => {}} />)
+
+    const externalBead = screen.getByRole('button', { name: /Accessible bead/ })
+    expect(within(externalBead).getByText('External files')).toBeInTheDocument()
+    expect(within(screen.getByRole('button', { name: /Repository bead/ })).queryByText('External files')).not.toBeInTheDocument()
+    fireEvent.click(externalBead)
+    expect(screen.getByRole('textbox', { name: 'Target file 2' })).toHaveValue('C:/Users/user/config.json')
+  })
+
   it('exposes disclosure state and labels every structured field', () => {
     render(<ControlledEditor />)
 

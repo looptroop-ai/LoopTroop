@@ -16,6 +16,7 @@ import {
   validateBeadDependencyGraph,
 } from './beadsFile'
 import { isRecord } from '@shared/typeGuards'
+import { isBeadTargetFile } from '@shared/beadTargets'
 import { resolveBeadStatus } from './types'
 
 /**
@@ -133,6 +134,9 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
       if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
         throw new BeadPlanValidationError(`Bead ${record.id} is missing a valid ${field} list`)
       }
+    }
+    if ((record.targetFiles as unknown[]).some((value) => !isBeadTargetFile(value))) {
+      throw new BeadPlanValidationError(`Bead ${record.id} contains an invalid target file path`)
     }
     if (!Array.isArray(record.testCommands)) {
       throw new BeadPlanValidationError(`Bead ${record.id} is missing the testCommands list`)

@@ -37,7 +37,7 @@ const OPENCODE_READ_ONLY_OVERRIDES: Readonly<Record<string, boolean>> = Object.f
   codesearch: true,
   doom_loop: false,
   edit: false,
-  external_directory: false,
+  external_directory: true,
   glob: true,
   grep: true,
   list: true,

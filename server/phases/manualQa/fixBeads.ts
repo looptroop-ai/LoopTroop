@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { z } from 'zod'
 import { isRecord } from '@shared/typeGuards'
+import { isBeadTargetFile } from '@shared/beadTargets'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext } from '../../machines/types'
 import type { Message, StreamEvent } from '../../opencode/types'
@@ -52,7 +53,7 @@ const CandidateSchema = z.object({
   testCommandReason: z.string().trim().min(1).optional(),
   labels: z.array(z.string().trim().min(1)).min(1),
   blockedByGroupIds: z.array(z.string().trim().min(1)).default([]),
-  targetFiles: z.array(z.string().trim().min(1)).min(1),
+  targetFiles: z.array(z.string().trim().min(1).refine(isBeadTargetFile)),
 }).strict().superRefine((candidate, ctx) => {
   if (candidate.testCommands.length === 0 && !candidate.testCommandReason) {
     ctx.addIssue({ code: 'custom', path: ['testCommandReason'], message: 'testCommandReason is required when testCommands is empty.' })
@@ -104,12 +105,6 @@ export function buildManualQaFixGroups(
   }))
 }
 
-function isProjectRelativePath(value: string): boolean {
-  if (!value.trim() || path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) return false
-  const normalized = path.posix.normalize(value.replace(/\\/g, '/'))
-  return normalized !== '.' && !normalized.startsWith('../') && !normalized.includes('/../')
-}
-
 function sameStringSet(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value) => right.includes(value))
 }
@@ -158,7 +153,7 @@ export function validateManualQaFixBeadCandidates(
       if (dependencyIndex >= index) throw new Error(`Manual QA fix bead ${bead.groupId} may depend only on an earlier merge group.`)
     }
     for (const targetFile of bead.targetFiles) {
-      if (!isProjectRelativePath(targetFile)) {
+      if (!isBeadTargetFile(targetFile)) {
         throw new Error(`Manual QA fix bead ${bead.groupId} has invalid target file path "${targetFile}".`)
       }
     }

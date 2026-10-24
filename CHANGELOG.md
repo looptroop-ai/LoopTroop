@@ -11,12 +11,17 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
+- Beads support external file targets with visible warnings, and explicit empty targets for work that changes no files.
+- Retry starts failed AI work in a fresh session, with optional user guidance across supported AI steps; Continue preserves the existing conversation.
 - Model-generated YAML values beginning with `,`, `]`, or `}` now parse without changing their text.
 - AI workflow prompts receive shared delivery guidance, while the request guard refuses direct GitHub and remote Git writes.
 - LoopTroop verifies early-merged ticket PRs and safely returns remaining work through review.
 
 ### Fixed
 
+- Accept external bead targets on Windows, macOS, Linux, and WSL, and explicit empty target lists without inventing repository files. Missing or malformed target lists remain invalid. Approval and execution flag absolute or repository-escaping target paths; external access has no folder allowlist, separate permission step, or automatic backup and remains subject to operating-system permissions and existing managed-state protections. External changes are outside Git recovery.
+- Stop and abandon failed AI sessions before manual Retry, including Retry with extra note, so refinement and coverage cannot reconnect to the stuck conversation. Preserve completed planning, saved interview answers, coding checkpoints, and successful-code finalization recovery. If the stop cannot be confirmed, keep the ticket blocked.
+- Make workspace setup retry notes use a fresh session, matching other AI retries. Support extra notes for failed AI steps and individual council-member restarts. Notes are passed unchanged to the affected work and retained in its history without changing approved documents or other members' results. Drafts steered by member retry notes carry the same anonymous operator-guidance notice as drafts steered by answered AI questions; Continue keeps its existing same-session behavior.
 - Quoted model-generated YAML scalars beginning with `,`, `]`, or `}` so stricter `js-yaml` parsing preserves their emitted values.
 - Before pushing a candidate, LoopTroop checks for a matching merged PR, verifies its landed commit on the current remote base, fetches the exact PR head, and compares tree proofs. A matching candidate completes from the original PR and stores the original PR, candidate SHA, and proofs. When the candidate has additional changes, LoopTroop applies only those changes to a recovery worktree on the verified base and reruns final tests, optional Manual QA, integration, and PR creation on a separate branch, leaving the merged PR and its branch untouched.
 - Recovery keeps corrective PR lineage across repeated early merges, recognizes a candidate delta already present on the base, retries temporary remote failures, checks every matching PR page, normalizes recovery checkout paths across platforms, and preserves manual recovery edits. A committed manual resolution can be adopted on retry; if the base advanced, it is refreshed on the latest verified base and revalidated. A manual resolution with no remaining changes completes from the verified merge; if no correction or recovery checkout survives, retry restarts from the original candidate. Verified merge history remains sufficient after later edits or reverts; local files blocking a clean correction receive their own diagnostic.

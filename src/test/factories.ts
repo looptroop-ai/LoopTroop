@@ -30,7 +30,7 @@ export const TEST = {
 // ---------------------------------------------------------------------------
 type TicketRuntime = Ticket['runtime']
 type RuntimeBead = NonNullable<TicketRuntime['beads']>[number]
-export type RuntimeBeadInput = Omit<RuntimeBead, 'failedIterationNotes' | 'userRetryNotes' | 'finalizationFailureNotes'> & Partial<Pick<RuntimeBead, 'failedIterationNotes' | 'userRetryNotes' | 'finalizationFailureNotes'>>
+export type RuntimeBeadInput = Omit<RuntimeBead, 'failedIterationNotes' | 'userRetryNotes' | 'finalizationFailureNotes'> & Partial<Pick<RuntimeBead, 'failedIterationNotes' | 'userRetryNotes' | 'finalizationFailureNotes'>> & { targetFiles?: string[] }
 type TicketOverrides = Omit<Partial<Ticket>, 'runtime'> & {
   runtime?: Omit<Partial<TicketRuntime>, 'beads'> & { beads?: RuntimeBeadInput[] }
 }

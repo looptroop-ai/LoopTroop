@@ -19,6 +19,81 @@ const shell = (command: string, options: { directory?: string; patterns?: string
 
 describe('getPermissionGuardRejection', () => {
   it.each([
+    'tar -xf archive.tar -- -C /tmp .git/config',
+    'tar -xf archive.tar -- -C /tmp -O .git/config',
+    'tar -xf archive.tar -T -O -C /repo',
+    'tar -xf archive.tar --files-from -O -C /repo',
+    'tar -xf archive.tar --files-fr=-O -C /repo',
+    'tar xTf -O archive.tar -C /repo',
+    'tar -xf archive.tar -g -O -C /repo',
+    'tar -xf archive.tar --listed-incre -O -C /repo',
+    'tar -xf archive.tar -X -O -C /repo',
+    'tar -xf archive.tar --exclude-from -O -C /repo',
+    'tar -xf archive.tar --exclude-fr -O -C /repo',
+    'tar -xf archive.tar --exclude -O -C /repo',
+    'tar -xf archive.tar -b -O -C /repo',
+    'tar -xf archive.tar --strip-components -O -C /repo',
+    'tar -xf archive.tar --strip-comp -O -C /repo',
+    'tar -xf archive.tar -H -O -C /repo',
+    'tar -xf archive.tar -L -O -C /repo',
+    'tar -xf archive.tar -s -O -C /repo',
+    'tar -xf archive.tar -W to-stdout -C /repo',
+    'tar -xf archive.tar --options -O -C /repo',
+    'tar -xf archive.tar --index-file /repo/.git/index -C /tmp/scratch',
+    'tar -cf /tmp/archive.tar --volno-file /repo/.git/index src/file.ts',
+    'tar -xf archive.tar -P -C /tmp/scratch',
+    'tar -xf archive.tar --absolute-names -C /tmp/scratch',
+    'tar -cM -f /repo/.git/archive.tar -f /tmp/next.tar src/file.ts',
+    'tar -cM --file /tmp/first.tar --file=/repo/.git/next.tar src/file.ts',
+  ])('keeps tar option values and every archive output protected: %s', (command) => {
+    expect(shell(command)).not.toBeNull()
+  })
+
+  it.each([
+    'tar -xf archive.tar -C /tmp/scratch -- -C /repo -O .git/config',
+    'tar -xf archive.tar -C /tmp/scratch --strip-components 1 --exclude node_modules',
+    'tar --extract --file archive.tar --directory /tmp/scratch --strip-comp=1 --exclude=node_modules',
+    'tar -xf archive.tar -X excludes.txt -b 20 -C /tmp/scratch',
+    'tar xbf 20 archive.tar -C /tmp/scratch',
+    'tar -xf archive.tar --exclude-from -O -C /tmp/scratch',
+    'tar -cM -f /tmp/first.tar -f /tmp/next.tar src/file.ts',
+    'tar --extract --file archive.tar --cd /tmp/scratch',
+  ])('keeps literal tar operands and harmless setup options available: %s', (command) => {
+    expect(shell(command)).toBeNull()
+  })
+
+  it.each([
+    'tar --extr -f archive.tar -C /repo',
+    'tar -xfOutput.tar -C /repo',
+    'tar -xfarchiveC/tmp.tar',
+    'tar xCf /repo archive.tar',
+    'tar -xf archive.tar -C /repo -- -O',
+    'tar -xf archive.tar -C /repo -- --to-stdout',
+    'tar -cf /repo/.git/archive.tar -- -f /tmp/scratch.tar',
+    'tar --ge --file=archive.tar --dire=/repo',
+    'tar --extract --file=archive.tar --dire=/repo src/file.ts --dire=/tmp/scratch other.txt',
+    'tar --cre --file=/repo/.git/archive.tar src/file.ts',
+    'tar --appe --file /repo/.git/archive.tar src/file.ts',
+    'tar --upd --file=/repo/archive.tar src/file.ts',
+    'tar --dele --file=/repo/archive.tar src/file.ts',
+    'tar --conc --file=/repo/archive.tar /tmp/other.tar',
+    'tar --cate --file=/repo/archive.tar /tmp/other.tar',
+  ])('checks abbreviated tar operation and destination options: %s', (command) => {
+    expect(shell(command)).not.toBeNull()
+  })
+
+  it.each([
+    'tar --extr --file=archive.tar --dire=/tmp/scratch',
+    'tar -xfOutput.tar -C /tmp/scratch',
+    'tar xCf /tmp/scratch archive.tar',
+    'tar --cre --file=/tmp/archive.tar src/file.ts',
+    'tar --extr --to-std --file=archive.tar --dire=/repo',
+    'tar --list --file=archive.tar',
+  ])('keeps safe tar long-option abbreviations available: %s', (command) => {
+    expect(shell(command)).toBeNull()
+  })
+
+  it.each([
     String.raw`gh api \-XPUT repos/owner/repo/pulls/12/merge`,
     String.raw`gh api \--method=POST repos/owner/repo/issues`,
     String.raw`gh api repos/owner/repo/pulls/12/merge \-XPUT`,

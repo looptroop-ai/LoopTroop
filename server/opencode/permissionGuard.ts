@@ -2452,82 +2452,94 @@ function classifyTar(args: string[], dynamic: boolean, input: PermissionGuardInp
   let toStdout = false
   let writingArchive = false
   const destinations: string[] = []
-  let archiveFile: string | undefined
+  const archiveFiles: string[] = []
+  const helperOptions = ['--to-command', '--use-compress-program', '--rmt-command', '--rsh-command', '--info-script', '--new-volume-script']
+  const indirectOptions = [
+    '--files-from', '--listed-incremental', '--transform', '--xform', '--one-top-level', '--chroot',
+    '--options', '--index-file', '--volno-file', '--absolute-names', '--absolute-paths', '--insecure',
+  ]
+  const valueOptions = [
+    '--blocking-factor', '--block-size', '--record-size', '--tape-length', '--format', '--label',
+    '--hole-detection', '--level', '--sparse-version', '--add-file', '--exclude', '--exclude-from',
+    '--exclude-ignore', '--exclude-ignore-recursive', '--exclude-tag', '--exclude-tag-all', '--exclude-tag-under',
+    '--group', '--group-map', '--owner', '--owner-map', '--mode', '--mtime', '--sort', '--pax-option',
+    '--xattrs-exclude', '--xattrs-include', '--starting-file', '--newer', '--newer-mtime', '--after-date',
+    '--suffix', '--strip-components', '--no-quote-chars', '--quote-chars', '--quoting-style', '--warning',
+    '--gid', '--gname', '--uid', '--uname', '--include', '--passphrase',
+    '--newer-ctime', '--newer-ctime-than', '--newer-mtime-than', '--newer-than',
+    '--older', '--older-ctime', '--older-ctime-than', '--older-mtime', '--older-mtime-than', '--older-than',
+  ]
+  const knownOptions = [...helperOptions, ...indirectOptions, ...valueOptions,
+    '--file', '--directory', '--cd', '--list', '--checkpoint', '--checkpoint-action', '--remove-files',
+    '--to-stdout', '--extract', '--get', '--create', '--append', '--update', '--delete', '--concatenate', '--catenate',
+  ]
   let afterSeparator = false
-  const legacyModes = new Set(['x', 'c', 'r', 'u', 'd', 'a'])
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (arg === '--') { afterSeparator = true; continue }
-    if (!afterSeparator && (arg === '--help' || arg === '--version')) return null
+    if (afterSeparator) continue
+    if (arg === '--help' || arg === '--version') return null
     const [longOption, longValue] = arg.split(/=(.*)/s, 2)
-    if (!afterSeparator && longOption?.startsWith('--') && '--remove-files'.startsWith(longOption)) return 'the tar source deletion paths cannot be verified; archive first and remove explicit paths separately'
-    const helperOptions = ['--to-command', '--use-compress-program', '--rmt-command', '--rsh-command', '--info-script', '--new-volume-script']
-    if (longOption?.startsWith('--') && helperOptions.some((option) => option.startsWith(longOption))) {
+    const exactOption = knownOptions.includes(longOption ?? '')
+    const matchesLongOption = (name: string) => Boolean(longOption?.startsWith('--')
+      && (name === longOption || (!exactOption && name.startsWith(longOption))))
+    if (matchesLongOption('--remove-files')) return 'the tar source deletion paths cannot be verified; archive first and remove explicit paths separately'
+    if (helperOptions.some(matchesLongOption)) {
       return 'the tar command may execute an external helper'
     }
-    const shortOptions = arg.startsWith('-') && !arg.startsWith('--') ? arg.slice(1)
-      : i === 0 && /^[A-Za-z]+$/.test(arg) ? arg : ''
-    if (shortOptions.includes('I')) return 'the tar command may execute an external compressor'
-    if (longOption && '--checkpoint-action'.startsWith(longOption)) {
+    if (indirectOptions.some(matchesLongOption)) return 'the tar indirect options or auxiliary paths cannot be verified'
+    const legacyOptions = i === 0 && /^[A-Za-z]+$/.test(arg)
+    const shortOptions = arg.startsWith('-') && !arg.startsWith('--') ? arg.slice(1) : legacyOptions ? arg : ''
+    if (matchesLongOption('--checkpoint-action')) {
       const action = longValue ?? args[i + 1]
       if (!action) return 'the tar checkpoint action cannot be verified'
       if (action.startsWith('exec=')) return 'the tar command may execute an external helper'
       if (longValue === undefined) i++
       continue
     }
-    if (arg === '--to-stdout' || arg === '-O') toStdout = true
-    if (arg === '--extract' || arg === '--get') extracting = true
-    if (['--create', '--append', '--update', '--delete', '--concatenate', '--catenate'].includes(arg)) writingArchive = true
-    if (arg === '--file') {
-      archiveFile = args[++i]
+    if (matchesLongOption('--to-stdout')) toStdout = true
+    if (matchesLongOption('--extract') || matchesLongOption('--get')) extracting = true
+    if (['--create', '--append', '--update', '--delete', '--concatenate', '--catenate'].some(matchesLongOption)) writingArchive = true
+    if (matchesLongOption('--file')) {
+      const archiveFile = longValue ?? args[++i]
       if (!archiveFile) return 'the archive output path cannot be verified'
+      archiveFiles.push(archiveFile)
       continue
     }
-    if (arg.startsWith('--file=')) {
-      archiveFile = arg.slice('--file='.length)
-      continue
-    }
-    if (arg === '-C' || arg === '--directory') {
-      const destination = args[++i]
+    if (arg === '-C' || matchesLongOption('--directory') || matchesLongOption('--cd')) {
+      const destination = longValue ?? args[++i]
       if (!destination) return 'the archive extraction target cannot be verified'
       destinations.push(destination)
       continue
     }
-    if (arg.startsWith('--directory=')) destinations.push(arg.slice('--directory='.length))
-    if (arg.startsWith('-') && !arg.startsWith('--') && arg.length > 1) {
-      const flags = arg.slice(1)
-      if (flags.includes('x')) extracting = true
-      if (flags.includes('c') || flags.includes('r') || flags.includes('u') || flags.includes('d') || flags.includes('A')) writingArchive = true
-      if (flags.includes('O')) toStdout = true
-      const fileOption = flags.indexOf('f')
-      if (fileOption >= 0) {
-        archiveFile = flags.length > fileOption + 1 ? flags.slice(fileOption + 1) : args[++i]
-        if (!archiveFile) return 'the archive output path cannot be verified'
-      }
-      const directoryOption = flags.indexOf('C')
-      if (directoryOption >= 0 && flags.length > directoryOption + 1) destinations.push(flags.slice(directoryOption + 1))
-      if (directoryOption >= 0 && flags.length === directoryOption + 1) {
-        const destination = args[++i]
-        if (!destination) return 'the archive extraction target cannot be verified'
-        destinations.push(destination)
-      }
-    } else if (!extracting && !writingArchive && !archiveFile && /^[A-Za-z]+$/.test(arg)
-      && legacyModes.has(arg[0]!.toLowerCase())
-      && ![...arg.slice(1)].some((flag) => legacyModes.has(flag.toLowerCase()))) {
-      if (arg[0]?.toLowerCase() === 'x') extracting = true
-      if (['c', 'r', 'u', 'd', 'a'].includes(arg[0]?.toLowerCase() ?? '')) writingArchive = true
-      if (arg.includes('O')) toStdout = true
-      const fileOption = arg.indexOf('f')
-      if (fileOption >= 0) {
-        archiveFile = arg.length > fileOption + 1 ? arg.slice(fileOption + 1) : args[++i]
-        if (!archiveFile) return 'the archive output path cannot be verified'
+    if (valueOptions.some(matchesLongOption)) {
+      if (!(longValue ?? args[++i])) return 'the tar option argument cannot be verified'
+      continue
+    }
+    if (shortOptions) {
+      for (let flagIndex = 0; flagIndex < shortOptions.length; flagIndex++) {
+        const flag = shortOptions[flagIndex]!
+        if (flag === 'I' || flag === 'F') return 'the tar command may execute an external compressor or script'
+        if ('TgsWHLP'.includes(flag)) return 'the tar indirect or platform-dependent options cannot be verified'
+        if (flag === 'x') extracting = true
+        if (['c', 'r', 'u', 'd', 'A'].includes(flag)) writingArchive = true
+        if (flag === 'O') toStdout = true
+        if ('fCbXNKV'.includes(flag)) {
+          const value = legacyOptions ? args[++i] : shortOptions.slice(flagIndex + 1) || args[++i]
+          if (!value) return flag === 'f' ? 'the archive output path cannot be verified' : 'the archive extraction target cannot be verified'
+          if (flag === 'f') archiveFiles.push(value)
+          else if (flag === 'C') destinations.push(value)
+          if (!legacyOptions) break
+        }
       }
     }
   }
-  if (writingArchive && archiveFile) {
-    if (dynamic && hasShellExpansion(archiveFile)) return 'the archive output path cannot be verified'
-    const effect = protectedPathEffect(archiveFile, input, true)
-    if (effect) return effect
+  if (writingArchive) {
+    for (const archiveFile of archiveFiles) {
+      if (dynamic && hasShellExpansion(archiveFile)) return 'the archive output path cannot be verified'
+      const effect = protectedPathEffect(archiveFile, input, true)
+      if (effect) return effect
+    }
   }
   if (!extracting || toStdout) return null
   let directory = input.directory ?? input.context?.worktreePath

@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.13 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.104.3 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.104.3 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.104.4 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.104.4 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `argparse` | 3.0.3 | PSF-2.0 | - |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `class-variance-authority` | 0.7.1 | Apache-2.0 | Copyright 2022 Joe Bell |
@@ -72,7 +72,7 @@ frontend packages inlined into the client bundle.
 | `hono` | 4.13.13 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.5.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.57.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.59.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.3.1 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.3.1 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
@@ -90,7 +90,7 @@ frontend packages inlined into the client bundle.
 | `use-sidecar` | 1.1.3 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `w3c-keyname` | 2.2.8 | MIT | Copyright (C) 2016 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `which` | 2.0.2 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
-| `xstate` | 5.33.2 | MIT | Copyright (c) 2015 David Khourshid |
+| `xstate` | 5.33.3 | MIT | Copyright (c) 2015 David Khourshid |
 | `zod` | 4.6.7 | MIT | Copyright (c) 2025 Colin McDonnell |
 
 ## Licence Texts
@@ -267,7 +267,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.104.3`, `@tanstack/react-query@5.104.3`
+Applies to: `@tanstack/query-core@5.104.4`, `@tanstack/react-query@5.104.4`
 
 ```text
 MIT License
@@ -852,7 +852,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.57.0`
+Applies to: `lucide-react@1.59.0`
 
 ```text
 ISC License
@@ -1045,7 +1045,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `xstate@5.33.2`
+Applies to: `xstate@5.33.3`
 
 ```text
 The MIT License (MIT)

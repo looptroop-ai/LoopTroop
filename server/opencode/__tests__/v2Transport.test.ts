@@ -1,7 +1,10 @@
+import { resolve } from "node:path";
 import { assert, describe, expect, it, vi } from "vitest";
+import { SESSION_LIST_LIMIT } from "../../lib/constants";
 import {
   OpenCodePromptReceiptUnavailableError,
   type OpenCodePromptRequest,
+  type OpenCodeTransportEventEnvelope,
 } from "../transport";
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from "../v2Transport";
 import { OpenCodeSDKAdapter } from "../adapter";
@@ -20,10 +23,14 @@ type FetchHandler = (
   request: CapturedRequest,
   init: RequestInit,
 ) => Response | Promise<Response>;
+type ChildSessionFixture =
+  | unknown[]
+  | ((request: CapturedRequest) => unknown);
 
 function createTransport(
   handler: FetchHandler,
   baseUrl = "http://127.0.0.1:4096",
+  childSessions: Readonly<Record<string, ChildSessionFixture>> = {},
 ) {
   const requests: CapturedRequest[] = [];
   const fetcher: typeof fetch = async (input, init = {}) => {
@@ -42,6 +49,18 @@ function createTransport(
       redirect: init.redirect,
     };
     requests.push(request);
+    if (request.method === "GET" && url.pathname === "/api/session" && url.searchParams.has("parentID")) {
+      const parentId = url.searchParams.get("parentID")!;
+      const fixture = childSessions[parentId] ?? childSessions["*"] ?? [];
+      if (typeof fixture === "function") return jsonResponse(fixture(request));
+      const offset = Number(url.searchParams.get("cursor") ?? 0);
+      const limit = Number(url.searchParams.get("limit") ?? fixture.length) || 100;
+      const data = fixture.slice(offset, offset + limit);
+      const next = offset + data.length < fixture.length
+        ? String(offset + data.length)
+        : undefined;
+      return jsonResponse({ data, cursor: next ? { next } : {} });
+    }
     return handler(request, init);
   };
   return {
@@ -92,7 +111,7 @@ function initialSessionLog(cursor: number): Response {
   ]);
 }
 
-function publicEventTransport(events: unknown[], watermark: number) {
+function publicEventTransport(events: unknown[], watermark: number, childSessions: Readonly<Record<string, ChildSessionFixture>> = {}) {
   return createTransport((request) => {
     if (request.url.pathname === "/api/event")
       return eventStream([{ type: "server.connected" }, ...events]);
@@ -101,7 +120,7 @@ function publicEventTransport(events: unknown[], watermark: number) {
         { type: "log.synced", aggregateID: "session-1", seq: watermark },
       ]);
     throw new Error(`Unexpected ${request.method} ${request.url}`);
-  });
+  }, "http://127.0.0.1:4096", childSessions);
 }
 
 function publicEventsAround(raw: unknown): unknown[] {
@@ -523,8 +542,10 @@ describe("OpenCode v2 fetch transport", () => {
     await iterator.return?.();
     expect(requests.map((request) => request.url.pathname)).toEqual([
       "/api/event",
+      "/api/session",
       "/api/experimental/session/session-1/log",
     ]);
+    expect(requests[1]?.url.searchParams.get("parentID")).toBe("session-1");
     expect(requests[0]?.accept).toBe("text/event-stream");
   });
 
@@ -1454,6 +1475,7 @@ describe("OpenCode v2 fetch transport", () => {
           permissionId: "per-1",
           permission: "read",
           patterns: ["/workspace/file.ts"],
+          permissionDirectory: "/workspace",
           details: { message: "Read file.ts" },
         },
       },
@@ -1467,6 +1489,64 @@ describe("OpenCode v2 fetch transport", () => {
       (request) => request.url.pathname === "/api/session/session-1/permission",
     );
     expect(permissionListIndex).toBeLessThan(replayLogIndex);
+  });
+
+  it("correlates a pending root shell ask with persisted tool input after reconnect", async () => {
+    let eventConnections = 0;
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event") {
+        eventConnections++;
+        return eventStream([{ type: "server.connected" }]);
+      }
+      if (request.url.pathname.endsWith("/log")) {
+        if (request.url.searchParams.get("after") === "2")
+          return eventStream([{ type: "log.synced", aggregateID: "session-1", seq: 2 }]);
+        return eventStream([
+          {
+            type: "session.tool.input.started",
+            data: { sessionID: "session-1", assistantMessageID: "message-1", id: "call-1", name: "bash" },
+            durable: { aggregateID: "session-1", seq: 1 },
+          },
+          {
+            type: "session.tool.input.ended",
+            data: {
+              sessionID: "session-1",
+              assistantMessageID: "message-1",
+              id: "call-1",
+              text: JSON.stringify({ command: "git status", workdir: "/outside" }),
+            },
+            durable: { aggregateID: "session-1", seq: 2 },
+          },
+          { type: "log.synced", aggregateID: "session-1", seq: 2 },
+        ]);
+      }
+      if (request.url.pathname === "/api/session/session-1/permission")
+        return jsonResponse({ data: [{
+          id: "pending-shell",
+          sessionID: "session-1",
+          action: "shell",
+          resources: ["git status"],
+          source: { type: "tool", messageID: "message-1", id: "call-1" },
+        }] });
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    });
+
+    const subscription = await transport.subscribeToEvents("session-1", "/workspace");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            permission: "bash",
+            permissionDirectory: resolve("/outside"),
+          },
+        },
+      });
+      expect(eventConnections).toBe(2);
+    } finally {
+      await iterator.return?.();
+    }
   });
 
   it("keeps reconnect history gaps sticky on later live events", async () => {
@@ -2732,7 +2812,10 @@ describe("OpenCode v2 fetch transport", () => {
         return jsonResponse({ data: form });
       if (request.url.pathname.endsWith("/form/form-1/reply"))
         return emptyResponse();
-      if (request.url.pathname.endsWith("/permission/permission-1/reply"))
+      if (
+        request.url.pathname.endsWith("/permission/permission-1/reply") ||
+        request.url.pathname.endsWith("/permission/permission-2/reply")
+      )
         return emptyResponse();
       if (
         request.url.pathname.endsWith("/form/form-1") &&
@@ -2764,8 +2847,16 @@ describe("OpenCode v2 fetch transport", () => {
     await transport.replyPermission(
       "session-1",
       "permission-1",
-      "always",
+      "once",
       "/workspace",
+    );
+    await transport.replyPermission(
+      "session-1",
+      "permission-2",
+      "reject",
+      "/workspace",
+      undefined,
+      "LoopTroop denied this guarded operation.",
     );
 
     expect(
@@ -2778,12 +2869,14 @@ describe("OpenCode v2 fetch transport", () => {
       "GET /api/session/session-1/form/form-1",
       "DELETE /api/session/session-1/form/form-1",
       "POST /api/session/session-1/permission/permission-1/reply",
+      "POST /api/session/session-1/permission/permission-2/reply",
     ]);
     expect(requests[0]?.url.searchParams.get("location[directory]")).toBe(
       "/workspace",
     );
     expect(requests[3]?.body).toEqual({ answer: { q0: "prod" } });
-    expect(requests[6]?.body).toEqual({ decision: "always" });
+    expect(requests[6]?.body).toEqual({ decision: "once" });
+    expect(requests[7]?.body).toEqual({ decision: "reject", message: "LoopTroop denied this guarded operation." });
   });
 
   it("refuses to reply to a question form owned by another session", async () => {
@@ -2997,6 +3090,463 @@ describe("OpenCode v2 fetch transport", () => {
       expect(requestSignal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("routes only proven descendant permission asks and binds shell workdir by source IDs", async () => {
+    const child = "child-session";
+    const unrelated = "unrelated-session";
+    const events = [
+      {
+        type: "session.created",
+        data: {
+          sessionID: child,
+          parentID: "session-1",
+          location: { directory: "/worktree/child" },
+        },
+        durable: { aggregateID: child, seq: 1 },
+      },
+      {
+        type: "session.created",
+        data: {
+          sessionID: unrelated,
+          parentID: "another-root",
+          location: { directory: "/other" },
+        },
+        durable: { aggregateID: unrelated, seq: 1 },
+      },
+      {
+        type: "session.tool.input.started",
+        data: { sessionID: child, assistantMessageID: "message-1", id: "call-1", name: "bash" },
+        durable: { aggregateID: child, seq: 2 },
+      },
+      {
+        type: "session.tool.input.ended",
+        data: {
+          sessionID: child,
+          assistantMessageID: "message-1",
+          id: "call-1",
+          text: JSON.stringify({ command: "git status", workdir: "../other" }),
+        },
+        durable: { aggregateID: child, seq: 3 },
+      },
+      {
+        type: "permission.asked",
+        data: {
+          sessionID: child,
+          id: "child-permission",
+          action: "shell",
+          resources: ["git status"],
+          source: { type: "tool", messageID: "message-1", id: "call-1" },
+        },
+      },
+      {
+        type: "session.text.delta",
+        data: { sessionID: child, assistantMessageID: "child-answer", delta: "child output" },
+      },
+      {
+        type: "permission.asked",
+        data: {
+          sessionID: unrelated,
+          id: "unrelated-permission",
+          action: "shell",
+          source: { type: "tool", messageID: "message-x", id: "call-x" },
+        },
+      },
+    ];
+    const { transport } = publicEventTransport(events, 0);
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    const observed: OpenCodeTransportEventEnvelope[] = [];
+    try {
+      for (let index = 0; index < 20; index++) {
+        const next = await iterator.next();
+        if (next.done) break;
+        observed.push(next.value);
+        if (next.value.event?.type === "permission") break;
+      }
+    } finally {
+      await iterator.return?.();
+    }
+
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      event: {
+        type: "permission",
+        sessionId: child,
+        action: "asked",
+        permissionId: "child-permission",
+        permission: "bash",
+        permissionDirectory: resolve("/worktree/child", "../other"),
+      },
+    });
+    expect(observed[0]?.cursor).toBeUndefined();
+  });
+
+  it("marks a child shell permission unverified when it arrives before matching tool input", async () => {
+    const child = "child-session";
+    const { transport } = publicEventTransport(
+      [
+        {
+          type: "session.created",
+          data: {
+            sessionID: child,
+            parentID: "session-1",
+            location: { directory: "/worktree/child" },
+          },
+          durable: { aggregateID: child, seq: 1 },
+        },
+        {
+          type: "permission.asked",
+          data: {
+            sessionID: child,
+            id: "early-permission",
+            action: "shell",
+            resources: ["git push origin feature"],
+            source: { type: "tool", messageID: "message-1", id: "call-not-seen-yet" },
+          },
+        },
+      ],
+      0,
+    );
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            sessionId: child,
+            permissionDirectory: "/worktree/child",
+            permissionDirectoryUnverified: true,
+          },
+        },
+      });
+    } finally {
+      await iterator.return?.();
+    }
+  });
+
+  it("marks a shell ask without a tool source as directory-unverified", async () => {
+    const { transport } = publicEventTransport([
+      {
+        type: "permission.asked",
+        data: {
+          sessionID: "session-1",
+          id: "unlinked-shell-permission",
+          action: "shell",
+          resources: ["git push origin feature"],
+        },
+      },
+    ], 0);
+    const subscription = await transport.subscribeToEvents("session-1", "/workspace");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            permission: "bash",
+            permissionDirectory: "/workspace",
+            permissionDirectoryUnverified: true,
+          },
+        },
+      });
+    } finally {
+      await iterator.return?.();
+    }
+  });
+
+  it("marks a native permission without a known session directory as unverified", async () => {
+    const { transport } = publicEventTransport([{
+      type: "permission.asked",
+      data: {
+        sessionID: "session-1",
+        id: "unlinked-edit-permission",
+        action: "edit",
+        resources: ["src/app.ts"],
+      },
+    }], 0);
+    const subscription = await transport.subscribeToEvents("session-1", undefined);
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            permission: "write",
+            permissionDirectoryUnverified: true,
+          },
+        },
+      });
+    } finally {
+      await iterator.return?.();
+    }
+  });
+
+  it("routes permissions from child sessions that existed before subscription", async () => {
+    const child = "existing-child";
+    const { transport, requests } = publicEventTransport(
+      [{
+        type: "permission.asked",
+        data: {
+          sessionID: child,
+          id: "existing-child-permission",
+          action: "shell",
+          resources: ["git push origin feature"],
+          source: { type: "tool", messageID: "message-1", id: "call-1" },
+        },
+      }],
+      0,
+      { "session-1": [{ id: child, location: { directory: "/worktree/child" } }] },
+    );
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            sessionId: child,
+            permissionId: "existing-child-permission",
+            permissionDirectory: "/worktree/child",
+            permissionDirectoryUnverified: true,
+          },
+        },
+      });
+      expect(requests.some((request) =>
+        request.url.pathname === "/api/session" &&
+        request.url.searchParams.get("parentID") === "session-1",
+      )).toBe(true);
+    } finally {
+      await iterator.return?.();
+    }
+  });
+
+  it("paginates child discovery through the v2 session list endpoint", async () => {
+    const child = "child-100";
+    const children = Array.from({ length: 101 }, (_, index) => ({ id: `child-${index}` }));
+    const { transport, requests } = publicEventTransport(
+      [{
+        type: "permission.asked",
+        data: { sessionID: child, id: "paged-child-permission", action: "read" },
+      }],
+      0,
+      { "session-1": children },
+    );
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            sessionId: child,
+            permissionId: "paged-child-permission",
+          },
+        },
+      });
+      const rootPages = requests.filter((request) =>
+        request.url.pathname === "/api/session" &&
+        request.url.searchParams.get("parentID") === "session-1",
+      );
+      expect(rootPages.map((request) => request.url.searchParams.get("cursor"))).toEqual([
+        null,
+        "100",
+      ]);
+      expect(rootPages.every((request) => request.method === "GET")).toBe(true);
+    } finally {
+      await iterator.return?.();
+    }
+  });
+
+  it("discovers nested children on reconnect, prunes stale children, and skips a missing child permission list", async () => {
+    const child = "existing-child";
+    const staleChild = "stale-child";
+    const grandchild = "new-grandchild";
+    let rootReads = 0;
+    let childReads = 0;
+    let eventConnections = 0;
+    const { transport, requests } = createTransport((request, init) => {
+      if (request.url.pathname === "/api/event") {
+        eventConnections++;
+        return eventConnections === 1
+          ? eventStream([{ type: "server.connected" }])
+          : hangingEventStream(init.signal, [
+              { type: "server.connected" },
+              {
+                type: "session.execution.started",
+                data: { sessionID: "session-1" },
+                durable: { aggregateID: "session-1", seq: 1 },
+              },
+            ]);
+      }
+      if (request.url.pathname.endsWith("/log"))
+        return eventStream([{ type: "log.synced", aggregateID: "session-1", seq: 0 }]);
+      if (request.url.pathname === "/api/session/session-1/permission")
+        return jsonResponse({ data: [] });
+      if (request.url.pathname === `/api/session/${child}/permission`)
+        return jsonResponse({ _tag: "SessionNotFoundError" }, 404);
+      if (request.url.pathname === `/api/session/${grandchild}/permission`)
+        return jsonResponse({ data: [] });
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": () => ({
+        data: rootReads++ === 0
+          ? [{ id: child }, { id: staleChild }]
+          : [{ id: child }],
+        cursor: {},
+      }),
+      [child]: () => ({
+        data: childReads++ === 0 ? [] : [{ id: grandchild }],
+        cursor: {},
+      }),
+      [staleChild]: [],
+    });
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: { event: { type: "execution_started", sessionId: "session-1" } },
+      });
+      expect(requests.some((request) =>
+        request.url.pathname === `/api/session/${grandchild}/permission`,
+      )).toBe(true);
+      expect(requests.some((request) =>
+        request.url.pathname === `/api/session/${staleChild}/permission`,
+      )).toBe(false);
+      expect(requests.filter((request) =>
+        request.url.pathname === "/api/session" &&
+        request.url.searchParams.get("parentID") === child,
+      )).toHaveLength(2);
+    } finally {
+      await iterator.return?.();
+    }
+  });
+
+  it("fails closed when child discovery returns a malformed page", async () => {
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event")
+        return eventStream([{ type: "server.connected" }]);
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": () => ({ data: {}, cursor: {} }),
+    });
+
+    await expect(transport.subscribeToEvents("session-1", "/worktree"))
+      .rejects.toThrow("invalid child session list");
+  });
+
+  it.each([{}, { cursor: null }])(
+    "fails closed when child discovery omits its pagination cursor (%o)",
+    async (pagination) => {
+      const { transport } = createTransport((request) => {
+        if (request.url.pathname === "/api/event")
+          return eventStream([{ type: "server.connected" }]);
+        throw new Error(`Unexpected ${request.method} ${request.url}`);
+      }, "http://127.0.0.1:4096", {
+        "session-1": () => ({ data: [], ...pagination }),
+      });
+
+      await expect(transport.subscribeToEvents("session-1", "/worktree"))
+        .rejects.toThrow("invalid child session cursor");
+    },
+  );
+
+  it("fails closed when child discovery returns a non-string pagination cursor", async () => {
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event")
+        return eventStream([{ type: "server.connected" }]);
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": () => ({ data: [], cursor: { next: 100 } }),
+    });
+
+    await expect(transport.subscribeToEvents("session-1", "/worktree"))
+      .rejects.toThrow("invalid child session cursor");
+  });
+
+  it("fails closed when child discovery repeats its pagination cursor", async () => {
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event")
+        return eventStream([{ type: "server.connected" }]);
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": () => ({ data: [], cursor: { next: "same-page" } }),
+    });
+
+    await expect(transport.subscribeToEvents("session-1", "/worktree"))
+      .rejects.toThrow("repeated child session cursor");
+  });
+
+  it("bounds child discovery when every page returns a new cursor", async () => {
+    let pages = 0;
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event")
+        return eventStream([{ type: "server.connected" }]);
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": () => ({ data: [], cursor: { next: `page-${++pages}` } }),
+    });
+
+    await expect(transport.subscribeToEvents("session-1", "/worktree"))
+      .rejects.toThrow("too many child session pages");
+    expect(pages).toBe(Math.ceil(SESSION_LIST_LIMIT / 100));
+  });
+
+  it("bounds total child discovery across an endless parent chain", async () => {
+    let childRequests = 0;
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === "/api/event")
+        return eventStream([{ type: "server.connected" }]);
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "*": (request) => {
+        childRequests++;
+        const parentId = request.url.searchParams.get("parentID")!;
+        return { data: [{ id: `child-${parentId}` }], cursor: {} };
+      },
+    });
+
+    await expect(transport.subscribeToEvents("session-1", "/worktree"))
+      .rejects.toThrow("too many related child sessions");
+    expect(childRequests).toBe(SESSION_LIST_LIMIT + 1);
+  });
+
+  it("re-fetches pending permissions for hydrated child sessions after reconnect", async () => {
+    const child = "existing-child";
+    let eventConnections = 0;
+    const { transport, requests } = createTransport((request) => {
+      if (request.url.pathname === "/api/event") {
+        eventConnections++;
+        return eventStream([{ type: "server.connected" }]);
+      }
+      if (request.url.pathname.endsWith("/log"))
+        return eventStream([{ type: "log.synced", aggregateID: "session-1", seq: 0 }]);
+      if (request.url.pathname === `/api/session/${child}/permission`)
+        return jsonResponse({ data: [{ id: "pending-child-permission", action: "shell", resources: ["git status"] }] });
+      if (request.url.pathname === "/api/session/session-1/permission")
+        return jsonResponse({ data: [] });
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": [{ id: child, location: { directory: "/worktree/child" } }],
+    });
+    const subscription = await transport.subscribeToEvents("session-1", "/worktree");
+    const iterator = subscription.events[Symbol.asyncIterator]();
+    try {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          event: {
+            type: "permission",
+            sessionId: child,
+            permissionId: "pending-child-permission",
+          },
+        },
+      });
+      expect(eventConnections).toBe(2);
+      expect(requests.some((request) => request.url.pathname === `/api/session/${child}/permission`)).toBe(true);
+    } finally {
+      await iterator.return?.();
     }
   });
 });

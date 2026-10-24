@@ -981,6 +981,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       "Context available: Ticket Details, PRD, Beads Plan, and Final Test Retry Notes.",
       "This phase tests the implementation as a whole and catches cross-bead issues that bead-level checks can miss.",
+      "When early-merge reconciliation produces a corrective candidate, this phase runs again before the configured Manual QA, integration, and new-PR flow.",
       "AI Response Timeout bounds the final-test model prompts. Command execution is still governed separately by the execution or final-test command timeout, so long-running shell commands are handled under their own limits.",
       "The test plan is generated dynamically so the main implementer can tailor checks to what was actually implemented, instead of assuming the right test already exists.",
     ],
@@ -1088,14 +1089,20 @@ const WORKFLOW_PHASE_DETAILS = {
   },
   CREATING_PULL_REQUEST: {
     overview:
-      "LoopTroop audits the final candidate files, pushes the approved candidate SHA to the remote ticket branch, and creates or updates a draft pull request on GitHub. This is the automatic GitHub handoff. It packages the final diff, the ticket intent, validation results, and any ignored-file decisions into a reviewer-facing draft PR without merging anything yet. Git and SSH calls stay non-interactive and bounded, and later remote branch cleanup requires an expected head lease.",
+      "LoopTroop audits the candidate files and checks for a matching pull request that may already be merged before pushing. It verifies the landed commit and compares the original PR head tree with the candidate. Matching trees or a candidate delta already present on the verified base complete from the original PR; additional candidate changes are applied to the verified remote base and returned to final testing. When another PR is needed, LoopTroop creates or updates an unmerged draft. Git and SSH calls stay non-interactive and bounded, and later remote branch cleanup requires an expected head lease.",
     steps: [
       "Candidate File Audit: Before any remote side effects, the locked main implementer classifies every final changed file as include, exclude, or review using ticket scope, diff metadata, final-test results, and conservative generated-file rules. Exclusions need evidence. Generated or tracked files stay included unless the audit can explain why they are unrelated byproducts. Formatting-only YAML repairs are allowed only when the output structure proves the intended mapping, preserve the emitted text, and are recorded as audit warnings.",
       "Filtered Candidate Rewrite: If the audit excludes files, LoopTroop rewrites the local candidate from the merge base using only include and review files, records ignored files and reasons in `candidate_file_audit`, updates the integration handoff SHA, and captures the final net diff in `candidate_diff` before pushing.",
-      "PR Drafting: Before any git or GitHub side effects, the locked main implementer generates a draft PR title and body in a fresh session under the configured AI Response Timeout using only ticket details and PRD as context, with integration report, final test report, diff stat, changed-file status, and diff patch appended as explicit prompt sections. Interview and beads artifacts are not fed into PR drafting.",
+      "Early-Merge Check: Before pushing or creating or updating a PR, LoopTroop finds a merged PR for the ticket branch and base. It verifies GitHub's landed commit on the current remote base, fetches the exact PR head, and compares its tree with the candidate. `early_merge_recovery` stores the original PR, candidate and head SHAs, their tree SHAs, landed commit, and verified remote base.",
+      "Verified Merge Policy: Verified merge history is sufficient even if conflict resolution omitted changes or later commits edited or reverted them. LoopTroop does not require current-content proof or automatically restore those changes.",
+      "Already-Landed Delta: If applying the exact candidate delta leaves the verified base unchanged, LoopTroop records an already_landed proof and completes without an empty corrective PR.",
+      "Equivalent Candidate: When the candidate and merged PR head trees match, LoopTroop records the original PR and both candidates' proof in `merge_report`, leaves the remote ticket branch untouched, and completes through cleanup without creating another PR.",
+      "Corrective Candidate: When the trees differ, LoopTroop applies only the merged-head-to-candidate delta to a recovery worktree based on the verified remote base. It records the original and corrected candidate SHAs, then returns to `RUNNING_FINAL_TEST`. The configured Manual QA step and integration run again before the final candidate audit and new PR. If the base advances before a saved correction is retried, LoopTroop reapplies the saved correction, including any manual resolution, to the latest verified base and reruns validation.",
+      "Manual Recovery: If the landed commit or PR head cannot be proved, or the corrective patch conflicts, LoopTroop preserves the original candidate and any recovery worktree, records the reason and conflict paths, and moves to `BLOCKED_ERROR`. It leaves the resolution to you and does not ask an AI session to choose a conflict resolution. Temporary remote failures and missing proof can be checked again on retry. Uncommitted recovery edits remain untouched. To resolve a conflict, stage the resolved files and create one clean commit directly on the recorded base, then retry Verify. LoopTroop adopts that committed resolution and reruns final validation. If the recovery checkout was removed before a resolution was saved, retry starts again from the original candidate. Local files preventing installation of a clean correction are reported against the original ticket worktree, separately from patch conflicts.",
+      "PR Drafting: Before the remote candidate push or PR create/update, the locked main implementer generates a draft PR title and body in a fresh session under the configured AI Response Timeout using only ticket details and PRD as context, with integration report, final test report, diff stat, changed-file status, and diff patch appended as explicit prompt sections. Interview and beads artifacts are not fed into PR drafting.",
       "PR Draft Validation: The draft title and body response is parsed as structured output before branch push or PR create or update. If parsing fails, the ticket's configured Structured Output Retries count applies. Validation errors may use a continued-session prompt, while empty, provider, or session failures use a fresh session. If parsing still fails, LoopTroop records diagnostics and raw attempts, then falls back to deterministic title and body instead of blocking the ticket.",
-      "Remote Candidate Push: LoopTroop force-pushes the final candidate SHA to the remote ticket branch using a lease, replacing the bead-level backup branch state with the single reviewable candidate commit. Internal push logging records the final result without progress output. SSH configuration remains non-interactive and preserves the caller's real settings; remote deletion later requires a valid expected SHA.",
-      "PR Upsert: LoopTroop creates a new draft PR when none exists, or updates the existing PR title, body, and metadata when one already exists for the ticket branch.",
+      "Remote Candidate Push: When a matching merged PR does not already contain the candidate, LoopTroop force-pushes the final candidate SHA to the remote ticket branch using a lease, replacing the bead-level backup branch state with the single reviewable candidate commit. Internal push logging records the final result without progress output. SSH configuration remains non-interactive and preserves the caller's real settings; remote deletion later requires a valid expected SHA.",
+      "PR Upsert: LoopTroop creates a new draft PR when none exists, or updates the existing unmerged PR title, body, and metadata. A merged PR is never updated.",
       "Metadata Persistence: The PR URL, number, state, head SHA, generated title and body, and timestamps are written into ticket artifacts so the review UI and later phases can reuse them deterministically.",
       "Failure Safety: If the push or GitHub operation fails, LoopTroop preserves the local candidate and worktree state and writes a recovery receipt describing the exact next safe actions. Git push, branch update, PR create or update, and review-waiting side effects are not retried automatically.",
     ],
@@ -1104,11 +1111,15 @@ const WORKFLOW_PHASE_DETAILS = {
       "A candidate-file audit artifact listing included, excluded, and reviewed files with reasons.",
       "Any formatting-only repairs applied while reading the candidate-file audit, listed as audit warnings and in the phase log.",
       "A candidate net-diff artifact used by PR review as the default diff view.",
-      "The remote ticket branch updated to the final candidate commit.",
-      "A draft GitHub pull request ready for human review.",
+      "The remote ticket branch updated when a new or existing unmerged PR needs the candidate; an equivalent early merge leaves it untouched.",
+      "A draft GitHub pull request ready for human review when a new or existing unmerged PR needs the candidate.",
+      "An `early_merge_recovery` artifact recording proof, corrected candidate data, or manual-recovery details when a matching PR has already merged.",
     ],
     transitions: [
       "Success → Reviewing Pull Request: A successful PR sync advances the workflow to the human PR review gate.",
+      "Already Merged + Equivalent Trees or Already-Landed Delta → Cleaning Up: The verified merge and candidate-delta proof allow cleanup without another PR.",
+      "Already Merged + Candidate Delta → Testing Implementation: The corrected candidate returns to final testing before optional Manual QA, integration, and a new PR.",
+      "Missing Proof or Patch Conflict → Blocked Error: LoopTroop preserves the candidate and any recovery worktree for manual resolution.",
       "Failure → Blocked Error: Push failures, GitHub auth issues, or PR creation or update failures move the ticket to Blocked Error.",
     ],
     notes: [
@@ -1118,38 +1129,44 @@ const WORKFLOW_PHASE_DETAILS = {
       "Structured PR draft retries happen before the remote branch push and before PR creation or update. If PR draft parsing is exhausted, LoopTroop records diagnostics and uses fallback text. Git or GitHub failures still move the ticket to Blocked Error with no automatic retry.",
       "This is the GitHub-native handoff from execution into review.",
       "The PR is draft-first by design so automated review or human review can happen before merge.",
+      "The command guard is not a process sandbox. Scripts, custom executables, network clients, and OpenCode helper sessions with independent permissions may fall outside its checks.",
     ],
   },
   WAITING_PR_REVIEW: {
     overview:
-      "LoopTroop waits for you to review the draft pull request before finishing the ticket. While the daemon runs, it checks GitHub for an external merge even when no UI is open. This is the last human gate. You can inspect the PR in GitHub, review the net candidate diff, bead activity, ignored-file audit, and test results locally, then either merge the PR or finish the ticket without merging. Remote checks are bounded and non-interactive, and branch deletion is allowed only with the recorded expected head. A durable closed-unmerged report for the current PR resumes completion after restart without another remote decision, and a fresh remote observation of an already-merged PR is recorded before any candidate or close conflict is rejected.",
+      "LoopTroop waits for you to review the draft pull request before finishing the ticket. While the daemon runs, it checks GitHub for an external merge even when no UI is open. Matching merged trees or an already-landed candidate delta complete from the original PR; a candidate with additional changes is carried to the verified base and returned to final tests. Missing proof or patch conflicts preserve the work for manual recovery. Retry Verify adopts a clean manual resolution committed once on the recorded recovery base and reruns final validation. When the PR remains open, this is the last human gate: inspect the PR, net candidate diff, bead activity, ignored-file audit, and test results, then merge or finish without merging. Remote checks are bounded and non-interactive, and branch deletion is allowed only with the recorded expected head. Merge and finish-without-merge checkpoints resume after restart without replacing a recorded decision.",
     steps: [
       "Draft PR Presentation: The workspace shows the PR URL, current PR state, candidate SHA, branch and base refs, integration report, final test summary, candidate-file audit, and final net diff.",
       "Diff Review Modes: The bead-commits modal defaults to Net Diff for the actual base-to-candidate PR review surface, while By Bead preserves cumulative implementation activity and By File groups repeated bead touches.",
       "Manual Review: You inspect the draft PR and the local result. There is no time limit. LoopTroop waits for your decision.",
-      "Merge Path: Choosing Merge PR & Finish marks the PR ready if needed and merges it into the base branch on GitHub. Once GitHub reports the PR merged, LoopTroop requires the PR head to match the approved candidate and verifies that the remote base branch contains the commit GitHub records as landed, including squash and rebase merges. Your local checkout stays untouched.",
+      "Merge Path: Choosing Merge PR & Finish marks an open draft ready if needed and merges it into the base branch on GitHub. LoopTroop verifies that GitHub's landed commit is on the remote base, including for squash and rebase merges. If the PR is already merged and its head SHA differs from the candidate, LoopTroop fetches the exact PR head and compares trees: a match completes from that PR; a candidate delta returns to `RUNNING_FINAL_TEST`; missing proof or a conflict moves to manual recovery. A clean correction may reset the managed ticket worktree while preserving the original candidate by Git ref. Your original project checkout stays untouched.",
       "Finish Without Merge Path: Choosing Finish Without Merge asks you to confirm, and takes an optional reason for stopping here. The PR and the remote ticket branch are preserved exactly as they are, then the ticket proceeds to cleanup and terminal completion. The reason is stored on the merge report as the current record, and in the ticket-wide skip trail as history. Nothing else explains why this branch stopped.",
-      "External Merge Detection: While the daemon runs, it checks waiting tickets on startup and starts another serial sweep 30 seconds after the previous sweep finishes, even with no UI open. Checks use the recorded PR number, including after branch deletion, and keep GitHub and fetch operations bounded and non-interactive. A merge on GitHub triggers candidate-head validation, landed-commit verification on the remote base, and completion without another merge request. Failed background checks leave the ticket waiting and retry with delays from one to five minutes. Restarting the daemon resumes checking; shutdown stops new checks and waits for the active check within the process shutdown deadline. A completed merge report or a validated closed-unmerged report lets restart finish the workflow without repeating remote completion or recording a second decision.",
+      "External Merge Detection: While the daemon runs, it checks waiting tickets on startup and starts another serial sweep 30 seconds after the previous sweep finishes, even with no UI open. Checks use the recorded PR number, including after branch deletion, and keep GitHub and fetch operations bounded and non-interactive. A merge on GitHub triggers landed-commit verification on the remote base and candidate-tree comparison. Matching trees complete from the original PR; a candidate delta returns to final testing, while missing proof or a patch conflict preserves the work for manual recovery. Failed background checks leave the ticket waiting and retry with delays from one to five minutes. Restarting the daemon resumes checking; shutdown stops new checks and waits for the active check within the process shutdown deadline. A completed merge report or a validated finish-without-merge report lets restart finish the workflow without repeating remote completion or recording a second decision.",
     ],
     outputs: [
-      "A stable draft-PR review gate that exposes final PR metadata, test results, integration summary, ignored-file audit, and the net candidate diff.",
-      "A merge report artifact recording whether the ticket finished as merged or closed unmerged, including the reason when you finished without merging.",
+      "A stable draft-PR review gate that exposes final PR metadata, test results, integration summary, ignored-file audit, and the net candidate diff while the PR remains unmerged.",
+      "A merge report artifact recording whether the ticket finished as merged or without merging, including the reason when you finished without merging.",
+      "An `early_merge_recovery` artifact recording candidate and PR tree proof or manual-recovery details.",
       "An explicit human decision before cleanup and terminal completion.",
     ],
     transitions: [
       "Merge PR & Finish → Cleaning Up: GitHub merge succeeds, remote base verification succeeds, and cleanup starts without changing the local checkout.",
       "Finish Without Merge → Cleaning Up: The ticket finishes successfully without merging and cleanup starts.",
-      "System Error → Blocked Error: If the GitHub merge fails or the PR head differs from the approved candidate or the remote base cannot be verified to contain the landed commit, the workflow blocks as a PR merge failure. Retry rechecks remote state without trying to merge again when GitHub already reports the PR as merged. Remote uncertainty fails without recording a closed-unmerged decision.",
+      "Already Merged + Candidate Delta → Testing Implementation: LoopTroop returns the corrected candidate to final tests before a new PR.",
+      "Missing Proof or Patch Conflict → Blocked Error: Preserve the candidate and recovery worktree for manual resolution.",
+      "System Error → Blocked Error: A normal open-PR merge blocks if its head differs from the approved candidate or the remote base cannot be verified to contain the landed commit. For an already-merged PR, LoopTroop first attempts tree proof and corrective reconciliation; missing proof or a patch conflict preserves the candidate for manual recovery. Retry rechecks remote state without trying to merge again. Remote uncertainty does not record a finish-without-merge decision.",
     ],
     notes: [
       "Context available: PR metadata, final test report, integration summary, and merge controls. No AI prompt context is assembled in this review gate.",
       "This is the final human quality gate in the GitHub endgame.",
+      "Verified merge history remains sufficient after later edits or reverts. An exact candidate delta already present on the verified base completes without another PR. Temporary remote failures are retryable. Resolve retained conflicts in the recovery checkout, stage the resolved files, and commit once on its recorded base before retrying Verify. Uncommitted edits remain untouched; a clean committed resolution returns through final validation. A saved correction retried after the base advances is refreshed and revalidated on the latest base while preserving the earlier work.",
       "Repeating Merge after a verified merge has entered cleanup or completed returns the recorded success without merging again. A verified merge checkpoint also prevents Cancel or Finish Without Merge from replacing the recorded outcome while finalization is pending.",
-      "A verified closed-unmerged checkpoint for the same PR resumes cleanup and terminal completion without another GitHub read. Merge, Finish Without Merge, and Cancel cannot replace it, and a stale checkpoint for a different PR is ignored rather than treated as a decision for the current review.",
-      "When a live PR read observes merged, LoopTroop persists that observation before candidate-head validation or a close conflict is rejected, so the review surface cannot keep presenting a known merged PR as open.",
+      "A verified finish-without-merge checkpoint for the same PR resumes cleanup and terminal completion without another GitHub read. Merge, Finish Without Merge, and Cancel cannot replace it, and a stale checkpoint for a different PR is ignored rather than treated as a decision for the current review.",
+      "When a live PR read observes merged, LoopTroop records the observed state and then verifies the landed commit and candidate tree. A corrective delta keeps the original merged PR in `early_merge_recovery` while a new PR proceeds through normal tests and review.",
       "Finishing without merge does not require deleting the PR or the remote branch.",
       "Finishing without merge is a decision worth explaining. Nothing later in the ticket asks why the branch stopped.",
       "Internal merge, fetch, push, and cleanup commands appear in `SYS > CMD` as final summaries so the review gate stays auditable without noisy progress chatter.",
+      "The command guard is not a process sandbox. Scripts, custom executables, network clients, and OpenCode helper sessions with independent permissions may fall outside its checks.",
     ],
   },
   CLEANING_ENV: {
@@ -1178,7 +1195,7 @@ const WORKFLOW_PHASE_DETAILS = {
   },
   COMPLETED: {
     overview:
-      "The ticket has finished its workflow and is now in a successful terminal state. All planning, execution, PR, testing, and cleanup artifacts remain available for review. The ticket records whether it finished through a merged PR or as a closed-unmerged completion, and it preserves the full implementation history. Cleanup warnings, if any, are shown separately and do not change the completed status.",
+      "The ticket has finished its workflow and is now in a successful terminal state. All planning, execution, PR, testing, and cleanup artifacts remain available for review. The ticket records whether it finished through a merged PR or a confirmed finish-without-merge decision, and it preserves the full implementation history. Cleanup warnings, if any, are shown separately and do not change the completed status.",
     steps: [
       "Terminal Status: LoopTroop marks the ticket as `completed` after cleanup finishes. This is final and irreversible. The ticket cannot be restarted or modified.",
       "Read-Only Workspace: From a workflow point of view, the workspace becomes read-only. No further AI phases run, no artifacts are modified, and no new planning or execution starts.",
@@ -1189,7 +1206,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "A terminal `completed` status, which is the successful end state of the workflow.",
       "Full lifecycle history preserved for review, including interview, PRD, beads plan, execution logs, test reports, integration report, pull-request report, merge report, and cleanup report.",
       "A cleanup summary showing `clean`, `warning`, or `null` when no cleanup report exists.",
-      "Completion metadata showing whether the ticket finished as merged or closed unmerged.",
+      "Completion metadata showing whether the ticket finished through a merge or a confirmed finish-without-merge decision.",
     ],
     transitions: [
       "None: this is a terminal state. There are no forward workflow transitions from Completed.",
@@ -1309,7 +1326,7 @@ function getSafeResumeDescription(
     return "No automation runs here. Restarts simply reopen the saved ticket.";
   }
   if (phase.id === "WAITING_PR_REVIEW") {
-    return "Restarts resume GitHub polling from saved ticket state. A verified merge or current closed-unmerged report resumes completion without repeating remote work; other failed checks retry with backoff.";
+    return "Restarts resume GitHub polling from saved ticket state. A verified merge or current finish-without-merge report resumes completion without repeating remote work; other failed checks retry with backoff.";
   }
   if (phase.id === "CODING") {
     return "If the current bead can be matched safely after a restart, LoopTroop resumes it. Otherwise it resets that bead from durable state, keeps the retry notes, and continues. If the worktree cannot be trusted, it blocks instead.";
@@ -1692,7 +1709,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "RUNNING_FINAL_TEST",
     label: "Testing Implementation",
     description:
-      "LoopTroop is running whole-ticket verification against the implemented result. This is the mandatory automated gate before Manual QA or final integration. The phase audits opaque Git path records so local-only outputs stay out of delivery.",
+      "LoopTroop is running whole-ticket verification against the implemented result. This is the mandatory automated gate before Manual QA or final integration, and it runs again after an early-merged PR adds a corrective candidate. The phase audits opaque Git path records so local-only outputs stay out of delivery.",
     details: WORKFLOW_PHASE_DETAILS.RUNNING_FINAL_TEST,
     kanbanPhase: "in_progress",
     groupId: "post_implementation",
@@ -1756,7 +1773,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "CREATING_PULL_REQUEST",
     label: "Creating Pull Request",
     description:
-      "LoopTroop is auditing the candidate files, recording any safe formatting corrections, drafting the PR text, pushing the ticket branch, and creating or updating the draft pull request. Git and SSH calls stay non-interactive and bounded, and later branch cleanup requires an expected head lease.",
+      "LoopTroop audits candidate files and verifies any matching PR that has already merged before pushing. A matching candidate or an already-landed delta completes from verified merge history; additional candidate changes return to final tests; missing proof or conflicts preserve the work for manual recovery. Retry Verify adopts a clean manual resolution committed once on the recorded recovery base and reruns final validation. If a new PR is needed, LoopTroop creates or updates an unmerged draft. The command guard does not sandbox scripts, custom executables, network clients, or helpers with independent permissions.",
     details: WORKFLOW_PHASE_DETAILS.CREATING_PULL_REQUEST,
     kanbanPhase: "in_progress",
     groupId: "post_implementation",
@@ -1770,7 +1787,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "WAITING_PR_REVIEW",
     label: "Reviewing Pull Request",
     description:
-      "Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion. Remote checks are bounded and non-interactive, and branch deletion is allowed only with the recorded expected head. The running daemon detects merges made on GitHub, including squash and rebase merges, without an open UI. It checks the approved candidate head and landed commit, and resumes verified completion after a restart. A durable closed-unmerged report for the current PR also resumes completion without another remote decision. Repeated Merge requests return the recorded success after a verified merge, while a recorded merge or close decision cannot be replaced.",
+      "Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason, then leaves the remote PR and branch untouched. The daemon detects GitHub merges, including squash and rebase merges, without an open UI and verifies the landed commit. When the PR head and candidate differ, matching trees or an already-landed delta complete from verified merge history; a remaining candidate delta returns to final tests; missing proof or conflicts preserve the work for manual recovery. Retry Verify adopts a clean manual resolution committed once on the recorded recovery base and reruns final validation. Merge and finish-without-merge decisions resume after a restart and cannot be replaced. A clean correction may reset the managed ticket worktree while preserving the original candidate by Git ref; your original project checkout stays untouched. The command guard does not sandbox scripts, custom executables, network clients, or helpers with independent permissions.",
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: "needs_input",
     groupId: "post_implementation",

@@ -358,6 +358,9 @@ describe('OpenCode adapter transport orchestration', () => {
     }), { headers: { 'content-type': 'text/event-stream' } })
     const fetcher: typeof fetch = async (input, init = {}) => {
       const url = input instanceof Request ? new URL(input.url) : new URL(String(input))
+      const method = init.method ?? (input instanceof Request ? input.method : 'GET')
+      if (method === 'GET' && url.pathname === '/api/session' && url.searchParams.get('parentID') === 'session-1')
+        return jsonResponse({ data: [], cursor: {} })
       if (url.pathname === '/api/session/session-1') {
         return jsonResponse({ data: { id: 'session-1', location: { directory: '/workspace' } } })
       }
@@ -387,6 +390,7 @@ describe('OpenCode adapter transport orchestration', () => {
         }] : [] })
       }
       if (url.pathname.endsWith('/instructions/entries/looptroop')) return emptyResponse()
+      if (url.pathname === '/api/session/session-1/children') return jsonResponse({ data: [] })
       if (url.pathname === '/api/session/session-1/prompt') {
         promptPosted = true
         promptPostCount += 1
@@ -676,6 +680,321 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.replyPermission).not.toHaveBeenCalled()
   })
 
+  it('replies to a descendant permission in that child session and applies unknown-cwd guard state', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            event: {
+              type: 'permission',
+              sessionId: 'child-session',
+              action: 'asked',
+              permissionId: 'child-permission',
+              permission: 'bash',
+              patterns: ['rm -rf tickets'],
+              permissionDirectory: '/worktree/child',
+              permissionDirectoryUnverified: true,
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: 'ask' }],
+        permissionGuard: true,
+        autoApprovePermissions: true,
+      },
+    )).resolves.toBe('current answer')
+
+    expect(transport.replyPermission).toHaveBeenCalledOnce()
+    expect(transport.replyPermission).toHaveBeenCalledWith(
+      'child-session',
+      'child-permission',
+      'reject',
+      '/worktree/child',
+      undefined,
+      expect.stringContaining('working directory cannot be verified'),
+    )
+  })
+
+  it('continues after a rejection consumes sibling permission requests in the same session', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'sibling-permission') {
+          throw Object.assign(new Error('Permission request not found: sibling-permission'), { status: 404 })
+        }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            cursor: 53,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'rejected-permission',
+              permission: 'bash',
+              patterns: ['git push origin feature'],
+            },
+          },
+          {
+            cursor: 54,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'sibling-permission',
+              permission: 'bash',
+              patterns: ['git status --short'],
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: 'deny' }],
+        autoApprovePermissions: true,
+      },
+    )).resolves.toBe('current answer')
+
+    expect(transport.replyPermission).toHaveBeenNthCalledWith(
+      1, 'session-1', 'rejected-permission', 'reject', '/worktree', undefined,
+      expect.stringContaining('tool policy'),
+    )
+    expect(transport.replyPermission).toHaveBeenNthCalledWith(
+      2, 'session-1', 'sibling-permission', 'reject', '/worktree', undefined,
+      expect.stringContaining('tool policy'),
+    )
+  })
+
+  it('does not treat a later auto-approval 404 as a consumed rejected permission', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'later-approval') {
+          throw Object.assign(new Error('Permission request not found: later-approval'), { status: 404 })
+        }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            cursor: 53,
+            event: {
+              type: 'permission', sessionId: 'session-1', action: 'asked',
+              permissionId: 'rejected-first', permission: 'bash', patterns: ['git push origin feature'],
+            },
+          },
+          {
+            cursor: 54,
+            event: {
+              type: 'permission', sessionId: 'session-1', action: 'asked',
+              permissionId: 'later-approval', permission: 'read', patterns: ['README.md'],
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: 'deny' }],
+        autoApprovePermissions: true,
+      },
+    )).rejects.toThrow('Failed to auto-approve OpenCode permission read')
+  })
+
+  it.each([
+    { label: 'a 404 without a successful reject', status: 404, rejectFirst: false, message: 'Permission request not found', body: undefined },
+    { label: 'a session 404 after a successful reject', status: 404, rejectFirst: true, message: 'Session not found', body: { _tag: 'SessionNotFoundError' } },
+    { label: 'a non-404 after a successful reject', status: 500, rejectFirst: true, message: 'Permission request not found', body: undefined },
+  ])('does not swallow $label', async ({ status, rejectFirst, message, body }) => {
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'second-permission') {
+          throw Object.assign(new Error(message), { status, body })
+        }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          {
+            cursor: 53,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'first-permission',
+              permission: 'bash',
+            },
+          },
+          {
+            cursor: 54,
+            event: {
+              type: 'permission',
+              sessionId: 'session-1',
+              action: 'asked',
+              permissionId: 'second-permission',
+              permission: 'bash',
+            },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    const permissionAction = rejectFirst ? 'deny' : 'ask'
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      {
+        permission: [{ permission: 'bash', pattern: '*', action: permissionAction }],
+        autoApprovePermissions: true,
+      },
+    )).rejects.toThrow('Failed to')
+  })
+
+  it.each(['v1', 'v2'] as const)(
+    'rejects a guarded remote write with feedback, then approves a safe next call once on %s',
+    async (protocol) => {
+      const source = createEventSource()
+      let dispatched = false
+      const replies: unknown[][] = []
+      const permissionEvents = (firstCursor: number) => [
+        {
+          cursor: firstCursor,
+          event: {
+            type: 'permission' as const,
+            sessionId: 'session-1',
+            action: 'asked' as const,
+            permissionId: 'permission-unsafe',
+            permission: 'bash',
+            patterns: ['git push origin feature'],
+          },
+        },
+        {
+          cursor: firstCursor + 1,
+          event: {
+            type: 'permission' as const,
+            sessionId: 'session-1',
+            action: 'asked' as const,
+            permissionId: 'permission-safe',
+            permission: 'bash',
+            patterns: ['git status --short'],
+          },
+        },
+      ]
+      const replyPermission = vi.fn(async (...args: unknown[]) => {
+        replies.push(args)
+      })
+
+      const transport = protocol === 'v2'
+        ? createV2Transport({
+            getSessionMessages: vi.fn(async () => dispatched
+              ? [message('old-assistant', 'stale answer'), message('new-assistant', 'prompt completed')]
+              : [message('old-assistant', 'stale answer')]),
+            subscribeToEvents: vi.fn(async (_sessionId, _directory, signal) => ({
+              events: source.events(signal),
+              cursor: 50,
+              coverageComplete: true,
+            })),
+            replyPermission,
+            dispatchPrompt: vi.fn(async () => {
+              dispatched = true
+              source.push(
+                inboxEvent('inbox_enqueued', 'inbox-own', 51),
+                executionEvent('execution_started', 52),
+                ...permissionEvents(53),
+                inboxEvent('inbox_delivered', 'inbox-own', 55),
+                executionEvent('execution_terminal', 56),
+              )
+              return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+            }),
+          }).transport
+        : createV1Transport({
+            subscribeToEvents: vi.fn(async (_sessionId, _directory, signal) => ({ events: source.events(signal) })),
+            replyPermission,
+            dispatchPrompt: vi.fn(async () => {
+              source.push(...permissionEvents(1))
+              await settleWithin((async () => {
+                while (replies.length < 2) await new Promise(resolve => realSetTimeout(resolve, 0))
+              })(), 'two permission replies')
+              return { kind: 'completed' as const, message: message('assistant-1', 'prompt completed') }
+            }),
+          })
+
+      await expect(createAdapter(transport).promptSession(
+        'session-1',
+        [{ type: 'text', content: 'prompt' }],
+        undefined,
+        {
+          permission: [
+            { permission: 'bash', pattern: '*', action: 'ask' },
+            { permission: 'edit', pattern: '*', action: 'ask' },
+            { permission: 'write', pattern: '*', action: 'ask' },
+          ],
+          permissionGuard: true,
+          autoApprovePermissions: true,
+        },
+      )).resolves.toBe('prompt completed')
+
+      expect(replyPermission).toHaveBeenCalledTimes(2)
+      expect(replyPermission).toHaveBeenNthCalledWith(
+        1,
+        'session-1',
+        'permission-unsafe',
+        'reject',
+        '/worktree',
+        undefined,
+        expect.stringContaining('remote repository'),
+      )
+      expect(replyPermission).toHaveBeenNthCalledWith(
+        2,
+        'session-1',
+        'permission-safe',
+        'once',
+        '/worktree',
+        undefined,
+      )
+      expect(replies[0]?.[2]).toBe('reject')
+      expect(replies[1]?.[2]).toBe('once')
+    },
+  )
+
   it('preserves caller cancellation when an aborted v2 POST has no verifiable receipt', async () => {
     const controller = new AbortController()
     let markDispatchStarted: (() => void) | undefined
@@ -910,7 +1229,7 @@ describe('OpenCode adapter transport orchestration', () => {
       undefined,
       { autoApprovePermissions: true },
     )).resolves.toBe('current answer')
-    expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'always', '/worktree', undefined)
+    expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'once', '/worktree', undefined)
   })
 
   it('does not auto-approve a pending ask after replay finds a competing inbox', async () => {
@@ -1843,7 +2162,7 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(permissionReply).toHaveBeenCalledWith(expect.objectContaining({
       requestID: 'permission-1',
       directory: '/worktree',
-      reply: 'always',
+      reply: 'once',
     }), expect.anything())
 
     const questions = await adapter.listPendingQuestions(undefined, undefined, 'session-1')

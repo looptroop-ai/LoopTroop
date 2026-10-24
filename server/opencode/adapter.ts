@@ -26,6 +26,7 @@ import {
 import { OpenCodeV1Transport, type OpenCodeV1Client } from "./v1Transport";
 import { parseModelRef } from "./types";
 import { isPermissionDeniedByRules } from "./toolPolicy";
+import { getPermissionGuardRejection } from "./permissionGuard";
 import type { TicketState } from "./contextBuilder";
 import { resolve } from "path";
 import { relative } from "path";
@@ -980,33 +981,74 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
       };
       const handledPermissionIds = new Set<string>();
+      const successfullyRejectedPermissionSessions = new Set<string>();
       const pendingPermissionEvents = new Map<
         string,
         { event: StreamEvent; order: number }
       >();
       const replyToPermission = async (streamEvent: StreamEvent) => {
+        const permissionSessionId = streamEvent.sessionId;
+        const permissionKey = streamEvent.type === "permission"
+          ? `${permissionSessionId}\u0000${streamEvent.permissionId}`
+          : "";
         if (
           streamEvent.type !== "permission" ||
           !streamEvent.permissionId ||
-          handledPermissionIds.has(streamEvent.permissionId)
+          handledPermissionIds.has(permissionKey)
         )
           return;
-        handledPermissionIds.add(streamEvent.permissionId);
+        handledPermissionIds.add(permissionKey);
+        const permissionDirectory = streamEvent.permissionDirectory ??
+          (permissionSessionId === sessionId ? directory : undefined);
         const deniedByPolicy = isPermissionDeniedByRules(
           promptOptions.permission,
           streamEvent.permission,
+          streamEvent.patterns,
+          permissionDirectory,
         );
-        permissionReplyPending = transport
-          .replyPermission(
-            sessionId,
-            streamEvent.permissionId,
-            deniedByPolicy ? "reject" : "always",
-            directory,
-            operationSignal,
-          )
+        const guardRejection = promptOptions.permissionGuard
+          ? getPermissionGuardRejection({
+              permission: streamEvent.permission,
+              patterns: streamEvent.patterns,
+              details: streamEvent.details,
+              ...(promptOptions.permissionGuard === true ? {} : { context: promptOptions.permissionGuard }),
+              directory: permissionDirectory,
+              unverifiedDirectory: streamEvent.permissionDirectoryUnverified,
+            })
+          : null;
+        const rejectionMessage = guardRejection ?? (deniedByPolicy
+          ? `LoopTroop denied the ${streamEvent.permission ?? "tool"} request because this workflow's tool policy does not allow it.`
+          : undefined);
+        const permissionReply = rejectionMessage
+          ? transport.replyPermission(
+              permissionSessionId,
+              streamEvent.permissionId,
+              "reject",
+              permissionDirectory,
+              operationSignal,
+              rejectionMessage,
+            )
+          : transport.replyPermission(
+              permissionSessionId,
+              streamEvent.permissionId,
+              "once",
+              permissionDirectory,
+              operationSignal,
+            );
+        permissionReplyPending = permissionReply
+          .then(() => {
+            if (rejectionMessage) {
+              successfullyRejectedPermissionSessions.add(permissionSessionId);
+            }
+          })
           .catch(async (error) => {
+            if (
+              this.isConfirmedPermissionNotFoundError(error) &&
+              Boolean(rejectionMessage) &&
+              successfullyRejectedPermissionSessions.has(permissionSessionId)
+            ) return;
             permissionReplyFailure = new Error(
-              `Failed to ${deniedByPolicy ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
+              `Failed to ${rejectionMessage ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
               { cause: error },
             );
             Object.assign(permissionReplyFailure, { openCodeOperation: "replying to an OpenCode permission request" });
@@ -1140,10 +1182,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             streamEvent.action === "asked" &&
             promptOptions.autoApprovePermissions &&
             streamEvent.permissionId &&
-            !handledPermissionIds.has(streamEvent.permissionId)
+            !handledPermissionIds.has(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`)
           ) {
             if (transport.protocol === "v2" || beforeV2Dispatch) {
-              pendingPermissionEvents.set(streamEvent.permissionId, {
+              pendingPermissionEvents.set(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`, {
                 event: streamEvent,
                 order: eventOrder,
               });
@@ -2531,6 +2573,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     const response = this.getRecord(record?.response);
     const status = this.readHttpStatus(response) ?? this.readHttpStatus(record);
     return status === 404;
+  }
+
+  private isConfirmedPermissionNotFoundError(error: unknown): boolean {
+    const record = this.getRecord(error);
+    const response = this.getRecord(record?.response);
+    const body = this.getRecord(record?.body) ?? this.getRecord(response?.body);
+    const status = this.readHttpStatus(response) ?? this.readHttpStatus(record);
+    return status === 404 && (body?._tag === "PermissionNotFoundError"
+      || /permission request not found/i.test(typeof record?.message === "string" ? record.message : ""));
   }
 
   private readHttpStatus(

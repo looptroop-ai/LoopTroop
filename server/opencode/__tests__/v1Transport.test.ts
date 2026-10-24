@@ -279,8 +279,19 @@ describe('OpenCode v1 transport direct behavior', () => {
     await expect(sdk.replyQuestion('session-1', 'question-1', [], '/workspace')).rejects.toThrow('did not confirm reply')
     await expect(sdk.rejectQuestion('session-1', 'question-1', '/workspace')).resolves.toBeUndefined()
     await expect(sdk.rejectQuestion('session-1', 'question-1', '/workspace')).rejects.toThrow('did not confirm rejection')
-    await expect(sdk.replyPermission('session-1', 'permission-1', 'always')).resolves.toBeUndefined()
-    await expect(sdk.replyPermission('session-1', 'permission-2', 'reject')).rejects.toThrow('did not confirm the permission reply')
+    await expect(sdk.replyPermission('session-1', 'permission-1', 'once', '/workspace')).resolves.toBeUndefined()
+    await expect(sdk.replyPermission('session-1', 'permission-2', 'reject', '/workspace', undefined, 'LoopTroop denied this guarded operation.')).rejects.toThrow('did not confirm the permission reply')
+    expect(permissionReply).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      requestID: 'permission-1',
+      directory: '/workspace',
+      reply: 'once',
+    }), expect.anything())
+    expect(permissionReply).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      requestID: 'permission-2',
+      directory: '/workspace',
+      reply: 'reject',
+      message: 'LoopTroop denied this guarded operation.',
+    }), expect.anything())
     await expect(sdk.interruptSession('session-1', '/workspace')).resolves.toBe(true)
     await expect(sdk.interruptSession('missing')).resolves.toBe(true)
     await expect(sdk.interruptSession('gone')).resolves.toBe(true)

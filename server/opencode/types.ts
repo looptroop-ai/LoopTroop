@@ -1,3 +1,5 @@
+import type { PermissionGuardContext } from "./permissionGuard";
+
 export interface Session {
   id: string
   slug?: string
@@ -78,6 +80,8 @@ export interface PromptSessionOptions {
   system?: string
   noReply?: boolean
   permission?: ReadonlyArray<OpenCodePermissionRule>
+  /** `true` enables remote-action checks before the ticket has managed paths. */
+  permissionGuard?: PermissionGuardContext | true
   autoApprovePermissions?: boolean
   onEvent?: (event: StreamEvent) => void
   stepFinishSafetyMs?: number
@@ -290,6 +294,10 @@ export interface PermissionStreamEvent extends StreamEventBase {
   title?: string
   patterns?: string[]
   details?: Record<string, unknown>
+  /** Directory proven from the matching native tool input or session location. */
+  permissionDirectory?: string
+  /** The matching shell tool input was not available to establish its directory. */
+  permissionDirectoryUnverified?: boolean
 }
 
 export interface QuestionStreamEvent extends StreamEventBase {

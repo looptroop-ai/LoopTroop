@@ -755,8 +755,8 @@ describe('ProjectForm', () => {
       fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Demo' } })
       fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
       fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/demo' } })
-      fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-      return await screen.findByRole('radio', { name: 'Repository' })
+      fireEvent.click(screen.getByText('Advanced'))
+      return await screen.findByLabelText('Repository')
     }
 
     it('offers all three destinations inside Advanced once the folder is a repository, defaulting to this clone', async () => {
@@ -1102,7 +1102,7 @@ describe('ProjectForm', () => {
 
     const view = render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
     fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/meili' } })
-    fireEvent.click(await screen.findByRole('radio', { name: /Keep project settings, clear tickets/i }))
+    fireEvent.click(await screen.findByLabelText(/Keep project settings, clear tickets/i))
     fireEvent.click(screen.getByRole('button', { name: 'Clear Tickets & Attach' }))
 
     mockProjectMutations.create.isPending = true

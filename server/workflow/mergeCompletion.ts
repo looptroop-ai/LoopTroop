@@ -2,17 +2,20 @@ import { isRecord } from '@shared/typeGuards'
 import { ensureActorForTicket, sendTicketEvent } from '../machines/persistence'
 import { withCommandLoggingAsync } from '../log/commandLogger'
 import { emitRoutePhaseLog } from '../routes/ticketHandlers/routeUtils'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, isDisplayOnlyMockTicket, type PublicTicket } from '../storage/tickets'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, isDisplayOnlyMockTicket, type PublicTicket } from '../storage/tickets'
 import {
   buildObservedPullRequestReport,
   completeMergedPullRequest,
   recordPullRequestRefreshFailure,
   readPullRequestReport,
+  reconcileEarlyMergedPullRequest,
   refreshPullRequestReport,
   refreshPullRequestState,
+  resolvePullRequestHeadBranch,
   type PullRequestReport,
 } from './phases/pullRequestPhase'
 import type { PullRequestInfo, PullRequestState } from '../git/github'
+import { EarlyMergeRecoveryManualError } from '../git/earlyMergedPullRequestRecovery'
 import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from './skipReceipts'
 
 const pending = new Map<string, Promise<unknown>>()
@@ -37,22 +40,38 @@ function readVerifiedMergeReport(ticket: PublicTicket) {
   if (!artifact || !prReport) return null
   try {
     const report: unknown = JSON.parse(artifact.content)
+    const baseTreeProof = isRecord(report)
+      && (report.proofKind === 'already_landed' || report.proofKind === 'manual_resolution_no_change')
     if (!isRecord(report)
       || report.status !== 'passed' || report.disposition !== 'merged' || report.prState !== 'merged'
       || typeof report.baseBranch !== 'string' || report.baseBranch.length === 0
       || report.baseBranch !== ticket.runtime.baseBranch
-      || report.headBranch !== (ticket.branchName?.trim() || ticket.externalId)
+      || typeof report.headBranch !== 'string' || report.headBranch.length === 0
+      || report.headBranch !== prReport.headBranch
       || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
-      || report.prHeadSha !== report.candidateCommitSha
+      || typeof report.prHeadSha !== 'string' || report.prHeadSha.length === 0
+      || (report.prHeadSha !== report.candidateCommitSha
+        && (baseTreeProof
+          ? typeof report.candidateTreeSha !== 'string' || report.candidateTreeSha.length === 0
+            || typeof report.prHeadTreeSha !== 'string' || report.prHeadTreeSha.length === 0
+            || report.candidateTreeSha === report.prHeadTreeSha
+            || typeof report.remoteBaseHead !== 'string' || report.remoteBaseHead.length === 0
+            || typeof report.remoteBaseTreeSha !== 'string' || report.remoteBaseTreeSha.length === 0
+          : (report.proofKind !== undefined && report.proofKind !== 'tree_equivalent')
+            || typeof report.candidateTreeSha !== 'string' || report.candidateTreeSha.length === 0
+            || report.candidateTreeSha !== report.prHeadTreeSha))
+      || (baseTreeProof && report.prHeadSha === report.candidateCommitSha)
       || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
       || report.prNumber !== prReport.prNumber
       || (report.prUrl !== null && typeof report.prUrl !== 'string')
       || typeof report.message !== 'string'
+      || typeof report.landedCommitSha !== 'string' || report.landedCommitSha.length === 0
       || typeof report.remoteBaseHead !== 'string' || report.remoteBaseHead.length === 0) return null
     return {
       prNumber: report.prNumber, prUrl: report.prUrl, prState: 'merged' as const,
-      prHeadSha: report.candidateCommitSha, message: report.message, remoteBaseHead: report.remoteBaseHead,
+      candidateCommitSha: report.candidateCommitSha, prHeadSha: report.prHeadSha,
+      message: report.message, remoteBaseHead: report.remoteBaseHead,
     }
   } catch {
     return null
@@ -88,7 +107,8 @@ function readClosedUnmergedReport(ticket: PublicTicket) {
       || prState === undefined
       || prHeadSha === undefined
       || typeof report.baseBranch !== 'string' || report.baseBranch !== ticket.runtime.baseBranch
-      || report.headBranch !== (ticket.branchName?.trim() || ticket.externalId)
+      || typeof report.headBranch !== 'string' || report.headBranch.length === 0
+      || report.headBranch !== prReport.headBranch
       || typeof report.candidateCommitSha !== 'string' || report.candidateCommitSha.length === 0
       || report.candidateCommitSha !== ticket.runtime.candidateCommitSha
       || typeof report.prNumber !== 'number' || !Number.isSafeInteger(report.prNumber) || report.prNumber <= 0
@@ -178,12 +198,50 @@ export async function completeTicketMerge(
   prReport: PullRequestReport,
   skipRemoteMerge = false,
   observedPullRequest?: PullRequestInfo,
-): Promise<void> {
+): Promise<'merged' | 'already_landed' | 'corrected' | 'skipped'> {
   const ticketId = ticket.id
   const phase = 'WAITING_PR_REVIEW'
-  if (resumeVerifiedMerge(ticket)) return
+  const ticketBranch = ticket.branchName?.trim() || ticket.externalId
+  if (resumeVerifiedMerge(ticket)) return 'merged'
   if (hasClosedUnmergedReport(ticket)) {
     throw new Error('A close-without-merge decision is already recorded for this pull request.')
+  }
+  const activeHeadBranch = resolvePullRequestHeadBranch(ticketId, ticketBranch, prReport)
+  if (observedPullRequest?.state === 'merged' && !ticket.runtime.candidateCommitSha) {
+    throw new Error(`Cannot verify merged pull request #${observedPullRequest.number} because no candidate commit is recorded.`)
+  }
+  if (observedPullRequest?.state === 'merged'
+    && (!ticket.runtime.candidateCommitSha || observedPullRequest.headRefOid !== ticket.runtime.candidateCommitSha)) {
+    const candidateCommitSha = ticket.runtime.candidateCommitSha ?? ''
+    const ticketPaths = getTicketPaths(ticketId)
+    if (!ticketPaths) throw new Error('Waiting pull request ticket is missing its workspace paths.')
+    const result = await reconcileEarlyMergedPullRequest({
+      ticketId,
+      phase,
+      projectPath: projectRoot,
+      worktreePath: ticketPaths.worktreePath,
+      externalId: ticket.externalId,
+      baseBranch: ticket.runtime.baseBranch,
+      headBranch: activeHeadBranch,
+      ticketBranch,
+      candidateCommitSha,
+      pr: observedPullRequest,
+    })
+    if (result === 'equivalent' || result === 'already_landed') {
+      ensureActorForTicket(ticketId)
+      sendTicketEvent(ticketId, { type: 'MERGE_COMPLETE' })
+      return result === 'already_landed' ? 'already_landed' : 'merged'
+    }
+    if (result === 'corrected') {
+      ensureActorForTicket(ticketId)
+      sendTicketEvent(ticketId, { type: 'EARLY_MERGE_CORRECTION_READY' })
+      return 'corrected'
+    }
+    if (result === 'skip') {
+      ensureActorForTicket(ticketId)
+      sendTicketEvent(ticketId, { type: 'EARLY_MERGE_CORRECTION_READY' })
+      return 'skipped'
+    }
   }
   const mergeReport = await withCommandLoggingAsync(
     ticketId,
@@ -194,7 +252,7 @@ export async function completeTicketMerge(
       externalId: ticket.externalId,
       projectPath: projectRoot,
       baseBranch: ticket.runtime.baseBranch,
-      headBranch: ticket.branchName?.trim() || ticket.externalId,
+      headBranch: activeHeadBranch,
       candidateCommitSha: ticket.runtime.candidateCommitSha,
       prReport,
       skipRemoteMerge,
@@ -203,10 +261,10 @@ export async function completeTicketMerge(
     (cmdPhase, type, content) => emitRoutePhaseLog(ticketId, cmdPhase, type, content),
   )
   const current = getTicketByRef(ticketId)
-  if (!current) return
+  if (!current) return 'merged'
   if (current.status !== phase) {
     emitRoutePhaseLog(ticketId, phase, 'info', `Pull request merge verified; ticket already moved to ${current.status}.`)
-    return
+    return 'merged'
   }
   ensureActorForTicket(ticketId)
   emitRoutePhaseLog(ticketId, phase, 'info', mergeReport.message, {
@@ -217,6 +275,7 @@ export async function completeTicketMerge(
     remoteBaseHead: mergeReport.remoteBaseHead,
   })
   sendTicketEvent(ticketId, { type: 'MERGE_COMPLETE' })
+  return 'merged'
 }
 
 export async function syncWaitingPullRequestTicket(ticketId: string): Promise<void> {
@@ -244,7 +303,7 @@ export async function syncWaitingPullRequestTicket(ticketId: string): Promise<vo
       ticketId,
       projectPath: input.projectRoot,
       baseBranch: input.ticket.runtime.baseBranch,
-      headBranch: input.ticket.branchName?.trim() || input.ticket.externalId,
+      headBranch: input.report.headBranch,
       candidateCommitSha: input.ticket.runtime.candidateCommitSha,
       prNumber: input.report.prNumber,
       error,
@@ -268,7 +327,19 @@ export async function syncWaitingPullRequestTicket(ticketId: string): Promise<vo
       refreshPullRequestReport(ticketId, updatedReport)
     }
     if (pr.state === 'merged') {
-      await completeTicketMerge(ticket, context.projectRoot, updatedReport, true, pr)
+      try {
+        await completeTicketMerge(ticket, context.projectRoot, updatedReport, true, pr)
+      } catch (error) {
+        if (!(error instanceof EarlyMergeRecoveryManualError)) throw error
+        const message = `Pull request #${pr.number} requires manual recovery: ${error.message}`
+        ensureActorForTicket(ticketId)
+        sendTicketEvent(ticketId, { type: 'ERROR', message, codes: ['EARLY_MERGE_RECOVERY_MANUAL'] })
+        emitRoutePhaseLog(ticketId, 'WAITING_PR_REVIEW', 'error', message, {
+          recoveryReason: error.recovery.reason,
+          recoveryWorktreePath: error.recovery.recoveryWorktreePath,
+          conflictPaths: error.recovery.conflictPaths,
+        })
+      }
     }
   })
 }

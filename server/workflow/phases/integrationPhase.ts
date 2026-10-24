@@ -66,6 +66,17 @@ export async function handleIntegration(
 
   if (signal?.aborted) throw new CancelledError(ticketId)
 
+  let earlyMergeCorrectionBranch: string | undefined
+  try {
+    const previous = JSON.parse(getLatestPhaseArtifact(ticketId, 'integration_report')?.content ?? 'null')
+    if (typeof previous?.earlyMergeCorrectionBranch === 'string'
+      && /^looptroop\/early-merge\/pr-\d+-[0-9a-f]{12}$/.test(previous.earlyMergeCorrectionBranch)) {
+      earlyMergeCorrectionBranch = previous.earlyMergeCorrectionBranch
+    }
+  } catch {
+    // A malformed previous report cannot establish correction lineage.
+  }
+
   const setupProfileArtifact = getLatestPhaseArtifact(
     ticketId,
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
@@ -127,6 +138,7 @@ export async function handleIntegration(
         status: 'blocked',
         completedAt: new Date().toISOString(),
         baseBranch: paths.baseBranch,
+        ...(earlyMergeCorrectionBranch ? { earlyMergeCorrectionBranch } : {}),
         gitHookValidation: hookValidation,
         hookEvidenceDrift,
         message,
@@ -191,6 +203,7 @@ export async function handleIntegration(
     pushed: false,
     pushDeferred: squash.success,
     pushError: null,
+    ...(earlyMergeCorrectionBranch ? { earlyMergeCorrectionBranch } : {}),
     manualQa: readManualQaDeliverySummary(ticketId),
     gitHookValidation: hookValidation,
     hookEvidenceDrift,

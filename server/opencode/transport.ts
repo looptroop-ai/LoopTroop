@@ -173,9 +173,10 @@ export interface OpenCodeTransport {
   replyPermission(
     sessionId: string,
     permissionId: string,
-    reply: "always" | "reject",
+    reply: "once" | "always" | "reject",
     directory?: string,
     signal?: AbortSignal,
+    message?: string,
   ): Promise<void>;
   interruptSession(sessionId: string, directory?: string): Promise<boolean>;
   checkHealth(signal?: AbortSignal): Promise<HealthStatus>;

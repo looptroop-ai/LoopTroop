@@ -137,6 +137,18 @@ function resolveSessionTicketRef(found: NonNullable<ReturnType<typeof findSessio
   return owner ? buildTicketRef(found.projectId, owner.externalId) : undefined
 }
 
+export function getSessionPermissionOwnership(sessionId: string): { ticketId: string, phase: string } | undefined {
+  try {
+    const found = findSessionRecord(sessionId)
+    if (!found || found.record.state !== 'active') return undefined
+    const ticketId = resolveSessionTicketRef(found)
+    return ticketId ? { ticketId, phase: found.record.phase } : undefined
+  } catch {
+    // Permission checks still run without storage; only ticket-specific paths are unavailable.
+    return undefined
+  }
+}
+
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
 }

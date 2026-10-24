@@ -164,6 +164,55 @@ describe('server/git/github', () => {
     expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('PUT'))).toBe(true)
   })
 
+  it('reads all pull request pages before choosing the newest relevant request', async () => {
+    const olderPullRequests = Array.from({ length: 100 }, (_, index) => pullRequestRecord(index + 1))
+    const pageRequests: number[] = []
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      const page = Number(args.find((arg) => arg.startsWith('page='))?.slice(5))
+      pageRequests.push(page)
+      expect(args).toEqual(expect.arrayContaining(['per_page=100', `page=${page}`]))
+      expect(args).not.toContain('--slurp')
+      return makeSpawnResult({ stdout: JSON.stringify(page === 1 ? olderPullRequests : [
+        { ...pullRequestRecord(200), state: 'closed' },
+        { ...pullRequestRecord(199), state: 'closed', merged_at: '2026-01-01T00:00:00Z', merge_commit_sha: 'landed' },
+      ]) })
+    })
+    const github = await import('../github')
+    const pulls = await github.listPullRequestsForBranch('/repo', 'ticket-branch', 'main')
+    expect(pulls.slice(0, 2)).toMatchObject([
+      { number: 200, state: 'closed' }, { number: 199, state: 'merged' },
+    ])
+    expect(pulls).toHaveLength(102)
+    expect(pageRequests).toEqual([1, 2])
+  })
+
+  it('fetches a PR head into an internal ref instead of sharing FETCH_HEAD', async () => {
+    const expectedHeadSha = 'a'.repeat(40)
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => (
+      args.includes('rev-parse')
+        ? makeSpawnResult({ stdout: `${expectedHeadSha}\n` })
+        : makeSpawnResult()
+    ))
+
+    const github = await import('../github')
+    await expect(github.fetchPullRequestHead('/repo', 42, expectedHeadSha)).resolves.toBe(expectedHeadSha)
+
+    const fetchCall = spawnMock.mock.calls.find(([, args]) => (args as string[]).includes('--no-write-fetch-head'))
+    expect(fetchCall?.[1]).toEqual(expect.arrayContaining([
+      '--no-write-fetch-head',
+      `+refs/pull/42/head:refs/looptroop/pull-heads/42/${expectedHeadSha}`,
+    ]))
+  })
+
+  it('rejects a fetched PR head that differs from its expected identity', async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => args.includes('rev-parse')
+      ? makeSpawnResult({ stdout: 'b'.repeat(40) }) : makeSpawnResult())
+    const github = await import('../github')
+    await expect(github.fetchPullRequestHead('/repo', 42, 'a'.repeat(40)))
+      .rejects.toBeInstanceOf(github.PullRequestHeadProofError)
+  })
+
   it('rejects unsafe diff refs before they can become a Git option', async () => {
     const github = await import('../github')
 
@@ -516,6 +565,34 @@ describe('server/git/github', () => {
     ]))
   })
 
+  it('creates a new draft instead of adopting or patching a closed merged pull request', async () => {
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+      if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
+      if (args.includes('GET')) return makeSpawnResult({ stdout: JSON.stringify([{
+        ...pullRequestRecord(12),
+        state: 'closed',
+        draft: false,
+        merged_at: '2026-01-01T00:00:00Z',
+        merge_commit_sha: 'landed-sha',
+      }]) })
+      if (args.includes('POST')) return makeSpawnResult({ stdout: JSON.stringify(pullRequestRecord(13)) })
+      return makeSpawnResult()
+    })
+
+    const github = await import('../github')
+    const result = await github.createOrUpdateDraftPullRequest({
+      projectPath: '/repo',
+      branchName: 'ticket-branch',
+      baseBranch: 'main',
+      title: 'Corrected candidate',
+      body: 'Open a new review for the corrective candidate.',
+    })
+
+    expect(result.number).toBe(13)
+    expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('PATCH'))).toBe(false)
+    expect(spawnMock.mock.calls.some(([, args]) => (args as string[]).includes('POST'))).toBe(true)
+  })
+
   it('rejects a draft creation response that contains no pull request metadata', async () => {
     spawnSyncMock.mockImplementation((command: string, args: readonly string[]) => {
       if (command === 'git') return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git' })
@@ -641,6 +718,16 @@ describe('server/git/github', () => {
     } finally {
       rmSync(projectPath, { recursive: true, force: true })
     }
+  })
+
+  it('fails closed when a NUL-delimited Git path cannot be decoded', async () => {
+    const github = await import('../github')
+    expect(() => github.decodeGitPathList(Buffer.from([0xff, 0]))).toThrow('cannot be safely decoded as UTF-8')
+  })
+
+  it('preserves a BOM when decoding a Git path', async () => {
+    const github = await import('../github')
+    expect(github.decodeGitPathList(Buffer.from([0xef, 0xbb, 0xbf, 0x66, 0x69, 0x6c, 0x65, 0]))).toEqual(['\uFEFFfile'])
   })
 
   it('allows a candidate checkout to replace a path that HEAD already tracks', async () => {
@@ -848,10 +935,10 @@ describe('server/git/github', () => {
     })
 
     const github = await import('../github')
-
-    await expect(github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')).rejects.toThrow(
-      'Remote origin/main does not contain commit candidate123. Latest remote base is remote-base-sha.',
-    )
+    const error = await github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123').catch((caught) => caught)
+    expect(error).toBeInstanceOf(github.RemoteBaseProofError)
+    if (!(error instanceof Error)) throw new Error('Expected remote ancestry proof failure')
+    expect(error.message).toBe('Remote origin/main does not contain commit candidate123. Latest remote base is remote-base-sha.')
   })
 
   it('rejects remote merge verification when the candidate SHA is unavailable', async () => {

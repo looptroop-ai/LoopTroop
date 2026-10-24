@@ -110,8 +110,8 @@ const requireElement = (element: Element | null | undefined, description: string
 }
 
 const openCustomAiQuestionWait = () => {
-  fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
-  fireEvent.click(screen.getByRole('radio', { name: /Set a custom ai question wait/i }))
+  fireEvent.click(screen.getByText('Advanced'))
+  fireEvent.click(screen.getByLabelText(/Set a custom ai question wait/i))
   return screen.getByLabelText('AI question wait')
 }
 
@@ -188,7 +188,7 @@ describe('ProfileSetup', () => {
 
     fireEvent.change(waitField, { target: { value: '5' } })
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
-    fireEvent.click(screen.getByRole('radio', { name: /Default ai question wait/i }))
+    fireEvent.click(screen.getByLabelText(/Default ai question wait/i))
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
   })
 
@@ -800,14 +800,14 @@ describe('ProfileSetup', () => {
   it('suspends an invalid custom wait while Off, restores it on re-enable, and clears it with Default', async () => {
     await renderProfileSetup()
     const waitField = openCustomAiQuestionWait()
-    const save = screen.getByRole('button', { name: 'Save' })
+    const save = screen.getByText('Save', { selector: 'button' })
 
     fireEvent.change(waitField, { target: { value: '10' } })
     expect(save).toBeEnabled()
     fireEvent.change(waitField, { target: { value: '61' } })
     expect(save).toBeDisabled()
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+    fireEvent.click(screen.getByLabelText('Off'))
     expect(waitField).toBeDisabled()
     expect(waitField).toHaveValue(10)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -818,13 +818,13 @@ describe('ProfileSetup', () => {
       expect.anything(),
     )
 
-    fireEvent.click(screen.getByRole('radio', { name: 'On' }))
+    fireEvent.click(screen.getByLabelText('On'))
     expect(waitField).toBeEnabled()
     expect(waitField).toHaveValue(61)
     expect(waitField).toHaveAttribute('aria-invalid', 'true')
     expect(save).toBeDisabled()
 
-    fireEvent.click(screen.getByRole('radio', { name: /Default ai question wait/i }))
+    fireEvent.click(screen.getByLabelText(/Default ai question wait/i))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(save).toBeEnabled()
     fireEvent.click(save)

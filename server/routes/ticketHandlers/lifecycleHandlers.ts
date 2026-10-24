@@ -1,3 +1,4 @@
+import { EarlyMergeRecoveryManualError } from '../../git/earlyMergedPullRequestRecovery'
 import { completeTicketMerge, hasClosedUnmergedReport, hasVerifiedMergeReport, withTicketMergeLock } from '../../workflow/mergeCompletion'
 import type { Context } from 'hono'
 import type { z } from 'zod'
@@ -60,6 +61,7 @@ import {
   completeCloseUnmerged,
   recordPullRequestRefreshFailure,
   readPullRequestReport,
+  resolvePullRequestHeadBranch,
   refreshPullRequestReport,
   refreshPullRequestState,
 } from '../../workflow/phases/pullRequestPhase'
@@ -592,7 +594,7 @@ export async function handleMergeTicket(c: Context) {
         ticketId,
         projectPath: ticketContext.projectRoot,
         baseBranch: ticket.runtime.baseBranch,
-        headBranch: ticket.branchName?.trim() || ticket.externalId,
+        headBranch: prReport.headBranch,
         candidateCommitSha: ticket.runtime.candidateCommitSha,
         prNumber: prReport.prNumber,
         error,
@@ -636,7 +638,16 @@ async function handleMergeTicketLocked(c: Context, observed: PullRequestInfo) {
   const phase = 'WAITING_PR_REVIEW'
 
   try {
-    await completeTicketMerge(ticket, ticketContext.projectRoot, prReport, false, observed)
+    const result = await completeTicketMerge(ticket, ticketContext.projectRoot, prReport, false, observed)
+    if (result === 'corrected') {
+      return respondWithState(c, ticketId, 'Final tests will run again for the corrected candidate.')
+    }
+    if (result === 'already_landed') {
+      return respondWithState(c, ticketId, 'The merged pull request changes are verified on the base branch.')
+    }
+    if (result === 'skipped') {
+      return respondWithState(c, ticketId, 'The merged pull request is older than the current candidate. Final tests will run before a new pull request is created.')
+    }
   } catch (err) {
     const current = getTicketByRef(ticketId)
     if (current && hasVerifiedMergeReport(current)) {
@@ -647,12 +658,23 @@ async function handleMergeTicketLocked(c: Context, observed: PullRequestInfo) {
         details: getErrorMessage(err),
       }, 500)
     }
+    const recovery = err instanceof EarlyMergeRecoveryManualError ? err.recovery : null
     const details = getErrorMessage(err)
-    const message = `Pull request merge failed: ${details}`
-    const codes = ['PULL_REQUEST_MERGE_FAILED']
+    if (!recovery) {
+      return c.json({
+        error: 'The pull request could not be verified for completion. The ticket remains available to retry.',
+        details,
+      }, 502)
+    }
+    const message = `Pull request #${observed.number} requires manual recovery: ${details}`
+    const codes = ['EARLY_MERGE_RECOVERY_MANUAL']
     try {
       ensureActorForTicket(ticketId)
-      emitRoutePhaseLog(ticketId, phase, 'error', message)
+      emitRoutePhaseLog(ticketId, phase, 'error', message, {
+        recoveryReason: recovery.reason,
+        recoveryWorktreePath: recovery.recoveryWorktreePath,
+        conflictPaths: recovery.conflictPaths,
+      })
       sendTicketEvent(ticketId, {
         type: 'ERROR',
         message,
@@ -709,7 +731,7 @@ export async function handleCloseUnmergedTicket(c: Context) {
         ticketId,
         projectPath: context.projectRoot,
         baseBranch: ticket.runtime.baseBranch,
-        headBranch: ticket.branchName?.trim() || ticket.externalId,
+        headBranch: prReport.headBranch,
         candidateCommitSha: ticket.runtime.candidateCommitSha,
         prNumber: prReport.prNumber,
         error,
@@ -761,12 +783,21 @@ async function handleCloseUnmergedTicketLocked(
 
   const closeReason = normalizeSkipReason(options.reason)
   const statusBeforeClose = ticket.status
+  let headBranch: string
+  try {
+    headBranch = resolvePullRequestHeadBranch(ticketId, ticket.branchName?.trim() || ticket.externalId, currentPrReport)
+  } catch (error) {
+    return c.json({ error: 'The active pull request does not match the ticket or its recorded corrective recovery.', details: getErrorMessage(error) }, 409)
+  }
+  if (observed.baseRefName !== ticket.runtime.baseBranch || observed.headRefName !== headBranch) {
+    return c.json({ error: 'The pull request changed while it was being verified. Reload and try again.' }, 409)
+  }
 
   try {
     const report = completeCloseUnmerged({
       ticketId,
       baseBranch: ticket.runtime.baseBranch,
-      headBranch: ticket.branchName?.trim() || ticket.externalId,
+      headBranch,
       candidateCommitSha: ticket.runtime.candidateCommitSha,
       prReport: buildObservedPullRequestReport(currentPrReport, observed),
       reason: closeReason,

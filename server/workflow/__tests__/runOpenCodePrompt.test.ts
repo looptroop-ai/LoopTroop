@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { patchTicket } from '../../storage/tickets'
+import { getTicketPaths } from '../../storage/ticketQueries'
+import * as ticketQueries from '../../storage/ticketQueries'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { buildFormattedBatchAnswers } from '../phases/interviewPhase'
@@ -24,7 +26,6 @@ import { deliberateInterview } from '../../phases/interview/deliberate'
 import {
   SILENT_DEFAULT_PERMISSIONS,
   SILENT_DISABLED_PERMISSIONS,
-  SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS,
   SILENT_READ_ONLY_PERMISSIONS,
 } from '../../opencode/toolPolicy'
 import {
@@ -260,6 +261,19 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
   }
 }
 
+const GUARDED_PROMPT_PERMISSIONS = [
+  { permission: 'bash', pattern: '*', action: 'ask' },
+  { permission: 'edit', pattern: '*', action: 'ask' },
+  { permission: 'write', pattern: '*', action: 'ask' },
+  { permission: 'apply_patch', pattern: '*', action: 'ask' },
+]
+
+function expectGuardedPromptPermissions(adapter: TestOpenCodeAdapter, callIndex: number) {
+  const guarded = new Set(['bash', 'edit', 'write', 'apply_patch'])
+  const permission = adapter.promptCalls[callIndex]?.options?.permission ?? []
+  expect(permission.filter((rule) => guarded.has(rule.permission))).toEqual(GUARDED_PROMPT_PERMISSIONS)
+}
+
 describe('runOpenCodePrompt', () => {
   const repoManager = createTestRepoManager('run-opencode-prompt-')
 
@@ -435,7 +449,7 @@ describe('runOpenCodePrompt', () => {
     expect(permissionReplies[0]?.[0]).toMatchObject({
       requestID: 'per-1',
       directory: '/tmp/project',
-      reply: 'always',
+      reply: 'once',
     })
   })
 
@@ -795,7 +809,7 @@ describe('runOpenCodePrompt', () => {
     expect(callbackOrder).toEqual(['session', 'prompt'])
     expect(dispatchedEvent).toMatchObject({
       session: { id: 'ses-1' },
-      promptText: 'PROM1 body',
+      promptText: '### text\nPROM1 body\n\n### system\nLeave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.',
       promptNumber: 1,
       timeoutKind: 'ai_response',
       timeoutMs: 1_000,
@@ -1086,6 +1100,119 @@ describe('runOpenCodePrompt', () => {
 
     expect(adapter.sessionCreateCalls).toHaveLength(1)
     expect(adapter.sessionCreateCalls[0]?.options?.permission).toEqual(OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS)
+  })
+
+  it('passes managed ticket paths to the permission guard and asks for shell and edits', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, {
+      title: 'Managed permission guard context',
+    })
+    patchTicket(ticket.id, { status: 'CODING' })
+    const paths = getTicketPaths(ticket.id)!
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+
+    await runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      sessionOwnership: {
+        ticketId: ticket.id,
+        phase: 'CODING',
+      },
+    })
+
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toEqual({
+      worktreePath: paths.worktreePath,
+      projectRoot: paths.projectRoot,
+      ticketDir: paths.ticketDir,
+    })
+    expectGuardedPromptPermissions(adapter, 0)
+  })
+
+  it('recovers managed ticket paths for an unowned same-session continuation', async () => {
+    resetTestDb()
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Continued permission guard context',
+    })
+    const sessionId = 'session-owned-continuation'
+    const adapter = new TestOpenCodeAdapter(['initial response', 'continuation response'], {
+      createSession: async () => ({ id: sessionId, projectPath: paths.worktreePath }),
+    })
+    let continuationDispatch: OpenCodePromptDispatchEvent | null = null
+    const initial = await runOpenCodePrompt({
+      adapter,
+      projectPath: paths.worktreePath,
+      parts: [{ type: 'text', content: 'Initial prompt' }],
+      toolPolicy: 'execution_setup_online',
+      sessionOwnership: {
+        ticketId: ticket.id,
+        phase: 'RUNNING_FINAL_TEST',
+        keepActive: true,
+      },
+    })
+
+    await runOpenCodeSessionPrompt({
+      adapter,
+      session: { id: initial.session.id },
+      parts: [{ type: 'text', content: 'Continue the same session' }],
+      toolPolicy: 'execution_setup_online',
+      skipSessionValidation: true,
+      onPromptDispatched: (event) => { continuationDispatch = event },
+    })
+
+    expect(adapter.promptCalls[1]?.options?.permissionGuard).toEqual({
+      worktreePath: paths.worktreePath,
+      projectRoot: paths.projectRoot,
+      ticketDir: paths.ticketDir,
+    })
+    expectGuardedPromptPermissions(adapter, 1)
+    expect(continuationDispatch).toMatchObject({ timeoutKind: 'ai_response' })
+    resetTestDb()
+  })
+
+  it('keeps permission checks enabled for unowned prompts without ticket paths', async () => {
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+
+    await runOpenCodeSessionPrompt({
+      adapter,
+      session: { id: 'session-before-worktree' },
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      skipSessionValidation: true,
+      toolPolicy: 'execution_setup_online',
+    })
+
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
+    expectGuardedPromptPermissions(adapter, 0)
+  })
+
+  it('keeps guarded prompts running when ticket path lookup fails', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Missing guard paths' })
+    patchTicket(ticket.id, { status: 'CODING' })
+    const adapter = new TestOpenCodeAdapter(['assistant response'])
+    const paths = vi.spyOn(ticketQueries, 'getTicketPaths').mockImplementation(() => {
+      throw new Error('Ticket paths are unavailable.')
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await runOpenCodePrompt({
+        adapter,
+        projectPath: '/tmp/project',
+        parts: [{ type: 'text', content: 'Prompt body' }],
+        sessionOwnership: { ticketId: ticket.id, phase: 'CODING' },
+      })
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(`permission-guard paths for ticket ${ticket.id}`),
+        expect.objectContaining({ message: 'Ticket paths are unavailable.' }),
+      )
+    } finally {
+      paths.mockRestore()
+      warning.mockRestore()
+    }
+
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
+    expectGuardedPromptPermissions(adapter, 0)
   })
 
   it('retries unowned session creation before prompting', async () => {
@@ -1505,7 +1632,10 @@ describe('runOpenCodePrompt', () => {
 
     expect(continued.response).toBe('continued response')
     expect(adapter.promptCalls[1]?.sessionId).toBe(initial.session.id)
-    expect(adapter.promptCalls[1]?.parts).toEqual([{ type: 'text', content: 'continue please' }])
+    expect(adapter.promptCalls[1]?.parts).toEqual([
+      { type: 'text', content: 'continue please' },
+      { type: 'system', content: 'Leave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.' },
+    ])
   })
 
   it('sends a custom continuation prompt to the preserved session across setup attempt numbers', async () => {
@@ -1550,7 +1680,10 @@ describe('runOpenCodePrompt', () => {
 
     expect(continued.response).toBe('continued response')
     expect(adapter.promptCalls[1]?.sessionId).toBe(initial.session.id)
-    expect(adapter.promptCalls[1]?.parts).toEqual([{ type: 'text', content: note }])
+    expect(adapter.promptCalls[1]?.parts).toEqual([
+      { type: 'text', content: note },
+      { type: 'system', content: 'Leave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.' },
+    ])
   })
 
   it('retains upgrade guidance after execution-band session creation retries are exhausted', async () => {
@@ -1660,12 +1793,14 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DEFAULT_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
     expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
       { permission: 'external_directory', pattern: '*', action: 'allow' },
       { permission: 'doom_loop', pattern: '*', action: 'allow' },
       { permission: 'webfetch', pattern: '*', action: 'deny' },
       { permission: 'websearch', pattern: '*', action: 'deny' },
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'edit', pattern: '*', action: 'ask' },
     ]))
     expect(adapter.promptCalls[0]?.options?.autoApprovePermissions).toBe(true)
   })
@@ -1681,7 +1816,13 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permissionGuard).toBe(true)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
+      { permission: 'webfetch', pattern: '*', action: 'allow' },
+      { permission: 'websearch', pattern: '*', action: 'allow' },
+      { permission: 'bash', pattern: '*', action: 'ask' },
+      { permission: 'edit', pattern: '*', action: 'ask' },
+    ]))
   })
 
   it('propagates the initial PROM1 interview draft prompt to callers', async () => {
@@ -2405,33 +2546,41 @@ describe('runOpenCodePrompt', () => {
   })
 
   it('uses an explicit absolute deadline instead of restarting timeoutMs', async () => {
-    const deferred = createDeferred<string>()
-    const adapter = new TestOpenCodeAdapter([{
-      response: deferred,
-      streamEvents: [{
-        type: 'session_status',
-        sessionId: 'ses-1',
-        status: 'retry',
-        attempt: 1,
-        message: 'temporarily unavailable',
-      }],
-    }])
-    const timeoutDeadline = Date.now() + 20
-    const dispatched: OpenCodePromptDispatchEvent[] = []
+    vi.useFakeTimers()
+    try {
+      const deferred = createDeferred<string>()
+      const adapter = new TestOpenCodeAdapter([{
+        response: deferred,
+        streamEvents: [{
+          type: 'session_status',
+          sessionId: 'ses-1',
+          status: 'retry',
+          attempt: 1,
+          message: 'temporarily unavailable',
+        }],
+      }])
+      const timeoutDeadline = Date.now() + 20
+      const dispatched: OpenCodePromptDispatchEvent[] = []
 
-    await expect(runOpenCodePrompt({
-      adapter,
-      projectPath: '/tmp/project',
-      parts: [{ type: 'text', content: 'Prompt body' }],
-      timeoutMs: 60_000,
-      timeoutDeadline,
-      opencodeRetryPolicy: { limit: 50, delayMs: 60_000 },
-      onPromptDispatched: event => dispatched.push(event),
-    })).rejects.toThrow('Timeout')
+      const pending = runOpenCodePrompt({
+        adapter,
+        projectPath: '/tmp/project',
+        parts: [{ type: 'text', content: 'Prompt body' }],
+        timeoutMs: 60_000,
+        timeoutDeadline,
+        opencodeRetryPolicy: { limit: 50, delayMs: 60_000 },
+        onPromptDispatched: event => dispatched.push(event),
+      })
+      const rejected = expect(pending).rejects.toThrow('Timeout')
+      await vi.advanceTimersByTimeAsync(20)
+      await rejected
 
-    expect(dispatched).toHaveLength(1)
-    expect(dispatched[0]?.deadlineAt).toBe(new Date(timeoutDeadline).toISOString())
-    expect(adapter.abortCalls).toEqual(['ses-1'])
+      expect(dispatched).toHaveLength(1)
+      expect(dispatched[0]?.deadlineAt).toBe(new Date(timeoutDeadline).toISOString())
+      expect(adapter.abortCalls).toEqual(['ses-1'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('subscribeToEvents emits synthetic done after step-finish safety timeout', async () => {

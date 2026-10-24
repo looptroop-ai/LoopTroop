@@ -9,6 +9,7 @@ const {
   getTicketPathsMock,
   insertPhaseArtifactMock,
   emitPhaseLogMock,
+  runExplicitGitHookValidationMock,
   isMockOpenCodeModeMock,
   handleMockExecutionUnsupportedMock,
   readManualQaDeliverySummaryMock,
@@ -18,6 +19,7 @@ const {
   getTicketPathsMock: vi.fn(),
   insertPhaseArtifactMock: vi.fn(),
   emitPhaseLogMock: vi.fn(),
+  runExplicitGitHookValidationMock: vi.fn(),
   isMockOpenCodeModeMock: vi.fn(),
   handleMockExecutionUnsupportedMock: vi.fn(),
   readManualQaDeliverySummaryMock: vi.fn(),
@@ -62,6 +64,10 @@ vi.mock('../../log/commandLogger', () => ({
   // Every git command now goes through the shared runner, which logs; a mock
   // that omits this export makes the runner throw rather than stay quiet.
   logCommand: vi.fn(),
+}))
+
+vi.mock('../../phases/executionSetup/hookValidation', () => ({
+  runExplicitGitHookValidation: runExplicitGitHookValidationMock,
 }))
 
 import { handleIntegration } from '../phases/integrationPhase'
@@ -144,6 +150,49 @@ describe('handleIntegration', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({ type: 'INTEGRATION_DONE' })
     expect(emitPhaseLogMock).toHaveBeenCalled()
+  })
+
+  it('preserves early-merge correction lineage across re-integration attempts', async () => {
+    getLatestPhaseArtifactMock.mockImplementation((_ticketId: string, artifactType: string) => (
+      artifactType === 'integration_report'
+        ? { content: JSON.stringify({ earlyMergeCorrectionBranch: 'looptroop/early-merge/pr-42-123456789abc' }) }
+        : undefined
+    ))
+
+    await handleIntegration(TEST.ticketId, context, vi.fn())
+
+    expect(getLatestPhaseArtifactMock).toHaveBeenCalledWith(TEST.ticketId, 'integration_report')
+    const report = JSON.parse(insertPhaseArtifactMock.mock.calls[0]![1].content)
+    expect(report).toMatchObject({
+      candidateCommitSha: 'abc1234',
+      earlyMergeCorrectionBranch: 'looptroop/early-merge/pr-42-123456789abc',
+    })
+  })
+
+  it('preserves early-merge correction lineage when hook validation blocks integration', async () => {
+    getLatestPhaseArtifactMock.mockImplementation((_ticketId: string, artifactType: string) => (
+      artifactType === 'integration_report'
+        ? { content: JSON.stringify({ earlyMergeCorrectionBranch: 'looptroop/early-merge/pr-42-123456789abc' }) }
+        : artifactType === 'execution_setup_profile'
+          ? { content: '{}' }
+          : undefined
+    ))
+    runExplicitGitHookValidationMock.mockResolvedValue({
+      errors: ['hook failed'],
+      warnings: [],
+      receipts: [],
+    })
+    const sendEvent = vi.fn<(event: TicketEvent) => void>()
+
+    await handleIntegration(TEST.ticketId, context, sendEvent)
+
+    const report = JSON.parse(insertPhaseArtifactMock.mock.calls[0]![1].content)
+    expect(report).toMatchObject({
+      status: 'blocked',
+      earlyMergeCorrectionBranch: 'looptroop/early-merge/pr-42-123456789abc',
+    })
+    expect(prepareSquashCandidateMock).not.toHaveBeenCalled()
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({ codes: ['GIT_HOOK_VALIDATION_FAILED'] }))
   })
 
   it('squash failure throws', async () => {

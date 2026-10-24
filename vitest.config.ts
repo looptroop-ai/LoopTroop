@@ -146,6 +146,7 @@ const serverIntegrationTests = [
   'server/council/__tests__/memberControlEngines.test.ts',
   'server/__tests__/startupArtifacts.test.ts',
   'server/git/__tests__/runCommandFallback.test.ts',
+  'server/git/__tests__/earlyMergedPullRequestRecovery.test.ts',
   // These run real Git/process fixtures and must not block or mutate a shared worker.
   'server/git/__tests__/hookDiscovery.test.ts',
   'server/git/__tests__/ignoreMode.test.ts',
@@ -175,6 +176,8 @@ const serverIntegrationTests = [
   'server/log/__tests__/executionLog.test.ts',
   'server/lib/__tests__/openPath.test.ts',
   'server/opencode/__tests__/manualQaFileParts.test.ts',
+  'server/opencode/__tests__/permissionGuard.test.ts',
+  'server/opencode/__tests__/permissionGuard.gitCommands.test.ts',
   'server/opencode/__tests__/adapterCoverage.test.ts',
   'server/opencode/__tests__/modelValidation.test.ts',
   'server/opencode/__tests__/providerCatalog.test.ts',

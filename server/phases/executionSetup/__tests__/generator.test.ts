@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
-import { SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS } from '../../../opencode/toolPolicy'
+import { resolveOpenCodePermissions } from '../../../opencode/toolPolicy'
 import { generateExecutionSetup } from '../generator'
 
 class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
@@ -212,7 +212,10 @@ describe('generateExecutionSetup', () => {
       expect.objectContaining({ attempt: 1, outcome: 'rejected', rawResponse: expect.stringContaining('status: ready') }),
       expect.objectContaining({ attempt: 2, outcome: 'accepted', rawResponse: expect.stringContaining('<EXECUTION_SETUP_RESULT>') }),
     ])
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS)
+    for (const call of adapter.promptCalls) {
+      expect(call.options?.permission).toEqual(resolveOpenCodePermissions('execution_setup_online', false, true))
+      expect(call.options?.permissionGuard).toBe(true)
+    }
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])

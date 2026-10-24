@@ -27,6 +27,17 @@ function createRestoredActor(overrides: Partial<TicketContext>) {
 }
 
 describe("ticketMachine states", () => {
+  it.each(["CREATING_PULL_REQUEST", "WAITING_PR_REVIEW"] as const)(
+    "returns to Final Testing when an early merge needs a corrective candidate from %s",
+    (status) => {
+      const actor = createRestoredActor({ status });
+      actor.start();
+      actor.send({ type: "EARLY_MERGE_CORRECTION_READY" });
+      expect(actor.getSnapshot().value).toBe("RUNNING_FINAL_TEST");
+      actor.stop();
+    },
+  );
+
   it("keeps cleanup running when a late Cancel arrives", () => {
     const initial = createActor(ticketMachine, {
       input: {

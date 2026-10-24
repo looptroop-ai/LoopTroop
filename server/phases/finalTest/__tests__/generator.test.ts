@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
-import { SILENT_DEFAULT_PERMISSIONS } from '../../../opencode/toolPolicy'
+import { resolveOpenCodePermissions } from '../../../opencode/toolPolicy'
 import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
 import { generateFinalTests } from '../generator'
@@ -124,8 +124,10 @@ describe('generateFinalTests', () => {
 
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DEFAULT_PERMISSIONS)
-    expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_DEFAULT_PERMISSIONS)
+    for (const call of adapter.promptCalls) {
+      expect(call.options?.permission).toEqual(resolveOpenCodePermissions('default', false, true))
+      expect(call.options?.permissionGuard).toBe(true)
+    }
   })
 
   it('restarts final test generation in a fresh session after an empty response', async () => {
@@ -306,29 +308,37 @@ describe('generateFinalTests', () => {
   })
 
   it('times out hung final-test generation prompts on the AI response deadline', async () => {
-    const adapter = new HangingPromptAdapter()
-    const dispatched: OpenCodePromptDispatchEvent[] = []
+    vi.useFakeTimers()
+    try {
+      const adapter = new HangingPromptAdapter()
+      const dispatched: OpenCodePromptDispatchEvent[] = []
 
-    await expect(generateFinalTests(
-      adapter,
-      [{ type: 'text', content: 'Ticket context' }],
-      '/tmp/test',
-      undefined,
-      {
-        model: 'model-a',
-        timeoutMs: 20,
-        onPromptDispatched: ({ event }) => {
-          dispatched.push(event)
+      const generation = generateFinalTests(
+        adapter,
+        [{ type: 'text', content: 'Ticket context' }],
+        '/tmp/test',
+        undefined,
+        {
+          model: 'model-a',
+          timeoutMs: 20,
+          onPromptDispatched: ({ event }) => {
+            dispatched.push(event)
+          },
         },
-      },
-    )).rejects.toThrow('Timeout')
+      )
+      const rejected = expect(generation).rejects.toThrow('Timeout')
+      await vi.advanceTimersByTimeAsync(20)
+      await rejected
 
-    expect(dispatched).toHaveLength(1)
-    expect(dispatched[0]).toMatchObject({
-      timeoutKind: 'ai_response',
-      timeoutMs: 20,
-      model: 'model-a',
-    })
-    expect(adapter.promptCalls).toHaveLength(1)
+      expect(dispatched).toHaveLength(1)
+      expect(dispatched[0]).toMatchObject({
+        timeoutKind: 'ai_response',
+        timeoutMs: 20,
+        model: 'model-a',
+      })
+      expect(adapter.promptCalls).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

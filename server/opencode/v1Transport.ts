@@ -225,14 +225,16 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
   async replyPermission(
     _sessionId: string,
     permissionId: string,
-    reply: 'always' | 'reject',
+    reply: 'once' | 'always' | 'reject',
     directory?: string,
     signal?: AbortSignal,
+    message?: string,
   ): Promise<void> {
     const res = await this.client.permission.reply({
       requestID: permissionId,
       ...(directory ? { directory } : {}),
       reply,
+      ...(message ? { message } : {}),
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
     if (!res.data) throw new Error('OpenCode did not confirm the permission reply')
   }

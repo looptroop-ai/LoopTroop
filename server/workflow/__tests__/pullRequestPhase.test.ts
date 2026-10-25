@@ -1426,7 +1426,8 @@ describe('pull request drafting context', () => {
     expect(mocks.pushBranchRef).not.toHaveBeenCalled()
   })
 
-  it.each(['candidate123', 'changed-candidate'])('continues PR drafting only with its saved candidate audit (%s)', async candidateCommitSha => {
+  it.each(['valid', 'changed-candidate', 'invalid-path', 'invalid-decision', 'inconsistent-files', 'duplicate-path', 'corrupt-json'])('continues PR drafting only with its saved candidate audit (%s)', async checkpointCase => {
+    const candidateCommitSha = checkpointCase === 'changed-candidate' ? checkpointCase : 'candidate123'
     resetTestDb()
     const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
     const ticketContext = getTicketContext(ticket.id)!
@@ -1440,14 +1441,21 @@ describe('pull request drafting context', () => {
       state: 'active',
     }).run()
     requestSessionContinuation({ ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', sessionId: 'pr-draft-to-continue' })
-    upsertLatestPhaseArtifact(ticket.id, 'candidate_file_audit', 'CREATING_PULL_REQUEST', JSON.stringify(buildCandidateFileAuditReport({
+    const audit = buildCandidateFileAuditReport({
       status: 'passed', baseCommit: 'base123', originalCandidateCommitSha: 'before-audit', candidateCommitSha,
       entries: [
         { path: 'src/example.ts', decision: 'include', reason: 'Requested change.' },
         { path: 'temporary.log', decision: 'exclude', reason: 'Already removed from the candidate.' },
       ],
-    })))
-    if (candidateCommitSha === 'candidate123') {
+    })
+    const firstEntry = audit.entries[0]
+    if (!firstEntry) throw new Error('Missing audit fixture entry')
+    if (checkpointCase === 'invalid-path') firstEntry.path = '../outside.txt'
+    if (checkpointCase === 'invalid-decision') Object.assign(firstEntry, { decision: 'unknown' })
+    if (checkpointCase === 'inconsistent-files') audit.includedFiles = ['unexpected.txt']
+    if (checkpointCase === 'duplicate-path') audit.entries.push(firstEntry)
+    upsertLatestPhaseArtifact(ticket.id, 'candidate_file_audit', 'CREATING_PULL_REQUEST', checkpointCase === 'corrupt-json' ? '{' : JSON.stringify(audit))
+    if (checkpointCase === 'valid') {
       mocks.runOpenCodePrompt.mockResolvedValueOnce({
         session: { id: 'pr-draft-to-continue' },
         response: [
@@ -1459,7 +1467,7 @@ describe('pull request drafting context', () => {
     }
     const sendEvent = vi.fn()
     const run = handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
-    if (candidateCommitSha !== 'candidate123') {
+    if (checkpointCase !== 'valid') {
       await expect(run).rejects.toThrow('saved file audit does not match the current candidate')
       expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
       expect(mocks.pushBranchRef).not.toHaveBeenCalled()
@@ -1689,6 +1697,7 @@ describe('pull request drafting context', () => {
       throw failure
     })
     await expect(handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)).rejects.toBe(failure)
+    expect(failure.blockedErrorDiagnostics.source).toBe('opencode')
     expect(mocks.pushBranchRef).not.toHaveBeenCalled()
     expect(mocks.createOrUpdateDraftPullRequest).not.toHaveBeenCalled()
   })
@@ -1755,7 +1764,10 @@ describe('pull request drafting context', () => {
       context,
       vi.fn(),
       new AbortController().signal,
-    )).rejects.toThrow('remote rejected push')
+    )).rejects.toMatchObject({
+      message: 'remote rejected push',
+      blockedErrorDiagnostics: { kind: 'runtime', source: 'system', summary: 'remote rejected push' },
+    })
 
     expect(mocks.runOpenCodeSessionPrompt).not.toHaveBeenCalled()
     expect(mocks.pushBranchRef).toHaveBeenCalledTimes(1)

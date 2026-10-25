@@ -335,6 +335,7 @@ export const devEventSchema = z.object({
     'ALL_BEADS_DONE',
     'TESTS_PASSED',
     'INTEGRATION_DONE',
+    'INTEGRATION_NO_CHANGES',
     'PULL_REQUEST_READY',
     'MERGE_COMPLETE',
     'CLOSE_UNMERGED_COMPLETE',

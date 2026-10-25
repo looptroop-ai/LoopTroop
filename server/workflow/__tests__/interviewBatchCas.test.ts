@@ -225,14 +225,14 @@ describe('interview batch durable CAS', () => {
       .toEqual(original.currentBatch)
   })
 
-  it('does not reactivate an abandoned PROM4 session even when the remote still exists', async () => {
+  it.each(['abandoned', 'completed'] as const)('does not reactivate a %s PROM4 session even when the remote still exists', async (state) => {
     const { ticket } = await seedInterviewBatch()
     const context = getTicketContext(ticket.id)
     context!.projectDb.insert(opencodeSessions).values({
       sessionId: 'session-1',
       ticketId: context!.localTicketId,
       phase: 'WAITING_INTERVIEW_ANSWERS',
-      state: 'abandoned',
+      state,
     }).run()
     const remoteSession = vi.spyOn(getOpenCodeAdapter(), 'getSession').mockResolvedValue({ id: 'session-1' })
 
@@ -240,8 +240,8 @@ describe('interview batch durable CAS', () => {
 
     expect(remoteSession).not.toHaveBeenCalled()
     expect(interviewQASessions.has(ticket.id)).toBe(false)
-    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toEqual([
-      expect.objectContaining({ sessionId: 'session-1', state: 'abandoned' }),
+    expect(listOpenCodeSessionsForTicket(ticket.id, [state])).toEqual([
+      expect.objectContaining({ sessionId: 'session-1', state }),
     ])
   })
 

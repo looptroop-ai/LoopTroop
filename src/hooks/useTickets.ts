@@ -118,6 +118,8 @@ interface TicketRuntime {
     title: string
     status: string
     iteration: number
+    targetFiles: string[]
+    externalTargetFiles?: string[]
     failedIterationNotes: BeadNoteEntry[]
     userRetryNotes: BeadNoteEntry[]
     finalizationFailureNotes: BeadNoteEntry[]

@@ -27,6 +27,16 @@ function createRestoredActor(overrides: Partial<TicketContext>) {
 }
 
 describe("ticketMachine states", () => {
+  it("cleans up a completed ticket without creating a pull request when integration has no changes", () => {
+    const actor = createRestoredActor({ status: "INTEGRATING_CHANGES" });
+    actor.start();
+    actor.send({ type: "INTEGRATION_NO_CHANGES" });
+    expect(actor.getSnapshot().value).toBe("CLEANING_ENV");
+    actor.send({ type: "CLEANUP_DONE" });
+    expect(actor.getSnapshot().value).toBe("COMPLETED");
+    actor.stop();
+  });
+
   it.each(["CREATING_PULL_REQUEST", "WAITING_PR_REVIEW"] as const)(
     "returns to Final Testing when an early merge needs a corrective candidate from %s",
     (status) => {

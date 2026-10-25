@@ -679,9 +679,8 @@ export async function handleAnswerBatch(c: Context) {
           if (err instanceof InterviewBatchChangedError
             || (isCancellationError(err) && !timeoutTriggered)
             || getTicketByRef(ticketId)?.status !== 'WAITING_INTERVIEW_ANSWERS'
-            || resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS') !== phaseAttempt
-            || !ownsFailedSnapshot) return
-          if (timeoutTriggered || diagnosticResult.diagnostics?.modelId || diagnosticResult.diagnostics?.sessionId) {
+            || resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS') !== phaseAttempt) return
+          if (ownsFailedSnapshot && (timeoutTriggered || diagnosticResult.diagnostics?.modelId || diagnosticResult.diagnostics?.sessionId)) {
             try {
               ensureActorForTicket(ticketId)
               sendTicketEvent(ticketId, {

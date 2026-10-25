@@ -1,3 +1,4 @@
+import { getExternalTargetFiles } from '../lib/beadTargets'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { readFileNoFollowSync } from '../io/readFile'
@@ -229,6 +230,17 @@ function formatBeadValidationDetails(errors: readonly BeadValidationError[]): st
   return errors.flatMap(({ line, issues }) => issues.map((issue) => `Line ${line}: ${issue}`)).join('; ')
 }
 
+function withExternalTargets(items: unknown[], ticketId: string): unknown[] {
+  const worktreePath = getTicketPaths(ticketId)?.worktreePath
+  return items.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item
+    const record = item as Record<string, unknown>
+    const externalTargetFiles = worktreePath ? getExternalTargetFiles(record.targetFiles, worktreePath) : []
+    const { externalTargetFiles: _storedClassification, ...bead } = record
+    return externalTargetFiles.length > 0 ? { ...bead, externalTargetFiles } : bead
+  })
+}
+
 beadsRouter.get('/tickets/:id/beads', (c) => {
   const ticketId = c.req.param('id')
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
@@ -246,7 +258,7 @@ beadsRouter.get('/tickets/:id/beads', (c) => {
   // The lines that did parse are returned; the ones that did not are named in
   // a header, by their line number in the file.
   const { items, itemLines, malformedLines } = parseJsonlContent(content, filePath)
-  const canonicalItems = canonicalizeParsedItems(items)
+  const canonicalItems = withExternalTargets(canonicalizeParsedItems(items), ticketId)
   setMalformedLineHeaders(c, malformedLines, findUnrepresentableLines(canonicalItems, itemLines))
   return c.json(canonicalItems)
 })
@@ -270,7 +282,7 @@ beadsRouter.get('/tickets/:id/beads/raw', (c) => {
   const content = readBeadsContent(filePath)
   c.header('X-Content-Sha256', contentSha256(content))
   const { items, itemLines, malformedLines } = parseJsonlContent(content, filePath)
-  const canonicalItems = canonicalizeParsedItems(items)
+  const canonicalItems = withExternalTargets(canonicalizeParsedItems(items), ticketId)
   const unrepresentableLines = findUnrepresentableLines(canonicalItems, itemLines)
   setMalformedLineHeaders(c, malformedLines, unrepresentableLines)
 

@@ -584,7 +584,7 @@ describe('handlePrdRefine', () => {
     })
   })
 
-  it.each([null, '{}', '{"candidateVersion":1,"refinedContent":"saved candidate","auditResult":{"envelope":{"status":"clean","gaps":[]}}}'])('refuses revision continuation when the saved audit checkpoint is unavailable or invalid: %s', async (checkpoint) => {
+  it.each([null, '{}', 'invalid JSON', '{"candidateVersion":1,"refinedContent":"saved candidate","auditResult":{"envelope":{"status":"clean","gaps":[]}}}'])('refuses revision continuation when the saved audit checkpoint is unavailable or invalid: %s', async (checkpoint) => {
     const { ticket, context, winnerId } = await setupCoverageTest()
     if (checkpoint !== null) insertPhaseArtifact(ticket.id, {
       phase: 'VERIFYING_PRD_COVERAGE', artifactType: 'prd_coverage_input', content: checkpoint,

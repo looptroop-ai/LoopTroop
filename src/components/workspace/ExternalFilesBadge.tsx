@@ -2,8 +2,8 @@ import { AlertTriangle } from 'lucide-react'
 import { isExternalTargetFile } from '@shared/beadTargets'
 import { Badge } from '@/components/ui/badge'
 
-export function ExternalFilesBadge({ targetFiles }: { targetFiles: string[] }) {
-  const externalFiles = targetFiles.filter(isExternalTargetFile)
+export function ExternalFilesBadge({ targetFiles, externalTargetFiles = [] }: { targetFiles: string[]; externalTargetFiles?: string[] }) {
+  const externalFiles = targetFiles.filter((file) => isExternalTargetFile(file) || externalTargetFiles.includes(file))
   if (externalFiles.length === 0) return null
 
   return (

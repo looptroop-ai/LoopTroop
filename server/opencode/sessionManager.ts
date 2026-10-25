@@ -16,7 +16,7 @@ import {
   getPendingSessionContinuationForTicketPhase,
   isContinuableBlockedError,
 } from './sessionContinuation'
-import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
 
 const PENDING_SESSION_OWNERSHIP_ARTIFACT = 'runtime/opencode-pending-sessions.json'
 
@@ -145,6 +145,21 @@ export function getSessionPermissionOwnership(sessionId: string): { ticketId: st
     return ticketId ? { ticketId, phase: found.record.phase } : undefined
   } catch {
     // Permission checks still run without storage; only ticket-specific paths are unavailable.
+    return undefined
+  }
+}
+
+export function getStoredSessionOwnership(sessionId: string): (SessionOwnership & { ticketId: string; phase: WorkflowPhaseId }) | undefined {
+  try {
+    const found = findSessionRecord(sessionId)
+    if (!found || found.record.state !== 'active') return undefined
+    const { phase, phaseAttempt, memberId, beadId, iteration, step } = found.record
+    if (!isWorkflowPhaseId(phase)) return undefined
+    const ticketId = resolveSessionTicketRef(found)
+    if (!ticketId) return undefined
+    return { ticketId, phase, phaseAttempt: phaseAttempt ?? undefined, memberId, beadId, iteration, step }
+  } catch {
+    // Prompts without ticket ownership do not depend on ticket storage.
     return undefined
   }
 }

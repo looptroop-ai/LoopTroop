@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
+import { listOpenCodeSessionsForTicket } from '../../../opencode/sessionManager'
 import { resolveOpenCodePermissions } from '../../../opencode/toolPolicy'
+import { patchTicket, recordTicketErrorOccurrence, resolveTicketContinuationCandidate } from '../../../storage/tickets'
+import { createTestRepoManager, createUninitializedTestTicket, resetTestDb } from '../../../test/integration'
 import { generateExecutionSetup } from '../generator'
+
+const repoManager = createTestRepoManager('execution-setup-generator-')
 
 class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
   private promptCounts = new Map<string, number>()
@@ -28,6 +34,20 @@ class FailingPromptAdapter extends MockOpenCodeAdapter {
   override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
     this.promptCalls.push({ sessionId: args[0], parts: args[1], options: args[3] })
     throw new Error('manual continuation prompt failed')
+  }
+}
+
+class StructuredRetryTimeoutAdapter extends MockOpenCodeAdapter {
+  private promptCount = 0
+
+  override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+    this.promptCount += 1
+    if (this.promptCount === 2) {
+      this.promptCalls.push({ sessionId: args[0], parts: args[1], options: args[3] })
+      throw new Error('Timeout')
+    }
+    this.mockResponses.set(args[0], 'invalid execution setup response')
+    return await super.promptSession(...args)
   }
 }
 
@@ -86,6 +106,13 @@ function buildReadyExecutionSetupResponse(): string {
 }
 
 describe('generateExecutionSetup', () => {
+  beforeEach(() => resetTestDb())
+
+  afterAll(() => {
+    resetTestDb()
+    repoManager.cleanup()
+  })
+
   it('returns a retryable generation failure when the attempt deadline expires before session creation', async () => {
     const adapter = new DeadlineAwareSessionAdapter()
 
@@ -219,6 +246,50 @@ describe('generateExecutionSetup', () => {
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
+  })
+
+  it('keeps a timed-out structured-retry session available to Continue', async () => {
+    resetTestDb()
+    const { ticket } = createUninitializedTestTicket(repoManager, {
+      title: 'Continue execution-setup retry timeout',
+    })
+    patchTicket(ticket.id, { status: 'PREPARING_EXECUTION_ENV' })
+    const adapter = new StructuredRetryTimeoutAdapter()
+
+    const result = await generateExecutionSetup(
+      adapter,
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/test',
+      undefined,
+      { ticketId: ticket.id, model: 'model-a' },
+    )
+
+    expect(result.session?.id).toBe('mock-session-1')
+    expect(result.parse.errors).toEqual(['Execution setup prompt failed: Timeout'])
+    const diagnostics: BlockedErrorDiagnostics = {
+      kind: 'timeout',
+      source: 'opencode',
+      summary: 'Timeout',
+      sessionId: result.session?.id,
+      isRetryable: true,
+    }
+    recordTicketErrorOccurrence(ticket.id, {
+      blockedFromStatus: 'PREPARING_EXECUTION_ENV',
+      errorMessage: 'Timeout',
+      diagnostics,
+    })
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'PREPARING_EXECUTION_ENV' } }),
+      errorMessage: 'Timeout',
+    })
+
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId))
+      .toEqual(['mock-session-1'])
+    expect(resolveTicketContinuationCandidate(ticket.id)).toMatchObject({
+      previousStatus: 'PREPARING_EXECUTION_ENV',
+      sessionId: 'mock-session-1',
+    })
   })
 
   it('does not treat an empty response as a progress continuation', async () => {

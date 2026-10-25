@@ -326,7 +326,7 @@ export async function handleManualQaChecklistGeneration(
         phase: 'GENERATING_QA_CHECKLIST',
         phaseAttempt: resolvePhaseAttempt(ticketId, 'GENERATING_QA_CHECKLIST'),
         memberId: model,
-        step: attempt === 0 ? 'generate' : `structured-retry-${attempt}`,
+        step: 'generate',
         forceFresh: attempt > 0,
       },
       onSessionCreated: (session) => { sessionId = session.id },

@@ -38,10 +38,14 @@ export function supportsRetryNote(
   errorCodes: readonly string[] = [],
   diagnostics?: BlockedErrorDiagnostics | null,
 ): boolean {
-  if (!isAiRetryPhase(phase) || errorCodes.includes(BEAD_FINALIZATION_FAILED)) return false
+  if (!isAiRetryPhase(phase) || errorCodes.some(code => [
+    BEAD_FINALIZATION_FAILED, 'MAIN_IMPLEMENTER_MISSING', 'PROM4_NO_WINNER',
+    'PROM4_NO_COMPILED_INTERVIEW', 'PROM4_INVALID_COMPILED_INTERVIEW', 'FINAL_TEST_FAILED',
+  ].includes(code))) return false
+  if (diagnostics?.source === 'system' || diagnostics?.source === 'runtime') return false
   if (phase === 'WAITING_MANUAL_QA') return errorCodes.includes('MANUAL_QA_FIX_BEADS_FAILED')
   if (phase === 'PRE_FLIGHT_CHECK' || phase === 'CREATING_PULL_REQUEST') {
-    return diagnostics?.source === 'opencode'
+    return diagnostics?.source === 'opencode' || diagnostics?.source === 'provider'
   }
   return true
 }

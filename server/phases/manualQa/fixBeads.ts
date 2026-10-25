@@ -71,6 +71,7 @@ const PersistedCandidateDocumentSchema = z.object({
   schemaVersion: z.literal(MANUAL_QA_FIX_BEADS_SCHEMA_VERSION),
   artifact: z.literal('manual_qa_fix_beads'),
   version: z.number().int().positive(),
+  retryNote: z.string().nullable().optional(),
   beads: z.array(CandidateSchema).min(1),
 }).strict()
 
@@ -377,10 +378,10 @@ export async function generateManualQaFixBeadCandidates(
   const maxRetries = resolveStructuredRetryRuntimeSettings(input.context).structuredRetryCount
   let correction = ''
   let lastError = 'Manual QA fix-bead generation failed.'
-  let observedSuccessfulTool = false
 
   emitAiMilestone(input.ticketId, input.context.externalId, phase, 'Generating execution-ready beads for failed Manual QA checks.', 'fix-beads-started')
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    let observedSuccessfulTool = false
     let sessionId = ''
     const streamState = createOpenCodeStreamState()
     const result = await runOpenCodePrompt({
@@ -398,7 +399,7 @@ export async function generateManualQaFixBeadCandidates(
         phase,
         phaseAttempt,
         memberId: model,
-        step: attempt === 0 ? 'generate-fix-beads' : `fix-beads-structured-retry-${attempt}`,
+        step: 'generate-fix-beads',
         forceFresh: attempt > 0,
       },
       onSessionCreated: (session) => { sessionId = session.id },
@@ -432,7 +433,7 @@ export async function generateManualQaFixBeadCandidates(
       correction = [
         '\n\n## Structured-output correction',
         `The previous attempt was invalid: ${lastError}`,
-        'Perform a successful focused read-only repository inspection if one has not completed, then return the corrected tagged YAML only.',
+        'Perform a successful focused read-only repository inspection in this session, then return the corrected tagged YAML only.',
         'Previous invalid response:',
         result.response.slice(0, STRUCTURED_CORRECTION_ECHO_LENGTH),
       ].join('\n')
@@ -445,12 +446,14 @@ export function persistManualQaFixBeadCandidates(
   ticketDir: string,
   version: number,
   candidates: ManualQaFixBeadCandidate[],
+  retryNote?: string,
 ): string {
   const path = getManualQaStoragePaths(ticketDir, version).fixBeadsPath
   const content = buildYamlDocument({
     schemaVersion: MANUAL_QA_FIX_BEADS_SCHEMA_VERSION,
     artifact: 'manual_qa_fix_beads',
     version,
+    retryNote: retryNote ?? null,
     beads: candidates,
   })
   writeManualQaText(ticketDir, path, content)
@@ -461,6 +464,7 @@ export function readManualQaFixBeadCandidates(
   ticketDir: string,
   version: number,
   groups: ManualQaFixGroup[],
+  retryNote?: string,
 ): ManualQaFixBeadCandidate[] | null {
   const path = getManualQaStoragePaths(ticketDir, version).fixBeadsPath
   const content = readManualQaText(ticketDir, path)
@@ -472,6 +476,7 @@ export function readManualQaFixBeadCandidates(
   if (isRecord(loaded) && loaded.schemaVersion === 1) return null
   const parsed = PersistedCandidateDocumentSchema.parse(loaded)
   if (parsed.version !== version) throw new Error('Persisted Manual QA fix beads belong to a different version.')
+  if ((parsed.retryNote ?? null) !== (retryNote ?? null)) return null
   validateManualQaFixBeadCandidates(parsed.beads, groups)
   return parsed.beads
 }

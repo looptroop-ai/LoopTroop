@@ -176,6 +176,7 @@ export type TicketEvent =
   | { type: "MANUAL_QA_SKIPPED" }
   | { type: "MANUAL_QA_FIXES_CREATED" }
   | { type: "INTEGRATION_DONE" }
+  | { type: "INTEGRATION_NO_CHANGES" }
   | { type: "PULL_REQUEST_READY" }
   | { type: "EARLY_MERGE_CORRECTION_READY" }
   | { type: "MERGE_COMPLETE" }

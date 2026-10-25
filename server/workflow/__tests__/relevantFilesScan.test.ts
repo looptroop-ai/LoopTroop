@@ -12,6 +12,7 @@ import {
 import { resetTestDb } from '../../test/integration'
 import { initializeTicket } from '../../ticket/initialize'
 import { OPENCODE_PROVIDER_AUTH_FAILED } from '@shared/errorCodes'
+import { SessionManager } from '../../opencode/sessionManager'
 
 const { runOpenCodePromptMock, runOpenCodeSessionPromptMock } = vi.hoisted(() => ({
   runOpenCodePromptMock: vi.fn(),
@@ -73,9 +74,36 @@ async function createInitializedTicket() {
 
 describe('handleRelevantFilesScan', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     resetTestDb()
     runOpenCodePromptMock.mockReset()
     runOpenCodeSessionPromptMock.mockReset()
+  })
+
+  it.each([
+    ['invalid output', undefined, true],
+    ['non-continuable failure', new Error('Invalid configuration'), true],
+    ['continuable timeout', new Error('Timeout'), false],
+  ])('closes only non-continuable scan sessions: %s', async (_label, failure, shouldClose) => {
+    const { ticket, context, paths } = await createInitializedTicket()
+    const close = vi.spyOn(SessionManager.prototype, 'abortAndAbandonSession').mockResolvedValue(true)
+    runOpenCodePromptMock.mockImplementation(async (options) => {
+      const session = { id: 'scan-cleanup-session', projectPath: paths.worktreePath }
+      options.onSessionCreated(session)
+      if (failure) throw failure
+      return { session, response: 'not valid structured output', messages: [] }
+    })
+    runOpenCodeSessionPromptMock.mockResolvedValue({
+      session: { id: 'scan-cleanup-session', projectPath: paths.worktreePath },
+      response: 'not valid structured output', messages: [],
+    })
+
+    const sendEvent = vi.fn()
+    await handleRelevantFilesScan(ticket.id, context, sendEvent, new AbortController().signal)
+
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }))
+    if (shouldClose) expect(close).toHaveBeenCalledWith('scan-cleanup-session')
+    else expect(close).not.toHaveBeenCalled()
   })
 
   afterAll(() => {

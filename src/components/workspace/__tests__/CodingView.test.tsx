@@ -542,7 +542,8 @@ describe('CodingView', () => {
     it('keeps an external-file indicator on compact numbered beads', () => {
       const beads = Array.from({ length: 20 }, (_, index) => ({
         id: `bead-${index + 1}`, title: `Bead number ${index + 1}`, status: 'pending', iteration: 0,
-        targetFiles: index === 0 ? ['/home/user/config.json'] : [],
+        targetFiles: index === 0 ? ['linked/config.json'] : [],
+        externalTargetFiles: index === 0 ? ['linked/config.json'] : [],
       }))
       renderCoding({ runtime: { beads } })
       expect(screen.getByRole('button', { name: 'Bead 1: Bead number 1, external files' }).querySelector('svg')).toHaveAttribute('aria-hidden', 'true')

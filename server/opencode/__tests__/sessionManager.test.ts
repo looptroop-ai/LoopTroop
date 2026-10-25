@@ -16,6 +16,7 @@ import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache, getExistingProjectDatabase } from '../../db/project'
 import {
   abortTicketSessions,
+  getStoredSessionOwnership,
   hasUnresolvedSessionOwnership,
   listOpenCodeSessionsForTicket,
   recoverPendingOpenCodeSessionOwnership,
@@ -26,6 +27,7 @@ import { eq } from 'drizzle-orm'
 import { opencodeSessions } from '../../db/schema'
 import { getTicketContext } from '../../storage/tickets'
 import { attachProject } from '../../storage/projects'
+import * as projectStorage from '../../storage/projects'
 import { createTicket, patchTicket } from '../../storage/tickets'
 import { readTicketFile, writeTicketFile } from '../../storage/ticketQueries'
 import * as ticketQueries from '../../storage/ticketQueries'
@@ -175,6 +177,17 @@ describe('SessionManager', () => {
   afterAll(() => {
     clearProjectDatabaseCache()
     repoManager.cleanup()
+  })
+
+  it('keeps optional ownership lookup independent of unavailable ticket storage', () => {
+    const lookup = vi.spyOn(projectStorage, 'listProjects').mockImplementation(() => {
+      throw new Error('Ticket storage unavailable')
+    })
+    try {
+      expect(getStoredSessionOwnership('unowned-session')).toBeUndefined()
+    } finally {
+      lookup.mockRestore()
+    }
   })
 
   it('requires PRD step ownership to match when reconnecting an active session', async () => {

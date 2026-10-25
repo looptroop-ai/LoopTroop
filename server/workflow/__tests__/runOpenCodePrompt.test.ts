@@ -1558,7 +1558,7 @@ describe('runOpenCodePrompt', () => {
     expect(listOpenCodeSessionsForTicket(ticket.id, ['completed'])).toHaveLength(1)
   })
 
-  it('preserves an owned same-session prompt after a resumable transport interruption', async () => {
+  it('recovers stored ownership and interrupts a same-session prompt after a resumable transport interruption', async () => {
     resetTestDb()
     const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Same session prompt continuation',
@@ -1586,12 +1586,9 @@ describe('runOpenCodePrompt', () => {
       adapter,
       session: initial.session,
       parts: [{ type: 'text', content: 'Follow-up prompt' }],
-      sessionOwnership: {
-        ticketId: ticket.id,
-        phase: 'CODING',
-      },
     })).rejects.toThrow('Failed to prompt OpenCode session')
 
+    expect(adapter.abortCalls).toEqual([initial.session.id])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toHaveLength(1)
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toHaveLength(0)
   })
@@ -1652,7 +1649,25 @@ describe('runOpenCodePrompt', () => {
 
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toHaveLength(1)
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toHaveLength(0)
-    expect(adapter.abortCalls).toEqual([])
+    expect(adapter.abortCalls).toEqual([initial.session.id])
+  })
+
+  it.each([true, false])('interrupts an owned timed-out turn and retains its conversation when stop confirmation is %s', async (stopped) => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Stop a timed-out turn before Continue' })
+    patchTicket(ticket.id, { status: 'CODING' })
+    const adapter = new TestOpenCodeAdapter(['initial', createDeferred<string>()])
+    const initial = await runOpenCodePrompt({
+      adapter, projectPath: '/tmp/project', parts: [{ type: 'text', content: 'Initial prompt' }],
+      sessionOwnership: { ticketId: ticket.id, phase: 'CODING', memberId: 'model-a', beadId: 'bead-1', iteration: 2, step: 'implement', keepActive: true },
+    })
+    const abort = vi.spyOn(adapter, 'abortSession').mockResolvedValue(stopped)
+    await expect(runOpenCodeSessionPrompt({
+      adapter, session: initial.session, parts: [{ type: 'text', content: 'Follow-up prompt' }], timeoutMs: 2_000,
+    })).rejects.toMatchObject({ message: 'Timeout', blockedErrorDiagnostics: { sessionId: initial.session.id, kind: 'timeout' } })
+    expect(abort).toHaveBeenCalledExactlyOnceWith(initial.session.id)
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toMatchObject([{ memberId: 'model-a', beadId: 'bead-1', iteration: 2, step: 'implement' }])
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toHaveLength(0)
   })
 
   it('replaces a pending continuation prompt with the bare PROM54 text in the owned active session', async () => {

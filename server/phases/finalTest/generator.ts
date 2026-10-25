@@ -14,6 +14,7 @@ import { parseFinalTestCommands, type FinalTestCommandPlan } from './parser'
 import { buildStructuredRetryPrompt } from '../../structuredOutput'
 import { buildStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import { SessionManager } from '../../opencode/sessionManager'
+import { shouldPreserveSessionForContinuation } from '../../opencode/sessionContinuation'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../../lib/constants'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import type { StructuredOutputMetadata } from '../../structuredOutput/types'
@@ -284,7 +285,20 @@ export async function generateFinalTests(
         response = result.response
       }
     } catch (error) {
-      if (activeSessionId) {
+      if (activeSessionId && !shouldPreserveSessionForContinuation({
+        error,
+        sessionId: activeSessionId,
+        modelId: callbacks?.model,
+        sessionOwnership: callbacks?.ticketId
+          ? {
+              ticketId: callbacks.ticketId,
+              phase: 'RUNNING_FINAL_TEST',
+              phaseAttempt: callbacks.phaseAttempt,
+              ...(callbacks.model ? { memberId: callbacks.model } : {}),
+            }
+          : undefined,
+        signal,
+      })) {
         await stopActiveSession(activeSessionId)
         activeSessionId = null
       }

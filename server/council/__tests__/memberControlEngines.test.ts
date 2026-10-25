@@ -14,6 +14,10 @@ import {
   stopCouncilMember,
 } from '../memberControl'
 import { VOTING_RUBRIC_INTERVIEW, type DraftProgressEvent, type DraftResult, type MemberOutcome, type Vote } from '../types'
+import { patchTicket } from '../../storage/tickets'
+import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
+import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 
 const repoManager = createTestRepoManager('council-member-control-')
 const MODEL_A = 'test/model-a'
@@ -28,7 +32,7 @@ const LONG_TIMEOUT_MS = 300_000
  * `stall` never answers until its prompt is aborted; `hang` ignores the abort
  * too, like a prompt request OpenCode leaves pending; a string is the answer.
  */
-type Script = Array<string | 'stall' | 'hang'>
+type Script = Array<string | Error>
 
 /**
  * Answers each model from its own script, in order.
@@ -59,6 +63,7 @@ class ScriptedAdapter extends MockOpenCodeAdapter {
     const model = options?.model ? `${options.model.providerID}/${options.model.modelID}` : 'unknown'
     this.prompts.push({ model, sessionId, parts })
     const next = this.scripts.get(model)?.shift()
+    if (next instanceof Error) throw next
     if (next === 'hang') return new Promise(() => {})
     if (next === 'stall') {
       return new Promise((_resolve, reject) => {
@@ -123,6 +128,7 @@ describe('stopping and restarting one council member', () => {
 
   afterEach(() => {
     resetCouncilRounds()
+    clearAllPendingSessionContinuationsForTests()
   })
 
   afterAll(() => {
@@ -355,8 +361,41 @@ describe('stopping and restarting one council member', () => {
   })
 
   describe('PRD drafting', () => {
+    it.each(['saved', 'missing', 'corrupt', 'changed'] as const)('continues the PRD substep using only its %s Full Answers checkpoint', async (checkpoint) => {
+      const { ticket, paths } = await createInitializedTestTicket(repoManager, { title: 'Continue Part 2' })
+      patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
+      const state = { ticketId: TEST.externalId, title: 'Continue Part 2', description: 'Keep answered questions.', interview: makeInterviewYaml() }
+      const options = { draftTimeoutMs: LONG_TIMEOUT_MS, minQuorum: 1, ticketId: ticket.id, ticketExternalId: TEST.externalId }
+      const adapter = new ScriptedAdapter({ [MODEL_A]: [resolvedFullAnswers(), new Error('Failed to prompt OpenCode session: socket hang up'), makePrdYaml()] })
+      const member = { modelId: MODEL_A, name: 'Model A' }
+      const first = await draftPRD(adapter, [member], state, paths.worktreePath, options)
+      expect(first.fullAnswers[0]?.outcome).toBe('completed')
+      expect(first.drafts[0]?.outcome).not.toBe('completed')
+      const failed = listOpenCodeSessionsForTicket(ticket.id, ['active']).find(session => session.step === 'prd_draft')
+      expect(failed).toBeDefined()
+      if (!failed) throw new Error('Missing retained PRD session')
+      requestSessionContinuation({ ticketId: ticket.id, phase: 'DRAFTING_PRD', sessionId: failed.sessionId })
+      const type = `prd_full_answers_checkpoint:${MODEL_A}`
+      if (checkpoint === 'missing') upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', '{}')
+      if (checkpoint === 'corrupt') upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', '{broken')
+      if (checkpoint === 'changed') state.description = 'Different approved inputs'
+      if (checkpoint !== 'saved') {
+        await expect(draftPRD(adapter, [member], state, paths.worktreePath, options)).rejects.toThrow('Use Retry to start a fresh attempt')
+        expect(adapter.prompts).toHaveLength(2)
+        return
+      }
+      expect(getLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD')).toBeDefined()
+      const continued = await draftPRD(adapter, [member], state, paths.worktreePath, options)
+      expect(continued.drafts[0]?.outcome).toBe('completed')
+      expect(continued.fullAnswers[0]?.content).toBe(first.fullAnswers[0]?.content)
+      expect(adapter.prompts).toHaveLength(3)
+      expect(adapter.prompts[2]?.sessionId).toBe(failed.sessionId)
+      expect(adapter.prompts[2]?.parts[0]).toEqual({ type: 'text', content: 'continue please' })
+    })
+
     async function startPrd(adapter: ScriptedAdapter, title: string, timeoutMs = LONG_TIMEOUT_MS) {
       const { ticket, paths } = await createInitializedTestTicket(repoManager, { title })
+      patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
       const fullAnswerEvents: DraftProgressEvent[] = []
       const draftEvents: DraftProgressEvent[] = []
       const run = draftPRD(

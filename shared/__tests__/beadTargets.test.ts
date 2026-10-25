@@ -14,6 +14,13 @@ describe('bead target files', () => {
     'src/../../settings.json',
     './src/../../settings.json',
     '~/settings.json',
+    '~other/settings.json',
+    'file:///outside/settings.json',
+    'https://example.com/settings.json',
+    '$HOME/settings.json',
+    '${HOME}/settings.json',
+    '$env:APPDATA/settings.json',
+    '%APPDATA%/settings.json',
     '~\\settings.json',
     '~',
     ' /outside/settings.json ',
@@ -35,7 +42,11 @@ describe('bead target files', () => {
     expect(isExternalTargetFile(filePath)).toBe(false)
   })
 
-  it.each([undefined, null, false, 42, {}, [], '', '   ', 'file\0name'].map((value) => ({ value })))('rejects invalid path %s', ({ value }) => {
+  it.each([null, 42, {}, undefined])('does not crash on malformed display targets %s', (value) => {
+    expect(isExternalTargetFile(value)).toBe(false)
+  })
+
+  it.each([undefined, null, false, 42, {}, [], '', '   ', 'file\0name', 'src/file\n/etc/passwd', 'file\rname', 'file\tname', 'file\u2028name', 'file\u2029name'].map((value) => ({ value })))('rejects invalid path %s', ({ value }) => {
     expect(isBeadTargetFile(value)).toBe(false)
   })
 })

@@ -10,6 +10,13 @@ describe('ExternalFilesBadge', () => {
     expect(screen.queryByText('External files')).not.toBeInTheDocument()
   })
 
+  it('uses server-resolved external symlinks without retaining warnings for removed targets', () => {
+    const { rerender } = render(<ExternalFilesBadge targetFiles={['linked/new.txt']} externalTargetFiles={['linked/new.txt']} />)
+    expect(screen.getByRole('note', { name: 'External files: linked/new.txt' })).toBeInTheDocument()
+    rerender(<ExternalFilesBadge targetFiles={['src/local.txt']} externalTargetFiles={['linked/new.txt']} />)
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+
   it.each(['/home/user/config.json', 'C:\\Users\\user\\config.json', '../shared/config.json', '~/config.json'])(
     'identifies external target %s with accessible text and its unchanged path', (externalPath) => {
       render(<ExternalFilesBadge targetFiles={['src/example.txt', externalPath]} />)

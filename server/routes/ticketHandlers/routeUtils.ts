@@ -37,6 +37,7 @@ import {
   type PublicTicketPhaseAttemptRow,
 } from '../../storage/tickets'
 import { clearExecutionSetupRuntimeArtifacts } from '../../phases/executionSetup/storage'
+import { expirePhaseRetryNote } from '../../workflow/retryNotes'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export { buildExecutionBandConflictMessage } from '../../workflow/executionBand'
@@ -258,6 +259,7 @@ export async function prepareExecutionSetupPlanRestart(ticketId: string): Promis
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
+  expirePhaseRetryNote(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES, restartReason)
   const createdAttempts = createFreshPhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES)
   ensureActorForTicket(ticketId)
@@ -283,6 +285,8 @@ export async function prepareExecutionSetupRuntimeRewind(
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
   ensureActivePhaseAttempt(ticketId, 'PREPARING_EXECUTION_ENV')
+  expirePhaseRetryNote(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
+  expirePhaseRetryNote(ticketId, 'PREPARING_EXECUTION_ENV')
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, EXECUTION_SETUP_RUNTIME_REWIND_PHASES, restartReason)
   const createdAttempts = createFreshPhaseAttempts(ticketId, ['WAITING_EXECUTION_SETUP_APPROVAL'])
   const removedFiles = clearExecutionSetupRuntimeArtifacts(ticketId, { preserveToolCache: true })
@@ -323,6 +327,8 @@ export async function prepareExecutionSetupRuntimeRegeneration(
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
   ensureActivePhaseAttempt(ticketId, 'PREPARING_EXECUTION_ENV')
+  expirePhaseRetryNote(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
+  expirePhaseRetryNote(ticketId, 'PREPARING_EXECUTION_ENV')
   const archivedAttempts = archiveActivePhaseAttempts(
     ticketId,
     EXECUTION_SETUP_RUNTIME_REWIND_PHASES,

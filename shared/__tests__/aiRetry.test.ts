@@ -33,10 +33,23 @@ describe('AI retry note eligibility', () => {
     expect(supportsRetryNote(phase)).toBe(false)
     expect(supportsRetryNote(phase, [], { kind: 'runtime', source: 'system', summary: 'Git failed' })).toBe(false)
     expect(supportsRetryNote(phase, [], { kind: 'transport', source: 'opencode', summary: 'Model request failed' })).toBe(true)
+    expect(supportsRetryNote(phase, [], { kind: 'opencode_provider', source: 'provider', summary: 'Provider unavailable' })).toBe(true)
   })
 
   it('offers notes for failed Manual QA fix-bead generation, not the human review itself', () => {
     expect(supportsRetryNote('WAITING_MANUAL_QA')).toBe(false)
     expect(supportsRetryNote('WAITING_MANUAL_QA', ['MANUAL_QA_FIX_BEADS_FAILED'])).toBe(true)
   })
+  it.each(['MAIN_IMPLEMENTER_MISSING', 'PROM4_NO_WINNER', 'PROM4_NO_COMPILED_INTERVIEW', 'PROM4_INVALID_COMPILED_INTERVIEW', 'FINAL_TEST_FAILED'])(
+    'does not offer instructions to repair a deterministic prerequisite: %s', code => {
+      expect(supportsRetryNote('WAITING_INTERVIEW_ANSWERS', [code])).toBe(false)
+    },
+  )
+
+  it('excludes deterministic failures in phases which also use AI', () => {
+    for (const phase of ['RUNNING_FINAL_TEST', 'GENERATING_QA_CHECKLIST']) {
+      expect(supportsRetryNote(phase, [], { kind: 'runtime', source: 'system', summary: 'Workspace missing' })).toBe(false)
+    }
+  })
+
 })

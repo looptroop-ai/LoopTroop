@@ -50,6 +50,8 @@ const {
   isMockOpenCodeModeMock,
   abortTicketSessionsMock,
   isTicketCancellationPendingMock,
+  hasInterviewRecoveryRequestedMock,
+  expirePhaseRetryNoteMock,
 } = vi.hoisted(() => ({
   mockLifecyclePhaseMocks: {
     handleMockCouncilDeliberate: vi.fn(),
@@ -96,6 +98,18 @@ const {
   isMockOpenCodeModeMock: vi.fn(),
   abortTicketSessionsMock: vi.fn(),
   isTicketCancellationPendingMock: vi.fn(() => false),
+  hasInterviewRecoveryRequestedMock: vi.fn(() => false),
+  expirePhaseRetryNoteMock: vi.fn(),
+}))
+
+vi.mock('../retryNotes', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../retryNotes')>(),
+  expirePhaseRetryNote: expirePhaseRetryNoteMock,
+}))
+
+vi.mock('../phases/interviewPhase', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../phases/interviewPhase')>(),
+  hasInterviewRecoveryRequested: hasInterviewRecoveryRequestedMock,
 }))
 
 vi.mock('../../opencode/factory', async () => {
@@ -163,6 +177,8 @@ describe('attachWorkflowRunner', () => {
     isMockOpenCodeModeMock.mockReset()
     abortTicketSessionsMock.mockReset()
     isTicketCancellationPendingMock.mockReset().mockReturnValue(false)
+    hasInterviewRecoveryRequestedMock.mockReset().mockReturnValue(false)
+    expirePhaseRetryNoteMock.mockReset()
     clearAllPendingSessionContinuationsForTests()
     phaseIntermediate.clear()
     interviewQASessions.clear()
@@ -439,6 +455,54 @@ describe('attachWorkflowRunner', () => {
         : [TEST.ticketId, expect.anything(), sendEvent, expect.anything()]
     expect(handler).toHaveBeenCalledWith(...expectedArgs)
     await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:${state}`)).toBe(false))
+    actor.stop()
+  })
+
+  it('runs an explicit interview recovery even when the interview cache is warm', async () => {
+    isMockOpenCodeModeMock.mockReturnValue(false)
+    hasInterviewRecoveryRequestedMock.mockReturnValue(true)
+    interviewQASessions.set(TEST.ticketId, {} as never)
+    livePhaseMocks.handleInterviewQAStart.mockResolvedValue(undefined)
+    const actor = createSnapshotActor('WAITING_INTERVIEW_ANSWERS')
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+    await vi.waitFor(() => expect(livePhaseMocks.handleInterviewQAStart).toHaveBeenCalledTimes(1))
+    actor.stop()
+  })
+
+  it('expires guidance after successful phase exit, while preserving it on a failure', () => {
+    isMockOpenCodeModeMock.mockReturnValue(false)
+    const actor = createSnapshotActor('WAITING_INTERVIEW_ANSWERS')
+    interviewQASessions.set(TEST.ticketId, {} as never)
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+    actor.send({ type: 'ERROR', message: 'Timed out', codes: ['TIMEOUT'] })
+    expect(expirePhaseRetryNoteMock).not.toHaveBeenCalled()
+    actor.stop()
+
+    const successful = createSnapshotActor('WAITING_INTERVIEW_ANSWERS')
+    livePhaseMocks.handleCoverageVerification.mockResolvedValue(undefined)
+    successful.start()
+    attachWorkflowRunner(TEST.ticketId, successful, vi.fn())
+    successful.send({ type: 'INTERVIEW_COMPLETE' })
+    expect(expirePhaseRetryNoteMock).toHaveBeenCalledWith(TEST.ticketId, 'WAITING_INTERVIEW_ANSWERS')
+    successful.stop()
+  })
+
+  it.each([
+    [Object.assign(new Error('Already reported'), { manualQaErrorReported: true }), undefined],
+    [Object.assign(new Error('Missing snapshot'), { code: 'MANUAL_QA_RESULTS_MISSING' }), 'MANUAL_QA_RESULTS_MISSING'],
+    [new Error('Workspace changed'), 'MANUAL_QA_SUBMISSION_RESUME_FAILED'],
+  ])('does not mislabel local Manual QA recovery failures: %s', async (error, expectedCode) => {
+    isMockOpenCodeModeMock.mockReturnValue(false)
+    resumeFailedManualQaSubmissionMock.mockRejectedValue(error)
+    const actor = createSnapshotActor('WAITING_MANUAL_QA')
+    actor.start()
+    const sendEvent = vi.fn()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+    await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:WAITING_MANUAL_QA`)).toBe(false))
+    if (expectedCode) expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR', codes: expect.arrayContaining([expectedCode]) }))
+    else expect(sendEvent).not.toHaveBeenCalled()
     actor.stop()
   })
 

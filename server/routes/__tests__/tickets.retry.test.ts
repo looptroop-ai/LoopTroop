@@ -162,6 +162,33 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
 
   afterEach(() => vi.restoreAllMocks())
 
+  it('rejects an overlapping retry before it can stop the newly restarted work', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'DRAFTING_BEADS' } }),
+      errorMessage: 'Model timed out',
+    })
+    ensureActivePhaseAttempt(ticket.id, 'DRAFTING_BEADS')
+    insertCouncilSession(ticket.id)
+    let confirmStop: ((stopped: boolean) => void) | undefined
+    let signalStopStarted: (() => void) | undefined
+    const stopStarted = new Promise<void>(resolve => { signalStopStarted = resolve })
+    abortSessionMock.mockImplementationOnce(() => {
+      signalStopStarted?.()
+      return new Promise<boolean>(resolve => { confirmStop = resolve })
+    })
+    const first = app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+    await stopStarted
+    const overlap = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+    expect(overlap.status).toBe(409)
+    expect(abortSessionMock).toHaveBeenCalledTimes(1)
+    confirmStop?.(true)
+    expect((await first).status).toBe(200)
+    expect(sendTicketEvent).toHaveBeenCalledTimes(1)
+    expect(listPhaseAttempts(ticket.id, 'DRAFTING_BEADS')).toHaveLength(2)
+  })
+
   it('tracks every retry-resumable non-implementation workflow status', () => {
     const expectedTracked = WORKFLOW_PHASES
       .filter((phase) => phase.groupId !== 'implementation' && phase.groupId !== 'done' && phase.groupId !== 'errors')
@@ -610,6 +637,27 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       expect.objectContaining({ attemptNumber: 2, state: 'active' }),
       expect.objectContaining({ attemptNumber: 1, state: 'archived' }),
     ])
+  })
+
+  it.each(['VERIFYING_PRD_COVERAGE', 'VERIFYING_BEADS_COVERAGE'] as const)('keeps %s retry guidance on the failed revision rather than its preceding audit', async phase => {
+    const { app, ticket } = setupRetryTicketApp()
+    const context = getTicketContext(ticket.id)
+    if (!context) throw new Error('Missing ticket storage')
+    context.projectDb.insert(opencodeSessions).values({
+      ticketId: context.localTicketId, sessionId: 'failed-coverage-revision', phase,
+      phaseAttempt: 1, step: 'revision', state: 'abandoned',
+    }).run()
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR', errorMessage: 'Revision failed',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: phase } }),
+    })
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Address the reported gaps.' }),
+    })
+    expect(response.status).toBe(200)
+    expect(readPhaseRetryNote(ticket.id, phase, undefined, 'audit')).toBeUndefined()
+    expect(readPhaseRetryNote(ticket.id, phase, undefined, 'revision')).toBe('Address the reported gaps.')
   })
 
   it('allows a workspace setup note when the previous session is gone', async () => {

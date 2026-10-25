@@ -321,6 +321,7 @@ const serverIntegrationTests = [
   // Same reason as the group below, found the same way.
   'server/lib/__tests__/commandExecutor.test.ts',
   'server/phases/executionSetup/__tests__/hookValidation.test.ts',
+  'server/phases/executionSetup/__tests__/generator.test.ts',
   // Same reason: it runs `doctor`'s real checks to read their names back, and
   // those probe `git`, `gh` and `npm` with `execFileSync`.
   'tests/wireContract.test.ts',

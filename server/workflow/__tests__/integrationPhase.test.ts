@@ -107,6 +107,23 @@ describe('handleIntegration', () => {
     context = makeTicketContext()
   })
 
+  it('finishes integration without a pull request when no repository files changed', async () => {
+    prepareSquashCandidateMock.mockResolvedValue({
+      success: true, noChanges: true, message: 'No candidate changes were available to squash',
+      mergeBase: 'base-sha', preSquashHead: 'base-sha', commitCount: 0,
+    })
+    const sendEvent = vi.fn()
+
+    await handleIntegration(TEST.ticketId, context, sendEvent)
+
+    expect(sendEvent).toHaveBeenCalledExactlyOnceWith({ type: 'INTEGRATION_NO_CHANGES' })
+    const report = JSON.parse(insertPhaseArtifactMock.mock.calls[0]![1].content)
+    expect(report).toMatchObject({
+      status: 'passed', noRepositoryChanges: true, candidateCommitSha: null,
+      pushed: false, pushDeferred: false,
+    })
+  })
+
   it('successful integration defers the remote update until manual verification', async () => {
     // The canonical-first read and its artifact fallback are one reader now,
     // and its own tests cover the envelope shapes; this drives its result.

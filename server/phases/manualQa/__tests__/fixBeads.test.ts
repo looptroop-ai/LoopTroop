@@ -80,6 +80,23 @@ beads:
 const PROJECT_PATH = '/repo'
 
 describe('Manual QA fix-bead generation contracts', () => {
+  it('reuses candidates only for the same retry guidance', () => {
+    const ticketDir = makeTempDir('manual-qa-fix-note-')
+    try {
+      const groups = buildManualQaFixGroups(checklist, draft)
+      const candidates = parseManualQaFixBeadsOutput(validResponse, groups)
+      persistManualQaFixBeadCandidates(ticketDir, 1, candidates, 'Check the saved selection.')
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups, 'Check the saved selection.')).toEqual(candidates)
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups, 'Check reset behavior.')).toBeNull()
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toBeNull()
+      persistManualQaFixBeadCandidates(ticketDir, 1, candidates)
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toEqual(candidates)
+      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups, 'Check reset behavior.')).toBeNull()
+    } finally {
+      removeTempDir(ticketDir)
+    }
+  })
+
   it('rejects a linked candidate document before reading or overwriting it', () => {
     const ticketDir = makeTempDir('manual-qa-fix-path-')
     const outside = makeTempDir('manual-qa-fix-outside-')

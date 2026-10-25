@@ -9,7 +9,7 @@ import {
 import type { DraftPhaseResult } from '../../council/types'
 import type { deliberateInterview as DeliberateInterview } from '../../phases/interview/deliberate'
 import { opencodeSessions } from '../../db/schema'
-import { getLatestPhaseArtifact, getTicketContext, insertPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketContext, insertPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import * as atomicWrite from '../../io/atomicWrite'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -44,6 +44,9 @@ import {
   processInterviewBatchAsync,
   readInterviewSessionSnapshotArtifact,
   persistInterviewRetrySnapshot,
+  hasInterviewRecoveryRequested,
+  readInterviewRetrySnapshot,
+  snapshotFingerprint,
   releaseInterviewBatch,
   writeInterviewSessionSnapshotArtifact,
 } from '../phases/interviewPhase'
@@ -112,15 +115,31 @@ describe('additional interview phase flows', () => {
       phase: 'COMPILING_INTERVIEW', artifactType: 'interview_compiled',
       content: JSON.stringify({ refinedContent: draftContent('Which outcome matters most?') }),
     })
-    const answered = recordBatchAnswers(makeActiveProm4Batch(ticket.id), { Q01: 'Preserve this submitted answer.' })
+    const original = makeActiveProm4Batch(ticket.id)
+    const answered = recordBatchAnswers(original, { Q01: 'Preserve this submitted answer.' })
+    upsertLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS', JSON.stringify({
+      originalSnapshot: original, answeredSnapshotFingerprint: snapshotFingerprint(answered),
+    }))
     if (action === 'retry') persistInterviewRetrySnapshot(ticket.id, answered)
     else {
       writeInterviewSessionSnapshotArtifact(ticket.id, answered)
       requestSessionContinuation({ ticketId: ticket.id, phase: 'WAITING_INTERVIEW_ANSWERS', sessionId: 'preserved-session' })
     }
     interviewQASessions.set(ticket.id, { sessionId: 'old-session', winnerId })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_INTERVIEW_ANSWERS', artifactType: 'interview_qa_session',
+      content: JSON.stringify({ sessionId: 'old-session', winnerId }),
+    })
+    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(true)
+    const recoveredSessionId = action === 'continue' ? 'preserved-session' : 'replacement-session'
+    const storageContext = getTicketContext(ticket.id)
+    if (!storageContext) throw new Error('Missing ticket storage fixture')
+    storageContext.projectDb.insert(opencodeSessions).values({
+      sessionId: recoveredSessionId, ticketId: storageContext.localTicketId,
+      phase: 'WAITING_INTERVIEW_ANSWERS', state: 'active',
+    }).run()
     const start = vi.spyOn(interviewQa, 'startInterviewSession').mockResolvedValue({
-      sessionId: action === 'continue' ? 'preserved-session' : 'replacement-session',
+      sessionId: recoveredSessionId,
       firstBatch: {
         questions: [], progress: { current: 1, total: 1 }, isComplete: true,
         isFinalFreeForm: false, aiCommentary: 'Complete.', batchNumber: 1,
@@ -133,10 +152,26 @@ describe('additional interview phase flows', () => {
       expect(start.mock.calls[0]?.[13]).toMatchObject({ answers: { Q01: { answer: 'Preserve this submitted answer.' } } })
       expect(readInterviewSessionSnapshotArtifact(ticket.id)?.answers.Q01?.answer).toBe('Preserve this submitted answer.')
       expect(sendEvent).toHaveBeenCalledWith({ type: 'INTERVIEW_COMPLETE' })
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_failed_submission', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_retry_requested', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(interviewQASessions.has(ticket.id)).toBe(false)
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_qa_session', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(storageContext.projectDb.select().from(opencodeSessions).get()?.state).toBe('completed')
     } finally {
       start.mockRestore()
       clearAllPendingSessionContinuationsForTests()
     }
+  })
+
+  it('keeps current saved answers authoritative over corrupt or outdated recovery artifacts', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const current = makeActiveProm4Batch(ticket.id)
+    for (const content of ['{invalid', JSON.stringify({ snapshot: {}, baselineFingerprint: 'outdated' })]) {
+      upsertLatestPhaseArtifact(ticket.id, 'interview_failed_submission', 'WAITING_INTERVIEW_ANSWERS', content)
+      expect(readInterviewRetrySnapshot(ticket.id)).toEqual(current)
+    }
+    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(false)
   })
 
   it.each(['repair', 'retry', 'clean'])('persists the first PROM4 batch with appropriate %s notices', async (kind) => {

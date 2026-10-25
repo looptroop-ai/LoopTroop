@@ -23,6 +23,7 @@ import {
   listTickets,
   patchTicket,
   resolvePhaseAttempt,
+  upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { manualQaOperations } from '../../db/schema'
 import type { TicketEvent } from '../../machines/types'
@@ -77,7 +78,7 @@ import {
 } from './fixBeads'
 import { emitAiMilestone, emitPhaseLog } from '../../workflow/phases/helpers'
 import { getErrorMessage } from '@shared/typeGuards'
-import { savePhaseRetryNote } from '../../workflow/retryNotes'
+import { readPhaseRetryNote, savePhaseRetryNote } from '../../workflow/retryNotes'
 
 export interface ManualQaMutationGuard {
   actionId: string
@@ -986,11 +987,19 @@ function finalizeRecoveredOperation(
   persistManualQaDatabaseOperation(ticketId, journal)
 }
 
+export function requestManualQaSubmissionRecovery(ticketId: string, requested = true): void {
+  upsertLatestPhaseArtifact(ticketId, 'manual_qa_recovery_requested', 'WAITING_MANUAL_QA', JSON.stringify({ requested }))
+}
+
 export async function resumeFailedManualQaSubmission(
   ticketId: string,
   sendEvent: (event: TicketEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  const request = getLatestPhaseArtifact(ticketId, 'manual_qa_recovery_requested', 'WAITING_MANUAL_QA')
+  if (!request || request.content !== JSON.stringify({ requested: true })) return
+  // Consume before yielding so an actor restart cannot race the accepted request.
+  requestManualQaSubmissionRecovery(ticketId, false)
   const paths = getTicketPaths(ticketId)
   if (!paths) return
   const version = resolveActiveManualQaVersion(paths.ticketDir)
@@ -1156,7 +1165,8 @@ export async function submitManualQa(input: {
     writeJournal(operationPath, journal)
     persistManualQaDatabaseOperation(input.ticketId, journal)
     try {
-      const storedCandidates = readManualQaFixBeadCandidates(paths.ticketDir, input.version, fixGroups)
+      const retryNote = readPhaseRetryNote(input.ticketId, 'WAITING_MANUAL_QA')
+      const storedCandidates = readManualQaFixBeadCandidates(paths.ticketDir, input.version, fixGroups, retryNote)
       const candidates = storedCandidates ?? await (input.generateFixBeads ?? generateManualQaFixBeadCandidates)({
         ticketId: input.ticketId,
         context: buildTicketContextFromTicket(ticket),
@@ -1166,7 +1176,7 @@ export async function submitManualQa(input: {
         existingBeads,
         signal: input.signal,
       })
-      const candidateContent = persistManualQaFixBeadCandidates(paths.ticketDir, input.version, candidates)
+      const candidateContent = persistManualQaFixBeadCandidates(paths.ticketDir, input.version, candidates, retryNote)
       persistManualQaPhaseArtifact(
         input.ticketId,
         'manual_qa_fix_beads',
@@ -1196,7 +1206,9 @@ export async function submitManualQa(input: {
         phaseAttempt: resolvePhaseAttempt(input.ticketId, 'WAITING_MANUAL_QA'),
       })
       input.sendEvent({ type: 'ERROR', message: `Manual QA fix-bead generation failed: ${message}`, codes: ['MANUAL_QA_FIX_BEADS_FAILED'] })
-      throw error
+      const reportedError = error instanceof Error ? error : new Error(message)
+      Object.assign(reportedError, { code: 'MANUAL_QA_FIX_BEADS_FAILED', manualQaErrorReported: true })
+      throw reportedError
     }
   }
 

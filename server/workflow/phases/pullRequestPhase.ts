@@ -1,4 +1,5 @@
 import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
+import { isCandidateFileAuditCheckpoint } from '../../lib/workflowContinuation'
 import { existsSync } from 'node:fs'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext, TicketEvent } from '../../machines/types'
@@ -1245,6 +1246,7 @@ export async function handleCreatePullRequest(
     return
   }
 
+  let aiWorkInFlight = false
   return withCommandLoggingAsync(
     ticketId,
     context.externalId,
@@ -1327,16 +1329,23 @@ export async function handleCreatePullRequest(
         if (artifact) {
           try {
             const parsed: unknown = JSON.parse(artifact.content)
-            if (isRecord(parsed) && parsed.baseCommit === integration.mergeBase && parsed.candidateCommitSha === candidateCommitSha
-              && (parsed.status === 'passed' || parsed.status === 'fallback')
-              && Array.isArray(parsed.includedFiles) && Array.isArray(parsed.excludedFiles) && Array.isArray(parsed.entries)) {
-              savedAudit = parsed as unknown as CandidateFileAuditReport
+            if (isCandidateFileAuditCheckpoint(parsed, {
+              baseCommit: integration.mergeBase,
+              candidateCommitSha,
+            })) {
+              const changedFiles = parseCandidateChangedFiles(diff.nameStatus).map(file => file.path)
+              if (parsed.includedFiles.length === changedFiles.length
+                && new Set(parsed.includedFiles).size === parsed.includedFiles.length
+                && parsed.includedFiles.every(path => changedFiles.includes(path))) {
+                savedAudit = parsed as unknown as CandidateFileAuditReport
+              }
             }
           } catch { /* A changed or damaged audit requires a fresh attempt. */ }
         }
         if (!savedAudit) throw new Error('Cannot continue pull request drafting because its saved file audit does not match the current candidate. Use Retry to start a fresh attempt.')
       }
 
+      aiWorkInFlight = true
       let candidateFileAudit = savedAudit ?? await runCandidateFileAudit({
         ticketId,
         context,
@@ -1353,6 +1362,7 @@ export async function handleCreatePullRequest(
         timeoutMs: aiResponseSettings.timeoutMs,
         signal,
       })
+      aiWorkInFlight = false
 
       if (!savedAudit && candidateFileAudit.excludedFiles.length > 0) {
         const rewrite = await rewriteCandidateCommitWithFiles(
@@ -1576,6 +1586,7 @@ export async function handleCreatePullRequest(
       })
 
       try {
+        aiWorkInFlight = true
         let draftResult = await runFreshDraftPrompt(false)
         let draftResponse = draftResult.response
 
@@ -1701,6 +1712,7 @@ export async function handleCreatePullRequest(
           }
         }
         await closeDraftSession('complete')
+        aiWorkInFlight = false
       } catch (error) {
         if (!shouldPreserveSessionForContinuation({
           error, sessionId, modelId: mainImplementer, signal,
@@ -1806,7 +1818,12 @@ export async function handleCreatePullRequest(
       sendEvent({ type: 'PULL_REQUEST_READY' })
     },
     (phase, type, content) => emitPhaseLog(ticketId, context.externalId, phase, type, content),
-  )
+  ).catch((error: unknown) => {
+    if (aiWorkInFlight) throw error
+    throw Object.assign(error instanceof Error ? error : new Error(getErrorMessage(error)), {
+      blockedErrorDiagnostics: { kind: 'runtime', source: 'system', summary: getErrorMessage(error) },
+    })
+  })
 }
 
 export function readPullRequestReport(ticketId: string): PullRequestReport | null {

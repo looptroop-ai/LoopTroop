@@ -8,9 +8,9 @@ const { artifacts, context, lookup, upsert } = vi.hoisted(() => ({
   upsert: vi.fn(),
 }))
 vi.mock('../../storage/ticketArtifacts', () => ({ getLatestPhaseArtifact: lookup, upsertLatestPhaseArtifact: upsert }))
-vi.mock('../../storage/ticketQueries', () => ({ getTicketContext: context }))
+vi.mock('../../storage/ticketQueries', () => ({ getTicketByRef: context }))
 
-import { appendPhaseRetryNote, canRetryWithExtraNote, PHASE_RETRY_NOTE_ARTIFACT, readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
+import { appendPhaseRetryNote, canRetryWithExtraNote, expirePhaseRetryNote, PHASE_RETRY_NOTE_ARTIFACT, readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
 
 describe('phase retry notes', () => {
   beforeEach(() => {
@@ -47,6 +47,33 @@ describe('phase retry notes', () => {
     expect(appendPhaseRetryNote(parts, '1:TEST-1', 'RUNNING_FINAL_TEST')).toBe(parts)
   })
 
+  it('expires successful guidance while retaining the submitted text as history', () => {
+    savePhaseRetryNote('1:TEST-1', 'RUNNING_FINAL_TEST', 'Check the reported failure')
+    expirePhaseRetryNote('1:TEST-1', 'RUNNING_FINAL_TEST')
+    expect(readPhaseRetryNote('1:TEST-1', 'RUNNING_FINAL_TEST')).toBeUndefined()
+    expect(JSON.parse(artifacts.get(`1:TEST-1:RUNNING_FINAL_TEST:${PHASE_RETRY_NOTE_ARTIFACT}`)!.content))
+      .toEqual({ note: 'Check the reported failure', active: false })
+    upsert.mockClear()
+    expirePhaseRetryNote('1:TEST-1', 'RUNNING_FINAL_TEST')
+    expirePhaseRetryNote('1:TEST-2', 'RUNNING_FINAL_TEST')
+    expect(upsert).not.toHaveBeenCalled()
+  })
+
+  it('applies substep guidance only to the failed substep and avoids duplicate member notes', () => {
+    savePhaseRetryNote('1:TEST-1', 'CREATING_PULL_REQUEST', 'Explain the change', 'pull_request_draft')
+    const parts: PromptPart[] = [{ type: 'text', content: 'Saved inputs' }]
+    expect(appendPhaseRetryNote(parts, '1:TEST-1', 'CREATING_PULL_REQUEST', undefined, 'candidate_file_audit')).toBe(parts)
+    expect(appendPhaseRetryNote(parts, '1:TEST-1', 'CREATING_PULL_REQUEST', undefined, 'pull_request_draft')).toHaveLength(2)
+    const withMember: PromptPart[] = [...parts, { type: 'text', content: '## User Retry Note\nExplain the change' }]
+    expect(appendPhaseRetryNote(withMember, '1:TEST-1', 'CREATING_PULL_REQUEST', undefined, 'pull_request_draft')).toBe(withMember)
+  })
+
+  it('ignores damaged optional note data instead of breaking every prompt', () => {
+    artifacts.set(`1:TEST-1:REFINING_PRD:${PHASE_RETRY_NOTE_ARTIFACT}`, { content: 'invalid json' })
+    expect(readPhaseRetryNote('1:TEST-1', 'REFINING_PRD')).toBeUndefined()
+    expect(() => expirePhaseRetryNote('1:TEST-1', 'REFINING_PRD')).not.toThrow()
+  })
+
   it('keeps newer per-model guidance after the phase retry note', () => {
     savePhaseRetryNote('1:TEST-1', 'DRAFTING_BEADS', 'Guidance for the round')
     const original: PromptPart = { type: 'text', content: 'Approved inputs' }
@@ -61,33 +88,13 @@ describe('phase retry notes', () => {
     expect(readPhaseRetryNote('1:TEST-1', 'REFINING_PRD')).toBeUndefined()
   })
 
-  it.each([
-    [null, 'REFINING_PRD', true],
-    [null, 'INTEGRATING_CHANGES', false],
-    ['[]', 'REFINING_PRD', true],
-    ['["BEAD_FINALIZATION_FAILED"]', 'CODING', false],
-    ['["BEAD_EXECUTION_FAILED", 1]', 'CODING', true],
-    ['invalid', 'CODING', false],
-    ['{}', 'REFINING_PRD', true],
-  ] as const)('checks saved failure codes %s for %s', (codes, phase, expected) => {
-    const get = vi.fn().mockReturnValue({ errorCodes: codes })
-    context.mockReturnValue({ localTicketId: 1, projectDb: { select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ get }) }) }) }) } })
-    expect(canRetryWithExtraNote('1:TEST-1', phase)).toBe(expected)
-  })
-
-  it('does not advertise notes for missing tickets and handles failures without occurrences', () => {
+  it('enforces the exact capability projected for the active failure', () => {
+    context.mockReturnValue({ previousStatus: 'CODING', availableActions: ['retry'] })
+    expect(canRetryWithExtraNote('1:TEST-1', 'CODING')).toBe(false)
+    context.mockReturnValue({ previousStatus: 'DRAFTING_BEADS', availableActions: ['retry', 'retry_with_note'] })
+    expect(canRetryWithExtraNote('1:TEST-1', 'DRAFTING_BEADS')).toBe(true)
+    expect(canRetryWithExtraNote('1:TEST-1', 'CODING')).toBe(false)
     context.mockReturnValue(undefined)
     expect(canRetryWithExtraNote('1:MISSING', 'CODING')).toBe(false)
-    context.mockReturnValue({ localTicketId: 1, projectDb: { select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ get: () => undefined }) }) }) }) } })
-    expect(canRetryWithExtraNote('1:TEST-1', 'PREPARING_EXECUTION_ENV')).toBe(true)
-  })
-
-  it.each([
-    ['{"kind":"transport","source":"opencode","summary":"Prompt failed"}', true],
-    ['{"kind":"runtime","source":"system","summary":"Git failed"}', false],
-    ['invalid', false],
-  ] as const)('uses the actual failing operation for mixed AI/local phases: %s', (diagnosticDetails, expected) => {
-    context.mockReturnValue({ localTicketId: 1, projectDb: { select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ get: () => ({ errorCodes: '[]', diagnosticDetails }) }) }) }) }) } })
-    expect(canRetryWithExtraNote('1:TEST-1', 'CREATING_PULL_REQUEST')).toBe(expected)
   })
 })

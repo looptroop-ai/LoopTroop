@@ -25,7 +25,7 @@ import {
   captureFinalTestDirtyFiles,
 } from '../../finalTest/fileEffectsAudit'
 import { prepareManualQaCheckpoint } from '../checkpoint'
-import { detectManualQaWorkspaceDrift, reserveManualQaSubmissionOperation, resumeFailedManualQaSubmission, skipManualQa, submitManualQa } from '../operations'
+import { detectManualQaWorkspaceDrift, requestManualQaSubmissionRecovery, reserveManualQaSubmissionOperation, resumeFailedManualQaSubmission, skipManualQa, submitManualQa } from '../operations'
 import {
   getManualQaChecklistHash,
   getManualQaStoragePaths,
@@ -797,6 +797,11 @@ describe('Manual QA submission recovery and integrity', () => {
       sendEvent: vi.fn(), generateFixBeads: async () => { throw new Error('Model timed out') },
     })).rejects.toThrow('Model timed out')
     const originalResults = readManualQaResults(setup.paths.ticketDir, 1)
+    const idleGenerate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates')
+    await resumeFailedManualQaSubmission(setup.ticket.id, vi.fn())
+    expect(idleGenerate).not.toHaveBeenCalled()
+    idleGenerate.mockRestore()
+    requestManualQaSubmissionRecovery(setup.ticket.id)
     savePhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA', 'Keep this guidance scoped to these failed checks.')
     insertPhaseArtifact(setup.ticket.id, {
       phase: 'UI_STATE', artifactType: 'ui_state:manual_qa_draft:v1',
@@ -817,6 +822,32 @@ describe('Manual QA submission recovery and integrity', () => {
       expect(readManualQaResults(setup.paths.ticketDir, 1)).toEqual(originalResults)
       expect(readPhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA')).toBeUndefined()
       expect(sendEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_FIXES_CREATED' })
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).toHaveBeenCalledTimes(1)
+    } finally {
+      generate.mockRestore()
+    }
+  })
+
+  it('retains guidance after a failed explicit replay without automatically replaying it again', async () => {
+    const setup = await prepareFixture()
+    setup.draft.results[0] = { ...setup.draft.results[0]!, outcome: 'fail', observation: 'The submitted failure.' }
+    await expect(submitManualQa({
+      ticketId: setup.ticket.id, version: 1, draft: setup.draft, guard: setup.guard,
+      sendEvent: vi.fn(), generateFixBeads: async () => { throw new Error('Initial timeout') },
+    })).rejects.toThrow('Initial timeout')
+    savePhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA', 'Keep the submitted failure in scope.')
+    requestManualQaSubmissionRecovery(setup.ticket.id)
+    const generate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates').mockRejectedValue(new Error('Retry timeout'))
+    try {
+      const sendEvent = vi.fn()
+      await expect(resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)).rejects.toMatchObject({
+        message: 'Retry timeout', code: 'MANUAL_QA_FIX_BEADS_FAILED', manualQaErrorReported: true,
+      })
+      expect(sendEvent).toHaveBeenCalledTimes(1)
+      expect(readPhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA')).toBe('Keep the submitted failure in scope.')
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).toHaveBeenCalledTimes(1)
     } finally {
       generate.mockRestore()
     }

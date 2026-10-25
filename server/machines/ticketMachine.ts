@@ -540,6 +540,7 @@ export const ticketMachine = setup({
       ],
       on: {
         INTEGRATION_DONE: { target: "CREATING_PULL_REQUEST" },
+        INTEGRATION_NO_CHANGES: { target: "CLEANING_ENV" },
         ERROR: { target: "BLOCKED_ERROR", actions: ["recordError"] },
         CANCEL: { target: "CANCELED" },
       },

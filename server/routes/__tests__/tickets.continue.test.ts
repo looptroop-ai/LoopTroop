@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
-import { opencodeSessions } from '../../db/schema'
+import { opencodeSessions, phaseArtifacts } from '../../db/schema'
 import { attachProject } from '../../storage/projects'
 import {
   createTicket,
@@ -13,6 +13,7 @@ import {
   listPhaseAttempts,
   patchTicket,
   recordTicketErrorOccurrence,
+  upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import {
@@ -21,9 +22,10 @@ import {
   hasPendingSessionContinuationForTicketPhase,
 } from '../../opencode/sessionContinuation'
 
-const { getSessionMock, listSessionsMock } = vi.hoisted(() => ({
+const { getSessionMock, listSessionsMock, abortSessionMock } = vi.hoisted(() => ({
   getSessionMock: vi.fn(),
   listSessionsMock: vi.fn(),
+  abortSessionMock: vi.fn(),
 }))
 
 vi.mock('../../opencode/factory', async (importOriginal) => {
@@ -33,6 +35,7 @@ vi.mock('../../opencode/factory', async (importOriginal) => {
     getOpenCodeAdapter: vi.fn(() => ({
       getSession: getSessionMock,
       listSessions: listSessionsMock,
+      abortSession: abortSessionMock,
     })),
   }
 })
@@ -92,7 +95,12 @@ function setupContinueTicketApp() {
   return { app, project, ticket }
 }
 
-function insertActiveOpenCodeSession(ticketRef: string, phase: string, sessionId = 'ses-continue') {
+function insertActiveOpenCodeSession(
+  ticketRef: string,
+  phase: string,
+  sessionId = 'ses-continue',
+  ownership: { phaseAttempt?: number; step?: string; memberId?: string } = {},
+) {
   const context = getTicketContext(ticketRef)
   if (!context) throw new Error(`Missing ticket context for ${ticketRef}`)
   context.projectDb.insert(opencodeSessions)
@@ -100,13 +108,20 @@ function insertActiveOpenCodeSession(ticketRef: string, phase: string, sessionId
       sessionId,
       ticketId: context.localTicketId,
       phase,
-      phaseAttempt: 1,
+      phaseAttempt: ownership.phaseAttempt ?? 1,
+      memberId: ownership.memberId ?? null,
+      step: ownership.step ?? null,
       state: 'active',
     })
     .run()
 }
 
-function blockTicketWithContinuableError(ticketRef: string, previousStatus: string, sessionId = 'ses-continue') {
+function blockTicketWithContinuableError(
+  ticketRef: string,
+  previousStatus: string,
+  sessionId = 'ses-continue',
+  ownership: { phaseAttempt?: number; step?: string; memberId?: string } = {},
+) {
   recordTicketErrorOccurrence(ticketRef, {
     blockedFromStatus: previousStatus,
     errorMessage: 'Usage limit has been reached.',
@@ -125,7 +140,7 @@ function blockTicketWithContinuableError(ticketRef: string, previousStatus: stri
     xstateSnapshot: JSON.stringify({ context: { previousStatus } }),
     errorMessage: 'Usage limit has been reached.',
   })
-  insertActiveOpenCodeSession(ticketRef, previousStatus, sessionId)
+  insertActiveOpenCodeSession(ticketRef, previousStatus, sessionId, ownership)
 }
 
 describe('ticketRouter POST /tickets/:id/continue', () => {
@@ -136,6 +151,7 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     clearAllPendingSessionContinuationsForTests()
     vi.clearAllMocks()
     listSessionsMock.mockResolvedValue([{ id: 'ses-continue', projectPath: '/tmp/project' }])
+    abortSessionMock.mockResolvedValue(true)
     getSessionMock.mockResolvedValue({ id: 'ses-continue', projectPath: '/tmp/project' })
   })
 
@@ -162,6 +178,119 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     ])
   })
 
+  it.each(['missing', 'damaged', 'other-attempt', 'wrong-session-attempt', 'wrong-member'] as const)(
+    'hides coverage Continue when the revision checkpoint is %s',
+    (checkpointState) => {
+      const { ticket } = setupContinueTicketApp()
+      const phase = 'VERIFYING_PRD_COVERAGE'
+      ensureActivePhaseAttempt(ticket.id, phase)
+      upsertLatestPhaseArtifact(ticket.id, 'prd_winner', 'REFINING_PRD', JSON.stringify({ winnerId: 'test/model' }))
+      blockTicketWithContinuableError(ticket.id, phase, 'ses-continue', {
+        step: 'revision',
+        memberId: checkpointState === 'wrong-member' ? 'test/other-model' : 'test/model',
+        phaseAttempt: checkpointState === 'wrong-session-attempt' ? 2 : undefined,
+      })
+
+      const content = JSON.stringify({
+        candidateVersion: 1,
+        refinedContent: 'saved candidate',
+        auditResult: { envelope: { status: 'gaps', gaps: ['Missing acceptance check'] } },
+      })
+      if (checkpointState === 'damaged') {
+        upsertLatestPhaseArtifact(ticket.id, 'prd_coverage_input', phase, '{')
+      } else if (checkpointState === 'other-attempt') {
+        const context = getTicketContext(ticket.id)!
+        context.projectDb.insert(phaseArtifacts).values({
+          ticketId: context.localTicketId,
+          phase,
+          phaseAttempt: 2,
+          artifactType: 'prd_coverage_input',
+          content,
+        }).run()
+      }
+
+      expect(getTicketByRef(ticket.id)?.availableActions).not.toContain('continue')
+    },
+  )
+
+  it('advertises coverage Continue when the revision checkpoint matches the active session', () => {
+    const { ticket } = setupContinueTicketApp()
+    const phase = 'VERIFYING_PRD_COVERAGE'
+    ensureActivePhaseAttempt(ticket.id, phase)
+    upsertLatestPhaseArtifact(ticket.id, 'prd_winner', 'REFINING_PRD', JSON.stringify({ winnerId: 'test/model' }))
+    upsertLatestPhaseArtifact(ticket.id, 'prd_coverage_input', phase, JSON.stringify({
+      candidateVersion: 1,
+      refinedContent: 'saved candidate',
+      auditResult: { envelope: { status: 'gaps', gaps: ['Missing acceptance check'] } },
+    }))
+    blockTicketWithContinuableError(ticket.id, phase, 'ses-continue', { step: 'revision', memberId: 'test/model' })
+
+    expect(getTicketByRef(ticket.id)?.availableActions).toContain('continue')
+  })
+
+  it.each(['missing', 'damaged', 'different-base', 'different-candidate', 'wrong-member', 'overlapping-decisions'] as const)(
+    'hides pull-request draft Continue when its checkpoint or session identity is %s',
+    (checkpointState) => {
+      const { ticket } = setupContinueTicketApp()
+      const phase = 'CREATING_PULL_REQUEST'
+      ensureActivePhaseAttempt(ticket.id, 'INTEGRATING_CHANGES')
+      ensureActivePhaseAttempt(ticket.id, phase)
+      patchTicket(ticket.id, { lockedMainImplementer: 'test/model' })
+      upsertLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
+        status: 'passed', mergeBase: 'base123', candidateCommitSha: 'candidate123',
+      }))
+      blockTicketWithContinuableError(ticket.id, phase, 'ses-continue', {
+        step: 'pull_request_draft',
+        memberId: checkpointState === 'wrong-member' ? 'test/other-model' : 'test/model',
+      })
+
+      if (checkpointState === 'damaged') {
+        upsertLatestPhaseArtifact(ticket.id, 'candidate_file_audit', phase, '{')
+      } else if (checkpointState !== 'missing') {
+        upsertLatestPhaseArtifact(ticket.id, 'candidate_file_audit', phase, JSON.stringify({
+          baseCommit: checkpointState === 'different-base' ? 'other-base' : 'base123',
+          candidateCommitSha: checkpointState === 'different-candidate' ? 'other-candidate' : 'candidate123',
+          status: 'passed',
+          includedFiles: ['src/example.ts'],
+          excludedFiles: checkpointState === 'overlapping-decisions' ? ['src/example.ts'] : [],
+          entries: checkpointState === 'overlapping-decisions'
+            ? [
+              { path: 'src/example.ts', decision: 'include', reason: 'Requested implementation.' },
+              { path: 'src/example.ts', decision: 'exclude', reason: 'Out of scope.' },
+            ]
+            : [{ path: 'src/example.ts', decision: 'include', reason: 'Requested implementation.' }],
+        }))
+      }
+
+      expect(getTicketByRef(ticket.id)?.availableActions).not.toContain('continue')
+    },
+  )
+
+  it('advertises pull-request draft Continue when the audit matches the latest candidate', () => {
+    const { ticket } = setupContinueTicketApp()
+    const phase = 'CREATING_PULL_REQUEST'
+    ensureActivePhaseAttempt(ticket.id, 'INTEGRATING_CHANGES')
+    ensureActivePhaseAttempt(ticket.id, phase)
+    patchTicket(ticket.id, { lockedMainImplementer: 'test/model' })
+    upsertLatestPhaseArtifact(ticket.id, 'integration_report', 'INTEGRATING_CHANGES', JSON.stringify({
+      status: 'passed', mergeBase: 'base123', candidateCommitSha: 'candidate123',
+    }))
+    upsertLatestPhaseArtifact(ticket.id, 'candidate_file_audit', phase, JSON.stringify({
+      baseCommit: 'base123',
+      candidateCommitSha: 'candidate123',
+      status: 'passed',
+      includedFiles: ['src/example.ts'],
+      excludedFiles: [],
+      entries: [{ path: 'src/example.ts', decision: 'include', reason: 'Requested implementation.' }],
+    }))
+    blockTicketWithContinuableError(ticket.id, phase, 'ses-continue', {
+      step: 'pull_request_draft',
+      memberId: 'test/model',
+    })
+
+    expect(getTicketByRef(ticket.id)?.availableActions).toContain('continue')
+  })
+
   it('clears a pending continuation if dispatching CONTINUE fails', async () => {
     const { app, ticket } = setupContinueTicketApp()
     blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
@@ -173,6 +302,21 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
 
     expect(response.status).toBe(500)
     expect(body).toEqual({ error: 'Failed to continue ticket', details: dispatchError.message })
+    expect(hasPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe(false)
+    expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+  })
+
+  it('withholds Continue when the old turn cannot be confirmed stopped', async () => {
+    const { app, ticket } = setupContinueTicketApp()
+    ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
+    blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
+    abortSessionMock.mockResolvedValueOnce(false)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(abortSessionMock).toHaveBeenCalledWith('ses-continue')
+    expect(sendTicketEvent).not.toHaveBeenCalled()
     expect(hasPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe(false)
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
   })
@@ -196,6 +340,7 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
   it('allows continue for HTTP 402 provider blocks with a preserved active session', async () => {
     const { app, ticket } = setupContinueTicketApp()
     const previousStatus = 'VERIFYING_PRD_COVERAGE'
+    upsertLatestPhaseArtifact(ticket.id, 'prd_winner', 'REFINING_PRD', JSON.stringify({ winnerId: 'test/model' }))
     ensureActivePhaseAttempt(ticket.id, previousStatus)
     recordTicketErrorOccurrence(ticket.id, {
       blockedFromStatus: previousStatus,
@@ -216,7 +361,7 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
       xstateSnapshot: JSON.stringify({ context: { previousStatus } }),
       errorMessage: 'Payment Required: {"detail":{"code":"deactivated_workspace"}} (HTTP 402)',
     })
-    insertActiveOpenCodeSession(ticket.id, previousStatus)
+    insertActiveOpenCodeSession(ticket.id, previousStatus, 'ses-continue', { step: 'audit', memberId: 'test/model' })
     expect(getTicketByRef(ticket.id)?.availableActions).toContain('continue')
 
     const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })

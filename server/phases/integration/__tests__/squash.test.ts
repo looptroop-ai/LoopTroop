@@ -129,15 +129,31 @@ describe('prepareSquashCandidate', () => {
     expect(commitMsg).toBe(`${BRANCH}: Add features`)
   })
 
-  it('returns failure when no changes exist relative to base', async () => {
+  it('reports a successful no-change result without creating a commit', async () => {
     const repoDir = repoManager.createRepo()
 
     git(repoDir, ['checkout', '-b', BRANCH])
 
+    const before = git(repoDir, ['rev-parse', 'HEAD'])
     const result = await prepareSquashCandidate(repoDir, 'main', 'Empty', BRANCH)
 
-    expect(result.success).toBe(false)
+    expect(result).toMatchObject({ success: true, noChanges: true })
+    expect(result.commitHash).toBeUndefined()
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(before)
     expect(result.message).toContain('No candidate changes')
+  })
+
+  it('reports no changes when an explicitly selected file still matches the base', async () => {
+    const repoDir = repoManager.createRepo()
+    git(repoDir, ['checkout', '-b', BRANCH])
+    const before = git(repoDir, ['rev-parse', 'HEAD'])
+
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Verification only', BRANCH, ['README.md'])
+
+    expect(result).toMatchObject({ success: true, noChanges: true })
+    expect(result.commitHash).toBeUndefined()
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(before)
+    expect(git(repoDir, ['status', '--porcelain'])).toBe('')
   })
 
   it('returns failure for an invalid worktree path', async () => {

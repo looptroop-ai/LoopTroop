@@ -1,8 +1,10 @@
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
 import { resolveOpenCodePermissions } from '../../../opencode/toolPolicy'
-import { patchTicket } from '../../../storage/tickets'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+import { listOpenCodeSessionsForTicket } from '../../../opencode/sessionManager'
+import { patchTicket, recordTicketErrorOccurrence, resolveTicketContinuationCandidate } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
 import { generateFinalTests } from '../generator'
 import type { OpenCodePromptDispatchEvent } from '../../../workflow/runOpenCodePrompt'
@@ -52,9 +54,25 @@ class HangingPromptAdapter extends MockOpenCodeAdapter {
   }
 }
 
+class StructuredRetryTimeoutAdapter extends MockOpenCodeAdapter {
+  private promptCount = 0
+
+  override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
+    this.promptCount += 1
+    if (this.promptCount === 2) {
+      this.promptCalls.push({ sessionId: args[0], parts: args[1], options: args[3] })
+      throw new Error('Timeout')
+    }
+    this.mockResponses.set(args[0], 'invalid final-test response')
+    return await super.promptSession(...args)
+  }
+}
+
 const repoManager = createTestRepoManager('final-test-generator-')
 
 describe('generateFinalTests', () => {
+  beforeEach(() => resetTestDb())
+
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
@@ -128,6 +146,51 @@ describe('generateFinalTests', () => {
       expect(call.options?.permission).toEqual(resolveOpenCodePermissions('default', false, true))
       expect(call.options?.permissionGuard).toBe(true)
     }
+  })
+
+  it('keeps a timed-out structured-retry session available to Continue', async () => {
+    resetTestDb()
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Continue final-test retry timeout',
+    })
+    patchTicket(ticket.id, { status: 'RUNNING_FINAL_TEST' })
+    const adapter = new StructuredRetryTimeoutAdapter()
+    let failure: unknown
+
+    try {
+      await generateFinalTests(
+        adapter,
+        [{ type: 'text', content: 'Ticket context' }],
+        paths.worktreePath,
+        undefined,
+        { ticketId: ticket.id, model: 'model-a' },
+      )
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toMatchObject({
+      message: 'Timeout',
+      blockedErrorDiagnostics: expect.objectContaining({ kind: 'timeout', sessionId: 'mock-session-1' }),
+    })
+    const diagnostics = (failure as Error & { blockedErrorDiagnostics?: BlockedErrorDiagnostics }).blockedErrorDiagnostics
+    recordTicketErrorOccurrence(ticket.id, {
+      blockedFromStatus: 'RUNNING_FINAL_TEST',
+      errorMessage: 'Timeout',
+      diagnostics,
+    })
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'RUNNING_FINAL_TEST' } }),
+      errorMessage: 'Timeout',
+    })
+
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId))
+      .toEqual(['mock-session-1'])
+    expect(resolveTicketContinuationCandidate(ticket.id)).toMatchObject({
+      previousStatus: 'RUNNING_FINAL_TEST',
+      sessionId: 'mock-session-1',
+    })
   })
 
   it('restarts final test generation in a fresh session after an empty response', async () => {

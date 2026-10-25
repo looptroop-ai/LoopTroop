@@ -1,5 +1,7 @@
 import { SessionManager } from "../../opencode/sessionManager";
+import { shouldPreserveSessionForContinuation } from "../../opencode/sessionContinuation";
 import { TicketWorkspaceNotInitializedError } from "../../lib/workflowErrors";
+import { isCoverageRevisionCheckpoint } from "../../lib/workflowContinuation";
 import type { TicketContext, TicketEvent } from "../../machines/types";
 import { withCommandLoggingAsync } from "../../log/commandLogger";
 import { handleMockExecutionUnsupported } from "./executionPhase";
@@ -2300,24 +2302,15 @@ function loadCoverageRevisionContinuation(
   if (session?.step !== "revision") return null;
 
   const artifact = getLatestPhaseArtifact(ticketId, `${phase}_coverage_input`, stateLabel);
-  const checkpoint = artifact ? JSON.parse(artifact.content) as {
-    candidateVersion?: number;
-    refinedContent?: string;
-    auditResult?: CoverageAuditResult;
-  } : null;
-  if (!checkpoint || typeof checkpoint.candidateVersion !== "number" || !Number.isInteger(checkpoint.candidateVersion)
-    || checkpoint.candidateVersion < 1
-    || typeof checkpoint.refinedContent !== "string" || !checkpoint.refinedContent.trim()
-    || checkpoint.auditResult?.envelope?.status !== "gaps"
-    || !Array.isArray(checkpoint.auditResult.envelope.gaps)
-    || checkpoint.auditResult.envelope.gaps.length === 0
-    || checkpoint.auditResult.envelope.gaps.some((gap) => typeof gap !== "string")) {
+  let checkpoint: unknown = null;
+  try { checkpoint = artifact ? JSON.parse(artifact.content) : null; } catch { /* Invalid checkpoints require Retry. */ }
+  if (!isCoverageRevisionCheckpoint(checkpoint)) {
     throw new Error(`Cannot continue ${phase} coverage revision without its saved candidate and audit result`);
   }
   return {
     candidateVersion: checkpoint.candidateVersion,
     refinedContent: checkpoint.refinedContent,
-    auditResult: checkpoint.auditResult,
+    auditResult: checkpoint.auditResult as CoverageAuditResult,
   };
 }
 
@@ -4120,6 +4113,7 @@ export async function handleRelevantFilesScan(
           errors: [normalized.error],
         }),
       });
+      if (sessionId) await new SessionManager(adapter).abortAndAbandonSession(sessionId);
       sendEvent({
         type: "ERROR",
         message: msg,
@@ -4200,6 +4194,15 @@ export async function handleRelevantFilesScan(
     await new SessionManager(adapter).completeSession(sessionId);
     sendEvent({ type: "RELEVANT_FILES_READY" });
   } catch (err) {
+    if (sessionId && !shouldPreserveSessionForContinuation({
+      error: err,
+      signal,
+      sessionId,
+      sessionOwnership: { ticketId, phase },
+      modelId: codingModelId,
+    })) {
+      await new SessionManager(adapter).abortAndAbandonSession(sessionId);
+    }
     if (err instanceof CancelledError) throw err;
     if (err instanceof Error && err.message === "Timeout") {
       const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({

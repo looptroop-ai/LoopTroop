@@ -17,6 +17,7 @@ import { throwIfCancelled } from '../../lib/abort'
 import { buildStructuredRetryPrompt } from '../../structuredOutput'
 import { buildStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import { SessionManager } from '../../opencode/sessionManager'
+import { shouldPreserveSessionForContinuation } from '../../opencode/sessionContinuation'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../../lib/constants'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
@@ -277,7 +278,21 @@ export async function generateExecutionSetupPlan(
         response = result.response
       }
     } catch (error) {
-      if (activeSessionId) {
+      if (activeSessionId && !shouldPreserveSessionForContinuation({
+        error,
+        sessionId: activeSessionId,
+        modelId: callbacks?.model,
+        sessionOwnership: callbacks?.ticketId
+          ? {
+              ticketId: callbacks.ticketId,
+              phase: 'GENERATING_EXECUTION_SETUP_PLAN',
+              phaseAttempt: callbacks.phaseAttempt,
+              step: 'execution_setup_plan',
+              ...(callbacks.model ? { memberId: callbacks.model } : {}),
+            }
+          : undefined,
+        signal,
+      })) {
         await stopActiveSession(activeSessionId)
         activeSessionId = null
       }

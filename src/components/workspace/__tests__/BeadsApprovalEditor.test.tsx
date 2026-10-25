@@ -37,6 +37,11 @@ describe('BeadsApprovalEditor accessibility', () => {
     expect(screen.getByRole('textbox', { name: 'Target file 2' })).toHaveValue('C:/Users/user/config.json')
   })
 
+  it('shows the server warning for a relative symlink target', () => {
+    render(<BeadsApprovalEditor beads={[{ ...bead, targetFiles: ['linked/config.json'], externalTargetFiles: ['linked/config.json'] }]} onChange={() => {}} />)
+    expect(screen.getByRole('note', { name: 'External files: linked/config.json' })).toBeInTheDocument()
+  })
+
   it('exposes disclosure state and labels every structured field', () => {
     render(<ControlledEditor />)
 

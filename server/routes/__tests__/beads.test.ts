@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
@@ -48,6 +48,22 @@ describe('beadsRouter flow validation', () => {
   afterAll(() => {
     clearProjectDatabaseCache()
     repoManager.cleanup()
+  })
+
+  it('marks repository-relative symlinks in both bead response shapes without changing the tracker', async () => {
+    const { ticket, paths } = createBeadsRouteTicket()
+    mkdirSync(paths.worktreePath, { recursive: true })
+    const outside = join(paths.projectRoot, 'outside-targets')
+    mkdirSync(outside, { recursive: true })
+    symlinkSync(outside, join(paths.worktreePath, 'linked'), 'junction')
+    mkdirSync(dirname(paths.beadsPath), { recursive: true })
+    const content = JSON.stringify({ id: 'B-1', title: 'External target', targetFiles: ['linked/new/file.txt'] }) + '\n'
+    writeFileSync(paths.beadsPath, content)
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+    expect(await response.json()).toMatchObject([{ targetFiles: ['linked/new/file.txt'], externalTargetFiles: ['linked/new/file.txt'] }])
+    const raw = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
+    expect(await raw.json()).toMatchObject({ content, items: [{ externalTargetFiles: ['linked/new/file.txt'] }] })
+    expect(readFileSync(paths.beadsPath, 'utf8')).toBe(content)
   })
 
   it('rejects traversal flows before reading or writing beads files', async () => {

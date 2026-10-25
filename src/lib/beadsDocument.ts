@@ -59,6 +59,7 @@ export interface RawBead {
     blockedBy?: string[]
     blocks?: string[]
   }
+  externalTargetFiles?: string[]
   targetFiles?: string[]
   target_files?: string[]
   notes?: string

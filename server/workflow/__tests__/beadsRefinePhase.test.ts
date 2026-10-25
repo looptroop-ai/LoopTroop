@@ -1,3 +1,6 @@
+import { opencodeSessions } from '../../db/schema'
+import { getTicketContext } from '../../storage/ticketQueries'
+import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -330,6 +333,7 @@ function readPersistedBeads(beadsPath: string) {
 describe('handleBeadsRefine', () => {
   beforeEach(() => {
     resetTestDb()
+    clearAllPendingSessionContinuationsForTests()
     phaseIntermediate.clear()
     refineDraftMock.mockReset()
     runOpenCodePromptMock.mockReset()
@@ -543,6 +547,47 @@ describe('handleBeadsRefine', () => {
     expect(phaseIntermediate.get(`${ticket.id}:beads`)).toBeDefined()
     expect(getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')).toBeUndefined()
     expect(sendEvent).not.toHaveBeenCalled()
+  })
+
+  it('continues a failed beads revision using its saved audit without running another audit first', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const winnerId = TEST.councilMembers[0]
+    const coverageGap = 'Missing a bead that surfaces unresolved coverage warnings during approval.'
+    writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_BEADS', artifactType: 'beads_winner', content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_BEADS', artifactType: 'beads_refined', content: JSON.stringify({ winnerId, refinedContent: buildBeadSubsetContent({ includeSecondBead: true }) }),
+    })
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-audit', projectPath: paths.worktreePath },
+      response: `status: gaps\ngaps: ["${coverageGap}"]\nfollow_up_questions: []`, messages: [],
+    }).mockRejectedValueOnce(new Error('Timeout'))
+    await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'beads', new AbortController().signal)).rejects.toThrow('Timeout')
+
+    const stored = getTicketContext(ticket.id)!
+    stored.projectDb.insert(opencodeSessions).values({
+      ticketId: stored.localTicketId, sessionId: 'coverage-revision', phase: 'VERIFYING_BEADS_COVERAGE',
+      phaseAttempt: 1, memberId: winnerId, step: 'revision', state: 'active',
+    }).run()
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_BEADS_COVERAGE', sessionId: 'coverage-revision' })
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-revision', projectPath: paths.worktreePath },
+      response: buildValidBeadsCoverageRevisionOutput(coverageGap), messages: [],
+    }).mockResolvedValueOnce({
+      session: { id: 'coverage-audit-next', projectPath: paths.worktreePath },
+      response: 'status: clean\ngaps: []\nfollow_up_questions: []', messages: [],
+    })
+    const sendEvent = vi.fn()
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'beads', new AbortController().signal)
+
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.sessionOwnership.step)).toEqual(['audit', 'revision', 'revision', 'audit'])
+    expect(runOpenCodePromptMock.mock.calls[2]?.[0].parts[0].content).toContain(coverageGap)
+    expect(parseUiArtifactCompanionArtifact(getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:beads_coverage', 'VERIFYING_BEADS_COVERAGE')!.content)?.payload).toMatchObject({
+      finalCandidateVersion: 2, attempts: [expect.objectContaining({ candidateVersion: 1 }), expect.objectContaining({ candidateVersion: 2 })],
+    })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
   })
 
   it('runs terminal bead expansion only after beads coverage becomes clean', async () => {

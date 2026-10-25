@@ -4,6 +4,7 @@ import {
   buildPersistedBatch,
   createInterviewSessionSnapshot,
   recordPreparedBatch,
+  recordBatchAnswers,
 } from '../../phases/interview/sessionState'
 import type { DraftPhaseResult } from '../../council/types'
 import type { deliberateInterview as DeliberateInterview } from '../../phases/interview/deliberate'
@@ -15,6 +16,7 @@ import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from 
 import { listSkipEvents, writeSkipReceipts } from '../skipReceipts'
 import { interviewQASessions, phaseIntermediate } from '../phases/state'
 import * as interviewQa from '../../phases/interview/qa'
+import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
 import { openCodeAuthAdvice } from '../../opencode/connection'
 import { buildStructuredOutputMetadata } from '../../structuredOutput'
 
@@ -41,6 +43,7 @@ import {
   handleMockInterviewQAStart,
   processInterviewBatchAsync,
   readInterviewSessionSnapshotArtifact,
+  persistInterviewRetrySnapshot,
   releaseInterviewBatch,
   writeInterviewSessionSnapshotArtifact,
 } from '../phases/interviewPhase'
@@ -85,6 +88,7 @@ describe('additional interview phase flows', () => {
     resetTestDb()
     phaseIntermediate.clear()
     interviewQASessions.clear()
+    clearAllPendingSessionContinuationsForTests()
     checkHealthMock.mockReset().mockResolvedValue({ available: true, version: 'test' })
     getSessionMock.mockReset().mockResolvedValue(null)
     deliberateInterviewMock.mockReset()
@@ -96,6 +100,43 @@ describe('additional interview phase flows', () => {
     repoManager.cleanup()
     if (originalMockMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
     else process.env.LOOPTROOP_OPENCODE_MODE = originalMockMode
+  })
+
+  it.each(['retry', 'continue'] as const)('dispatches the failed interview AI work on %s while retaining submitted answers', async (action) => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    const winnerId = TEST.councilMembers[0]
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COMPILING_INTERVIEW', artifactType: 'interview_winner', content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COMPILING_INTERVIEW', artifactType: 'interview_compiled',
+      content: JSON.stringify({ refinedContent: draftContent('Which outcome matters most?') }),
+    })
+    const answered = recordBatchAnswers(makeActiveProm4Batch(ticket.id), { Q01: 'Preserve this submitted answer.' })
+    if (action === 'retry') persistInterviewRetrySnapshot(ticket.id, answered)
+    else {
+      writeInterviewSessionSnapshotArtifact(ticket.id, answered)
+      requestSessionContinuation({ ticketId: ticket.id, phase: 'WAITING_INTERVIEW_ANSWERS', sessionId: 'preserved-session' })
+    }
+    interviewQASessions.set(ticket.id, { sessionId: 'old-session', winnerId })
+    const start = vi.spyOn(interviewQa, 'startInterviewSession').mockResolvedValue({
+      sessionId: action === 'continue' ? 'preserved-session' : 'replacement-session',
+      firstBatch: {
+        questions: [], progress: { current: 1, total: 1 }, isComplete: true,
+        isFinalFreeForm: false, aiCommentary: 'Complete.', batchNumber: 1,
+      },
+    })
+    try {
+      const sendEvent = vi.fn()
+      await handleInterviewQAStart(ticket.id, context, sendEvent, new AbortController().signal)
+      expect(start).toHaveBeenCalledOnce()
+      expect(start.mock.calls[0]?.[13]).toMatchObject({ answers: { Q01: { answer: 'Preserve this submitted answer.' } } })
+      expect(readInterviewSessionSnapshotArtifact(ticket.id)?.answers.Q01?.answer).toBe('Preserve this submitted answer.')
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'INTERVIEW_COMPLETE' })
+    } finally {
+      start.mockRestore()
+      clearAllPendingSessionContinuationsForTests()
+    }
   })
 
   it.each(['repair', 'retry', 'clean'])('persists the first PROM4 batch with appropriate %s notices', async (kind) => {
@@ -604,7 +645,7 @@ describe('additional interview phase flows', () => {
         claim ?? undefined,
       )
       expect(firstReplay).toMatchObject({ batchNumber: 2, isComplete: false, questions: [{ id: 'tradeoffs' }] })
-      expect(getSessionMock).toHaveBeenCalledWith('mock-session', expect.any(AbortSignal))
+      expect(getSessionMock).not.toHaveBeenCalled()
 
       const followUp = readInterviewSessionSnapshotArtifact(ticket.id)
       const secondReplay = await handleInterviewQABatch(

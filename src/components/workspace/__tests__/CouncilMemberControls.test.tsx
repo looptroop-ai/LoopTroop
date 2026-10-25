@@ -342,6 +342,7 @@ describe('member dialog controls in a drafting step', () => {
 
     const dialog = openChip('model-a')
     expect(within(dialog).queryByRole('button', { name: /^(Stop|Retry) model-a$/ })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Retry with extra note model-a' })).not.toBeInTheDocument()
   })
 
   it('stops a model only after the person confirms', async () => {
@@ -364,6 +365,45 @@ describe('member dialog controls in a drafting step', () => {
       url: '/api/tickets/1%3ATEST-1/council/members/stop',
       body: { phase: 'COUNCIL_DELIBERATING', memberId: A },
     })
+  })
+
+  it('keeps an ordinary retry free of extra-note inputs', () => {
+    renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'failed', [B]: 'pending' })], LIVE_DELIBERATING)
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry model-a' }))
+    expect(within(dialog).queryByRole('textbox', { name: 'Extra note' })).not.toBeInTheDocument()
+  })
+
+  it('requires a nonblank extra note, bounds its length, and cancels without sending', () => {
+    const fetchMock = stubFetch()
+    renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'failed', [B]: 'pending' })], LIVE_DELIBERATING)
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry with extra note model-a' }))
+    const strip = within(dialog).getByRole('group', { name: 'Retry model-a?' })
+    const note = within(strip).getByRole('textbox', { name: 'Extra note' })
+    const submit = within(strip).getByRole('button', { name: 'Add note and retry model' })
+    expect(note).toHaveAttribute('required')
+    expect(submit).toBeDisabled()
+    fireEvent.change(note, { target: { value: ' \n ' } })
+    expect(submit).toBeDisabled()
+    fireEvent.change(note, { target: { value: 'x'.repeat(20_001) } })
+    expect(note).toHaveValue('x'.repeat(20_000))
+    expect(submit).toBeEnabled()
+    fireEvent.click(within(strip).getByRole('button', { name: 'Cancel' }))
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(strip).not.toBeInTheDocument()
+  })
+
+  it('keeps the extra note when the server refuses the selected model retry', async () => {
+    stubFetch(409, { error: 'The model could not be stopped.' })
+    renderPanel('COUNCIL_DELIBERATING', [interviewDrafts({ [A]: 'failed', [B]: 'pending' })], LIVE_DELIBERATING)
+    const dialog = openChip('model-a')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry with extra note model-a' }))
+    const note = within(dialog).getByRole('textbox', { name: 'Extra note' })
+    fireEvent.change(note, { target: { value: 'Keep this guidance.' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add note and retry model' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('The model could not be stopped.')
+    expect(note).toHaveValue('Keep this guidance.')
   })
 
   it('cancels without sending anything', () => {
@@ -507,6 +547,7 @@ describe('member dialog controls in a drafting step', () => {
     expect(within(strip).getByRole('button', { name: 'Cancel' })).toBeDisabled()
     expect(within(dialog).getByRole('button', { name: 'Stop model-a' })).toBeDisabled()
     expect(within(dialog).getByRole('button', { name: 'Retry model-a' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Retry with extra note model-a' })).toBeDisabled()
     expect(strip.querySelector('.animate-spin')).not.toBeNull()
 
     answer(jsonResponse(200, { success: true, phase: 'COUNCIL_DELIBERATING', memberId: A }))
@@ -530,6 +571,24 @@ describe('member dialog controls in a drafting step', () => {
     expect(sentRequest(fetchMock)).toEqual({
       url: '/api/tickets/1%3ATEST-1/council/members/retry',
       body: { phase: 'DRAFTING_PRD', memberId: A, part },
+    })
+  })
+
+  it.each([
+    ['Part 1', 0, 'full_answers'],
+    ['Part 2', 1, 'prd_draft'],
+  ])('retries a PRD model with an extra note from %s', async (_case, chipIndex, part) => {
+    const fetchMock = stubFetch(200, { success: true, phase: 'DRAFTING_PRD', memberId: A })
+    renderPanel('DRAFTING_PRD', prdArtifacts({ [A]: 'completed', [B]: 'pending' }, { [A]: 'failed', [B]: 'pending' }), LIVE_PRD_DRAFTING)
+    const dialog = openChip('model-a', chipIndex)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry with extra note model-a' }))
+    const note = '  Preserve the accepted requirements.\nCheck the missing detail.  '
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Extra note' }), { target: { value: note } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add note and retry model' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    expect(sentRequest(fetchMock)).toEqual({
+      url: '/api/tickets/1%3ATEST-1/council/members/retry',
+      body: { phase: 'DRAFTING_PRD', memberId: A, part, note },
     })
   })
 })
@@ -578,6 +637,7 @@ describe('voter badge controls in a voting step', () => {
 
     expect(screen.getAllByText('model-b').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /^(Stop|Retry) model-/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Retry with extra note model-/ })).not.toBeInTheDocument()
   })
 
   it('confirms under the voter row and restarts the chosen voter', async () => {
@@ -600,6 +660,22 @@ describe('voter badge controls in a voting step', () => {
       url: '/api/tickets/1%3ATEST-1/council/members/retry',
       body: { phase: 'COUNCIL_VOTING_PRD', memberId: B },
     })
+  })
+
+  it('retries only the selected voter with an unchanged extra note', async () => {
+    const fetchMock = stubFetch(200, { success: true, phase: 'COUNCIL_VOTING_PRD', memberId: C })
+    renderVotes(voteContent({ [A]: 'pending', [B]: 'completed', [C]: 'failed' }), LIVE_PRD_VOTING)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry with extra note model-c' }))
+    const strip = screen.getByRole('group', { name: 'Retry model-c?' })
+    const note = '  Score the supplied requirements.\nKeep the existing rubric.  '
+    fireEvent.change(within(strip).getByRole('textbox', { name: 'Extra note' }), { target: { value: note } })
+    fireEvent.click(within(strip).getByRole('button', { name: 'Add note and retry model' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    expect(sentRequest(fetchMock)).toEqual({
+      url: '/api/tickets/1%3ATEST-1/council/members/retry',
+      body: { phase: 'COUNCIL_VOTING_PRD', memberId: C, note },
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('still shows a refusal that arrives after the vote ended', async () => {

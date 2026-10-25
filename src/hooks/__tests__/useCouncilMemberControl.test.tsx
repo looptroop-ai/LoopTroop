@@ -83,6 +83,31 @@ describe('useCouncilMemberControl', () => {
     expect(sentRequest(fetchMock).body).toEqual({ phase: 'COUNCIL_VOTING_PRD', memberId: 'openai/gpt-5.2' })
   })
 
+  it('sends an extra note unchanged with the selected PRD retry part', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { success: true, phase: 'DRAFTING_PRD', memberId: 'vendor/model-a' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useCouncilMemberControl(), { wrapper })
+    const note = '  Keep the accepted answers.\nCheck the missing requirement.  '
+
+    result.current.mutate({ ticketId: TEST.ticketId, action: 'retry', phase: 'DRAFTING_PRD', memberId: 'vendor/model-a', part: 'prd_draft', note })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(sentRequest(fetchMock).body).toEqual({ phase: 'DRAFTING_PRD', memberId: 'vendor/model-a', part: 'prd_draft', note })
+  })
+
+  it('does not forward retry guidance with a stop', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { success: true, phase: 'DRAFTING_PRD', memberId: 'vendor/model-a', outcome: 'stopped' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useCouncilMemberControl(), { wrapper })
+
+    result.current.mutate({ ticketId: TEST.ticketId, action: 'stop', phase: 'DRAFTING_PRD', memberId: 'vendor/model-a', part: 'prd_draft', note: 'Retry guidance' })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(sentRequest(fetchMock).body).toEqual({ phase: 'DRAFTING_PRD', memberId: 'vendor/model-a' })
+  })
+
   it('surfaces the server refusal and still refreshes the artifacts', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(409, {
       error: 'This step is no longer running.',

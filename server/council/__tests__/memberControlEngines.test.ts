@@ -37,7 +37,7 @@ type Script = Array<string | 'stall' | 'hang'>
  * one member's attempts whatever order the sessions are created in.
  */
 class ScriptedAdapter extends MockOpenCodeAdapter {
-  readonly prompts: Array<{ model: string; sessionId: string }> = []
+  readonly prompts: Array<{ model: string; sessionId: string; parts: PromptPart[] }> = []
   readonly aborted: string[] = []
   private readonly scripts: Map<string, Script>
 
@@ -57,7 +57,7 @@ class ScriptedAdapter extends MockOpenCodeAdapter {
     options?: PromptSessionOptions,
   ): Promise<string> {
     const model = options?.model ? `${options.model.providerID}/${options.model.modelID}` : 'unknown'
-    this.prompts.push({ model, sessionId })
+    this.prompts.push({ model, sessionId, parts })
     const next = this.scripts.get(model)?.shift()
     if (next === 'hang') return new Promise(() => {})
     if (next === 'stall') {
@@ -185,7 +185,8 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, progress } = await startDrafting(adapter, 'Restart a drafter')
       await waitFor(() => adapter.promptsFor(MODEL_B).length === 1, 'B to start drafting')
 
-      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B)
+      const note = '  Focus on the missing prerequisite.\nUse the provided evidence.  '
+      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B, undefined, undefined, note)
       const result = await run
 
       const [firstSession, secondSession] = adapter.promptsFor(MODEL_B)
@@ -194,6 +195,13 @@ describe('stopping and restarting one council member', () => {
       expect(adapter.aborted).toContain(firstSession)
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'completed' })
       expect(result.drafts[1]?.content).toBe('Second draft from B')
+      expect(result.drafts[1]?.steeredByOperator).toBe(true)
+      expect(result.drafts[0]?.steeredByOperator).toBeUndefined()
+      expect(adapter.prompts.filter((prompt) => prompt.model === MODEL_B)[1]?.parts)
+        .toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(adapter.prompts.filter((prompt) => prompt.model === MODEL_A)).toHaveLength(1)
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
+      expect(result.drafts[1]?.rawAttempts?.[0]?.initialInput).toContain(note)
       const bEvents = progress.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status)
       expect(bEvents).toEqual(['session_created', 'restarted', 'session_created', 'finished'])
     })
@@ -327,7 +335,8 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, progress } = await startVoting(adapter, 'Restart a voter')
       await waitFor(() => progress.some((entry) => entry.memberId === MODEL_A) && adapter.promptsFor(MODEL_B).length === 1, 'A to vote')
 
-      await retryCouncilMember(ticket.id, 'COUNCIL_VOTING_INTERVIEW', MODEL_A)
+      const note = '  Recheck the supplied coverage evidence.  '
+      await retryCouncilMember(ticket.id, 'COUNCIL_VOTING_INTERVIEW', MODEL_A, undefined, undefined, note)
       await waitFor(() => progress.filter((entry) => entry.memberId === MODEL_A).length === 3, 'A to vote again')
       await stopCouncilMember(ticket.id, 'COUNCIL_VOTING_INTERVIEW', MODEL_B)
       const result = await run
@@ -339,6 +348,9 @@ describe('stopping and restarting one council member', () => {
       ])
       expect(result.votes.filter((vote) => vote.voterId === MODEL_A)).toHaveLength(2)
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
+      expect(adapter.prompts.filter((prompt) => prompt.model === MODEL_A)[1]?.parts)
+        .toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_B))).not.toContain(note)
     })
   })
 
@@ -418,10 +430,16 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, fullAnswerEvents, draftEvents } = await startPrd(adapter, 'Restart the PRD draft')
       await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its PRD draft')
 
-      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'prd_draft')
+      const note = '  Keep the saved answers and clarify the requirement.  '
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'prd_draft', undefined, note)
       const result = await run
 
       expect(adapter.promptsFor(MODEL_B)).toHaveLength(3)
+      expect(result.drafts[1]?.steeredByOperator).toBe(true)
+      const memberPrompts = adapter.prompts.filter((prompt) => prompt.model === MODEL_B)
+      expect(memberPrompts[2]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(memberPrompts.slice(0, 2))).not.toContain(note)
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'completed' })
       expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))
         .toEqual(['session_created', 'finished'])
@@ -508,10 +526,16 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, fullAnswerEvents } = await startPrd(adapter, 'Restart from Full Answers')
       await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its PRD draft')
 
-      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'full_answers')
+      const note = '  Reconsider the skipped answer using the existing evidence.  '
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'full_answers', undefined, note)
       const result = await run
 
       expect(adapter.promptsFor(MODEL_B)).toHaveLength(4)
+      expect(result.drafts[1]?.steeredByOperator).toBe(true)
+      const memberPrompts = adapter.prompts.filter((prompt) => prompt.model === MODEL_B)
+      expect(memberPrompts[2]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(memberPrompts[3]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
       expect(result.fullAnswerOutcomes[MODEL_B]).toBe('completed')
       expect(result.memberOutcomes[MODEL_B]).toBe('completed')
       expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))

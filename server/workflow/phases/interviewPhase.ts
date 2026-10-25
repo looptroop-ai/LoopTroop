@@ -10,8 +10,8 @@ import { deliberateInterview } from '../../phases/interview/deliberate'
 import { startInterviewSession, submitBatchToSession, type BatchResponse } from '../../phases/interview/qa'
 import {
   listOpenCodeSessionsForTicket,
-  reactivateOpenCodeSessionForContinuation,
 } from '../../opencode/sessionManager'
+import { getPendingSessionContinuationForTicketPhase } from '../../opencode/sessionContinuation'
 import { buildCompiledInterviewArtifact, requireCompiledInterviewArtifact } from '../../phases/interview/compiled'
 import {
   buildCanonicalInterviewYaml,
@@ -176,6 +176,36 @@ export function writeInterviewSessionSnapshotArtifact(ticketId: string, snapshot
     'WAITING_INTERVIEW_ANSWERS',
     serializeInterviewSessionSnapshot(snapshot),
   )
+}
+
+const INTERVIEW_FAILED_SUBMISSION_ARTIFACT = 'interview_failed_submission'
+const INTERVIEW_RETRY_REQUESTED_ARTIFACT = 'interview_retry_requested'
+
+export function readInterviewRetrySnapshot(ticketId: string): InterviewSessionSnapshot | null {
+  const current = readInterviewSessionSnapshotArtifact(ticketId)
+  const artifact = getLatestPhaseArtifact(ticketId, INTERVIEW_FAILED_SUBMISSION_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')
+  if (artifact && current) {
+    try {
+      const stored = JSON.parse(artifact.content) as { snapshot?: unknown; baselineFingerprint?: unknown }
+      if (stored.baselineFingerprint === snapshotFingerprint(current)) {
+        return parseInterviewSessionSnapshot(JSON.stringify(stored.snapshot)) ?? current
+      }
+    } catch { /* The current saved answers remain authoritative. */ }
+  }
+  return current
+}
+
+export function persistInterviewRetrySnapshot(ticketId: string, snapshot: InterviewSessionSnapshot): void {
+  const context = getTicketContext(ticketId)
+  if (context) {
+    // Retry has confirmed the old session stopped; retire only its observed batch claim.
+    const claim = context.projectDb.select({ token: interviewBatchClaims.token }).from(interviewBatchClaims)
+      .where(eq(interviewBatchClaims.ticketId, context.localTicketId)).get()
+    if (claim) context.projectDb.delete(interviewBatchClaims)
+      .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, claim.token))).run()
+  }
+  persistInterviewSession(ticketId, snapshot)
+  upsertLatestPhaseArtifact(ticketId, INTERVIEW_RETRY_REQUESTED_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS', 'true')
 }
 
 export function persistInterviewSession(ticketId: string, snapshot: InterviewSessionSnapshot) {
@@ -1095,23 +1125,12 @@ export async function restoreInterviewQASession(ticketId: string, signal?: Abort
   const persisted = cached ?? readInterviewQASessionArtifact(ticketId)
   if (!persisted) return null
 
-  // A failed PROM4 turn is deliberately abandoned after its remote stop is
-  // confirmed. Before reusing that session, prove the remote still exists and
-  // reacquire an active ownership row. Otherwise a retry would prompt an
-  // abandoned row that cancellation no longer visits.
+  // An abandoned session belongs to an earlier attempt; only Continue may reactivate it.
   const ownership = listOpenCodeSessionsForTicket(ticketId, ['active', 'abandoned'])
     .find((row) => row.sessionId === persisted.sessionId)
   if (ownership?.state === 'abandoned') {
-    const remote = await adapter.getSession(persisted.sessionId, signal)
-    throwIfAborted(signal, ticketId)
-    if (!remote || !reactivateOpenCodeSessionForContinuation(
-      ticketId,
-      'WAITING_INTERVIEW_ANSWERS',
-      persisted.sessionId,
-    )) {
-      interviewQASessions.delete(ticketId)
-      return null
-    }
+    interviewQASessions.delete(ticketId)
+    return null
   }
 
   throwIfAborted(signal, ticketId)
@@ -1775,8 +1794,10 @@ export async function handleInterviewQAStart(
   signal: AbortSignal,
 ) {
   restoreInterruptedInterviewBatch(ticketId)
-  const persistedSnapshot = readInterviewSessionSnapshotArtifact(ticketId)
-  if (persistedSnapshot?.currentBatch) {
+  const continuationRequested = getPendingSessionContinuationForTicketPhase(ticketId, 'WAITING_INTERVIEW_ANSWERS') !== null
+  const retryRequested = getLatestPhaseArtifact(ticketId, INTERVIEW_RETRY_REQUESTED_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')?.content === 'true'
+  const persistedSnapshot = continuationRequested ? readInterviewRetrySnapshot(ticketId) : readInterviewSessionSnapshotArtifact(ticketId)
+  if (persistedSnapshot?.currentBatch && !retryRequested && !continuationRequested) {
     emitPhaseLog(
       ticketId,
       context.externalId,
@@ -1792,7 +1813,7 @@ export async function handleInterviewQAStart(
     return
   }
 
-  const restoredSession = await restoreInterviewQASession(ticketId, signal)
+  const restoredSession = retryRequested || continuationRequested ? null : await restoreInterviewQASession(ticketId, signal)
   if (restoredSession) {
     emitModelSystemLog(
       ticketId,
@@ -1900,6 +1921,7 @@ export async function handleInterviewQAStart(
     ticketId,
     interviewSettings.draftTimeoutMs,
     resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
+    persistedSnapshot ?? undefined,
   )
   throwIfAborted(signal, ticketId)
 
@@ -1910,6 +1932,27 @@ export async function handleInterviewQAStart(
     artifactType: INTERVIEW_QA_SESSION_ARTIFACT,
     content: JSON.stringify({ sessionId, winnerId }),
   })
+
+  const submittedBatch = baseSnapshot.batchHistory.at(-1)
+  if ((retryRequested || continuationRequested) && submittedBatch) {
+    recordInterviewSkipReceipts({
+      ticketId, externalId: context.externalId, ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      surface: 'interview_question', snapshot: baseSnapshot,
+      questionIds: submittedBatch.questionIds, batchNumber: submittedBatch.batchNumber,
+    })
+  }
+  upsertLatestPhaseArtifact(ticketId, INTERVIEW_RETRY_REQUESTED_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS', 'false')
+  upsertLatestPhaseArtifact(ticketId, INTERVIEW_FAILED_SUBMISSION_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS', '')
+  if (firstBatch.isComplete) {
+    const completedSnapshot = markInterviewSessionComplete(baseSnapshot, firstBatch.finalYaml)
+    const paths = getTicketPaths(ticketId)
+    if (!paths) throw new TicketWorkspaceNotInitializedError('Ticket workspace not initialized')
+    writeCanonicalInterview(context.externalId, paths.ticketDir, completedSnapshot)
+    persistInterviewSession(ticketId, completedSnapshot)
+    logInterviewBatchNormalization(ticketId, context.externalId, winnerId, sessionId, firstBatch)
+    sendEvent({ type: 'INTERVIEW_COMPLETE' })
+    return
+  }
 
   const persistedBatch = buildPersistedBatch(firstBatch, 'prom4', baseSnapshot)
   const updatedSnapshot = recordPreparedBatch(baseSnapshot, persistedBatch)
@@ -2356,9 +2399,16 @@ export function processInterviewBatchAsync(
       // impossible, because a revert is unrecoverable and a skipped revert is
       // not.
       try {
+        const failedSnapshot = readInterviewSessionSnapshotArtifact(ticketId)
         const restored = claimToken
           ? restoreInterviewBatchAfterFailure(ticketId, originalSnapshot, skipReceipt, claimToken)
           : false
+        if (restored && failedSnapshot) {
+          const restoredSnapshot = readInterviewSessionSnapshotArtifact(ticketId)
+          if (restoredSnapshot) upsertLatestPhaseArtifact(ticketId, INTERVIEW_FAILED_SUBMISSION_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS', JSON.stringify({
+            snapshot: failedSnapshot, baselineFingerprint: snapshotFingerprint(restoredSnapshot),
+          }))
+        }
         if (!restored) {
           console.warn(`[runner] Not reverting the interview session for ${ticketId}: it has moved on since this batch wrote it.`)
         }

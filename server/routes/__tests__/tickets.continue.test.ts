@@ -17,6 +17,7 @@ import {
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import {
   clearAllPendingSessionContinuationsForTests,
+  getPendingSessionContinuationForTicketPhase,
   hasPendingSessionContinuationForTicketPhase,
 } from '../../opencode/sessionContinuation'
 
@@ -143,19 +144,20 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     repoManager.cleanup()
   })
 
-  it('records pending continuation and resumes the previous status without archiving phase attempts', async () => {
+  it.each(['PREPARING_EXECUTION_ENV', 'WAITING_INTERVIEW_ANSWERS', 'REFINING_PRD'] as const)('continues %s in the same session with the default continuation prompt and unchanged attempt', async (phase) => {
     const { app, ticket } = setupContinueTicketApp()
-    ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
-    blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
+    ensureActivePhaseAttempt(ticket.id, phase)
+    blockTicketWithContinuableError(ticket.id, phase)
     expect(getTicketByRef(ticket.id)?.availableActions).toContain('continue')
 
     const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
 
     expect(response.status).toBe(200)
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'CONTINUE' })
-    expect(hasPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe(true)
-    expect(getTicketByRef(ticket.id)?.status).toBe('PREPARING_EXECUTION_ENV')
-    expect(listPhaseAttempts(ticket.id, 'PREPARING_EXECUTION_ENV')).toEqual([
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, phase)).toMatchObject({ sessionId: 'ses-continue' })
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, phase)?.prompt).toBeUndefined()
+    expect(getTicketByRef(ticket.id)?.status).toBe(phase)
+    expect(listPhaseAttempts(ticket.id, phase)).toEqual([
       expect.objectContaining({ attemptNumber: 1, state: 'active' }),
     ])
   })

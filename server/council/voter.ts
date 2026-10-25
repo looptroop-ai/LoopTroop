@@ -1,3 +1,4 @@
+import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { randomUUID } from 'node:crypto'
 import type { OpenCodeAdapter } from '../opencode/adapter'
 import type {
@@ -100,7 +101,7 @@ export function buildVotePresentationOrder(
     // draft that followed an instruction it never saw as simply wrong, and the
     // one draft with the most information in it is the one most likely to lose.
     content: draft.steeredByOperator
-      ? `Draft ${index + 1}:\n[Note: while writing this draft its author asked the operator a question and was given an answer. The other drafts were written without it. Judge this draft on its merits; do not mark it down merely for differing from the others.]\n${draft.content}`
+      ? `Draft ${index + 1}:\n[Note: this draft's author received additional operator guidance. Other drafts may have been written without that guidance. Judge this draft on its merits; do not mark it down merely for differing from the others.]\n${draft.content}`
       : `Draft ${index + 1}:\n${draft.content}`,
   }))
 }
@@ -168,6 +169,12 @@ export async function conductVoting(
   toolPolicy: OpenCodeToolPolicy = 'default',
   maxStructuredRetries: number = 1,
 ): Promise<VotingPhaseResult> {
+  if (sessionOwnership) {
+    sessionOwnership = {
+      ...sessionOwnership,
+      phaseAttempt: resolvePhaseAttempt(sessionOwnership.ticketId, sessionOwnership.phase, sessionOwnership.phaseAttempt),
+    }
+  }
   const votes: Vote[] = []
   const validDrafts = drafts.filter(d => d.outcome === 'completed' && d.content)
   const rubric = phase ? getVotingRubricForPhase(phase) : VOTING_RUBRIC
@@ -296,7 +303,7 @@ export async function conductVoting(
     }
 
     const executeVote = (async (): Promise<VoteAttemptResult> => {
-      const votingPrompt = buildPromptForVoter
+      const baseVotingPrompt = buildPromptForVoter
         ? buildPromptForVoter({ voter, anonymizedDrafts: anonymized, rubric })
         : [
             ...contextParts,
@@ -312,6 +319,9 @@ export async function conductVoting(
               ].join('\n'),
             },
           ]
+      const votingPrompt: PromptPart[] = attempt.retryNote === undefined
+        ? baseVotingPrompt
+        : [...baseVotingPrompt, { type: 'text', content: `## User Retry Note\n${attempt.retryNote}` }]
       let promptParts = votingPrompt
       const initialInput = formatPromptText(votingPrompt)
       let result: Awaited<ReturnType<typeof runOpenCodePrompt>> | undefined

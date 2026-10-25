@@ -19,6 +19,7 @@ export interface CouncilMemberControlVariables {
   memberId: string
   /** Only a retry in `DRAFTING_PRD` sends it. */
   part?: CouncilMemberRetryPart
+  note?: string
 }
 
 export async function controlCouncilMember({
@@ -27,8 +28,14 @@ export async function controlCouncilMember({
   phase,
   memberId,
   part,
+  note,
 }: CouncilMemberControlVariables): Promise<CouncilMemberStopResponse | CouncilMemberRetryResponse> {
-  const body: CouncilMemberRetryRequest = action === 'retry' && part ? { phase, memberId, part } : { phase, memberId }
+  const body: CouncilMemberRetryRequest = {
+    phase,
+    memberId,
+    ...(action === 'retry' && part ? { part } : {}),
+    ...(action === 'retry' && note !== undefined ? { note } : {}),
+  }
   const res = await fetch(apiTicketPath(ticketId, 'council', 'members', action), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

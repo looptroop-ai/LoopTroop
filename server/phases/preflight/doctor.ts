@@ -1,4 +1,5 @@
 import type { DiagnosticCheck, PreFlightContext, PreFlightReport } from './types'
+import { appendPhaseRetryNote } from '../../workflow/retryNotes'
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { Bead } from '../beads/types'
 import { existsSync } from 'fs'
@@ -76,11 +77,13 @@ export const defaultDoctorDeps: DoctorDeps = {
 }
 
 async function runExecutionCapabilityProbe(
+  ticketId: string,
   adapter: OpenCodeAdapter,
   worktreePath: string,
   preFlightContext: PreFlightContext,
   signal?: AbortSignal,
   options: PreFlightRunOptions = {},
+  readArtifact: typeof getLatestPhaseArtifact = getLatestPhaseArtifact,
 ): Promise<void> {
   const modelId = preFlightContext.lockedMainImplementer
   if (!modelId) {
@@ -143,7 +146,7 @@ async function runExecutionCapabilityProbe(
     const response = await raceWithCancel(
       adapter.promptSession(
         session.id,
-        [{ type: 'text', content: buildPromptFromTemplate(PROM_EXECUTION_CAPABILITY_PROBE, []) }],
+        appendPhaseRetryNote([{ type: 'text', content: buildPromptFromTemplate(PROM_EXECUTION_CAPABILITY_PROBE, []) }], ticketId, 'PRE_FLIGHT_CHECK', readArtifact),
         signal,
         {
           model: parseModelRef(modelId),
@@ -552,7 +555,7 @@ export async function runPreFlightChecks(
   if (preFlightContext.lockedMainImplementer && paths?.worktreePath) {
     try {
       throwIfAborted(signal, ticketId)
-      await runExecutionCapabilityProbe(adapter, paths.worktreePath, preFlightContext, signal, options)
+      await runExecutionCapabilityProbe(ticketId, adapter, paths.worktreePath, preFlightContext, signal, options, deps.getLatestPhaseArtifact)
       throwIfAborted(signal, ticketId)
       checks.push({
         name: 'OpenCode Execution Capability',

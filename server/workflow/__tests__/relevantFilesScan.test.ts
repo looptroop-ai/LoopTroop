@@ -127,11 +127,13 @@ describe('handleRelevantFilesScan', () => {
     expect(runOpenCodeSessionPromptMock).toHaveBeenCalledTimes(1)
     expect(runOpenCodeSessionPromptMock.mock.calls[0]?.[0]).toMatchObject({
       session: { id: 'ses-1' },
+      sessionOwnership: { ticketId: ticket.id, phase: 'SCANNING_RELEVANT_FILES', memberId: TEST.implementer, keepActive: true },
       model: TEST.implementer,
       variant: 'xhigh',
       toolPolicy: 'default',
     })
     expect(runOpenCodePromptMock.mock.calls[0]?.[0]).toMatchObject({
+      sessionOwnership: { ticketId: ticket.id, phase: 'SCANNING_RELEVANT_FILES', memberId: TEST.implementer, keepActive: true },
       model: TEST.implementer,
       variant: 'xhigh',
       toolPolicy: 'default',

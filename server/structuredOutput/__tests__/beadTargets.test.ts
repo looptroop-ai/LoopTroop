@@ -50,7 +50,7 @@ describe('expanded bead target parsing', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value[0]?.targetFiles).toEqual([target])
-    expect(result.repairWarnings).toContain('Wrapped the single targetFiles path at bead index 0 in a list.')
+    expect(result.repairWarnings).toContain(`Wrapped the single targetFiles path at bead index 0 in a list: ${JSON.stringify(target)} -> ${JSON.stringify([target])}.`)
   })
 
   it('accepts the existing target_files alias with an explicit empty list', () => {

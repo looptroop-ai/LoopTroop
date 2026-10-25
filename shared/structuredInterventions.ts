@@ -607,6 +607,14 @@ function buildExactInterventionDetails(
     return { exactCorrection: 'Converted inline context guidance text into the canonical patterns / anti_patterns object.' }
   }
 
+  if (code === 'cleanup_target_files_list') {
+    const match = warning.match(/^Wrapped the single targetFiles path at bead index (\d+) in a list: (.+) -> (\[.+\])\.$/)
+    return {
+      exactCorrection: 'Wrapped the existing target-file path in a one-item list without inventing or redirecting a target.',
+      ...(match ? { examples: [{ scope: `beads[${match[1]}].targetFiles`, before: match[2], after: match[3] }] } : {}),
+    }
+  }
+
   if (code === 'cleanup_change_type_correction') {
     return { exactCorrection: 'Reclassified or reapplied the refinement change so the declared change list matched the validated content.' }
   }
@@ -1451,6 +1459,22 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       why: 'Every bead should reference at least one PRD item for traceability. An empty prdRefs may indicate the bead was fabricated or the references were lost.',
       how: 'LoopTroop recorded the missing-reference warning; the bead was kept but flagged for review.',
     })
+  }
+
+  const targetList = warning.match(/^Wrapped the single targetFiles path at bead index (\d+) in a list:/)
+  if (targetList) {
+    return {
+      ...buildIntervention(warning, {
+        code: 'cleanup_target_files_list',
+        stage: 'normalize',
+        category: 'cleanup',
+        title: 'Converted a target-file path to a list',
+        summary: 'The bead supplied one path as text instead of a list of paths.',
+        why: 'Target files must use a list, including when there is only one file.',
+        how: 'LoopTroop kept the supplied path and wrapped it in a one-item list.',
+      }),
+      target: `beads[${targetList[1]}].targetFiles`,
+    }
   }
 
   if (/context guidance/i.test(normalized)) {

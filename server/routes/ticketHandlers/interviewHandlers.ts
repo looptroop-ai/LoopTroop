@@ -21,6 +21,7 @@ import {
   InterviewBatchChangedError,
   markInterviewBatchStopPending,
   restoreInterviewBatchAfterFailure,
+  readInterviewSessionSnapshotArtifact,
   snapshotFingerprint,
   type InterviewBatchSkipReceipt,
 } from '../../workflow/phases/interviewPhase'
@@ -32,6 +33,7 @@ import {
 import {
   getLatestPhaseArtifact,
   getTicketByRef,
+  resolvePhaseAttempt,
   resolveTicketContainedPath,
 } from '../../storage/tickets'
 import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
@@ -55,6 +57,8 @@ import {
 } from '../../phases/interview/finalDocument'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isCancellationError } from '../../lib/abort'
+import { buildOpenCodeBlockedErrorDiagnostics } from '../../opencode/blockedErrorDiagnostics'
 import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
@@ -563,6 +567,7 @@ export async function handleAnswerBatch(c: Context) {
       // currentBatch cleared) synchronously before its first await, so the
       // snapshot is consistent by the time we return.
       ensureActorForTicket(ticketId)
+      const phaseAttempt = resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS')
       sendTicketEvent(ticketId, { type: 'BATCH_ANSWERED', batchAnswers: parsed.data.answers, selectedOptions: parsed.data.selectedOptions })
 
       let timeoutId: ReturnType<typeof setTimeout> | null = null
@@ -666,6 +671,29 @@ export async function handleAnswerBatch(c: Context) {
         })
         .catch(err => {
           logTicketOperationError(ticketId, 'Async batch processing failed for', err)
+          const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: err })
+          const current = readInterviewSessionSnapshotArtifact(ticketId)
+          const currentFingerprint = current ? snapshotFingerprint(current) : null
+          const ownsFailedSnapshot = currentFingerprint === snapshotFingerprint(asyncSession)
+            || currentFingerprint === persistedReceipt?.persistedSnapshotFingerprint
+          if (err instanceof InterviewBatchChangedError
+            || (isCancellationError(err) && !timeoutTriggered)
+            || getTicketByRef(ticketId)?.status !== 'WAITING_INTERVIEW_ANSWERS'
+            || resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS') !== phaseAttempt
+            || !ownsFailedSnapshot) return
+          if (timeoutTriggered || diagnosticResult.diagnostics?.modelId || diagnosticResult.diagnostics?.sessionId) {
+            try {
+              ensureActorForTicket(ticketId)
+              sendTicketEvent(ticketId, {
+                type: 'ERROR',
+                message: getErrorMessage(err),
+                codes: diagnosticResult.errorCodes,
+                ...(diagnosticResult.diagnostics ? { diagnostics: diagnosticResult.diagnostics } : {}),
+              })
+            } catch (transitionError) {
+              logTicketOperationError(ticketId, 'Failed to block the interview after its AI request failed', transitionError)
+            }
+          }
           broadcaster.broadcast(ticketId, 'needs_input', {
             ticketId,
             type: 'interview_error',

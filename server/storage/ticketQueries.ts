@@ -39,6 +39,7 @@ import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { questionWaitOverlapMs } from './questionWaits'
 import { getPendingQuestionSummary } from '../workflow/questionWindows'
 import { getErrorMessage } from '@shared/typeGuards'
+import { supportsRetryNote } from '@shared/aiRetry'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -969,6 +970,10 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
   const availableActions = isMockTicket
     ? getDisplayOnlyMockTicketActions(ticket.status)
     : addContinueActionWhenAvailable(getAvailableWorkflowActions(ticket.status), continuationCandidate)
+  const activeError = errorOccurrences.find(occurrence => occurrence.id === activeErrorOccurrenceId)
+  if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && supportsRetryNote(previousStatus, activeError?.errorCodes, activeError?.diagnostics)) {
+    availableActions.push('retry_with_note')
+  }
   if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && previousStatus === 'PREPARING_EXECUTION_ENV') {
     availableActions.push('edit_execution_setup_plan')
   }

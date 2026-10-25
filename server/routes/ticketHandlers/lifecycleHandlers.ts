@@ -9,11 +9,7 @@ import {
   sendTicketEvent,
   stopActor,
 } from '../../machines/persistence'
-import {
-  abortTicketSessions,
-  listOpenCodeSessionsForTicket,
-  reactivateOpenCodeSessionForContinuation,
-} from '../../opencode/sessionManager'
+import { abortTicketSessions } from '../../opencode/sessionManager'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
@@ -67,13 +63,15 @@ import {
 } from '../../workflow/phases/pullRequestPhase'
 import type { PullRequestInfo } from '../../git/github'
 import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
-import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
+import { hasSuccessfulExecutionCheckpointForFinalization, recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
+import { persistInterviewRetrySnapshot, readInterviewRetrySnapshot } from '../../workflow/phases/interviewPhase'
+import { interviewQASessions } from '../../workflow/phases/state'
 import { isExecutionBandStatus } from '../../workflow/executionBand'
 import { getErrorMessage } from '@shared/typeGuards'
 import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText } from '@shared/errorDiagnostics'
 import { buildOpenCodeBlockedErrorDiagnostics } from '../../opencode/blockedErrorDiagnostics'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
-import { isCouncilMemberControlPhase } from '@shared/councilMembers'
+import { canRetryWithExtraNote, savePhaseRetryNote } from '../../workflow/retryNotes'
 import { broadcaster } from '../../sse/broadcaster'
 import {
   clearSessionContinuation,
@@ -876,16 +874,12 @@ export async function handleRetryTicket(c: Context) {
     return c.json({ error: parsedBody.error.issues[0]?.message ?? 'Invalid retry request' }, 400)
   }
   const userRetryNote = parsedBody.data.note
-  if (userRetryNote !== undefined && ticket.previousStatus !== 'CODING' && ticket.previousStatus !== 'PREPARING_EXECUTION_ENV') {
-    return c.json({ error: 'Retry notes are only available for implementation or workspace runtime setup errors' }, 409)
+  if (userRetryNote !== undefined && !canRetryWithExtraNote(ticketId, ticket.previousStatus)) {
+    return c.json({ error: 'Retry with extra note is only available for failed AI work' }, 409)
   }
-
-  if (userRetryNote !== undefined && ticket.previousStatus === 'PREPARING_EXECUTION_ENV') {
-    if (!await clearPendingCancellationForRetry(ticketId)) {
-      return c.json({
-        error: 'Retry is not available until the previous cancellation cleanup is confirmed',
-      }, 409)
-    }
+  if (userRetryNote !== undefined && ticket.previousStatus === 'CODING'
+    && hasSuccessfulExecutionCheckpointForFinalization(ticketId)) {
+    return c.json({ error: 'Retry with extra note is only available for failed AI work' }, 409)
   }
 
   if (isExecutionBandStatus(ticket.previousStatus)) {
@@ -895,89 +889,38 @@ export async function handleRetryTicket(c: Context) {
     }
   }
 
-  if (userRetryNote !== undefined && ticket.previousStatus === 'PREPARING_EXECUTION_ENV') {
-    const setupSession = listOpenCodeSessionsForTicket(ticketId, ['active', 'abandoned'])
-      .filter(session => session.phase === 'PREPARING_EXECUTION_ENV')
-      .sort((left, right) => (
-        (right.phaseAttempt ?? 0) - (left.phaseAttempt ?? 0)
-        || Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-      ))[0]
-    if (!setupSession) {
-      return c.json({
-        error: 'Retry with extra note is not available because the workspace setup session could not be recovered',
-      }, 409)
-    }
-
-    let liveSession
-    try {
-      liveSession = await getOpenCodeAdapter().getSession(setupSession.sessionId)
-    } catch (err) {
-      return c.json({
-        error: 'Retry with extra note is not available because the workspace setup session could not be verified',
-        details: getErrorMessage(err),
-      }, 500)
-    }
-    if (!liveSession) {
-      return c.json({
-        error: 'Retry with extra note is not available because the workspace setup session is no longer active',
-      }, 409)
-    }
-    if (!reactivateOpenCodeSessionForContinuation(
-      ticketId,
-      'PREPARING_EXECUTION_ENV',
-      setupSession.sessionId,
-    )) {
-      return c.json({ error: 'Retry with extra note could not recover the workspace setup session' }, 409)
-    }
-
-    requestSessionContinuation({
-      ticketId,
-      phase: 'PREPARING_EXECUTION_ENV',
-      sessionId: setupSession.sessionId,
-      prompt: userRetryNote,
-      additionalRetryAttempts: 1,
-    })
-    try {
-      ensureActorForTicket(ticketId)
-      sendTicketEvent(ticketId, { type: 'RETRY' })
-    } catch (err) {
-      clearSessionContinuation(setupSession.sessionId)
-      logTicketOperationError(ticketId, 'Failed to resume workspace setup session for ticket', err)
-      return c.json({ error: 'Failed to retry workspace setup with the extra note', details: getErrorMessage(err) }, 500)
-    }
-
-    return respondWithState(c, ticketId, 'Workspace setup note accepted')
+  // Retry must never reconnect to work that the previous attempt left running.
+  let stopped: boolean
+  try {
+    stopped = await abortTicketSessions(ticketId)
+  } catch (err) {
+    return c.json({
+      error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+      details: getErrorMessage(err),
+    }, 409)
   }
+  if (!stopped) {
+    return c.json({
+      error: 'Retry is not available until the previous OpenCode session stop is confirmed',
+    }, 409)
+  }
+  const interviewSnapshot = ticket.previousStatus === 'WAITING_INTERVIEW_ANSWERS'
+    ? readInterviewRetrySnapshot(ticketId)
+    : null
+  if (ticket.previousStatus === 'WAITING_INTERVIEW_ANSWERS') interviewQASessions.delete(ticketId)
 
   if (ticket.previousStatus === 'CODING') {
-    let stopped: boolean
-    try {
-      stopped = await abortTicketSessions(ticketId)
-    } catch (err) {
-      return c.json({
-        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
-        details: getErrorMessage(err),
-      }, 409)
-    }
-    if (!stopped) {
-      return c.json({
-        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
-      }, 409)
-    }
-
     const paths = getTicketPaths(ticketId)
     if (!paths) {
       return c.json({ error: 'Retry is not available because the ticket workspace could not be resolved' }, 409)
     }
     try {
-      const recoveredBead = (userRetryNote === undefined
-        ? recoverSuccessfulExecutionCheckpointForFinalization(ticketId)
-        : null)
-        ?? await recoverCodingBeadWithReset(ticketId, {
-          worktreePath: paths.worktreePath,
-          requireReset: true,
-          userRetryNote,
-        })
+      const finalizedBead = recoverSuccessfulExecutionCheckpointForFinalization(ticketId)
+      const recoveredBead = finalizedBead ?? await recoverCodingBeadWithReset(ticketId, {
+        worktreePath: paths.worktreePath,
+        requireReset: true,
+        userRetryNote,
+      })
       if (!recoveredBead) {
         return c.json({ error: 'Retry is not available because no failed bead could be restored' }, 409)
       }
@@ -995,26 +938,6 @@ export async function handleRetryTicket(c: Context) {
     }
   }
 
-  // A council step can fail with a member whose stop OpenCode never confirmed.
-  // Its session row is still active, and the retried round would reconnect to
-  // it instead of starting the model fresh.
-  if (ticket.previousStatus === 'PREPARING_EXECUTION_ENV' || isCouncilMemberControlPhase(ticket.previousStatus)) {
-    let stopped: boolean
-    try {
-      stopped = await abortTicketSessions(ticketId)
-    } catch (err) {
-      return c.json({
-        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
-        details: getErrorMessage(err),
-      }, 409)
-    }
-    if (!stopped) {
-      return c.json({
-        error: 'Retry is not available until the previous OpenCode session stop is confirmed',
-      }, 409)
-    }
-  }
-
   try {
     if (!await clearPendingCancellationForRetry(ticketId)) {
       return c.json({
@@ -1026,13 +949,28 @@ export async function handleRetryTicket(c: Context) {
       archiveActivePhaseAttempts(ticketId, [ticket.previousStatus], 'manual_retry_after_blocked_error')
       createFreshPhaseAttempts(ticketId, [ticket.previousStatus])
     }
+    if (interviewSnapshot) persistInterviewRetrySnapshot(ticketId, interviewSnapshot)
+    if (ticket.previousStatus !== 'CODING') {
+      savePhaseRetryNote(ticketId, resolveStoredWorkflowPhase(ticket.previousStatus), userRetryNote)
+    }
     ensureActorForTicket(ticketId)
     sendTicketEvent(ticketId, { type: 'RETRY' })
   } catch (err) {
+    if (userRetryNote !== undefined && ticket.previousStatus !== 'CODING') {
+      try {
+        savePhaseRetryNote(ticketId, resolveStoredWorkflowPhase(ticket.previousStatus), undefined)
+      } catch (cleanupError) {
+        logTicketOperationError(ticketId, 'Failed to clear the rejected retry note', cleanupError)
+      }
+    }
     logTicketOperationError(ticketId, 'Failed to send RETRY to ticket', err)
     return c.json({ error: 'Failed to retry ticket', details: getErrorMessage(err) }, 500)
   }
 
+  if (userRetryNote !== undefined) {
+    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(ticket.previousStatus), 'info',
+      `Retry with extra note:\n${userRetryNote}`, { userRetryNote })
+  }
   return respondWithState(c, ticketId, 'Retry action accepted')
 }
 

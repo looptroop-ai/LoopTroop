@@ -15,7 +15,8 @@ import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { throwIfAborted } from '../../council/types'
 import { formatPromptText, runOpenCodePrompt, runOpenCodeSessionPrompt } from '../runOpenCodePrompt'
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
-import { SessionManager } from '../../opencode/sessionManager'
+import { listOpenCodeSessionsForTicket, SessionManager } from '../../opencode/sessionManager'
+import { getPendingSessionContinuationForTicketPhase, shouldPreserveSessionForContinuation } from '../../opencode/sessionContinuation'
 import { rewriteCandidateCommitWithFiles } from '../../phases/integration/squash'
 import {
   buildCandidateFileAuditPrompt,
@@ -1180,6 +1181,9 @@ async function runCandidateFileAudit(input: {
     })
   } catch (error) {
     if (input.signal?.aborted) throw error
+    if (sessionId && !await new SessionManager(adapter).abortAndAbandonSession(sessionId)) {
+      throw new Error(`Could not confirm abort of candidate file audit session ${sessionId}`, { cause: error })
+    }
     const warning = `Candidate file audit fell back to including all files: ${getErrorMessage(error)}`
     emitPhaseLog(
       input.ticketId,
@@ -1314,7 +1318,26 @@ export async function handleCreatePullRequest(
       let integrationRaw = integration.raw
       let diff = readGitDiff(worktreePath, integration.mergeBase, candidateCommitSha)
 
-      let candidateFileAudit = await runCandidateFileAudit({
+      const continuation = getPendingSessionContinuationForTicketPhase(ticketId, 'CREATING_PULL_REQUEST')
+      const continuingDraft = continuation && listOpenCodeSessionsForTicket(ticketId, ['active'])
+        .some(session => session.sessionId === continuation.sessionId && session.step === 'pull_request_draft')
+      let savedAudit: CandidateFileAuditReport | null = null
+      if (continuingDraft) {
+        const artifact = getLatestPhaseArtifact(ticketId, CANDIDATE_FILE_AUDIT_ARTIFACT, 'CREATING_PULL_REQUEST')
+        if (artifact) {
+          try {
+            const parsed: unknown = JSON.parse(artifact.content)
+            if (isRecord(parsed) && parsed.baseCommit === integration.mergeBase && parsed.candidateCommitSha === candidateCommitSha
+              && (parsed.status === 'passed' || parsed.status === 'fallback')
+              && Array.isArray(parsed.includedFiles) && Array.isArray(parsed.excludedFiles) && Array.isArray(parsed.entries)) {
+              savedAudit = parsed as unknown as CandidateFileAuditReport
+            }
+          } catch { /* A changed or damaged audit requires a fresh attempt. */ }
+        }
+        if (!savedAudit) throw new Error('Cannot continue pull request drafting because its saved file audit does not match the current candidate. Use Retry to start a fresh attempt.')
+      }
+
+      let candidateFileAudit = savedAudit ?? await runCandidateFileAudit({
         ticketId,
         context,
         worktreePath,
@@ -1331,7 +1354,7 @@ export async function handleCreatePullRequest(
         signal,
       })
 
-      if (candidateFileAudit.excludedFiles.length > 0) {
+      if (!savedAudit && candidateFileAudit.excludedFiles.length > 0) {
         const rewrite = await rewriteCandidateCommitWithFiles(
           worktreePath,
           integration.mergeBase,
@@ -1467,6 +1490,7 @@ export async function handleCreatePullRequest(
           keepActive: true,
           forceFresh: true,
           memberId: mainImplementer,
+          step: 'pull_request_draft',
         },
         onSessionCreated: (session) => {
           sessionId = session.id
@@ -1626,6 +1650,13 @@ export async function handleCreatePullRequest(
                 model: mainImplementer,
                 variant: context.lockedMainImplementerVariant ?? undefined,
                 toolPolicy: 'disabled',
+                sessionOwnership: {
+                  ticketId,
+                  phase: 'CREATING_PULL_REQUEST',
+                  memberId: mainImplementer,
+                  step: 'pull_request_draft',
+                  keepActive: true,
+                },
                 onStreamEvent: (event) => {
                   if (!sessionId) return
                   emitOpenCodeStreamEvent(
@@ -1671,7 +1702,10 @@ export async function handleCreatePullRequest(
         }
         await closeDraftSession('complete')
       } catch (error) {
-        await closeDraftSession('abandon')
+        if (!shouldPreserveSessionForContinuation({
+          error, sessionId, modelId: mainImplementer, signal,
+          sessionOwnership: { ticketId, phase: 'CREATING_PULL_REQUEST' },
+        })) await closeDraftSession('abandon')
         throw error
       }
 

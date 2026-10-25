@@ -314,7 +314,9 @@ async function updateTicket(id: string, input: UpdateTicketInput): Promise<Ticke
   return normalizeTicketResponse(await res.json())
 }
 
-function getTicketActionPath(id: string, action: WorkflowAction): string {
+type TicketRequestAction = Exclude<WorkflowAction, 'retry_with_note'>
+
+function getTicketActionPath(id: string, action: TicketRequestAction): string {
   switch (action) {
     case 'close_unmerged':
       return apiTicketPath(id, 'close-unmerged')
@@ -339,7 +341,7 @@ export type TicketActionPayload =
   | { kind: 'close_reason'; reason?: string }
 
 export type TicketActionVariables =
-  | { id: string; action: WorkflowAction; payload?: undefined }
+  | { id: string; action: TicketRequestAction; payload?: undefined }
   | { id: string; action: 'retry'; payload: { kind: 'retry_note'; note: string } }
   | { id: string; action: 'close_unmerged'; payload: { kind: 'close_reason'; reason?: string } }
 
@@ -351,7 +353,7 @@ function buildTicketActionBody(payload: TicketActionPayload | undefined): string
 
 export async function ticketAction(
   id: string,
-  action: WorkflowAction,
+  action: TicketRequestAction,
   payload?: TicketActionPayload,
 ): Promise<TicketActionResponse> {
   const body = buildTicketActionBody(payload)

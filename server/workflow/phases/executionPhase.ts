@@ -273,6 +273,10 @@ function findRecoverableSuccessfulCheckpoint(
   return null;
 }
 
+export function hasSuccessfulExecutionCheckpointForFinalization(ticketId: string): boolean {
+  return findRecoverableSuccessfulCheckpoint(ticketId, readTicketBeads(ticketId)) !== null;
+}
+
 export function recoverSuccessfulExecutionCheckpointForFinalization(
   ticketId: string,
 ): Bead | null {

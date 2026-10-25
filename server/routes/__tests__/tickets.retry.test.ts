@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -18,6 +18,11 @@ import {
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { WORKFLOW_PHASES } from '@shared/workflowMeta'
+import { readPhaseRetryNote } from '../../workflow/retryNotes'
+import { createInterviewSessionSnapshot, buildPersistedBatch, recordPreparedBatch, recordBatchAnswers } from '../../phases/interview/sessionState'
+import { persistInterviewSession, readInterviewSessionSnapshotArtifact, snapshotFingerprint } from '../../workflow/phases/interviewPhase'
+import { interviewQASessions } from '../../workflow/phases/state'
+import { broadcaster } from '../../sse/broadcaster'
 import {
   clearAllPendingSessionContinuationsForTests,
   getPendingSessionContinuationForTicketPhase,
@@ -71,13 +76,14 @@ vi.mock('../../workflow/phases/executionPhase', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../workflow/phases/executionPhase')>()
   return {
     ...actual,
+    hasSuccessfulExecutionCheckpointForFinalization: vi.fn(() => false),
     recoverSuccessfulExecutionCheckpointForFinalization: vi.fn(() => null),
   }
 })
 
 import { sendTicketEvent } from '../../machines/persistence'
 import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
-import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
+import { hasSuccessfulExecutionCheckpointForFinalization, recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
 import { isTicketCancellationPending, markTicketCancellationPending } from '../../workflow/runner'
 import { ticketRouter } from '../tickets'
 
@@ -146,12 +152,15 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     clearAllPendingSessionContinuationsForTests()
     vi.clearAllMocks()
     getSessionMock.mockResolvedValue({ id: 'ses-setup-current', projectPath: '/tmp/project' })
+    abortSessionMock.mockResolvedValue(true)
   })
 
   afterAll(() => {
     clearProjectDatabaseCache()
     repoManager.cleanup()
   })
+
+  afterEach(() => vi.restoreAllMocks())
 
   it('tracks every retry-resumable non-implementation workflow status', () => {
     const expectedTracked = WORKFLOW_PHASES
@@ -301,6 +310,52 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe('DRAFT')
   })
 
+  it('preserves saved interview answers while discarding the old AI conversation on retry', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    ensureActivePhaseAttempt(ticket.id, 'WAITING_INTERVIEW_ANSWERS')
+    const question = { id: 'Q01', phase: 'Foundation' as const, question: 'What should change?' }
+    const initial = createInterviewSessionSnapshot({
+      winnerId: 'test/model',
+      compiledQuestions: [question],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [question],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: '',
+      batchNumber: 1,
+    }, 'prom4', initial)
+    const prepared = recordPreparedBatch(initial, batch)
+    const snapshot = recordBatchAnswers(prepared, { Q01: 'Keep my answer.' })
+    persistInterviewSession(ticket.id, prepared)
+    upsertLatestPhaseArtifact(ticket.id, 'interview_failed_submission', 'WAITING_INTERVIEW_ANSWERS', JSON.stringify({
+      snapshot,
+      baselineFingerprint: snapshotFingerprint(prepared),
+    }))
+    interviewQASessions.set(ticket.id, { sessionId: 'old-conversation', winnerId: 'test/model' })
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'WAITING_INTERVIEW_ANSWERS' } }),
+      errorMessage: 'Interview follow-up failed',
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Continue with the saved answers.' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(readInterviewSessionSnapshotArtifact(ticket.id)).toEqual(snapshot)
+    expect(listPhaseArtifacts(ticket.id, { phase: 'WAITING_INTERVIEW_ANSWERS' }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ artifactType: 'interview_retry_requested', content: 'true' })]))
+    expect(interviewQASessions.has(ticket.id)).toBe(false)
+    expect(readPhaseRetryNote(ticket.id, 'WAITING_INTERVIEW_ANSWERS')).toBe('Continue with the saved answers.')
+    expect(listPhaseAttempts(ticket.id, 'WAITING_INTERVIEW_ANSWERS')[0]).toMatchObject({ attemptNumber: 2, state: 'active' })
+  })
+
   it('rejects retry when the blocked status has no previous status', async () => {
     const { app, ticket } = setupRetryTicketApp()
     patchTicket(ticket.id, {
@@ -346,6 +401,45 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       state: 'active',
       archivedReason: null,
     })
+  })
+
+  it('retries successful coding finalization without resetting or repeating the bead', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'CODING' } }),
+      errorMessage: 'Commit failed after successful coding',
+    })
+    vi.mocked(recoverSuccessfulExecutionCheckpointForFinalization).mockReturnValueOnce({ id: 'B1' } as never)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(recoverSuccessfulExecutionCheckpointForFinalization).toHaveBeenCalledWith(ticket.id)
+    expect(recoverCodingBeadWithReset).not.toHaveBeenCalled()
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
+  })
+
+  it('rejects a note for successful coding awaiting finalization even without an error code', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'CODING' } }),
+      errorMessage: 'Commit failed after successful coding',
+    })
+    vi.mocked(hasSuccessfulExecutionCheckpointForFinalization).mockReturnValueOnce(true)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Do not repeat successful work.' }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(recoverSuccessfulExecutionCheckpointForFinalization).not.toHaveBeenCalled()
+    expect(recoverCodingBeadWithReset).not.toHaveBeenCalled()
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+    expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
   })
 
   it('clears a confirmed cancellation fence before resuming CODING', async () => {
@@ -398,7 +492,7 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     })
 
     expect(response.status).toBe(200)
-    expect(recoverSuccessfulExecutionCheckpointForFinalization).not.toHaveBeenCalled()
+    expect(recoverSuccessfulExecutionCheckpointForFinalization).toHaveBeenCalledWith(ticket.id)
     expect(recoverCodingBeadWithReset).toHaveBeenCalledWith(ticket.id, expect.objectContaining({
       requireReset: true,
       userRetryNote: note,
@@ -452,13 +546,13 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
   })
 
-  it('rejects retry notes outside CODING without archiving or resuming the phase', async () => {
+  it('rejects retry notes for a local operation without archiving or resuming the phase', async () => {
     const { app, ticket } = setupRetryTicketApp()
-    ensureActivePhaseAttempt(ticket.id, 'REFINING_PRD')
+    ensureActivePhaseAttempt(ticket.id, 'INTEGRATING_CHANGES')
     patchTicket(ticket.id, {
       status: 'BLOCKED_ERROR',
-      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'REFINING_PRD' } }),
-      errorMessage: 'PRD refinement failed',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'INTEGRATING_CHANGES' } }),
+      errorMessage: 'Integration failed',
     })
 
     const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
@@ -469,15 +563,16 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
 
     expect(response.status).toBe(409)
     expect(await response.json()).toMatchObject({
-      error: 'Retry notes are only available for implementation or workspace runtime setup errors',
+      error: 'Retry with extra note is only available for failed AI work',
     })
     expect(sendTicketEvent).not.toHaveBeenCalled()
-    expect(listPhaseAttempts(ticket.id, 'REFINING_PRD')).toHaveLength(1)
+    expect(listPhaseAttempts(ticket.id, 'INTEGRATING_CHANGES')).toHaveLength(1)
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
   })
 
-  it('sends an extra note to the existing workspace setup session without versioning the phase', async () => {
+  it('restarts workspace setup with a verbatim note in a fresh attempt instead of continuing its session', async () => {
     const { app, ticket } = setupRetryTicketApp()
+    const broadcast = vi.spyOn(broadcaster, 'broadcast')
     ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
     upsertLatestPhaseArtifact(
       ticket.id,
@@ -485,14 +580,15 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       'PREPARING_EXECUTION_ENV',
       JSON.stringify({ status: 'failed', errors: ['Workspace probe failed'] }),
     )
-    insertSetupSession(ticket.id, 'abandoned')
+    insertSetupSession(ticket.id, 'active')
+    abortSessionMock.mockResolvedValueOnce(true)
     patchTicket(ticket.id, {
       status: 'BLOCKED_ERROR',
       xstateSnapshot: JSON.stringify({ context: { previousStatus: 'PREPARING_EXECUTION_ENV' } }),
       errorMessage: 'Workspace probe failed',
     })
 
-    const note = 'Check the original checkout for the missing generated fixture.'
+    const note = 'Check the original checkout.\n  Preserve this whitespace.  '
     const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -500,19 +596,23 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     })
 
     expect(response.status).toBe(200)
-    expect(getSessionMock).toHaveBeenCalledWith('ses-setup-current')
+    expect(abortSessionMock).toHaveBeenCalledWith('ses-setup-current')
+    expect(getSessionMock).not.toHaveBeenCalled()
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
-    expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toMatchObject({
-      sessionId: 'ses-setup-current',
-      prompt: note,
-      additionalRetryAttempts: 1,
-    })
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBeNull()
+    expect(readPhaseRetryNote(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe(note)
+    expect(broadcast).toHaveBeenCalledWith(ticket.id, 'log', expect.objectContaining({
+      phase: 'PREPARING_EXECUTION_ENV',
+      content: `Retry with extra note:\n${note}`,
+      data: expect.objectContaining({ userRetryNote: note }),
+    }))
     expect(listPhaseAttempts(ticket.id, 'PREPARING_EXECUTION_ENV')).toEqual([
-      expect.objectContaining({ attemptNumber: 1, state: 'active' }),
+      expect.objectContaining({ attemptNumber: 2, state: 'active' }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived' }),
     ])
   })
 
-  it('does not resume workspace setup when its existing session is gone', async () => {
+  it('allows a workspace setup note when the previous session is gone', async () => {
     const { app, ticket } = setupRetryTicketApp()
     ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
     insertSetupSession(ticket.id, 'abandoned')
@@ -529,12 +629,15 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       body: JSON.stringify({ note: 'Create file x first.' }),
     })
 
-    expect(response.status).toBe(409)
-    expect(sendTicketEvent).not.toHaveBeenCalled()
+    expect(response.status).toBe(200)
+    expect(getSessionMock).not.toHaveBeenCalled()
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
     expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBeNull()
     expect(listPhaseAttempts(ticket.id, 'PREPARING_EXECUTION_ENV')).toEqual([
-      expect.objectContaining({ attemptNumber: 1, state: 'active' }),
+      expect.objectContaining({ attemptNumber: 2, state: 'active' }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived' }),
     ])
+    expect(readPhaseRetryNote(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe('Create file x first.')
   })
 
   it('does not resume when CODING recovery fails before a user note can be persisted', async () => {
@@ -577,6 +680,106 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     expect(response.status).toBe(409)
     expect(sendTicketEvent).not.toHaveBeenCalled()
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+  })
+
+  it.each([
+    'SCANNING_RELEVANT_FILES',
+    'REFINING_PRD',
+    'VERIFYING_PRD_COVERAGE',
+    'REFINING_BEADS',
+    'VERIFYING_BEADS_COVERAGE',
+    'EXPANDING_BEADS',
+    'GENERATING_EXECUTION_SETUP_PLAN',
+  ] as const)('stores a note unchanged for a new %s attempt and preserves previous inputs', async (phase) => {
+    const { app, ticket } = setupRetryTicketApp()
+    ensureActivePhaseAttempt(ticket.id, phase)
+    upsertLatestPhaseArtifact(ticket.id, 'saved_input', phase, 'Original saved input')
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: phase } }),
+      errorMessage: 'AI step failed',
+    })
+    const note = 'Try this approach.\n  Preserve this exactly.  '
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(readPhaseRetryNote(ticket.id, phase)).toBe(note)
+    expect(listPhaseAttempts(ticket.id, phase)[0]).toMatchObject({ attemptNumber: 2, state: 'active' })
+    expect(listPhaseArtifacts(ticket.id, { phase, phaseAttempt: 1 }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ artifactType: 'saved_input', content: 'Original saved input' })]))
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, phase)).toBeNull()
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
+  })
+
+  it.each([
+    'REFINING_PRD',
+    'VERIFYING_PRD_COVERAGE',
+    'REFINING_BEADS',
+    'VERIFYING_BEADS_COVERAGE',
+    'EXPANDING_BEADS',
+  ] as const)('requires a confirmed stop before restarting %s or saving its note', async (phase) => {
+    const { app, ticket } = setupRetryTicketApp()
+    ensureActivePhaseAttempt(ticket.id, phase)
+    const context = getTicketContext(ticket.id)!
+    context.projectDb.insert(opencodeSessions).values({
+      sessionId: 'ses-stuck-planning',
+      ticketId: context.localTicketId,
+      phase,
+      phaseAttempt: 1,
+      state: 'active',
+    }).run()
+    patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: phase } }),
+      errorMessage: 'AI session stuck',
+    })
+    abortSessionMock.mockResolvedValueOnce(false)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Restart this work.' }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(abortSessionMock).toHaveBeenCalledWith('ses-stuck-planning')
+    expect(readPhaseRetryNote(ticket.id, phase)).toBeUndefined()
+    expect(listPhaseAttempts(ticket.id, phase)).toEqual([
+      expect.objectContaining({ attemptNumber: 1, state: 'active' }),
+    ])
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
+  it('keeps a retry note in attempt history without applying it to a later plain retry', async () => {
+    const { app, ticket } = setupRetryTicketApp()
+    const block = () => patchTicket(ticket.id, {
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'REFINING_PRD' } }),
+      errorMessage: 'Refinement failed',
+    })
+    ensureActivePhaseAttempt(ticket.id, 'REFINING_PRD')
+    block()
+    const notedRetry = await app.request(`/api/tickets/${ticket.id}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Only for this attempt.' }),
+    })
+    expect(notedRetry.status).toBe(200)
+    block()
+
+    const plainRetry = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(plainRetry.status).toBe(200)
+    expect(readPhaseRetryNote(ticket.id, 'REFINING_PRD')).toBeUndefined()
+    expect(listPhaseArtifacts(ticket.id, { phase: 'REFINING_PRD', phaseAttempt: 2 }))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ artifactType: 'user_retry_note', content: JSON.stringify({ note: 'Only for this attempt.' }) }),
+      ]))
   })
 
   // A council member whose stop OpenCode never confirmed leaves its session row

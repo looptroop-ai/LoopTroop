@@ -94,7 +94,7 @@ import {
   // Cleanup phase
   handleCleanup,
 } from './phases'
-import { handleManualQaChecklistGeneration } from '../phases/manualQa'
+import { handleManualQaChecklistGeneration, resumeFailedManualQaSubmission } from '../phases/manualQa'
 import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
 
@@ -724,6 +724,18 @@ export function attachWorkflowRunner(
           const errMsg = getErrorMessage(err)
           emitPhaseLog(ticketId, context.externalId, 'GENERATING_QA_CHECKLIST', 'error', errMsg)
           sendEvent(buildWorkflowErrorEvent(errMsg, ['MANUAL_QA_CHECKLIST_FAILED'], err))
+        })
+        .finally(() => {
+          runningPhases.delete(key)
+        })
+    } else if (state === 'WAITING_MANUAL_QA') {
+      runningPhases.add(key)
+      resumeFailedManualQaSubmission(ticketId, sendEvent, signal)
+        .catch(err => {
+          if (isCancellationError(err, signal)) return
+          const errMsg = getErrorMessage(err)
+          emitPhaseLog(ticketId, context.externalId, 'WAITING_MANUAL_QA', 'error', errMsg)
+          sendEvent(buildWorkflowErrorEvent(errMsg, ['MANUAL_QA_FIX_BEADS_FAILED'], err))
         })
         .finally(() => {
           runningPhases.delete(key)

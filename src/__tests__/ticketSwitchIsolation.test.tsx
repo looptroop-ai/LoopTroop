@@ -560,7 +560,7 @@ describe('cross-ticket state isolation', () => {
 
   it('leaves no error-view retry note behind when another ticket is opened', async () => {
     const [first, second] = makePair(
-      { status: 'BLOCKED_ERROR', previousStatus: 'CODING', availableActions: ['retry'] },
+      { status: 'BLOCKED_ERROR', previousStatus: 'CODING', availableActions: ['retry', 'retry_with_note'] },
       {
         first: { errorMessage: FIRST_ERROR_MESSAGE },
         second: { errorMessage: SECOND_ERROR_MESSAGE },

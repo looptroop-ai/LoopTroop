@@ -1,3 +1,4 @@
+import { resolvePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type {
   CouncilMember,
@@ -504,7 +505,7 @@ async function executeStructuredStep(
     ? {
         ticketId: options.ticketId,
         phase: 'DRAFTING_PRD' as const,
-        phaseAttempt: options.phaseAttempt ?? 1,
+        phaseAttempt: resolvePhaseAttempt(options.ticketId, 'DRAFTING_PRD', options.phaseAttempt),
         memberId: member.modelId,
         step: options.step,
         keepActive: true,
@@ -800,7 +801,7 @@ export async function draftPRD(
       .map((question) => question.id)
     : []
   const shouldResolveGaps = skippedQuestionIds.length > 0
-  const phaseAttempt = options.phaseAttempt ?? 1
+  const phaseAttempt = options.ticketId ? resolvePhaseAttempt(options.ticketId, 'DRAFTING_PRD', options.phaseAttempt) : 1
 
   /**
    * A member's finished Full Answers, kept across a restart of its PRD draft.
@@ -998,6 +999,9 @@ export async function draftPRD(
           ],
         )
 
+        if (attempt.retryNote !== undefined) {
+          gapResolutionParts.push({ type: 'text', content: `## User Retry Note\n${attempt.retryNote}` })
+        }
         const fullAnswersStep = await executeStructuredStep(adapter, member, projectPath, gapResolutionParts, {
           step: 'full_answers',
           signal: memberSignal,
@@ -1056,6 +1060,7 @@ export async function draftPRD(
           fullAnswersStep.normalizedResponse,
           fullAnswersStep.rawAttempts,
         )
+        if (attempt.retryNote !== undefined) fullAnswersResult.steeredByOperator = true
         keptFullAnswers.set(member.modelId, { result: fullAnswersResult, resolvedInterviewContent })
         onFullAnswersProgress?.({
           memberId: member.modelId,
@@ -1130,6 +1135,9 @@ export async function draftPRD(
           fullAnswers: [resolvedInterviewContent],
         }),
       )
+      if (attempt.retryNote !== undefined) {
+        prdPromptParts.push({ type: 'text', content: `## User Retry Note\n${attempt.retryNote}` })
+      }
 
       const prdStep = await executeStructuredStep(adapter, member, projectPath, prdPromptParts, {
         step: 'prd_draft',
@@ -1181,6 +1189,7 @@ export async function draftPRD(
         prdStep.normalizedResponse,
         prdStep.rawAttempts,
       )
+      if (attempt.retryNote !== undefined || fullAnswersResult?.steeredByOperator) prdResult.steeredByOperator = true
       onDraftProgress?.({
         memberId: member.modelId,
         status: 'finished',

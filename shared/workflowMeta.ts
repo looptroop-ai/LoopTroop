@@ -182,6 +182,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Failure → Blocked Error: If the scan cannot produce a valid result, the ticket pauses for manual recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This is a single-model phase. The council has not started yet.",
       "The scan is read-only. It does not change repository files.",
       "Context available: Ticket Details only.",
@@ -213,6 +214,8 @@ const WORKFLOW_PHASE_DETAILS = {
       "Cancel → Canceled: User cancellation stops the active drafting work.",
     ],
     notes: [
+      "Member Retry With Extra Note: Restart only the selected council member in a fresh session with its saved inputs and the entered guidance unchanged. Other members keep working and retain their results. Existing PRD Part 1 and Part 2 retry boundaries still apply; the note stays in that member's retry history.",
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This is the first multi-model phase in the workflow.",
       "Council members do not see each other's drafts while this phase is running.",
       "Malformed output stays diagnostic-only. It does not appear as a usable draft.",
@@ -250,6 +253,8 @@ const WORKFLOW_PHASE_DETAILS = {
       "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted voter's session ended, the vote fails rather than risk two copies of the model running.",
     ],
     notes: [
+      "Member Retry With Extra Note: Restart only the selected council member in a fresh session with its saved inputs and the entered guidance unchanged. Other members keep working and retain their results. Existing PRD Part 1 and Part 2 retry boundaries still apply; the note stays in that member's retry history.",
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "Anonymization and random ordering reduce bias.",
       "Context available: Relevant Files, Ticket Details, and anonymized competing drafts.",
       "Voting Raw views show the validated drafts that were actually scored.",
@@ -284,6 +289,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Failure → Blocked Error: If the winning draft cannot be normalized correctly, the ticket pauses for recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This is the first interactive artifact the user sees in the planning flow.",
       "The winning model performs this normalization step.",
       "Raw draft views stay aligned to the validated content used by refinement.",
@@ -322,6 +328,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Skip All → Approving Interview: All remaining unanswered questions are marked skipped, a synthetic clean coverage record is written, and the ticket moves straight to approval.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This is a user-input phase. The workflow is intentionally paused while you answer.",
       "The phase may repeat during the initial interview and again during coverage follow-ups.",
       "AI context available: Ticket Details plus the live interview session state. Read-only repository checks can confirm technical facts, but they do not replace stakeholder decisions.",
@@ -354,6 +361,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Failure → Blocked Error: If coverage cannot finish safely, the ticket pauses for recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "The follow-up loop is budgeted and cannot run forever.",
       "Coverage uses the winning interview model for consistency with the chosen strategy.",
       "Context available: Ticket Details, User Answers, and Interview Results, plus focused read-only repository inspection only when needed.",
@@ -425,6 +433,8 @@ const WORKFLOW_PHASE_DETAILS = {
       "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted model's session ended, the step fails rather than risk two copies of the model running.",
     ],
     notes: [
+      "Member Retry With Extra Note: Restart only the selected council member in a fresh session with its saved inputs and the entered guidance unchanged. Other members keep working and retain their results. Existing PRD Part 1 and Part 2 retry boundaries still apply; the note stays in that member's retry history.",
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This phase has two internal parts with different context slices: Interview Results for Full Answers, then Full Answers for PRD drafting.",
       "Malformed Full Answers or PRD text stays diagnostic-only. Safe parser repairs fix formatting, not meaning.",
       "This is the stage that turns interview intent into a formal implementation specification.",
@@ -463,6 +473,8 @@ const WORKFLOW_PHASE_DETAILS = {
       "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted voter's session ended, the vote fails rather than risk two copies of the model running.",
     ],
     notes: [
+      "Member Retry With Extra Note: Restart only the selected council member in a fresh session with its saved inputs and the entered guidance unchanged. Other members keep working and retain their results. Existing PRD Part 1 and Part 2 retry boundaries still apply; the note stays in that member's retry history.",
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "Context available: Relevant Files, Ticket Details, Interview Results, and anonymized competing drafts.",
       "The winner is not the final PRD. It still goes through refinement and coverage.",
       "Voting Raw views show the validated drafts that were actually scored.",
@@ -496,6 +508,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Failure → Blocked Error: If the candidate cannot be refined safely, the ticket pauses for recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "The winning model performs refinement so the voice and structure of the selected draft stay coherent.",
       "Context available: Relevant Files, Ticket Details, Full Answers, and competing drafts, with focused read-only repository inspection only when needed.",
       "Raw draft views stay aligned to the validated content used by refinement.",
@@ -530,6 +543,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Failure → Blocked Error: If coverage or revision cannot finish safely, the ticket pauses for recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "Unlike interview coverage, this loop stays inside one phase and fixes the document directly.",
       "The version cap is configuration-driven so every project can choose its own trade-off.",
       "While this status is live, the workspace title can show the current candidate version and pass number.",
@@ -604,6 +618,8 @@ const WORKFLOW_PHASE_DETAILS = {
       "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted model's session ended, the step fails rather than risk two copies of the model running.",
     ],
     notes: [
+      "Member Retry With Extra Note: Restart only the selected council member in a fresh session with its saved inputs and the entered guidance unchanged. Other members keep working and retain their results. Existing PRD Part 1 and Part 2 retry boundaries still apply; the note stays in that member's retry history.",
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "Context available: Relevant Files, Ticket Details, and PRD, with focused read-only repository inspection only when needed.",
       "These blueprints stay semantic. Exact file targets and runtime metadata are added later during expansion.",
       "Malformed blueprint output stays diagnostic-only. It does not appear as a usable draft.",
@@ -641,6 +657,8 @@ const WORKFLOW_PHASE_DETAILS = {
       "Unconfirmed Stop → Blocked Error: If OpenCode cannot confirm that a stopped or restarted voter's session ended, the vote fails rather than risk two copies of the model running.",
     ],
     notes: [
+      "Member Retry With Extra Note: Restart only the selected council member in a fresh session with its saved inputs and the entered guidance unchanged. Other members keep working and retain their results. Existing PRD Part 1 and Part 2 retry boundaries still apply; the note stays in that member's retry history.",
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "Context available: Relevant Files, Ticket Details, PRD, and anonymized competing drafts. The vote preserves structured command and dependency fields instead of flattening them into prose.",
       "This rubric is more architecture-focused than the interview and PRD voting rubrics.",
       "Voting Raw views show the validated blueprints that were actually scored.",
@@ -674,6 +692,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Failure → Blocked Error: If the blueprint cannot be refined safely, the ticket pauses for recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This phase still works on the semantic plan, including minimal planned checks or an explanation when no automated command is appropriate.",
       "Context available: Relevant Files, Ticket Details, PRD, and competing drafts, with focused read-only repository inspection only when needed.",
       "Raw draft views stay aligned to the validated content used by refinement.",
@@ -705,6 +724,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Coverage Failure → Blocked Error: If coverage or revision cannot finish safely, the ticket pauses for recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This phase works only on the semantic blueprint. Execution-ready bead records are created in the separate expansion phase.",
       "The pass cap keeps the loop from running forever.",
       "While this status is live, the workspace title can show the current blueprint version and pass number.",
@@ -722,7 +742,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "LoopTroop turns the approved semantic blueprint into the execution-ready bead records the coding loop will consume. Expansion keeps the approved acceptance and planned verification, then adds file targets, dependency ordering, labels, and runtime metadata.",
     steps: [
       "Blueprint loading: LoopTroop loads the latest semantic blueprint from the coverage phase.",
-      "Expansion: The model receives the semantic blueprint, relevant files, ticket details, and the approved PRD. It preserves the accepted verification guidance and adds only the execution-specific fields the coding loop needs.",
+      "Expansion: The model receives the semantic blueprint, relevant files, ticket details, and the approved PRD. It preserves accepted verification guidance and adds execution-specific fields. Targets may name repository files or files in any external folder; an explicit empty target list is valid when no files are targeted. Missing or malformed target lists are rejected.",
       "Bead record writing: The expanded bead records are written to the ticket workspace as the canonical beads data file.",
       "Approval candidate: The expanded output is also stored as the artifact you review in the beads approval screen.",
     ],
@@ -736,6 +756,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Expansion Failure → Blocked Error: If expansion cannot finish safely, the ticket pauses for recovery.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This is the only planning phase with a dedicated semantic-to-execution expansion step.",
       "Context available: Relevant Files, Ticket Details, PRD, and the semantic blueprint, with focused read-only repository inspection only when needed.",
       "Expansion happens after coverage because execution-specific detail is expensive to redo if the semantic plan still has gaps.",
@@ -749,12 +770,12 @@ const WORKFLOW_PHASE_DETAILS = {
     overview:
       "The final bead plan is ready for review before coding starts. Here you review task descriptions, dependencies, acceptance criteria, human-readable tests, and planned commands. After approval, the coding loop consumes one bead at a time.",
     steps: [
-      "Execution plan review: LoopTroop shows each bead's description, acceptance criteria, dependency chain, file targets, planned test commands or no-command explanation, source-line diagnostics, and execution ordering.",
+      "Execution plan review: LoopTroop shows each bead's description, acceptance criteria, dependency chain, file targets, planned test commands or no-command explanation, source-line diagnostics, and execution ordering. Beads with absolute or repository-escaping target paths show an External files warning with those paths.",
       "Dependency view: The plan makes the dependency chain visible so you can check that the execution order makes sense before coding begins.",
       "Editing And Draft Autosave: You can review the plan in structured form or edit the raw representation before approving. Draft changes autosave between view switches and reloads. The visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time. Draft autosave does not update the authoritative beads artifact; explicit Save applies the draft and records a user-edit receipt.",
       "Coverage warnings and extra fixes: If the pass cap was hit before the plan became fully clean, the approval screen shows the unresolved gaps. You can edit manually, approve with gaps, or run a targeted AI fix that revises the semantic blueprint and rechecks coverage. Approving with gaps takes an optional reason, which is stored on the approval receipt and in the skip trail.",
       "Extra-fix logs: A requested fix has its own manual coverage fix number, separate from the automatic check limit. Manual check counts show no 'of Y' limit. Logs identify revision and audit response attempts and any reconnection to existing sessions.",
-      "Approval decision: Approval locks the execution plan the coding loop will consume bead by bead. The request includes the content hash you reviewed, so stale tabs cannot approve an older version.",
+      "Approval decision: Approval locks the execution plan the coding loop will consume bead by bead, including disclosed external targets. The request includes the content hash you reviewed, so stale tabs cannot approve an older version. External files require no folder allowlist or separate permission step and are not covered by repository rollback.",
       "Expansion refresh: If an extra fix changes the semantic blueprint, LoopTroop reruns expansion before it refreshes the approval artifact and hash.",
     ],
     outputs: [
@@ -805,6 +826,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Any Critical Failure → Blocked Error: Connectivity failures, missing artifacts, dependency-graph problems, committable pre-existing worktree changes, or workspace-integrity issues move the ticket to Blocked Error with a specific failure reason.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This phase is deterministic and lightweight. It does not perform ticket-specific setup or make permanent repository changes.",
       "The point is to catch environment problems before setup or coding wastes time on work that was going to fail anyway.",
       "Warning-level results, such as untracked generated or local outputs, are recorded but do not block execution. Only critical failures stop the coding path.",
@@ -833,6 +855,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Cancel → Canceled: Cancellation stops generation while preserving completed logs and artifacts for audit.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This phase is in progress, not a user-input gate. Approval begins only after generation reaches a valid or reviewable-invalid result.",
       "No temporary setup or permanent repository mutation is allowed here. Approved setup actions run only in Preparing Workspace Runtime.",
       "The drafting attempt keeps the original generated candidate and diagnostics even after a user edits the separate approval copy.",
@@ -889,7 +912,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Filesystem Policy Enforcement: After each ready setup attempt, LoopTroop verifies in code that setup did not leave committable project changes outside LoopTroop or setup roots. If it did, the attempt fails and a retry note describes the violation. Common untracked generated or local outputs do not block setup, but they are logged and copied into profile `cautions` with suggested `.gitignore` entries. Setup never edits `.gitignore` automatically.",
       "Retry and Reset: If an attempt fails or returns an actionable Blocked result, LoopTroop records retry notes, resets tracked repository files back to the setup-phase start commit, preserves LoopTroop-owned ticket artifacts under `.ticket`, clears stale setup-profile and env-wrapper state while preserving `.ticket/runtime/execution-setup/tool-cache`, and retries within the normal iteration budget. Git reset and cleanup use bounded process-tree handling and must finish before a retry continues. A Blocked result with `not_provisionable` evidence and a reason stops immediately because the agent found no safe path. Repeated tooling-blocker protection still applies to retryable failures.",
       "Deadline Recovery: Once an attempt deadline expires, LoopTroop stops scheduling active setup work and returns a clear timeout failure. Process termination, session cleanup, safe worktree reset, and approved-input rematerialization may finish afterward so recovery stays safe. That cleanup does not consume the next attempt's fresh budget. Timeouts before session creation remain ordinary retryable setup failures.",
-      "Manual Same-Session Attempt: After setup blocks, Retry with extra note... opens a dialog. Confirming sends only the entered text to the preserved setup session and grants one extra setup attempt beyond the attempts already used. It keeps the current runtime phase attempt and does not store the user text as future setup context.",
+      "Manual Retry With A Note: After setup blocks, Retry with extra note... stops the old session and starts a fresh setup attempt from the approved plan and saved inputs, adding the user's note unchanged. Continue resumes an eligible preserved session instead.",
       "Return To Setup Approval: While this phase is active, you can go back to Approving Workspace Setup to edit or regenerate the plan. LoopTroop warns first, stops the active runtime setup session, archives both the approved setup-plan attempt and the current runtime attempt, clears stale runtime-profile outputs while preserving the tool cache, and requires the revised plan to be approved again before setup runs. The rewound approval actor stays quiet for that request, so manual edits are not overwritten by an automatic draft and regenerate starts only one setup-plan session.",
     ],
     outputs: [
@@ -899,10 +922,11 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
     transitions: [
       "Setup Ready → Implementing: A valid setup profile with passing wrapper and probe validation advances the workflow into coding, where the first real bead starts at 1/N.",
-      "Setup Blocked Or Failed → Blocked Error: A terminal honest Blocked result, retry exhaustion, repeated tooling blockers, provider or session failures, or committable project changes left by setup move the ticket to Blocked Error with the setup report preserved for diagnosis. Retry with extra note... can send one direct prompt to the preserved setup session. Edit setup plan... asks for confirmation before rewinding to approval.",
+      "Setup Blocked Or Failed → Blocked Error: A terminal honest Blocked result, retry exhaustion, repeated tooling blockers, provider or session failures, or committable project changes left by setup move the ticket to Blocked Error with the setup report preserved for diagnosis. Retry with extra note... restarts setup in a fresh session from the approved plan and saved inputs with the entered guidance unchanged. Edit setup plan... asks for confirmation before rewinding to approval.",
       "Edit Or Regenerate Plan → Approval Or Drafting: Manual editing rewinds one step to Approving Workspace Setup with the current plan. Regeneration archives the runtime and plan attempts, clears stale runtime outputs while preserving the tool cache, records a durable regeneration request, and enters Drafting Workspace Setup Plan.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "This phase is not a real bead. It does not change bead counts, is not part of final-testing scope, and never produces commits or pushes.",
       "Coding receives a read-only setup-profile file path instead of the full profile inline. That keeps later execution context smaller while still avoiding repeated environment rediscovery. Final testing also reads the setup profile and automatically applies a declared wrapper to generated commands that do not already use it.",
       "The approved setup plan stays the user-facing review artifact. Execution setup may augment it temporarily, but those augmentations are recorded in the execution report instead of silently rewriting the approved plan.",
@@ -942,6 +966,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Bead Failure → Blocked Error: A bead that exhausts its Ralph iteration budget, hits an unrecoverable runtime error, or fails local finalization sends `BEAD_ERROR`. Ralph failures append to Failed Iteration Notes. Finalization failures use `BEAD_FINALIZATION_FAILED`, append to Finalization Failure Notes, do not broadcast `bead_complete`, and stay manual Retry or Cancel blocks. Retry with extra note... appends the user's timestamped guidance only to User Retry Notes after a safe reset.",
     ],
     notes: [
+      "External targets: Beads with absolute or repository-escaping target paths show an External files warning. This display follows the written paths and does not resolve relative symbolic links. The agent may read, create, modify, or delete ordinary external files permitted by the operating system; original-checkout, managed-state, and Git-delivery protections still apply. External access has no folder allowlist, separate approval, automatic backup, or Git rollback; external changes can remain after a retry, cancellation, or failure.",
       "Only runnable beads are eligible for new execution selection. Interrupted `in_progress` beads are handled by recovery first: preserved continuations reuse their exact session, current checkpoints are finalized, and otherwise the interrupted attempt is noted, safely reset, incremented, and returned to `pending` before selection. Beads with status `error` are never selected until a retry moves them back into CODING.",
       "Inline context available to the agent is Current Bead Data, `bead_data`, plus the `bead_notes` slice rendered as three separate histories. Execution setup details stay available by reading `.ticket/runtime/execution-setup-profile.json` when needed. The agent does not receive the full beads plan, PRD, interview, or other beads' results inline.",
       "The `beadStartCommit` is recorded before a bead becomes `in_progress`. If git cannot record it, the bead remains pending, no execution call starts, and a Retry can reattempt the checkpoint; a pending bead with `startedAt` may be reset when that anchor is present, while an already-started bead without an anchor still fails closed during reset recovery. Coding does not write a common Git exclude rule for generated or local files.",
@@ -979,6 +1004,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Any Test Failure → Blocked Error: Failed tests or final-test generation failures move the ticket to Blocked Error, where you can retry the test run or cancel.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "Context available: Ticket Details, PRD, Beads Plan, and Final Test Retry Notes.",
       "This phase tests the implementation as a whole and catches cross-bead issues that bead-level checks can miss.",
       "When early-merge reconciliation produces a corrective candidate, this phase runs again before the configured Manual QA, integration, and new-PR flow.",
@@ -1009,6 +1035,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "Cancel → Canceled: Cancellation stops workflow automation while preserving generated artifacts for audit.",
     ],
     notes: [
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "No user action is required here. This workspace exists to show live milestones, phase logs, and the finished checklist artifact before handing off to interactive Manual QA.",
       "LoopTroop does not launch or interact with the application being tested. The application remains fully user-controlled.",
       "Coverage gaps are advisory and do not block the checklist by themselves.",
@@ -1047,6 +1074,7 @@ const WORKFLOW_PHASE_DETAILS = {
       "QA-Fix Generation Or Validation Failure → Blocked Error: No child ticket or bead is created until the complete candidate set is valid and persisted. Retry resumes the exact stored submission action.",
     ],
     notes: [
+      "AI Submission Recovery: A failure while generating fix beads can offer Retry with extra note for the saved submission. The failed session must stop before a fresh AI attempt receives the saved inputs and the user's unchanged guidance. The submitted results and operation identity remain preserved; ordinary human review does not expose AI recovery controls.",
       "This is the interactive consumer of the checklist artifact produced by Preparing Manual QA. The producer phase stays a smaller artifact-and-log surface.",
       "LoopTroop never starts, stops, previews, or otherwise controls the user's application.",
       "PRD coverage is advisory and collapsed by default. Improvement context and both description and provenance previews are also opt-in disclosures.",
@@ -1123,6 +1151,8 @@ const WORKFLOW_PHASE_DETAILS = {
       "Failure → Blocked Error: Push failures, GitHub auth issues, or PR creation or update failures move the ticket to Blocked Error.",
     ],
     notes: [
+      "PR Draft Continuation: Continue reuses the saved candidate-file audit only when its base and candidate still match. It resumes the preserved drafting session without rerunning the audit. A missing or mismatched audit requires Retry instead.",
+      "Manual AI recovery: Retry first confirms that the failed sessions stopped, then restarts the affected work in fresh sessions from saved inputs. Retry with extra note adds the user's guidance unchanged to that attempt. Continue alone resumes an eligible preserved session. Completed earlier work remains available; an unconfirmed stop keeps the ticket blocked.",
       "Context available: Ticket Details and PRD, plus explicit integration report, final test report, diff stat, diff name or status, and diff patch sections.",
       "Candidate-file audit runs in its own fresh session. Safe formatting-only repairs preserve the model-emitted paths and reasons and are shown as warnings; if validation still fails, LoopTroop falls back to including all files so malformed audit text cannot silently remove files.",
       "PR drafting starts in a fresh session after candidate-file auditing. If a matching active CREATING_PULL_REQUEST session exists, LoopTroop aborts and abandons it before creating the first draft session. AI Response Timeout bounds both the initial draft and structured retry prompts, and the draft session is completed before remote side effects begin.",
@@ -1248,16 +1278,16 @@ const WORKFLOW_PHASE_DETAILS = {
       "State Preservation: Blocked Error becomes the active workflow state while preserving the previous status, the phase that failed. That preserved status is what tells Retry and any eligible Continue exactly where to return. Backend, OpenCode, WSL, OS, and machine restarts revalidate an eligible continuation by the unresolved occurrence's exact session id and blocked-from phase when durable ownership is available in the project database or ticket marker. If both storage layers are unavailable, only the current process guard remains and a restart cannot claim recovery. Temporary verification failures keep the session eligible instead of abandoning it.",
       "Error History: If a ticket has blocked more than once, for example retry, fail, retry, fail, every error occurrence is kept in history. That helps you spot repeated failures and decide whether retry is likely to help.",
       "Error Message And Technical Context: The full sanitized error message and any distinct underlying cause appear above recovery actions and Technical details. Stable workflow events and error codes add guidance for recognized causes; unknown failures show their actual message without generic failure boilerplate. Technical details is collapsed by default for every error. It includes the ticket and occurrence identity, failed phase, exact timestamp, full sanitized recorded error, and the last five Debug-view records from the failed phase window, newest first and each collapsed by default. Each original JSONL record counts as one entry and keeps its multiline message and structured data after credential redaction. Repeated session errors remain distinct records even when their display identifiers match. Cookie redaction retains unambiguous neighboring diagnostic fields and valid expanded JSON. Evidence requests preserve cursor metadata; ordinary log pages and exports retain their existing content. The added native raw-line field is sanitized in the common reader. Historical records exclude later retries even when the same OpenCode session was reused. Missing metadata, absent logs, and failed log reads are reported explicitly. There is no older-record control inside details; the separate phase log provides the full history. Available error type and a bounded sanitized stack appear alongside codes, timestamps, captured provider, model, and exact session fields, including initial interview-batch failures that block the ticket. Readiness errors name failed doctor steps in the recorded error and keep detailed check evidence in sanitized debug records and the pre-flight report. Saved check summaries contain only the stable name, category, and reason. Provider-login guidance requires provider evidence; an expired token from a test or setup command retains that phase's explanation. A prompt error reporting only Unauthorized or Forbidden without explicit server or provider evidence shows captured metadata, status, and cause with neutral guidance and Retry; provider identity, login-refresh advice, and Continue are not inferred. Each failure line keeps its step, error-type prefix, and HTTP status in regular text; only the actionable cause is bold. OpenCode communication details include the failed operation and any reported connection code and cause. Available token counts include cache reads and writes. The bounded provider response preview removes terminal controls before redacting recognized credentials and URL secrets and preserves structured formatting and repeated lines, with keyboard scrolling. Background refreshes of the same failure preserve the open section and keyboard focus; selecting another ticket or occurrence closes the details again. Initial interview parsing failures that block the ticket retain available finish and token/cache metrics, and a cleanup error preserves the original failure as its cause. Live coding errors show their paused or failed bead context before technical details; a paused current bead takes precedence over an older failed bead. Historical errors omit current bead data. The full phase log remains available below. Debug records redact credentials before live streaming or storage in every phase, including readiness, coding, and council work. Opening Technical details does not rewrite saved source files.",
-      "Decision Point: The live view shows only recovery actions the server advertises for this occurrence: Retry and Cancel when available, Continue only for an eligible preserved session, and Edit setup plan for a failed PREPARING_EXECUTION_ENV step. An advertised Retry also offers an extra note for CODING or PREPARING_EXECUTION_ENV failures. A setup-approval error does not itself grant setup-plan editing or note-bearing retry. For coding, the note is appended to User Retry Notes after safe bead recovery. A setup retry verifies the preserved setup session before sending the note. Finalization failures already have their own concise Finalization Failure Note and stay manual Retry or Cancel blocks. Ralph is used only for coding-iteration failures such as the workflow deadline.",
+      "Decision Point: The live view shows only recovery actions the server advertises for this occurrence. Retry stops failed AI work and starts the affected step in a fresh session from saved inputs; Retry with extra note... adds the entered guidance unchanged when that failed AI step supports it. Continue keeps an eligible preserved session and sends the normal continuation prompt. Edit setup plan returns failed runtime setup to approval. Coding retains its checkpoint and finalization recovery checks, and non-AI operation failures retry the operation without repeating completed coding.",
     ],
     outputs: [
       "An error-occurrence history with timestamps, error messages, error codes, compact failed readiness check summaries, error type and bounded sanitized stack, structured provider, model, session, communication operation and cause, timeout, OpenCode retry, output-truncation, and rate-limit diagnostics when available, log-correlated provider causes when available, and the phase where each failure occurred. Technical details reads the last five matching debug records from that occurrence's failure window.",
       "Blocked-state metadata linking the error to the specific phase that failed.",
-      "A manual decision point containing only the server-advertised Retry, setup-plan editing, eligible same-session Continue, and Cancel actions for the current occurrence.",
+      "A manual decision point containing the supported Retry, Retry with extra note, setup-plan editing, eligible same-session Continue, and Cancel actions for the current occurrence.",
     ],
     transitions: [
-      "Retry → Previous Status: Retry archives the active phase attempt with `manual_retry_after_blocked_error`, creates the next active attempt, returns the workflow to the previously blocked status for every non-implementation phase, automatically navigates the workspace to that resumed status, and clears the active error selection. CODING keeps its special failed-bead reset before re-entering and does not create phase versions; a pending cancellation marker is cleared only after the previous session stop and bead recovery are confirmed. After a council step that drafts or votes, and after Preparing Workspace Runtime, Retry first stops the step's leftover OpenCode sessions and stays unavailable until that stop is confirmed, so a model whose stop never went through cannot carry on into the new round. For a live CODING block, Retry with extra note... performs the same safe recovery and appends a timestamped entry only to User Retry Notes after the bead can be identified and reset. OpenCode retry-budget or provider and session blocks may use Continue instead when the session is still addressable by exact id.",
-      "Setup Retry With Note → Preparing Workspace Runtime: If the server advertises a note-bearing setup retry for a preserved setup session, it keeps the current phase attempt, sends only the entered note to that session, allows exactly one extra manual setup attempt, automatically navigates the workspace back to Preparing Workspace Runtime, and clears the active error selection. An approval error without that advertised action stays limited to its supported recovery controls, and the user note is not appended to setup retry notes or later setup context.",
+      "Retry → Previous Status: Retry first confirms that the failed AI sessions stopped, then restarts the affected work in fresh sessions using its saved inputs. If stopping cannot be confirmed, the ticket remains blocked. Tracked non-implementation phases archive the failed attempt and create a fresh version; completed earlier planning and saved interview answers remain available. CODING keeps bead-scoped checkpoint recovery, and a successful coding checkpoint can retry finalization without repeating implementation. Successful recovery returns the workspace to the resumed status and clears active error selection.",
+      "Retry With Extra Note → Previous Status: A note-bearing retry performs the same fresh-session restart as Retry and adds the user's text unchanged to the affected AI work. Notes remain visible in its history and do not edit approved planning documents or become instructions for unrelated phases. Workspace setup uses the same fresh-session behavior; it does not resume the old conversation. Coding retains its separate User Retry Notes history.",
       "Continue → Previous Status: Continue is available only for eligible OpenCode or provider interruptions with a preserved active session addressable by exact id, including transient provider stalls, provider or session timeouts, selected 5xx or 529 and 408 or 429 responses, transport failures, `HTTP 402 Payment Required` blocks that can be cleared outside the session, and known OpenCode-server login or permission rejections after server login or permissions are repaired. Known OpenCode-server HTTP 401 or 403 login or permission rejections still require repaired server login or permissions, the same existing session, and usual ownership and availability checks. Billing, quota, invalid-request, and policy denials do not qualify for this server-login exception. Failed session creation without an existing session stays Retry-only. Model-provider authentication failures remain ineligible for Continue. It is not available for CODING workflow-owned iteration timeouts, which keep resetting and retrying until the bead budget is exhausted. Eligible sessions survive backend, OpenCode, WSL, OS, and machine restarts when the unresolved error occurrence, previous phase, and exact remote session still match. Temporary verification failures preserve the active record for a later check, while only confirmed absence or stale ownership abandons it. Continue returns to the previous status without archiving or creating phase attempts, automatically navigates the workspace to that resumed status, clears the active error selection, and sends exactly `continue please` into that same session. For CODING provider interruptions, the blocked view treats the bead as paused instead of actively counting down. After Continue, LoopTroop starts a fresh per-iteration timeout window while reusing the preserved OpenCode session.",
       "Edit Setup Plan → Waiting for Workspace Setup Plan Approval: Returns the ticket to setup plan review, rewinding stale workspace runtime attempts and outputs, automatically navigates the workspace to Waiting for Workspace Setup Plan Approval, and clears the active error selection.",
       "Cancel → Canceled: Cancel moves the ticket to the terminal Canceled state only after active remote sessions are confirmed stopped, automatically navigates the workspace to Canceled, and clears the active error selection. If a stop is false, thrown, or unverified, the ticket remains retryable with ownership visible. Artifacts and error history are preserved by default, and the cancellation dialog offers optional cleanup of AI-generated artifacts or the execution log.",
@@ -1265,7 +1295,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       "Past error occurrences stay reviewable even after the ticket moves on through retry or is canceled. Error history is never deleted.",
       "Manual retry versions for non-implementation phases are reviewed through the phase previous-version selector. Automatic structured retries inside a version are reviewed through artifact Raw attempt tabs, with parser and retry intervention warnings summarized on the main artifact tab. CODING retry history stays bead-scoped.",
-      "Retry with extra note... is shown only when the live Blocked Error view receives the server-advertised retry action and the failed phase supports that note. Coding appends the text unchanged to User Retry Notes and starts a fresh bead recovery. A setup-approval error does not imply note-bearing retry or setup-plan editing; historical errors and blocks from other phases do not offer unsupported controls.",
+      "Retry with extra note... is available for a live failed AI step that supports retry. It opens a dialog for a non-blank note of at most 20,000 characters. Retry and note-bearing Retry start fresh AI conversations; Continue preserves the conversation. Historical errors and non-AI operation failures do not offer unsupported note controls.",
       "When Drafting Workspace Setup Plan blocks during regeneration, Retry returns to that drafting version with the same durable regeneration-request artifact id. The request is cleared only after a valid or reviewable-invalid draft reaches approval.",
       "Continue is intentionally narrower than Retry. It is hidden unless the active error has a session id, the matching OpenCode session is preserved locally and addressable by exact id, and diagnostics point to a continuable provider or session condition such as `HTTP 402 Payment Required`, transient limits, overload, provider or session timeout, selected 5xx or 529 and 408 or 429 responses, transport interruption, or a known OpenCode-server login or permission rejection after server login or permissions are repaired. Billing, quota, invalid-request, and policy denials do not qualify for this server-login exception. Model-provider auth, LoopTroop-owned iteration timeout, non-402 quota, configuration, invalid-request, model-not-found, and request-size errors remain ineligible. A failed session creation with no existing session stays Retry-only. Restart reconciliation uses this same centralized eligibility classifier for every continuable error type instead of special-casing usage limits.",
       "Daemon Startup Recovery: Daemon startup recovery is a separate process-level failure. When an unresolved in-progress fallback raises `RECOVERY_BLOCKED`, startup throws before projections, ticket actor hydration, or execution timers; it does not create a `BLOCKED_ERROR` ticket occurrence or expose ticket Retry, Continue, or Cancel actions. The affected files and diagnostic remain available for manual recovery.",
@@ -1376,7 +1406,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "SCANNING_RELEVANT_FILES",
     label: "Scanning Relevant Files",
     description:
-      "LoopTroop is finding the files that matter for this ticket and saving accepted paths, excerpts, and reasons as shared planning context. This is a read-only grounding step for the council, PRD, and blueprint phases that follow.",
+      "LoopTroop is finding the files that matter for this ticket and saving accepted paths, excerpts, and reasons as shared planning context. This is a read-only grounding step for the council, PRD, and blueprint phases that follow. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.SCANNING_RELEVANT_FILES,
     kanbanPhase: "in_progress",
     groupId: "discovery",
@@ -1389,7 +1419,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_DELIBERATING",
     label: "Council Drafting Questions",
     description:
-      "Each council model is drafting interview questions on its own so the workflow can compare different approaches before choosing one. Models work in parallel from the same context, and only valid drafts move forward to voting. You can stop or retry one model from its chip while the others keep working.",
+      "Each council model is drafting interview questions on its own so the workflow can compare different approaches before choosing one. Models work in parallel from the same context, and only valid drafts move forward to voting. You can stop or retry one model from its chip while the others keep working. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt. A model-specific Retry with extra note restarts only that member with your unchanged guidance.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_DELIBERATING,
     kanbanPhase: "in_progress",
     groupId: "interview",
@@ -1402,7 +1432,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_VOTING_INTERVIEW",
     label: "Voting on Questions",
     description:
-      "The council is scoring the interview drafts and choosing the strongest question set. Drafts are anonymized so the vote stays about quality, not authorship, and the winner becomes the basis for the interactive interview. You can stop or retry one voter from its badge in Voting Details while the others keep scoring.",
+      "The council is scoring the interview drafts and choosing the strongest question set. Drafts are anonymized so the vote stays about quality, not authorship, and the winner becomes the basis for the interactive interview. You can stop or retry one voter from its badge in Voting Details while the others keep scoring. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt. A model-specific Retry with extra note restarts only that member with your unchanged guidance.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_INTERVIEW,
     kanbanPhase: "in_progress",
     groupId: "interview",
@@ -1415,7 +1445,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COMPILING_INTERVIEW",
     label: "Refining Interview",
     description:
-      "LoopTroop is turning the winning draft into the interview you will actually answer, including normalized questions, batch state, and UI metadata. This is the step that converts the council winner into a consistent interactive artifact.",
+      "LoopTroop is turning the winning draft into the interview you will actually answer, including normalized questions, batch state, and UI metadata. This is the step that converts the council winner into a consistent interactive artifact. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.COMPILING_INTERVIEW,
     kanbanPhase: "in_progress",
     groupId: "interview",
@@ -1428,7 +1458,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "WAITING_INTERVIEW_ANSWERS",
     label: "Interviewing",
     description:
-      "Answer the interview questions that will shape the PRD, or skip them with an optional reason the answering model gets to read. If ordinary parsing fails, safe field-tag repairs preserve model text in complete, explicitly wrapped batches. Accepted repair notices name the rule and affected fields, with excerpts retained in structured log data; successful structured retries are also recorded. Rejected field-tag repairs identify the structural problem in validation errors. Every submission has a positive batch identity; stale or unknown batches are rejected before mutation, and a durable claim keeps only its owner active. Draft answers autosave with visible state and last-save time. If a remote stop is false, thrown, or unverified, ownership stays retryable instead of being cleaned up. Non-final submissions can load another batch, and coverage may send the ticket back here with focused follow-up questions.",
+      "Answer the interview questions that will shape the PRD, or skip them with an optional reason the answering model gets to read. If ordinary parsing fails, safe field-tag repairs preserve model text in complete, explicitly wrapped batches. Accepted repair notices name the rule and affected fields, with excerpts retained in structured log data; successful structured retries are also recorded. Rejected field-tag repairs identify the structural problem in validation errors. Every submission has a positive batch identity; stale or unknown batches are rejected before mutation, and a durable claim keeps only its owner active. Draft answers autosave with visible state and last-save time. If a remote stop is false, thrown, or unverified, ownership stays retryable instead of being cleaned up. Non-final submissions can load another batch, and coverage may send the ticket back here with focused follow-up questions. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.WAITING_INTERVIEW_ANSWERS,
     kanbanPhase: "needs_input",
     groupId: "interview",
@@ -1442,7 +1472,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "VERIFYING_INTERVIEW_COVERAGE",
     label: "Coverage Check (Interview)",
     description:
-      "LoopTroop is checking whether the interview gathered enough information. If important gaps remain, it creates a focused follow-up round before approval. Logs separate coverage checks, response attempts, and reconnections to existing sessions. Timeout failures keep their captured model and session in blocked-error details. The loop is budgeted so the interview still converges instead of running indefinitely.",
+      "LoopTroop is checking whether the interview gathered enough information. If important gaps remain, it creates a focused follow-up round before approval. Logs separate coverage checks, response attempts, and reconnections to existing sessions. Timeout failures keep their captured model and session in blocked-error details. The loop is budgeted so the interview still converges instead of running indefinitely. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_INTERVIEW_COVERAGE,
     kanbanPhase: "in_progress",
     groupId: "interview",
@@ -1469,7 +1499,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "DRAFTING_PRD",
     label: "Council Drafting Specs",
     description:
-      "The council is filling skipped answers where needed and drafting competing PRDs. Each model works from its own completed answer set so the vote can compare both assumptions and specs. Invalid Full Answers stay diagnostic-only instead of turning into broken drafts. You can stop or retry one model from its Part 1 or Part 2 chip while the others keep working.",
+      "The council is filling skipped answers where needed and drafting competing PRDs. Each model works from its own completed answer set so the vote can compare both assumptions and specs. Invalid Full Answers stay diagnostic-only instead of turning into broken drafts. You can stop or retry one model from its Part 1 or Part 2 chip while the others keep working. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt. A model-specific Retry with extra note restarts only that member with your unchanged guidance.",
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_PRD,
     kanbanPhase: "in_progress",
     groupId: "prd",
@@ -1483,7 +1513,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_VOTING_PRD",
     label: "Voting on Specs",
     description:
-      "The council is scoring the PRD drafts and choosing the best starting point. The winner is the baseline for refinement, not the final approved spec, and the weighted rubric focuses on completeness, clarity, and testable requirements. You can stop or retry one voter from its badge in Voting Details while the others keep scoring.",
+      "The council is scoring the PRD drafts and choosing the best starting point. The winner is the baseline for refinement, not the final approved spec, and the weighted rubric focuses on completeness, clarity, and testable requirements. You can stop or retry one voter from its badge in Voting Details while the others keep scoring. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt. A model-specific Retry with extra note restarts only that member with your unchanged guidance.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_PRD,
     kanbanPhase: "in_progress",
     groupId: "prd",
@@ -1496,7 +1526,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "REFINING_PRD",
     label: "Refining Specs",
     description:
-      "LoopTroop is strengthening the winning PRD with the best missing details from the other drafts and producing PRD Candidate v1. Stable identifiers and text-preserving repairs keep the candidate reviewable before coverage begins.",
+      "LoopTroop is strengthening the winning PRD with the best missing details from the other drafts and producing PRD Candidate v1. Stable identifiers and text-preserving repairs keep the candidate reviewable before coverage begins. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.REFINING_PRD,
     kanbanPhase: "in_progress",
     groupId: "prd",
@@ -1514,7 +1544,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "VERIFYING_PRD_COVERAGE",
     label: "Coverage Check (PRD)",
     description:
-      "LoopTroop is checking the current PRD candidate against the winning Full Answers, using focused read-only repository inspection only when needed to confirm repository-specific claims. It revises in place until the candidate is clean or the pass cap is reached, and remaining gaps can still move forward with warnings. Logs identify the candidate, coverage check, audit or revision, response attempt, and any reconnection to existing sessions.",
+      "LoopTroop is checking the current PRD candidate against the winning Full Answers, using focused read-only repository inspection only when needed to confirm repository-specific claims. It revises in place until the candidate is clean or the pass cap is reached, and remaining gaps can still move forward with warnings. Logs identify the candidate, coverage check, audit or revision, response attempt, and any reconnection to existing sessions. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_PRD_COVERAGE,
     kanbanPhase: "in_progress",
     groupId: "prd",
@@ -1541,7 +1571,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "DRAFTING_BEADS",
     label: "Council Drafting Blueprint",
     description:
-      "The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and explicit structured verification commands. These drafts stay at the planning level, so exact file targets and runtime metadata are added later. You can stop or retry one model from its chip while the others keep working.",
+      "The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and explicit structured verification commands. These drafts stay at the planning level, so exact file targets and runtime metadata are added later. You can stop or retry one model from its chip while the others keep working. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt. A model-specific Retry with extra note restarts only that member with your unchanged guidance.",
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_BEADS,
     kanbanPhase: "in_progress",
     groupId: "beads",
@@ -1554,7 +1584,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "COUNCIL_VOTING_BEADS",
     label: "Voting on Blueprint",
     description:
-      "The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage. The vote focuses on decomposition quality, dependency logic, feasibility, and testability. You can stop or retry one voter from its badge in Voting Details while the others keep scoring.",
+      "The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage. The vote focuses on decomposition quality, dependency logic, feasibility, and testability. You can stop or retry one voter from its badge in Voting Details while the others keep scoring. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt. A model-specific Retry with extra note restarts only that member with your unchanged guidance.",
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_BEADS,
     kanbanPhase: "in_progress",
     groupId: "beads",
@@ -1567,7 +1597,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "REFINING_BEADS",
     label: "Refining Blueprint",
     description:
-      "LoopTroop is improving the winning semantic blueprint with stronger tasks, tests, and constraints from the other drafts, using focused read-only repository inspection when needed. This still stays at the semantic layer, before execution-specific metadata is added.",
+      "LoopTroop is improving the winning semantic blueprint with stronger tasks, tests, and constraints from the other drafts, using focused read-only repository inspection when needed. This still stays at the semantic layer, before execution-specific metadata is added. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.REFINING_BEADS,
     kanbanPhase: "in_progress",
     groupId: "beads",
@@ -1580,7 +1610,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "VERIFYING_BEADS_COVERAGE",
     label: "Coverage Check (Beads)",
     description:
-      "LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required. It revises the blueprint until the required work is covered or the pass cap is reached, while keeping this stage semantic before expansion adds execution metadata. Logs identify the candidate, coverage check, audit or revision, response attempt, and any reconnection to existing sessions.",
+      "LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required. It revises the blueprint until the required work is covered or the pass cap is reached, while keeping this stage semantic before expansion adds execution metadata. Logs identify the candidate, coverage check, audit or revision, response attempt, and any reconnection to existing sessions. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_BEADS_COVERAGE,
     kanbanPhase: "in_progress",
     groupId: "beads",
@@ -1596,7 +1626,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "EXPANDING_BEADS",
     label: "Expanding Blueprint",
     description:
-      "LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records while preserving structured commands and explicit no-command reasons. This adds file targets, dependency ordering, labels, and runtime metadata without redesigning the approved plan.",
+      "LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records while preserving structured commands and explicit no-command reasons. This adds file targets, dependency ordering, labels, and runtime metadata without redesigning the approved plan. Targets may be external or explicitly empty; missing or malformed lists are rejected. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.EXPANDING_BEADS,
     kanbanPhase: "in_progress",
     groupId: "beads",
@@ -1610,7 +1640,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "WAITING_BEADS_APPROVAL",
     label: "Approving Blueprint",
     description:
-      "Review and approve the execution-ready bead plan before coding starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact and its JSONL diagnostics. Approving with known coverage gaps takes an optional reason, and this is the last planning checkpoint before automated code changes begin. Requested AI gap fixes use a separate manual coverage fix number in the log, with revision and audit response attempts. Manual check counts show no automatic limit.",
+      "Review and approve the execution-ready bead plan before coding starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact and its JSONL diagnostics. Approving with known coverage gaps takes an optional reason, and this is the last planning checkpoint before automated code changes begin. Requested AI gap fixes use a separate manual coverage fix number in the log, with revision and audit response attempts. Manual check counts show no automatic limit. Each bead with external targets shows an External files warning and its paths; approval includes those targets.",
     details: WORKFLOW_PHASE_DETAILS.WAITING_BEADS_APPROVAL,
     kanbanPhase: "needs_input",
     groupId: "beads",
@@ -1624,7 +1654,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "PRE_FLIGHT_CHECK",
     label: "Checking Readiness",
     description:
-      "LoopTroop is running the last readiness checks before setup-plan drafting starts so execution does not begin from a broken workspace or plan. It verifies repo state, required artifacts, coding-agent access with a real model request, bead dependency integrity, and safe Git path and ref inputs. A failure names the doctor check that failed and its reported cause. Each failure line keeps its step, error-type prefix, and HTTP status in regular text; only the actionable cause is bold. Technical details keeps the available model, provider, session, and debug evidence, including the reported status, error type, and response preview of a provider rejection. Probe diagnostics redact credentials before live logging or storage.",
+      "LoopTroop is running the last readiness checks before setup-plan drafting starts so execution does not begin from a broken workspace or plan. It verifies repo state, required artifacts, coding-agent access with a real model request, bead dependency integrity, and safe Git path and ref inputs. A failure names the doctor check that failed and its reported cause. Each failure line keeps its step, error-type prefix, and HTTP status in regular text; only the actionable cause is bold. Technical details keeps the available model, provider, session, and debug evidence, including the reported status, error type, and response preview of a provider rejection. Probe diagnostics redact credentials before live logging or storage. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.PRE_FLIGHT_CHECK,
     kanbanPhase: "in_progress",
     groupId: "pre_implementation",
@@ -1638,7 +1668,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "GENERATING_EXECUTION_SETUP_PLAN",
     label: "Drafting Workspace Setup Plan",
     description:
-      "LoopTroop is creating a read-only, host-aware workspace setup proposal for review. Live generation logs and versioned artifacts stay visible, and no setup command runs until a valid plan is explicitly approved in the next phase.",
+      "LoopTroop is creating a read-only, host-aware workspace setup proposal for review. Live generation logs and versioned artifacts stay visible, and no setup command runs until a valid plan is explicitly approved in the next phase. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.GENERATING_EXECUTION_SETUP_PLAN,
     kanbanPhase: "in_progress",
     groupId: "pre_implementation",
@@ -1675,7 +1705,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "PREPARING_EXECUTION_ENV",
     label: "Preparing Workspace Runtime",
     description:
-      "LoopTroop is preparing the current host for this ticket with the approved setup plan. The phase must finish with an honest Ready or Blocked result before coding can start. Temporary tooling, inputs, and environment changes are recorded in the reusable runtime profile. Failed prompts remain in the attempt report; recovery requires a confirmed remote stop and bounded Git cleanup.",
+      "LoopTroop is preparing the current host for this ticket with the approved setup plan. The phase must finish with an honest Ready or Blocked result before coding can start. Temporary tooling, inputs, and environment changes are recorded in the reusable runtime profile. Failed prompts remain in the attempt report; recovery requires a confirmed remote stop and bounded Git cleanup. Manual Retry, including Retry with extra note, starts a fresh AI session from the approved plan and saved inputs. Continue alone resumes an eligible preserved session.",
     details: WORKFLOW_PHASE_DETAILS.PREPARING_EXECUTION_ENV,
     kanbanPhase: "in_progress",
     groupId: "pre_implementation",
@@ -1694,7 +1724,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "CODING",
     label: "Implementing (Bead ?/?)",
     description:
-      "LoopTroop is implementing the ticket one bead at a time. Each bead records its reset checkpoint before it becomes `in_progress` and must finish its own checks before the workflow moves to the next one. Automatic bead-response continuations within each bead iteration follow the finite `maxIterations` cap when configured, while `0` means unlimited for that automatic path; user-facing Continue across phases is separate. A checkpointed pending bead remains safely retryable even if its status write was interrupted. Success creates bead-level execution history, while bounded Git resets and commits preserve opaque paths and failures reset safely or pause for manual recovery. Step-cap and hook recovery markers stay owner-bound and destructive recovery refuses when their evidence is missing or ambiguous.",
+      "LoopTroop is implementing the ticket one bead at a time. Each bead records its reset checkpoint before it becomes `in_progress` and must finish its own checks before the workflow moves to the next one. Automatic bead-response continuations within each bead iteration follow the finite `maxIterations` cap when configured, while `0` means unlimited for that automatic path; user-facing Continue across phases is separate. A checkpointed pending bead remains safely retryable even if its status write was interrupted. Success creates bead-level execution history, while bounded Git resets and commits preserve opaque paths and failures reset safely or pause for manual recovery. Step-cap and hook recovery markers stay owner-bound and destructive recovery refuses when their evidence is missing or ambiguous. Beads disclose external targets with an External files warning; external changes are outside repository rollback.",
     details: WORKFLOW_PHASE_DETAILS.CODING,
     kanbanPhase: "in_progress",
     groupId: "implementation",
@@ -1709,7 +1739,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "RUNNING_FINAL_TEST",
     label: "Testing Implementation",
     description:
-      "LoopTroop is running whole-ticket verification against the implemented result. This is the mandatory automated gate before Manual QA or final integration, and it runs again after an early-merged PR adds a corrective candidate. The phase audits opaque Git path records so local-only outputs stay out of delivery.",
+      "LoopTroop is running whole-ticket verification against the implemented result. This is the mandatory automated gate before Manual QA or final integration, and it runs again after an early-merged PR adds a corrective candidate. The phase audits opaque Git path records so local-only outputs stay out of delivery. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.RUNNING_FINAL_TEST,
     kanbanPhase: "in_progress",
     groupId: "post_implementation",
@@ -1723,7 +1753,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "GENERATING_QA_CHECKLIST",
     label: "Preparing Manual QA",
     description:
-      "LoopTroop is preparing the next Manual QA checklist and candidate checkpoint from the passing implementation. This phase stays automatic and never controls your app. Candidate paths remain opaque, generated outputs stay local-only, and advisory PRD coverage is computed for the next checklist version.",
+      "LoopTroop is preparing the next Manual QA checklist and candidate checkpoint from the passing implementation. This phase stays automatic and never controls your app. Candidate paths remain opaque, generated outputs stay local-only, and advisory PRD coverage is computed for the next checklist version. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt.",
     details: WORKFLOW_PHASE_DETAILS.GENERATING_QA_CHECKLIST,
     kanbanPhase: "in_progress",
     groupId: "post_implementation",
@@ -1744,7 +1774,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "WAITING_MANUAL_QA",
     label: "Manual QA",
     description:
-      "Run the app yourself, work through the checklist, and record results in the autosaved Manual QA workspace. Submit and Skip capture the clicked draft, evidence, checklist round, and revision; later autosaves cannot replace that snapshot. Evidence storage keeps a strict no-symlink policy, event diagnostics retain invalid lines, and evidence locking uses a persistent transaction database. Submit finishes the round, and failed checks create QA-fix work. Waiving a check or skipping the round takes an optional reason, and improvements and evidence stay attached to the versioned checklist history.",
+      "Run the app yourself, work through the checklist, and record results in the autosaved Manual QA workspace. Submit and Skip capture the clicked draft, evidence, checklist round, and revision; later autosaves cannot replace that snapshot. Evidence storage keeps a strict no-symlink policy, event diagnostics retain invalid lines, and evidence locking uses a persistent transaction database. Submit finishes the round, and failed checks create QA-fix work. Waiving a check or skipping the round takes an optional reason, and improvements and evidence stay attached to the versioned checklist history. If AI fix-bead generation fails during submission, Retry with extra note can restart that AI work with your guidance while preserving the submitted results.",
     details: WORKFLOW_PHASE_DETAILS.WAITING_MANUAL_QA,
     kanbanPhase: "needs_input",
     groupId: "post_implementation",
@@ -1773,7 +1803,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "CREATING_PULL_REQUEST",
     label: "Creating Pull Request",
     description:
-      "LoopTroop audits candidate files and verifies any matching PR that has already merged before pushing. A matching candidate or an already-landed delta completes from verified merge history; additional candidate changes return to final tests; missing proof or conflicts preserve the work for manual recovery. Retry Verify adopts a clean manual resolution committed once on the recorded recovery base and reruns final validation. If a new PR is needed, LoopTroop creates or updates an unmerged draft. The command guard does not sandbox scripts, custom executables, network clients, or helpers with independent permissions.",
+      "LoopTroop audits candidate files and verifies any matching PR that has already merged before pushing. A matching candidate or an already-landed delta completes from verified merge history; additional candidate changes return to final tests; missing proof or conflicts preserve the work for manual recovery. Retry Verify adopts a clean manual resolution committed once on the recorded recovery base and reruns final validation. If a new PR is needed, LoopTroop creates or updates an unmerged draft. The command guard does not sandbox scripts, custom executables, network clients, or helpers with independent permissions. If AI work fails, Retry starts a fresh session; Retry with extra note adds your guidance to that attempt. Continue requires the saved audit to match the same base and candidate.",
     details: WORKFLOW_PHASE_DETAILS.CREATING_PULL_REQUEST,
     kanbanPhase: "in_progress",
     groupId: "post_implementation",
@@ -1843,7 +1873,7 @@ const BASE_WORKFLOW_PHASES = [
     id: "BLOCKED_ERROR",
     label: "Error (reason)",
     description:
-      "A phase failed and LoopTroop is waiting for your recovery decision. The workspace shows the failed phase and actual error first, including failure details from checks, setup, bead execution, and final tests. Coding failures lead with the final stopping reason and latest attempts. It places recovery actions the server allows above Technical details, collapsed by default for every error. The section includes the ticket and occurrence identity, failed phase, timestamp, full sanitized error, and the last five matching Debug-view records, newest first and each collapsed by default. Expand a record for complete structured data after credential redaction. Debug logs in every phase redact credentials before live streaming or storage. The server applies known failure bounds before selecting records, including errors without a saved occurrence, so newer activity cannot hide evidence. Provider-login guidance requires provider evidence. A prompt error reporting only Unauthorized or Forbidden without explicit server or provider evidence keeps captured status, cause, and metadata with neutral guidance and Retry, without inferred provider identity, login-refresh advice, or Continue. An existing preserved session may Continue following a known OpenCode-server HTTP 401 or 403 rejection once server login or permissions are repaired and the usual exact-session safety checks pass; failed session creation without a session stays Retry-only. Model-provider authentication failures remain ineligible for Continue. Billing, quota, invalid-request, and policy denials do not qualify for the server-login exception. Provider prompt rejections retain their reported provider identity, status, error type, and response preview. Repeated session-error records remain separate evidence. The separate phase log retains the full history. Missing metadata or logs is explicit. Captured model, exact session, token/cache counts, error type, bounded stack, and a bounded redacted provider preview add context when available. Communication failures name the failed OpenCode operation and reported error, then point to captured connection details or say when no exact connection cause was reported. Available connection codes and causes appear in Technical details, including causes preserved through session-creation retries and nested AI retry errors. Details stay open during refreshes of the same failure. The current paused bead takes precedence over older failure notes. Historical occurrences show their own phase without current bead counters or notes. Safe resume follows the detailed ownership rules: if both the project database and ticket marker are unavailable, only the current process guard remains and a restart cannot claim recovery. CODING Retry clears a pending cancellation fence only after the previous stop and bead recovery are confirmed. The ticket keeps the error context, logs, and the exact phase that needs retry or continuation. Failed runtime setup offers setup-plan editing and an extra-note retry; setup-approval errors do not grant those controls. Triggering any recovery action (Retry, Continue, Retry with extra note, Edit setup plan, or Cancel) automatically navigates the workspace back to the resumed status or canceled view and clears the error selection.",
+      "A phase failed and LoopTroop is waiting for your recovery decision. The workspace shows the failed phase and actual error first, including failure details from checks, setup, bead execution, and final tests. Coding failures lead with the final stopping reason and latest attempts. It places recovery actions the server allows above Technical details, collapsed by default for every error. The section includes the ticket and occurrence identity, failed phase, timestamp, full sanitized error, and the last five matching Debug-view records, newest first and each collapsed by default. Expand a record for complete structured data after credential redaction. Debug logs in every phase redact credentials before live streaming or storage. The server applies known failure bounds before selecting records, including errors without a saved occurrence, so newer activity cannot hide evidence. Provider-login guidance requires provider evidence. A prompt error reporting only Unauthorized or Forbidden without explicit server or provider evidence keeps captured status, cause, and metadata with neutral guidance and Retry, without inferred provider identity, login-refresh advice, or Continue. An existing preserved session may Continue following a known OpenCode-server HTTP 401 or 403 rejection once server login or permissions are repaired and the usual exact-session safety checks pass; failed session creation without a session stays Retry-only. Model-provider authentication failures remain ineligible for Continue. Billing, quota, invalid-request, and policy denials do not qualify for the server-login exception. Provider prompt rejections retain their reported provider identity, status, error type, and response preview. Repeated session-error records remain separate evidence. The separate phase log retains the full history. Missing metadata or logs is explicit. Captured model, exact session, token/cache counts, error type, bounded stack, and a bounded redacted provider preview add context when available. Communication failures name the failed OpenCode operation and reported error, then point to captured connection details or say when no exact connection cause was reported. Available connection codes and causes appear in Technical details, including causes preserved through session-creation retries and nested AI retry errors. Details stay open during refreshes of the same failure. The current paused bead takes precedence over older failure notes. Historical occurrences show their own phase without current bead counters or notes. Safe resume follows the detailed ownership rules: if both the project database and ticket marker are unavailable, only the current process guard remains and a restart cannot claim recovery. CODING Retry clears a pending cancellation fence only after the previous stop and bead recovery are confirmed. The ticket keeps the error context, logs, and the exact phase that needs retry or continuation. Failed runtime setup offers setup-plan editing and an extra-note retry; setup-approval errors do not grant those controls. Triggering any recovery action (Retry, Continue, Retry with extra note, Edit setup plan, or Cancel) automatically navigates the workspace back to the resumed status or canceled view and clears the error selection. Retry restarts failed AI work in a fresh session; Retry with extra note adds unchanged user guidance where supported, while Continue resumes the preserved session.",
     details: WORKFLOW_PHASE_DETAILS.BLOCKED_ERROR,
     kanbanPhase: "needs_input",
     groupId: "errors",
@@ -1993,6 +2023,7 @@ export const WORKFLOW_ACTIONS = [
   "approve",
   "cancel",
   "retry",
+  "retry_with_note",
   "edit_execution_setup_plan",
   "continue",
   "merge",

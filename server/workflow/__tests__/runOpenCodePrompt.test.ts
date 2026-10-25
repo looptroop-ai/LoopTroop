@@ -42,6 +42,8 @@ import { WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
 import { createWorkBudget } from '../workBudget'
 import { removeTempDir } from '../../test/tempDir'
 import { V2OpenCodeHttpError } from '../../opencode/v2Transport'
+import { savePhaseRetryNote } from '../retryNotes'
+import { archiveActivePhaseAttempts, createFreshPhaseAttempts, ensureActivePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 
 type OpenCodeSDKClient = NonNullable<ConstructorParameters<typeof OpenCodeSDKAdapter>[1]>
 
@@ -276,6 +278,65 @@ function expectGuardedPromptPermissions(adapter: TestOpenCodeAdapter, callIndex:
 
 describe('runOpenCodePrompt', () => {
   const repoManager = createTestRepoManager('run-opencode-prompt-')
+
+  it('reserves a continuation for its own step while another step uses a fresh session', async () => {
+    resetTestDb()
+    clearAllPendingSessionContinuationsForTests()
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Continue the exact PR step' })
+    patchTicket(ticket.id, { status: 'CREATING_PULL_REQUEST' })
+    const adapter = new TestOpenCodeAdapter(['Initial draft', 'Audit response', 'Continued draft'])
+    const draft = await runOpenCodePrompt({
+      adapter, projectPath: '/tmp/project', parts: [{ type: 'text', content: 'Draft a PR' }],
+      sessionOwnership: { ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', step: 'pull_request_draft', keepActive: true },
+    })
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', sessionId: draft.session.id })
+    const audit = await runOpenCodePrompt({
+      adapter, projectPath: '/tmp/project', parts: [{ type: 'text', content: 'Audit files' }],
+      sessionOwnership: { ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', step: 'candidate_file_audit', forceFresh: true },
+    })
+    expect(audit.response).toBe('Audit response')
+    expect(audit.session.id).not.toBe(draft.session.id)
+    expect(adapter.promptCalls[1]?.parts[0]).toEqual({ type: 'text', content: 'Audit files' })
+    const resumed = await runOpenCodePrompt({
+      adapter, projectPath: '/tmp/project', parts: [{ type: 'text', content: 'Do not resend the draft inputs' }],
+      sessionOwnership: { ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', step: 'pull_request_draft', forceFresh: true },
+    })
+    expect(resumed.session.id).toBe(draft.session.id)
+    expect(resumed.response).toBe('Continued draft')
+    expect(adapter.promptCalls[2]?.parts[0]).toEqual({ type: 'text', content: 'continue please' })
+    expect(adapter.abortCalls).not.toContain(draft.session.id)
+  })
+
+  it('uses the current attempt and appends the literal retry note only to restarted work', async () => {
+    resetTestDb()
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Fresh refinement with guidance' })
+    patchTicket(ticket.id, { status: 'REFINING_PRD' })
+    ensureActivePhaseAttempt(ticket.id, 'REFINING_PRD')
+    savePhaseRetryNote(ticket.id, 'REFINING_PRD', 'Old attempt note')
+    archiveActivePhaseAttempts(ticket.id, ['REFINING_PRD'], 'retry')
+    createFreshPhaseAttempts(ticket.id, ['REFINING_PRD'])
+    const note = '  Keep the supplied paths.\nUse the recorded evidence exactly.  '
+    savePhaseRetryNote(ticket.id, 'REFINING_PRD', note)
+    const adapter = new TestOpenCodeAdapter(['refined', 'continued'])
+    const initialParts: PromptPart[] = [{ type: 'text', content: 'Saved refinement inputs' }]
+    const initial = await runOpenCodePrompt({
+      adapter, projectPath: '/tmp/project', parts: initialParts,
+      sessionOwnership: { ticketId: ticket.id, phase: 'REFINING_PRD', keepActive: true },
+    })
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])[0]?.phaseAttempt).toBe(2)
+    expect(adapter.promptCalls[0]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+    expect(initialParts).toEqual([{ type: 'text', content: 'Saved refinement inputs' }])
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'REFINING_PRD', sessionId: initial.session.id })
+    await runOpenCodePrompt({
+      adapter, projectPath: '/tmp/project', parts: initialParts,
+      sessionOwnership: { ticketId: ticket.id, phase: 'REFINING_PRD' },
+    })
+    expect(adapter.promptCalls[1]?.sessionId).toBe(initial.session.id)
+    expect(adapter.promptCalls[1]?.parts).toEqual([
+      { type: 'text', content: 'continue please' },
+      { type: 'system', content: 'Leave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.' },
+    ])
+  })
 
   afterAll(() => {
     clearAllPendingSessionContinuationsForTests()
@@ -1627,6 +1688,7 @@ describe('runOpenCodePrompt', () => {
       sessionOwnership: {
         ticketId: ticket.id,
         phase: 'PREPARING_EXECUTION_ENV',
+        forceFresh: true,
       },
     })
 

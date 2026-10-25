@@ -1,3 +1,4 @@
+import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import type { OpenCodeAdapter } from '../opencode/adapter'
 import type {
   CouncilMember,
@@ -115,7 +116,7 @@ export async function generateDrafts(
     ? {
         ticketId: runtimeOptions.ticketId,
         phase: runtimeOptions.phase,
-        phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+        phaseAttempt: resolvePhaseAttempt(runtimeOptions.ticketId, runtimeOptions.phase, runtimeOptions.phaseAttempt),
       }
     : null
   const sessionManager = ownershipScope ? new SessionManager(adapter) : null
@@ -228,8 +229,11 @@ export async function generateDrafts(
 
     const executeDraft = (async (): Promise<DraftResult> => {
       if (signal?.aborted) throw new CancelledError()
-      let promptParts = contextParts
-      const initialInput = formatPromptText(contextParts)
+      const memberContextParts: PromptPart[] = attempt.retryNote === undefined
+        ? contextParts
+        : [...contextParts, { type: 'text', content: `## User Retry Note\n${attempt.retryNote}` }]
+      let promptParts = memberContextParts
+      const initialInput = formatPromptText(memberContextParts)
       let result: Awaited<ReturnType<typeof runOpenCodePrompt>> | undefined
       const maxStructuredRetries = normalizeStructuredRetryCount(runtimeOptions?.maxStructuredRetries)
 
@@ -351,12 +355,12 @@ export async function generateDrafts(
           }
           attemptCount += 1
           promptParts = retryDecision.useStructuredRetryPrompt
-            ? buildStructuredRetryPrompt(contextParts, {
+            ? buildStructuredRetryPrompt(memberContextParts, {
                 validationError,
                 rawResponse: content,
                 schemaReminder: runtimeOptions?.structuredRetrySchemaReminder,
               })
-            : contextParts
+            : memberContextParts
         }
       }
 
@@ -368,10 +372,10 @@ export async function generateDrafts(
         })
       }
 
-      const steeredByOperator = wasMemberAnswered(
+      const steeredByOperator = attempt.retryNote !== undefined || wasMemberAnswered(
         runtimeOptions?.ticketId,
         runtimeOptions?.phase,
-        runtimeOptions?.phaseAttempt ?? 1,
+        ownershipScope?.phaseAttempt ?? 1,
         member.modelId,
       )
 

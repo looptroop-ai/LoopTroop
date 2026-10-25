@@ -117,7 +117,7 @@ export async function generateExecutionSetupPlan(
             sessionOwnership: {
               ticketId: callbacks.ticketId,
               phase: 'GENERATING_EXECUTION_SETUP_PLAN',
-              phaseAttempt: callbacks.phaseAttempt ?? 1,
+              phaseAttempt: callbacks.phaseAttempt,
               keepActive: true,
               step: 'execution_setup_plan',
               ...(callbacks.model ? { memberId: callbacks.model } : {}),
@@ -249,7 +249,7 @@ export async function generateExecutionSetupPlan(
                 sessionOwnership: {
                   ticketId: callbacks.ticketId,
                   phase: 'GENERATING_EXECUTION_SETUP_PLAN',
-                  phaseAttempt: callbacks.phaseAttempt ?? 1,
+                  phaseAttempt: callbacks.phaseAttempt,
                   keepActive: true,
                   step: 'execution_setup_plan',
                   ...(callbacks.model ? { memberId: callbacks.model } : {}),

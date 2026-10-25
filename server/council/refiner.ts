@@ -135,7 +135,7 @@ export async function refineDraft(
               sessionOwnership: {
                 ticketId: sessionOwnership.ticketId,
                 phase: sessionOwnership.phase,
-                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+                phaseAttempt: sessionOwnership.phaseAttempt,
                 memberId: winnerDraft.memberId,
               },
             }

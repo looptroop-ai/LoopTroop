@@ -42,6 +42,8 @@ import { getTicketPaths } from '../storage/ticketQueries'
 import { createWorkBudget, type WorkBudget } from './workBudget'
 import { phaseMayAskQuestions } from '@shared/aiQuestions'
 import { ticketAllowsAiQuestions } from './aiQuestionSettings'
+import { appendPhaseRetryNote } from './retryNotes'
+import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 
 export interface OpenCodeRunCallbacks {
   onSessionCreated?: (session: Session, context?: { reconnected: boolean }) => void
@@ -417,7 +419,7 @@ export async function runOpenCodePrompt({
   variant,
   toolPolicy,
   questionsAllowed,
-  sessionOwnership,
+  sessionOwnership: requestedSessionOwnership,
   erroredSessionPolicy,
   opencodeRetryPolicy,
   onSessionCreated,
@@ -425,6 +427,10 @@ export async function runOpenCodePrompt({
   onStreamEvent,
   onPromptCompleted,
 }: OpenCodeRunOptions & { projectPath: string }): Promise<OpenCodeRunResult> {
+  const sessionOwnership = requestedSessionOwnership && {
+    ...requestedSessionOwnership,
+    phaseAttempt: resolvePhaseAttempt(requestedSessionOwnership.ticketId, requestedSessionOwnership.phase, requestedSessionOwnership.phaseAttempt),
+  }
   let sessionManager: SessionManager | null = null
   const sessionCreateOptions = resolveSessionCreateOptions()
   const resolvedTimeoutDeadline = workBudget
@@ -437,7 +443,8 @@ export async function runOpenCodePrompt({
   try {
     if (sessionOwnership) {
       sessionManager = new SessionManager(adapter)
-      if (sessionOwnership.forceFresh) {
+      const forceFresh = sessionOwnership.forceFresh && !sessionManager.getPendingContinuationSession(sessionOwnership.ticketId, sessionOwnership.phase, sessionOwnership)
+      if (forceFresh) {
         const existing = sessionManager.getOwnedActiveSession(
           sessionOwnership.ticketId,
           sessionOwnership.phase,
@@ -453,7 +460,7 @@ export async function runOpenCodePrompt({
           clearOpenCodePromptDispatchCount(existing.sessionId)
         }
       }
-      const existing = !sessionOwnership.forceFresh
+      const existing = !forceFresh
         ? await sessionManager.validateAndReconnect(
             sessionOwnership.ticketId,
             sessionOwnership.phase,
@@ -520,7 +527,7 @@ export async function runOpenCodePrompt({
       : null
     const promptParts = continuation
       ? [{ type: 'text' as const, content: continuation.prompt ?? PROM54_CONTINUE_TEXT }]
-      : parts
+      : sessionOwnership ? appendPhaseRetryNote(parts, sessionOwnership.ticketId, sessionOwnership.phase) : parts
     const result = await runOpenCodeSessionPrompt({
       adapter,
       session,
@@ -590,7 +597,7 @@ export async function runOpenCodeSessionPrompt({
   variant,
   toolPolicy,
   questionsAllowed,
-  sessionOwnership,
+  sessionOwnership: requestedSessionOwnership,
   skipSessionValidation,
   erroredSessionPolicy,
   opencodeRetryPolicy,
@@ -601,6 +608,10 @@ export async function runOpenCodeSessionPrompt({
   timeoutDeadline,
   workBudget: callerBudget,
 }: OpenCodeRunOptions & { session: Session }): Promise<OpenCodeRunResult> {
+  const sessionOwnership = requestedSessionOwnership && {
+    ...requestedSessionOwnership,
+    phaseAttempt: resolvePhaseAttempt(requestedSessionOwnership.ticketId, requestedSessionOwnership.phase, requestedSessionOwnership.phaseAttempt),
+  }
   const dispatchedParts: PromptPart[] = [
     ...parts,
     { type: 'system', content: GLOBAL_DELIVERY_OWNERSHIP_INSTRUCTION },

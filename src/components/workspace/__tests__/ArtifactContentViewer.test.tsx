@@ -224,6 +224,17 @@ items:
     expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
   })
 
+  it('marks external targets on the affected bead in the approval artifact', () => {
+    render(<BeadsDraftView content={JSON.stringify([
+      { id: 'external', title: 'Check external configuration', targetFiles: ['/home/user/config.json'] },
+      { id: 'internal', title: 'Update project', targetFiles: ['src/app.txt'] },
+    ])} />)
+    expect(within(screen.getByRole('button', { name: /Check external configuration/ })).getByText('External files')).toBeInTheDocument()
+    expect(within(screen.getByRole('button', { name: /Update project/ })).queryByText('External files')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Check external configuration/ }))
+    expect(screen.getByText('/home/user/config.json')).toBeInTheDocument()
+  })
+
   it('shows Manual QA provenance in bead artifacts while keeping retry notes separate', () => {
     render(<BeadsDraftView content={JSON.stringify({ beads: [{
       id: 'QA-v2-1', title: 'Fix checkout', priority: 1, status: 'pending', notes: 'Retry note',

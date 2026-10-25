@@ -559,6 +559,69 @@ describe('ticketRouter basic ticket routes', () => {
     expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(String))
   })
 
+  it('blocks a failed asynchronous AI submission with diagnostics so recovery actions can be offered', async () => {
+    const ticket = createInterviewBatchTicket()
+    const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
+    delete process.env.LOOPTROOP_OPENCODE_MODE
+    const diagnostics = {
+      kind: 'transport',
+      source: 'opencode',
+      summary: 'The interview request lost its connection.',
+      sessionId: 'interview-failed-session',
+      modelId: 'test/model',
+    }
+    vi.mocked(processInterviewBatchAsync).mockRejectedValueOnce(Object.assign(
+      new Error(diagnostics.summary),
+      { blockedErrorDiagnostics: diagnostics },
+    ))
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'Keep this answer.' } }),
+      })
+
+      expect(response.status).toBe(202)
+      await vi.waitFor(() => expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, expect.objectContaining({
+        type: 'ERROR',
+        message: diagnostics.summary,
+        diagnostics: expect.objectContaining({ sessionId: diagnostics.sessionId, kind: diagnostics.kind }),
+      })))
+    } finally {
+      if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
+      else process.env.LOOPTROOP_OPENCODE_MODE = previousMode
+    }
+  })
+
+  it('ignores an old asynchronous AI failure after the interview has moved on', async () => {
+    const ticket = createInterviewBatchTicket()
+    const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
+    delete process.env.LOOPTROOP_OPENCODE_MODE
+    let rejectModel: ((error: Error) => void) | undefined
+    vi.mocked(processInterviewBatchAsync).mockImplementationOnce(() => new Promise((_, reject) => { rejectModel = reject }))
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'Keep this answer.' } }),
+      })
+      expect(response.status).toBe(202)
+      patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_APPROVAL' })
+      rejectModel?.(Object.assign(new Error('Late AI failure'), {
+        blockedErrorDiagnostics: { kind: 'transport', source: 'opencode', summary: 'Late AI failure', sessionId: 'old-session' },
+      }))
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(sendTicketEvent).not.toHaveBeenCalledWith(ticket.id, expect.objectContaining({ type: 'ERROR' }))
+      expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_APPROVAL')
+    } finally {
+      if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
+      else process.env.LOOPTROOP_OPENCODE_MODE = previousMode
+    }
+  })
+
   it('refuses answer submission while a skip-all stop is awaiting confirmation', async () => {
     const ticket = createInterviewBatchTicket()
     const initialClaim = claimDurableInterviewBatch(ticket.id)

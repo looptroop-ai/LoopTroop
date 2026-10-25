@@ -772,10 +772,7 @@ export class SessionManager {
     ownership?: SessionOwnership,
     signal?: AbortSignal,
   ): Promise<Session | null> {
-    const pendingContinuation = getPendingSessionContinuationForTicketPhase(ticketId, phase)
-    const pendingSession = pendingContinuation
-      ? this.getActiveSessionById(ticketId, phase, pendingContinuation.sessionId)
-      : undefined
+    const pendingSession = this.getPendingContinuationSession(ticketId, phase, ownership)
     const existing = pendingSession ?? (ownership
       ? this.getOwnedActiveSession(ticketId, phase, ownership)
       : this.getActiveSession(ticketId, phase))
@@ -800,6 +797,16 @@ export class SessionManager {
       throw new Error(`Could not verify whether OpenCode session ${existing.sessionId} is still active`)
     }
     return null
+  }
+
+  getPendingContinuationSession(ticketId: string, phase: StoredSessionPhase, ownership?: SessionOwnership) {
+    const pending = getPendingSessionContinuationForTicketPhase(ticketId, phase)
+    const session = pending ? this.getActiveSessionById(ticketId, phase, pending.sessionId) : undefined
+    if (!session || !ownership) return session
+    for (const key of ['memberId', 'beadId', 'iteration', 'step'] as const) {
+      if ((session[key] ?? null) !== (ownership[key] ?? null)) return undefined
+    }
+    return session
   }
 
   private getActiveSessionById(ticketId: string, phase: StoredSessionPhase, sessionId: string) {
@@ -853,7 +860,7 @@ export class SessionManager {
     }
 
     const pendingSession = pendingContinuation?.sessionId === sessionId
-      ? this.getActiveSessionById(ticketId, phase, sessionId)
+      ? this.getPendingContinuationSession(ticketId, phase, ownership)
       : undefined
     const existing = pendingSession ?? (ownership
       ? this.getOwnedActiveSession(ticketId, phase, ownership)

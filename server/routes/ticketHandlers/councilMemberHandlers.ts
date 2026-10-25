@@ -92,10 +92,14 @@ export async function handleRetryCouncilMember(c: Context) {
   const part = phase === 'DRAFTING_PRD' ? parsed.data.part ?? 'prd_draft' : undefined
 
   try {
-    await retryCouncilMember(ticketId, phase, memberId, part, closeQuestionsFor(ticketId, phase, memberId, 'member_restarted'))
+    await retryCouncilMember(ticketId, phase, memberId, part, closeQuestionsFor(ticketId, phase, memberId, 'member_restarted'), parsed.data.note)
     // Which part restarts is logged by the step itself when the new attempt
     // begins: a PRD restart from Part 2 redoes both parts when Part 1 is unusable.
-    emitRoutePhaseLog(ticketId, phase, 'info', `You restarted ${memberId}, with a full new time limit.`, { modelId: memberId })
+    const note = parsed.data.note
+    emitRoutePhaseLog(ticketId, phase, 'info', `You restarted ${memberId}, with a full new time limit.${note !== undefined ? `\nExtra note:\n${note}` : ''}`, {
+      modelId: memberId,
+      ...(note !== undefined ? { userRetryNote: note } : {}),
+    })
     return c.json({ success: true, phase, memberId } satisfies CouncilMemberRetryResponse)
   } catch (error) {
     return respondWithControlError(c, error)

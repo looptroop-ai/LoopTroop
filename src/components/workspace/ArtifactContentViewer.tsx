@@ -39,6 +39,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/comp
 import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/interviewDocument'
 import { renderWordDiffSegments } from './diffWordHighlights'
 import { InterviewDocumentView } from './InterviewDocumentView'
+import { ExternalFilesBadge } from './ExternalFilesBadge'
 import {
   getCouncilStatusLabel,
   readCouncilRoundMeta,
@@ -2050,6 +2051,7 @@ export function BeadsDraftView({ content, parsedBeads }: { content: string; pars
                       #{order}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{title}</span>
+                    <ExternalFilesBadge targetFiles={targetFiles} />
                     {qaOrigin && <ManualQaOriginBadge origin={qaOrigin} />}
                   </span>
                 )}
@@ -2327,6 +2329,13 @@ function LiveVoterStatusBadges({ scope, voters, minQuorum, roundOpen }: {
                 memberId={voterId}
                 disabled={confirmation.isPending}
                 onClick={() => confirmation.open({ action: 'retry', memberId: voterId })}
+              />
+              <CouncilMemberControlButton
+                iconOnly
+                action="retry_with_note"
+                memberId={voterId}
+                disabled={confirmation.isPending}
+                onClick={() => confirmation.open({ action: 'retry', memberId: voterId, note: '' })}
               />
             </div>
           )

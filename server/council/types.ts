@@ -78,7 +78,7 @@ export interface DraftResult {
   rawAttempts?: RawAttempt[]
   skippedReason?: string
   /**
-   * This member asked the operator something and got an answer.
+   * This member received an operator answer or a retry note.
    *
    * It therefore drafted against instructions none of the other members saw, and
    * will be judged by voters who did not see them either. Carried through to the

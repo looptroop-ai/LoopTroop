@@ -105,7 +105,7 @@ export async function generateFinalTests(
             sessionOwnership: {
               ticketId: callbacks.ticketId,
               phase: 'RUNNING_FINAL_TEST',
-              phaseAttempt: callbacks.phaseAttempt ?? 1,
+              phaseAttempt: callbacks.phaseAttempt,
               keepActive: true,
               ...(callbacks.model ? { memberId: callbacks.model } : {}),
             },
@@ -248,7 +248,7 @@ export async function generateFinalTests(
                 sessionOwnership: {
                   ticketId: callbacks.ticketId,
                   phase: 'RUNNING_FINAL_TEST',
-                  phaseAttempt: callbacks.phaseAttempt ?? 1,
+                  phaseAttempt: callbacks.phaseAttempt,
                   keepActive: true,
                   ...(callbacks.model ? { memberId: callbacks.model } : {}),
                 },

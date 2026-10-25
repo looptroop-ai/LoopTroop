@@ -101,6 +101,7 @@ export interface CouncilMemberStopRequest {
 export interface CouncilMemberRetryRequest extends CouncilMemberStopRequest {
   /** Only read in `DRAFTING_PRD`. Defaults to `prd_draft`. */
   part?: CouncilMemberRetryPart
+  note?: string
 }
 
 export interface CouncilMemberStopResponse {

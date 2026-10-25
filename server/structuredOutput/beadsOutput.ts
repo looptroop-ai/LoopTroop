@@ -829,7 +829,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     throw new Error(`Bead at index ${index} must include a targetFiles list of non-empty file paths; use [] when no files are targeted`)
   }
   if (typeof rawTargetFiles === 'string') {
-    repairWarnings.push(`Wrapped the single targetFiles path at bead index ${index} in a list.`)
+    repairWarnings.push(`Wrapped the single targetFiles path at bead index ${index} in a list: ${JSON.stringify(rawTargetFiles)} -> ${JSON.stringify(targetFiles.map(filePath => filePath.trim()))}.`)
   }
 
   const dependencies = normalizeDependencies(getValueByAliases(value, ['dependencies']))

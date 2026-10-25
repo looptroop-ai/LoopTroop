@@ -1,3 +1,5 @@
+import { readPhaseRetryNote, savePhaseRetryNote } from '../../../workflow/retryNotes'
+import * as fixBeadGeneration from '../fixBeads'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -23,7 +25,7 @@ import {
   captureFinalTestDirtyFiles,
 } from '../../finalTest/fileEffectsAudit'
 import { prepareManualQaCheckpoint } from '../checkpoint'
-import { detectManualQaWorkspaceDrift, reserveManualQaSubmissionOperation, skipManualQa, submitManualQa } from '../operations'
+import { detectManualQaWorkspaceDrift, reserveManualQaSubmissionOperation, resumeFailedManualQaSubmission, skipManualQa, submitManualQa } from '../operations'
 import {
   getManualQaChecklistHash,
   getManualQaStoragePaths,
@@ -772,6 +774,52 @@ describe('Manual QA submission recovery and integrity', () => {
       sendEvent: vi.fn(),
     })
     expect(readManualQaResults(setup.paths.ticketDir, 1)?.submittedAt).toBe('2026-07-13T12:00:00.000Z')
+  })
+
+  it('waits for human input when no failed Manual QA submission exists', async () => {
+    const setup = await prepareFixture()
+    const generate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates')
+    try {
+      const sendEvent = vi.fn()
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).not.toHaveBeenCalled()
+      expect(sendEvent).not.toHaveBeenCalled()
+    } finally {
+      generate.mockRestore()
+    }
+  })
+
+  it('retries failed Manual QA generation from the submitted results despite a newer autosave', async () => {
+    const setup = await prepareFixture()
+    setup.draft.results[0] = { ...setup.draft.results[0]!, outcome: 'fail', observation: 'The submitted failure.' }
+    await expect(submitManualQa({
+      ticketId: setup.ticket.id, version: 1, draft: setup.draft, guard: setup.guard,
+      sendEvent: vi.fn(), generateFixBeads: async () => { throw new Error('Model timed out') },
+    })).rejects.toThrow('Model timed out')
+    const originalResults = readManualQaResults(setup.paths.ticketDir, 1)
+    savePhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA', 'Keep this guidance scoped to these failed checks.')
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'UI_STATE', artifactType: 'ui_state:manual_qa_draft:v1',
+      content: JSON.stringify({ revision: 2, data: { ...setup.draft, results: [] } }),
+    })
+    const generate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates').mockResolvedValue([{
+      groupId: 'item:item-one', title: 'Repair item one', description: 'Correct the failed behavior.', prdRefs: [],
+      contextGuidance: { patterns: ['Follow existing boundaries.'], anti_patterns: ['Do not hide the failure.'] },
+      acceptanceCriteria: ['Item one works.'], tests: ['Check the failed behavior.'], testCommands: [],
+      testCommandReason: 'Manual verification applies.', labels: ['manual-qa'], blockedByGroupIds: [], targetFiles: [],
+    }])
+    try {
+      const sendEvent = vi.fn()
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).toHaveBeenCalledWith(expect.objectContaining({
+        draft: expect.objectContaining({ results: [expect.objectContaining({ observation: 'The submitted failure.' })] }),
+      }))
+      expect(readManualQaResults(setup.paths.ticketDir, 1)).toEqual(originalResults)
+      expect(readPhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA')).toBeUndefined()
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_FIXES_CREATED' })
+    } finally {
+      generate.mockRestore()
+    }
   })
 
   it('keeps the submitted snapshot when a newer autosave exists', async () => {

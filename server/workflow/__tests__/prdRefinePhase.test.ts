@@ -1,3 +1,6 @@
+import { opencodeSessions } from '../../db/schema'
+import { getTicketContext } from '../../storage/ticketQueries'
+import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import * as jsYaml from 'js-yaml'
@@ -274,6 +277,7 @@ function readExecutionLogEntries(logPath: string) {
 describe('handlePrdRefine', () => {
   beforeEach(() => {
     resetTestDb()
+    clearAllPendingSessionContinuationsForTests()
     phaseIntermediate.clear()
     refineDraftMock.mockReset()
     runOpenCodePromptMock.mockReset()
@@ -514,6 +518,88 @@ describe('handlePrdRefine', () => {
 
     return { ticket, context, paths, winnerId, interviewContent, fullAnswersContent, winnerDraftContent, refinement }
   }
+
+  it('continues a failed PRD revision using its saved audit without running another audit first', async () => {
+    const { ticket, context, paths, winnerId } = await setupCoverageTest()
+    const coverageGap = 'Missing retry-cap approval behavior.'
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-audit', projectPath: paths.worktreePath },
+      response: `status: gaps\ngaps: ["${coverageGap}"]\nfollow_up_questions: []`,
+      messages: [],
+    }).mockRejectedValueOnce(new Error('Timeout'))
+    await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal)).rejects.toThrow('Timeout')
+
+    const stored = getTicketContext(ticket.id)!
+    stored.projectDb.insert(opencodeSessions).values({
+      ticketId: stored.localTicketId, sessionId: 'coverage-revision', phase: 'VERIFYING_PRD_COVERAGE',
+      phaseAttempt: 1, memberId: winnerId, step: 'revision', state: 'active',
+    }).run()
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_PRD_COVERAGE', sessionId: 'coverage-revision' })
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-revision', projectPath: paths.worktreePath },
+      response: buildValidCoverageRevisionOutput(ticket.externalId, coverageGap), messages: [],
+    }).mockResolvedValueOnce({
+      session: { id: 'coverage-audit-next', projectPath: paths.worktreePath },
+      response: 'status: clean\ngaps: []\nfollow_up_questions: []', messages: [],
+    })
+    const sendEvent = vi.fn()
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'prd', new AbortController().signal)
+
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.sessionOwnership.step)).toEqual(['audit', 'revision', 'revision', 'audit'])
+    expect(runOpenCodePromptMock.mock.calls[2]?.[0].parts[0].content).toContain(coverageGap)
+    expect(parseUiArtifactCompanionArtifact(getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:prd_coverage', 'VERIFYING_PRD_COVERAGE')!.content)?.payload).toMatchObject({
+      finalCandidateVersion: 2, attempts: [expect.objectContaining({ candidateVersion: 1 }), expect.objectContaining({ candidateVersion: 2 })],
+    })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
+  })
+
+  it('continues the next audit against the saved revised PRD without repeating the revision', async () => {
+    const { ticket, context, paths, winnerId } = await setupCoverageTest()
+    const coverageGap = 'Missing retry-cap approval behavior.'
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-audit', projectPath: paths.worktreePath },
+      response: `status: gaps\ngaps: ["${coverageGap}"]\nfollow_up_questions: []`, messages: [],
+    }).mockResolvedValueOnce({
+      session: { id: 'coverage-revision', projectPath: paths.worktreePath },
+      response: buildValidCoverageRevisionOutput(ticket.externalId, coverageGap), messages: [],
+    }).mockRejectedValueOnce(new Error('Timeout'))
+    await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal)).rejects.toThrow('Timeout')
+    const revisedContent = readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')
+    const stored = getTicketContext(ticket.id)!
+    stored.projectDb.insert(opencodeSessions).values({
+      ticketId: stored.localTicketId, sessionId: 'coverage-audit-next', phase: 'VERIFYING_PRD_COVERAGE',
+      phaseAttempt: 1, memberId: winnerId, step: 'audit', state: 'active',
+    }).run()
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_PRD_COVERAGE', sessionId: 'coverage-audit-next' })
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-audit-next', projectPath: paths.worktreePath },
+      response: 'status: clean\ngaps: []\nfollow_up_questions: []', messages: [],
+    })
+
+    await handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal)
+
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.sessionOwnership.step)).toEqual(['audit', 'revision', 'audit', 'audit'])
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage_input', 'VERIFYING_PRD_COVERAGE')!.content)).toMatchObject({
+      candidateVersion: 2, refinedContent: revisedContent.trim(),
+    })
+  })
+
+  it.each([null, '{}', '{"candidateVersion":1,"refinedContent":"saved candidate","auditResult":{"envelope":{"status":"clean","gaps":[]}}}'])('refuses revision continuation when the saved audit checkpoint is unavailable or invalid: %s', async (checkpoint) => {
+    const { ticket, context, winnerId } = await setupCoverageTest()
+    if (checkpoint !== null) insertPhaseArtifact(ticket.id, {
+      phase: 'VERIFYING_PRD_COVERAGE', artifactType: 'prd_coverage_input', content: checkpoint,
+    })
+    const stored = getTicketContext(ticket.id)!
+    stored.projectDb.insert(opencodeSessions).values({
+      ticketId: stored.localTicketId, sessionId: 'coverage-revision', phase: 'VERIFYING_PRD_COVERAGE',
+      phaseAttempt: 1, memberId: winnerId, step: 'revision', state: 'active',
+    }).run()
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_PRD_COVERAGE', sessionId: 'coverage-revision' })
+
+    await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal))
+      .rejects.toThrow('without its saved candidate and audit result')
+    expect(runOpenCodePromptMock).not.toHaveBeenCalled()
+  })
 
   it('identifies a revision connection failure after the audit found gaps and preserves its diagnostics', async () => {
     const { ticket, context, paths, winnerId } = await setupCoverageTest()

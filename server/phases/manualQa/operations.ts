@@ -58,6 +58,7 @@ import {
   readManualQaModelCapabilitySnapshot,
   readManualQaResults,
   readManualQaSummary,
+  resolveActiveManualQaVersion,
   readManualQaText,
   writeManualQaText,
   resolveManualQaEvidence,
@@ -76,6 +77,7 @@ import {
 } from './fixBeads'
 import { emitAiMilestone, emitPhaseLog } from '../../workflow/phases/helpers'
 import { getErrorMessage } from '@shared/typeGuards'
+import { savePhaseRetryNote } from '../../workflow/retryNotes'
 
 export interface ManualQaMutationGuard {
   actionId: string
@@ -982,6 +984,28 @@ function finalizeRecoveredOperation(
   journal.updatedAt = summary.completedAt
   writeJournal(operationPath, journal)
   persistManualQaDatabaseOperation(ticketId, journal)
+}
+
+export async function resumeFailedManualQaSubmission(
+  ticketId: string,
+  sendEvent: (event: TicketEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const paths = getTicketPaths(ticketId)
+  if (!paths) return
+  const version = resolveActiveManualQaVersion(paths.ticketDir)
+  if (version === null || readManualQaSummary(paths.ticketDir, version)?.outcome !== 'failed') return
+  const results = readManualQaResults(paths.ticketDir, version)
+  if (!results) throw new Error('The failed Manual QA submission snapshot was not found.')
+  const { artifact: _artifact, actionId, submittedAt: _submittedAt, ...draft } = results
+  await submitManualQa({
+    ticketId, version, draft: { ...draft, artifact: 'manual_qa_draft' }, signal, sendEvent,
+    guard: {
+      actionId, operationType: 'submit', expectedChecklistHash: draft.checklistHash,
+      expectedDraftRevision: draft.draftRevision,
+    },
+  })
+  savePhaseRetryNote(ticketId, 'WAITING_MANUAL_QA', undefined)
 }
 
 export async function submitManualQa(input: {

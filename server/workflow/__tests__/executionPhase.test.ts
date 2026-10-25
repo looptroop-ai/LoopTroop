@@ -114,6 +114,7 @@ vi.mock("../../sse/broadcaster", () => ({
 
 import {
   handleCoding,
+  hasSuccessfulExecutionCheckpointForFinalization,
   recoverSuccessfulExecutionCheckpointForFinalization,
 } from "../phases/executionPhase";
 
@@ -1090,6 +1091,7 @@ describe("handleCoding", () => {
       "stale done",
       "2026-01-01T00:00:00.000Z",
     );
+    expect(hasSuccessfulExecutionCheckpointForFinalization(ticket.id)).toBe(false);
     executeBeadMock.mockResolvedValueOnce({
       success: true,
       beadId: "bead-1",
@@ -1618,6 +1620,8 @@ describe("handleCoding", () => {
     );
     const sendEvent = vi.fn();
 
+    expect(hasSuccessfulExecutionCheckpointForFinalization(ticket.id)).toBe(true);
+    expect(readTicketBeads(ticket.id).find((bead) => bead.id === "bead-1")?.status).toBe("error");
     const recovered = recoverSuccessfulExecutionCheckpointForFinalization(
       ticket.id,
     );

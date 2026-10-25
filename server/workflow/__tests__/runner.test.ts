@@ -42,6 +42,7 @@ const {
   handleCodingMock,
   handleFinalTestMock,
   handleManualQaChecklistGenerationMock,
+  resumeFailedManualQaSubmissionMock,
   handlePrdRefineMock,
   handleExecutionSetupPlanGenerationMock,
   handleMockExecutionUnsupportedMock,
@@ -87,6 +88,7 @@ const {
   handleCodingMock: vi.fn(),
   handleFinalTestMock: vi.fn(),
   handleManualQaChecklistGenerationMock: vi.fn(),
+  resumeFailedManualQaSubmissionMock: vi.fn(),
   handlePrdRefineMock: vi.fn(),
   handleExecutionSetupPlanGenerationMock: vi.fn(),
   handleMockExecutionUnsupportedMock: vi.fn(),
@@ -112,6 +114,7 @@ vi.mock('../../opencode/sessionManager', async (importOriginal) => ({
 vi.mock('../../phases/manualQa', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../phases/manualQa')>(),
   handleManualQaChecklistGeneration: handleManualQaChecklistGenerationMock,
+  resumeFailedManualQaSubmission: resumeFailedManualQaSubmissionMock,
 }))
 
 vi.mock('../phases', async () => {
@@ -152,6 +155,7 @@ describe('attachWorkflowRunner', () => {
     handleCodingMock.mockReset()
     handleFinalTestMock.mockReset()
     handleManualQaChecklistGenerationMock.mockReset()
+    resumeFailedManualQaSubmissionMock.mockReset().mockResolvedValue(undefined)
     handlePrdRefineMock.mockReset()
     handleExecutionSetupPlanGenerationMock.mockReset()
     handleMockExecutionUnsupportedMock.mockReset()
@@ -435,6 +439,18 @@ describe('attachWorkflowRunner', () => {
         : [TEST.ticketId, expect.anything(), sendEvent, expect.anything()]
     expect(handler).toHaveBeenCalledWith(...expectedArgs)
     await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:${state}`)).toBe(false))
+    actor.stop()
+  })
+
+  it('checks for a failed saved Manual QA submission when the phase resumes', async () => {
+    isMockOpenCodeModeMock.mockReturnValue(false)
+    resumeFailedManualQaSubmissionMock.mockResolvedValue(undefined)
+    const actor = createSnapshotActor('WAITING_MANUAL_QA')
+    const sendEvent = vi.fn()
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, sendEvent)
+    await vi.waitFor(() => expect(resumeFailedManualQaSubmissionMock).toHaveBeenCalledWith(TEST.ticketId, sendEvent, expect.anything()))
+    await vi.waitFor(() => expect(runningPhases.has(`${TEST.ticketId}:WAITING_MANUAL_QA`)).toBe(false))
     actor.stop()
   })
 

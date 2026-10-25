@@ -6,7 +6,8 @@ import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from 
 import { writeJsonl } from '../../io/jsonl'
 import { createTicket, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
 import { DISPLAY_ONLY_MOCK_BRANCH_NAME, resolveReviewCutoffStatus } from '../ticketQueries'
-import { questionWaits, ticketStatusHistory, tickets } from '../../db/schema'
+import { questionWaits, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../../db/schema'
+import { canRetryWithExtraNote } from '../../workflow/retryNotes'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
 
 const runtimeRepoManager = createTestRepoManager('ticket-runtime-qa-origin-')
@@ -34,6 +35,32 @@ describe('runtime Manual QA bead origin projection', () => {
   afterAll(() => {
     resetTestDb()
     runtimeRepoManager.cleanup()
+  })
+
+  it.each([
+    { phase: 'REFINING_PRD', codes: [], diagnostics: null, allowed: true },
+    { phase: 'CREATING_PULL_REQUEST', codes: ['PULL_REQUEST_FAILED'], diagnostics: { kind: 'runtime', source: 'system', summary: 'Push failed' }, allowed: false },
+    { phase: 'CREATING_PULL_REQUEST', codes: ['PULL_REQUEST_FAILED'], diagnostics: { kind: 'transport', source: 'opencode', summary: 'Prompt failed' }, allowed: true },
+    { phase: 'PRE_FLIGHT_CHECK', codes: [], diagnostics: { kind: 'runtime', source: 'system', summary: 'Git unavailable' }, allowed: false },
+    { phase: 'WAITING_MANUAL_QA', codes: ['MANUAL_QA_FIX_BEADS_FAILED'], diagnostics: null, allowed: true },
+    { phase: 'WAITING_MANUAL_QA', codes: [], diagnostics: null, allowed: false },
+    { phase: 'CODING', codes: ['BEAD_FINALIZATION_FAILED'], diagnostics: null, allowed: false },
+  ])('advertises the same note capability enforced by the route for $phase ($allowed)', async ({ phase, codes, diagnostics, allowed }) => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'AI retry capability' })
+    const context = getTicketContext(setup.ticket.id)!
+    context.projectDb.update(tickets).set({
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: phase } }),
+    }).where(eq(tickets.id, context.localTicketId)).run()
+    context.projectDb.insert(ticketErrorOccurrences).values({
+      ticketId: context.localTicketId,
+      occurrenceNumber: 1,
+      blockedFromStatus: phase,
+      errorCodes: JSON.stringify(codes),
+      diagnosticDetails: diagnostics ? JSON.stringify(diagnostics) : null,
+    }).run()
+    expect(getTicketByRef(setup.ticket.id)!.availableActions.includes('retry_with_note')).toBe(allowed)
+    expect(canRetryWithExtraNote(setup.ticket.id, phase)).toBe(allowed)
   })
 
   it.each(['PREPARING_EXECUTION_ENV', 'WAITING_EXECUTION_SETUP_APPROVAL', 'CODING'])(

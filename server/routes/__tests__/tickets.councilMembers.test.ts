@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { readFileSync } from 'node:fs'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, PromptSessionOptions } from '../../opencode/types'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { generateDrafts } from '../../council/drafter'
 import { resetCouncilRounds } from '../../council/memberControl'
 import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import { getTicketPaths } from '../../storage/tickets'
 import { attachRequest, getTicketQuestionState, resetAllQuestionWindows } from '../../workflow/questionWindows'
 import { listSkipEvents } from '../../workflow/skipReceipts'
 import { isTicketWorkSuspended, resetAllWorkBudgets } from '../../workflow/workBudget'
@@ -30,6 +32,7 @@ const MODEL_B = 'test/model-b'
 /** Model B never answers until its prompt is aborted; model A answers at once. */
 class StallingAdapter extends MockOpenCodeAdapter {
   readonly prompted: string[] = []
+  readonly promptInputs: Array<{ model: string; parts: PromptPart[] }> = []
   confirmAborts = true
 
   override async promptSession(
@@ -40,6 +43,7 @@ class StallingAdapter extends MockOpenCodeAdapter {
   ): Promise<string> {
     const model = options?.model ? `${options.model.providerID}/${options.model.modelID}` : ''
     this.prompted.push(model)
+    this.promptInputs.push({ model, parts })
     if (model === MODEL_B && this.prompted.filter((entry) => entry === MODEL_B).length === 1) {
       return new Promise((_resolve, reject) => {
         signal?.addEventListener('abort', () => {
@@ -149,6 +153,37 @@ describe('council member routes', () => {
     const res = await post(ticket.id, 'retry', { phase: 'COUNCIL_VOTING_PRD', memberId: MODEL_A })
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'This step is no longer running.', code: 'STEP_NOT_RUNNING' })
+  })
+
+  it.each(['', '  \n ', null, 7, 'x'.repeat(20_001)])('rejects an invalid member retry note', async (note) => {
+    const { ticket } = await createInitializedTestTicket(repoManager, { title: 'Invalid member retry note' })
+    const response = await post(ticket.id, 'retry', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_B, note })
+    expect(response.status).toBe(400)
+  })
+
+  it('restarts only the chosen model with the exact note and records it in its phase log', async () => {
+    const { ticket, run, adapter } = await startRound('Retry one model with a note')
+    const note = '  Use the existing configuration.\nPreserve the evidence.  '
+
+    const response = await post(ticket.id, 'retry', { phase: 'COUNCIL_DELIBERATING', memberId: MODEL_B, note })
+    expect(response.status).toBe(200)
+    await run
+
+    const memberPrompts = adapter.promptInputs.filter((prompt) => prompt.model === MODEL_B)
+    expect(memberPrompts).toHaveLength(2)
+    expect(memberPrompts[1]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+    expect(adapter.promptInputs.filter((prompt) => prompt.model === MODEL_A)).toHaveLength(1)
+    expect(JSON.stringify(adapter.promptInputs.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
+
+    const paths = getTicketPaths(ticket.id)
+    if (!paths) throw new Error('Expected ticket paths')
+    const logs = readFileSync(paths.executionLogPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(logs).toContainEqual(expect.objectContaining({
+      modelId: MODEL_B,
+      phase: 'COUNCIL_DELIBERATING',
+      content: expect.stringContaining(`Extra note:\n${note}`),
+      data: expect.objectContaining({ userRetryNote: note }),
+    }))
   })
 
   it('stops a working model and refuses to stop a finished one', async () => {

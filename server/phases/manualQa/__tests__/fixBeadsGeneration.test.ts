@@ -184,7 +184,7 @@ describe('Manual QA fix-bead generation', () => {
       })
       .mockResolvedValueOnce({ session: { id: 'uninspected-retry' }, response, messages: [] })
     await expect(generateManualQaFixBeadCandidates(input())).rejects.toThrow(
-      'The model did not complete the required read-only repository inspection tool call.',
+      'The model did not complete a required read-only inspection tool call successfully.',
     )
   })
 
@@ -306,7 +306,7 @@ describe('Manual QA fix-bead generation', () => {
     mocks.runOpenCodePrompt.mockResolvedValue({ session: { id: 'fix-beads-no-inspection' }, response, messages: [] })
 
     await expect(generateManualQaFixBeadCandidates(input())).rejects.toThrow(
-      'The model did not complete the required read-only repository inspection tool call.',
+      'The model did not complete a required read-only inspection tool call successfully.',
     )
     expect(mocks.emitAiMilestone).not.toHaveBeenCalledWith(
       expect.anything(),

@@ -40,6 +40,13 @@ describe('AI retry note eligibility', () => {
     expect(supportsRetryNote('WAITING_MANUAL_QA')).toBe(false)
     expect(supportsRetryNote('WAITING_MANUAL_QA', ['MANUAL_QA_FIX_BEADS_FAILED'])).toBe(true)
   })
+
+  it('offers notes for final-test AI generation failures but not failed test commands', () => {
+    const diagnostics = { kind: 'timeout' as const, source: 'opencode' as const, summary: 'Model request timed out' }
+    expect(supportsRetryNote('RUNNING_FINAL_TEST', ['TESTS_FAILED'], diagnostics)).toBe(true)
+    expect(supportsRetryNote('RUNNING_FINAL_TEST', ['FINAL_TEST_FAILED'])).toBe(false)
+  })
+
   it.each(['MAIN_IMPLEMENTER_MISSING', 'PROM4_NO_WINNER', 'PROM4_NO_COMPILED_INTERVIEW', 'PROM4_INVALID_COMPILED_INTERVIEW', 'FINAL_TEST_FAILED'])(
     'does not offer instructions to repair a deterministic prerequisite: %s', code => {
       expect(supportsRetryNote('WAITING_INTERVIEW_ANSWERS', [code])).toBe(false)

@@ -1006,6 +1006,7 @@ function BeadGrid({
   onSelect: (id: string | null) => void
 }) {
   const compact = beads.length > COMPACT_THRESHOLD
+  const hasExternalTargets = (bead: TicketBead) => bead.targetFiles.some(file => isExternalTargetFile(file) || bead.externalTargetFiles?.includes(file))
 
   if (compact) {
     return (
@@ -1018,7 +1019,7 @@ function BeadGrid({
               <TooltipTrigger asChild>
                 <button
                           onClick={() => onSelect(viewingBeadId === bead.id ? null : bead.id)}
-                          aria-label={(bead.targetFiles.some(isExternalTargetFile) || Boolean(bead.externalTargetFiles?.length)) ? `Bead ${index + 1}: ${bead.title}, external files` : undefined}
+                          aria-label={hasExternalTargets(bead) ? `Bead ${index + 1}: ${bead.title}, external files` : undefined}
                           className={cn(
                             'h-7 w-full rounded text-[10px] font-mono font-medium transition-colors',
                             bead.status === 'completed' || bead.status === 'skipped'
@@ -1032,10 +1033,10 @@ function BeadGrid({
                           )}
                         >
                           {index + 1}
-                          {(bead.targetFiles.some(isExternalTargetFile) || Boolean(bead.externalTargetFiles?.length)) && <AlertTriangle aria-hidden="true" className="ml-0.5 inline h-2.5 w-2.5 text-amber-700 dark:text-amber-300" />}
+                          {hasExternalTargets(bead) && <AlertTriangle aria-hidden="true" className="ml-0.5 inline h-2.5 w-2.5 text-amber-700 dark:text-amber-300" />}
                         </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-xs text-center text-balance">{`#${index + 1}: ${bead.title}${bead.iteration > 0 ? ` (${bead.iteration}x)` : ''}${(bead.targetFiles.some(isExternalTargetFile) || Boolean(bead.externalTargetFiles?.length)) ? ' · External files' : ''}`}</TooltipContent>
+              <TooltipContent className="max-w-xs text-center text-balance">{`#${index + 1}: ${bead.title}${bead.iteration > 0 ? ` (${bead.iteration}x)` : ''}${hasExternalTargets(bead) ? ' · External files' : ''}`}</TooltipContent>
             </Tooltip>
         ))}
       </div>

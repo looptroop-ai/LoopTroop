@@ -1,6 +1,4 @@
-import { opencodeSessions } from '../../db/schema'
-import { getTicketContext } from '../../storage/ticketQueries'
-import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
+import { clearAllPendingSessionContinuationsForTests } from '../../opencode/sessionContinuation'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import * as jsYaml from 'js-yaml'
@@ -17,6 +15,8 @@ import {
   makeInterviewYaml,
 } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
+import { readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
+import { continueCoverageSession, expectCleanCoverageAttempts } from './coverageTestHelpers'
 
 const {
   refineDraftMock,
@@ -522,19 +522,25 @@ describe('handlePrdRefine', () => {
   it('continues a failed PRD revision using its saved audit without running another audit first', async () => {
     const { ticket, context, paths, winnerId } = await setupCoverageTest()
     const coverageGap = 'Missing retry-cap approval behavior.'
+    savePhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', 'Keep guidance after a failed revision.', 'revision')
     runOpenCodePromptMock.mockResolvedValueOnce({
       session: { id: 'coverage-audit', projectPath: paths.worktreePath },
       response: `status: gaps\ngaps: ["${coverageGap}"]\nfollow_up_questions: []`,
       messages: [],
     }).mockRejectedValueOnce(new Error('Timeout'))
     await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal)).rejects.toThrow('Timeout')
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', undefined, 'revision'))
+      .toBe('Keep guidance after a failed revision.')
 
-    const stored = getTicketContext(ticket.id)!
-    stored.projectDb.insert(opencodeSessions).values({
-      ticketId: stored.localTicketId, sessionId: 'coverage-revision', phase: 'VERIFYING_PRD_COVERAGE',
-      phaseAttempt: 1, memberId: winnerId, step: 'revision', state: 'active',
-    }).run()
-    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_PRD_COVERAGE', sessionId: 'coverage-revision' })
+    continueCoverageSession({
+      ticketId: ticket.id,
+      domain: 'prd',
+      sessionId: 'coverage-revision',
+      memberId: winnerId,
+      step: 'revision',
+    })
+    savePhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', 'Finish this revision.', 'revision')
+    savePhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', 'Keep the audit note.', 'audit')
     runOpenCodePromptMock.mockResolvedValueOnce({
       session: { id: 'coverage-revision', projectPath: paths.worktreePath },
       response: buildValidCoverageRevisionOutput(ticket.externalId, coverageGap), messages: [],
@@ -547,8 +553,13 @@ describe('handlePrdRefine', () => {
 
     expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.sessionOwnership.step)).toEqual(['audit', 'revision', 'revision', 'audit'])
     expect(runOpenCodePromptMock.mock.calls[2]?.[0].parts[0].content).toContain(coverageGap)
-    expect(parseUiArtifactCompanionArtifact(getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:prd_coverage', 'VERIFYING_PRD_COVERAGE')!.content)?.payload).toMatchObject({
-      finalCandidateVersion: 2, attempts: [expect.objectContaining({ candidateVersion: 1 }), expect.objectContaining({ candidateVersion: 2 })],
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', undefined, 'revision')).toBeUndefined()
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', undefined, 'audit')).toBeUndefined()
+    expectCleanCoverageAttempts({
+      ticketId: ticket.id,
+      domain: 'prd',
+      finalCandidateVersion: 2,
+      gap: coverageGap,
     })
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
   })
@@ -565,12 +576,15 @@ describe('handlePrdRefine', () => {
     }).mockRejectedValueOnce(new Error('Timeout'))
     await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal)).rejects.toThrow('Timeout')
     const revisedContent = readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')
-    const stored = getTicketContext(ticket.id)!
-    stored.projectDb.insert(opencodeSessions).values({
-      ticketId: stored.localTicketId, sessionId: 'coverage-audit-next', phase: 'VERIFYING_PRD_COVERAGE',
-      phaseAttempt: 1, memberId: winnerId, step: 'audit', state: 'active',
-    }).run()
-    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_PRD_COVERAGE', sessionId: 'coverage-audit-next' })
+    continueCoverageSession({
+      ticketId: ticket.id,
+      domain: 'prd',
+      sessionId: 'coverage-audit-next',
+      memberId: winnerId,
+      step: 'audit',
+    })
+    savePhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', 'Finish this audit.', 'audit')
+    savePhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', 'Keep the revision note.', 'revision')
     runOpenCodePromptMock.mockResolvedValueOnce({
       session: { id: 'coverage-audit-next', projectPath: paths.worktreePath },
       response: 'status: clean\ngaps: []\nfollow_up_questions: []', messages: [],
@@ -582,6 +596,8 @@ describe('handlePrdRefine', () => {
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage_input', 'VERIFYING_PRD_COVERAGE')!.content)).toMatchObject({
       candidateVersion: 2, refinedContent: revisedContent.trim(),
     })
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', undefined, 'audit')).toBeUndefined()
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', undefined, 'revision')).toBe('Keep the revision note.')
   })
 
   it.each([null, '{}', 'invalid JSON', '{"candidateVersion":1,"refinedContent":"saved candidate","auditResult":{"envelope":{"status":"clean","gaps":[]}}}'])('refuses revision continuation when the saved audit checkpoint is unavailable or invalid: %s', async (checkpoint) => {
@@ -589,15 +605,19 @@ describe('handlePrdRefine', () => {
     if (checkpoint !== null) insertPhaseArtifact(ticket.id, {
       phase: 'VERIFYING_PRD_COVERAGE', artifactType: 'prd_coverage_input', content: checkpoint,
     })
-    const stored = getTicketContext(ticket.id)!
-    stored.projectDb.insert(opencodeSessions).values({
-      ticketId: stored.localTicketId, sessionId: 'coverage-revision', phase: 'VERIFYING_PRD_COVERAGE',
-      phaseAttempt: 1, memberId: winnerId, step: 'revision', state: 'active',
-    }).run()
-    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_PRD_COVERAGE', sessionId: 'coverage-revision' })
+    continueCoverageSession({
+      ticketId: ticket.id,
+      domain: 'prd',
+      sessionId: 'coverage-revision',
+      memberId: winnerId,
+      step: 'revision',
+    })
+    savePhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', 'Keep this note after the invalid checkpoint.', 'revision')
 
     await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'prd', new AbortController().signal))
       .rejects.toThrow('without its saved candidate and audit result')
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_PRD_COVERAGE', undefined, 'revision'))
+      .toBe('Keep this note after the invalid checkpoint.')
     expect(runOpenCodePromptMock).not.toHaveBeenCalled()
   })
 
@@ -1014,48 +1034,12 @@ describe('handlePrdRefine', () => {
     expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.variant)).toEqual(['high', 'high', 'high'])
     expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
 
-    const coverageArtifact = getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'VERIFYING_PRD_COVERAGE')
-    expect(coverageArtifact).toBeDefined()
-    expect(JSON.parse(coverageArtifact!.content)).toMatchObject({
-      status: 'clean',
+    expectCleanCoverageAttempts({
+      ticketId: ticket.id,
+      domain: 'prd',
       finalCandidateVersion: 2,
-      hasRemainingGaps: false,
-      remainingGaps: [],
-    })
-
-    const coverageCompanion = getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:prd_coverage', 'VERIFYING_PRD_COVERAGE')
-    const parsedCoverageCompanion = parseUiArtifactCompanionArtifact(coverageCompanion!.content)?.payload as {
-      attempts?: Array<{ candidateVersion?: number; status?: string; gaps?: string[] }>
-      transitions?: Array<{ fromVersion?: number; toVersion?: number; gaps?: string[]; fromContent?: string; toContent?: string }>
-      finalCandidateVersion?: number
-      hasRemainingGaps?: boolean
-      remainingGaps?: string[]
-    } | undefined
-    expect(parsedCoverageCompanion).toMatchObject({
-      finalCandidateVersion: 2,
-      hasRemainingGaps: false,
-      remainingGaps: [],
-      attempts: [
-        expect.objectContaining({
-          candidateVersion: 1,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 2,
-          status: 'clean',
-          gaps: [],
-        }),
-      ],
-      transitions: [
-        expect.objectContaining({
-          fromVersion: 1,
-          toVersion: 2,
-          gaps: [coverageGap],
-          fromContent: expect.stringContaining('Prompt hardening and refinement safety'),
-          toContent: expect.stringContaining('Prompt hardening and approval safety'),
-        }),
-      ],
+      gap: coverageGap,
+      transitionContent: ['Prompt hardening and refinement safety', 'Prompt hardening and approval safety'],
     })
 
     const coverageRevision = getLatestPhaseArtifact(ticket.id, 'prd_coverage_revision', 'VERIFYING_PRD_COVERAGE')
@@ -1297,76 +1281,15 @@ describe('handlePrdRefine', () => {
     const coverageArtifact = getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'VERIFYING_PRD_COVERAGE')
     expect(coverageArtifact).toBeDefined()
     expect(JSON.parse(coverageArtifact!.content)).toMatchObject({
-      status: 'clean',
       coverageRunNumber: 5,
       maxCoveragePasses: 5,
-      finalCandidateVersion: 5,
-      hasRemainingGaps: false,
-      remainingGaps: [],
       terminationReason: 'clean',
     })
-
-    const coverageCompanion = getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:prd_coverage', 'VERIFYING_PRD_COVERAGE')
-    const parsedCoverageCompanion = parseUiArtifactCompanionArtifact(coverageCompanion!.content)?.payload as {
-      attempts?: Array<{ candidateVersion?: number; status?: string; gaps?: string[] }>
-      transitions?: Array<{ fromVersion?: number; toVersion?: number; gaps?: string[] }>
-      finalCandidateVersion?: number
-      hasRemainingGaps?: boolean
-      remainingGaps?: string[]
-    } | undefined
-    expect(parsedCoverageCompanion).toMatchObject({
+    expectCleanCoverageAttempts({
+      ticketId: ticket.id,
+      domain: 'prd',
       finalCandidateVersion: 5,
-      hasRemainingGaps: false,
-      remainingGaps: [],
-      attempts: [
-        expect.objectContaining({
-          candidateVersion: 1,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 2,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 3,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 4,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 5,
-          status: 'clean',
-          gaps: [],
-        }),
-      ],
-      transitions: [
-        expect.objectContaining({
-          fromVersion: 1,
-          toVersion: 2,
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          fromVersion: 2,
-          toVersion: 3,
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          fromVersion: 3,
-          toVersion: 4,
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          fromVersion: 4,
-          toVersion: 5,
-          gaps: [coverageGap],
-        }),
-      ],
+      gap: coverageGap,
     })
 
     const coverageRevision = getLatestPhaseArtifact(ticket.id, 'prd_coverage_revision', 'VERIFYING_PRD_COVERAGE')

@@ -1333,7 +1333,7 @@ export async function handleCreatePullRequest(
               baseCommit: integration.mergeBase,
               candidateCommitSha,
             })) {
-              const changedFiles = parseCandidateChangedFiles(diff.nameStatus).map(file => file.path)
+              const changedFiles = parseCandidateChangedFiles(diff.nameStatusZ ?? diff.nameStatus).map(file => file.path)
               if (parsed.includedFiles.length === changedFiles.length
                 && new Set(parsed.includedFiles).size === parsed.includedFiles.length
                 && parsed.includedFiles.every(path => changedFiles.includes(path))) {

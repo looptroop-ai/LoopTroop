@@ -670,10 +670,12 @@ export class SessionManager {
   async completeSession(sessionId: string) {
     const found = findSessionRecord(sessionId)
     if (!found) return
-    found.projectDb.update(opencodeSessions)
+    const update = found.projectDb.update(opencodeSessions)
       .set({ state: 'completed', updatedAt: new Date().toISOString() })
       .where(eq(opencodeSessions.sessionId, sessionId))
       .run()
+    if (update.changes === 0) return
+    clearSessionContinuation(sessionId)
     const ticketRef = resolveSessionTicketRef(found)
     if (ticketRef) forgetPendingSessionOwnership(ticketRef, sessionId)
     this.adapter.forgetSessionDirectory?.(sessionId)
@@ -682,10 +684,12 @@ export class SessionManager {
   async abandonSession(sessionId: string) {
     const found = findSessionRecord(sessionId)
     if (!found) return
-    found.projectDb.update(opencodeSessions)
+    const update = found.projectDb.update(opencodeSessions)
       .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
       .where(eq(opencodeSessions.sessionId, sessionId))
       .run()
+    if (update.changes === 0) return
+    clearSessionContinuation(sessionId)
     const ticketRef = resolveSessionTicketRef(found)
     if (ticketRef) forgetPendingSessionOwnership(ticketRef, sessionId)
     this.adapter.forgetSessionDirectory?.(sessionId)

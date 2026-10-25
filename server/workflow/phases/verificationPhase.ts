@@ -1,3 +1,4 @@
+import { expirePhaseRetryNote } from '../retryNotes';
 import { SessionManager } from "../../opencode/sessionManager";
 import { shouldPreserveSessionForContinuation } from "../../opencode/sessionContinuation";
 import { TicketWorkspaceNotInitializedError } from "../../lib/workflowErrors";
@@ -293,7 +294,8 @@ function createOpenCodeDiagnosticTracker(modelId: string) {
         attemptMeta: runResult.attemptMeta,
         modelId,
         sessionId: runResult.session.id,
-        fallbackMessage: sessionRetryFallback,
+        // Retain exact session ownership if a completed response later fails validation.
+        fallbackMessage: sessionRetryFallback ?? "The AI response failed structured-output validation.",
       });
     },
   };
@@ -1434,6 +1436,7 @@ async function runPrdCoverageAuditPrompt(params: {
     );
   }
 
+  expirePhaseRetryNote(params.ticketId, params.stateLabel, "audit");
   return {
     response,
     envelope: coverageEnvelope.value,
@@ -1592,6 +1595,7 @@ async function runPrdCoverageResolutionPrompt(params: {
         initialInput,
       });
 
+      expirePhaseRetryNote(params.ticketId, params.stateLabel, "revision");
       return { response, revision, structuredMeta, rawAttempts };
     } catch (error) {
       const validationError = getErrorMessage(error);
@@ -1942,6 +1946,7 @@ async function runBeadsCoverageAuditPrompt(params: {
     );
   }
 
+  expirePhaseRetryNote(params.ticketId, params.stateLabel, "audit");
   return {
     response,
     envelope: coverageEnvelope.value,
@@ -2097,6 +2102,7 @@ async function runBeadsCoverageResolutionPrompt(params: {
         initialInput,
       });
 
+      expirePhaseRetryNote(params.ticketId, params.stateLabel, "revision");
       return { response, revision, structuredMeta, rawAttempts };
     } catch (error) {
       const validationError = getErrorMessage(error);
@@ -4113,7 +4119,9 @@ export async function handleRelevantFilesScan(
           errors: [normalized.error],
         }),
       });
-      if (sessionId) await new SessionManager(adapter).abortAndAbandonSession(sessionId);
+      if (sessionId && !await new SessionManager(adapter).abortAndAbandonSession(sessionId)) {
+        throw new Error(`Could not confirm abort of relevant-files scan session ${sessionId}`);
+      }
       sendEvent({
         type: "ERROR",
         message: msg,
@@ -4201,7 +4209,9 @@ export async function handleRelevantFilesScan(
       sessionOwnership: { ticketId, phase },
       modelId: codingModelId,
     })) {
-      await new SessionManager(adapter).abortAndAbandonSession(sessionId);
+      if (!await new SessionManager(adapter).abortAndAbandonSession(sessionId)) {
+        throw new Error(`Could not confirm abort of relevant-files scan session ${sessionId}`, { cause: err });
+      }
     }
     if (err instanceof CancelledError) throw err;
     if (err instanceof Error && err.message === "Timeout") {
@@ -4959,6 +4969,8 @@ export async function handleCoverageVerification(
     });
     return;
   }
+
+  expirePhaseRetryNote(ticketId, stateLabel);
 
   persistUiArtifactCompanionArtifact(
     ticketId,

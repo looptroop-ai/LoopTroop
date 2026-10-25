@@ -81,12 +81,14 @@ describe('handleRelevantFilesScan', () => {
   })
 
   it.each([
-    ['invalid output', undefined, true],
-    ['non-continuable failure', new Error('Invalid configuration'), true],
-    ['continuable timeout', new Error('Timeout'), false],
-  ])('closes only non-continuable scan sessions: %s', async (_label, failure, shouldClose) => {
+    ['invalid output', undefined, true, true],
+    ['non-continuable failure', new Error('Invalid configuration'), true, true],
+    ['continuable timeout', new Error('Timeout'), false, true],
+    ['unconfirmed invalid-output cleanup', undefined, true, false],
+    ['unconfirmed failure cleanup', new Error('Invalid configuration'), true, false],
+  ])('closes only non-continuable scan sessions: %s', async (_label, failure, shouldClose, stopConfirmed) => {
     const { ticket, context, paths } = await createInitializedTicket()
-    const close = vi.spyOn(SessionManager.prototype, 'abortAndAbandonSession').mockResolvedValue(true)
+    const close = vi.spyOn(SessionManager.prototype, 'abortAndAbandonSession').mockResolvedValue(stopConfirmed)
     runOpenCodePromptMock.mockImplementation(async (options) => {
       const session = { id: 'scan-cleanup-session', projectPath: paths.worktreePath }
       options.onSessionCreated(session)
@@ -99,9 +101,14 @@ describe('handleRelevantFilesScan', () => {
     })
 
     const sendEvent = vi.fn()
-    await handleRelevantFilesScan(ticket.id, context, sendEvent, new AbortController().signal)
-
-    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }))
+    const operation = handleRelevantFilesScan(ticket.id, context, sendEvent, new AbortController().signal)
+    if (!stopConfirmed) {
+      await expect(operation).rejects.toThrow('Could not confirm abort of relevant-files scan session scan-cleanup-session')
+      expect(sendEvent).not.toHaveBeenCalled()
+    } else {
+      await operation
+      expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }))
+    }
     if (shouldClose) expect(close).toHaveBeenCalledWith('scan-cleanup-session')
     else expect(close).not.toHaveBeenCalled()
   })

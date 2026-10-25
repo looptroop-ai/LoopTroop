@@ -13,7 +13,10 @@ import { throwIfCancelled } from '../../lib/abort'
 import { buildStructuredRetryPrompt } from '../../structuredOutput'
 import { buildStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import { SessionManager } from '../../opencode/sessionManager'
-import { shouldPreserveSessionForContinuation } from '../../opencode/sessionContinuation'
+import {
+  buildContinuationDiagnostics,
+  shouldPreserveSessionForContinuation,
+} from '../../opencode/sessionContinuation'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../../lib/constants'
 import { classifyStructuredFailureFromError, getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
@@ -87,6 +90,7 @@ function buildPromptFailureGeneration(
   initialInput?: string,
 ): GenerateExecutionSetupResult {
   const validationError = `Execution setup prompt failed: ${getErrorMessage(error)}`
+  const promptDiagnostics = buildContinuationDiagnostics({ error, sessionId: session?.id })
   const failureClass = classifyStructuredFailureFromError(error)
   const rawAttempts: RawAttempt[] = [...previousRawAttempts]
   const rawAttempt = appendRejectedRawAttempt(rawAttempts, {
@@ -120,6 +124,8 @@ function buildPromptFailureGeneration(
       validationError,
       retryDiagnostics,
     }),
+    ...(promptDiagnostics.diagnostics ? { diagnostics: promptDiagnostics.diagnostics } : {}),
+    ...(promptDiagnostics.errorCodes.length > 0 ? { errorCodes: promptDiagnostics.errorCodes } : {}),
     rawAttempts,
   }
 }
@@ -137,7 +143,7 @@ export async function generateExecutionSetup(
     timeoutDeadline?: number
     budget?: WorkBudget
     structuredRetryCount?: number
-    phaseAttempt?: number
+    iteration?: number | null
     manualContinuation?: boolean
     onSessionCreated?: (sessionId: string) => void
     onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void
@@ -182,7 +188,7 @@ export async function generateExecutionSetup(
         ? {
             ticketId: callbacks.ticketId,
             phase: 'PREPARING_EXECUTION_ENV',
-            phaseAttempt: callbacks.phaseAttempt,
+            iteration: callbacks.iteration,
             ...(callbacks.model ? { memberId: callbacks.model } : {}),
           }
         : undefined,
@@ -207,7 +213,7 @@ export async function generateExecutionSetup(
           sessionOwnership: {
             ticketId: callbacks.ticketId,
             phase: 'PREPARING_EXECUTION_ENV',
-            phaseAttempt: callbacks.phaseAttempt,
+            iteration: callbacks.iteration,
             keepActive: true,
             ...(callbacks.model ? { memberId: callbacks.model } : {}),
           },
@@ -463,7 +469,7 @@ export async function generateExecutionSetup(
                 sessionOwnership: {
                   ticketId: callbacks.ticketId,
                   phase: 'PREPARING_EXECUTION_ENV',
-                  phaseAttempt: callbacks.phaseAttempt,
+                  iteration: callbacks.iteration,
                   keepActive: true,
                   ...(callbacks.model ? { memberId: callbacks.model } : {}),
                 },

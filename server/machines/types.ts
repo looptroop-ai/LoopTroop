@@ -154,7 +154,12 @@ export type TicketEvent =
   | { type: "APPROVE_EXECUTION_SETUP_PLAN" }
   | { type: "EXECUTION_SETUP_EVIDENCE_CHANGED" }
   | { type: "EXECUTION_SETUP_READY" }
-  | { type: "EXECUTION_SETUP_FAILED"; errors?: string[] }
+  | {
+      type: "EXECUTION_SETUP_FAILED";
+      errors?: string[];
+      codes?: string[];
+      diagnostics?: BlockedErrorDiagnostics | null;
+    }
   | {
       type: "CHECKS_FAILED";
       errors: string[];

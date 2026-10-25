@@ -30,7 +30,7 @@ import { isAbortError } from '../lib/abort'
 import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
-import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+import { buildContinuationDiagnostics, shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
 import { stopCutShortCouncilSession } from './sessionStop'
 import { CouncilMemberInterruptedError, openCouncilRound, type CouncilMemberAttempt } from './memberControl'
 import { COUNCIL_MEMBER_STOPPED_ERROR } from '@shared/councilMembers'
@@ -115,6 +115,8 @@ interface VoteAttemptResult {
   rawResponse?: string
   normalizedResponse?: string
   rawAttempts?: RawAttempt[]
+  blockedErrorDiagnostics?: VoterDetail['blockedErrorDiagnostics']
+  blockedErrorCodes?: string[]
 }
 
 export async function conductVoting(
@@ -220,6 +222,8 @@ export async function conductVoting(
       ...(typeof result.normalizedResponse === 'string' ? { normalizedResponse: result.normalizedResponse } : {}),
       ...(result.structuredOutput ? { structuredOutput: result.structuredOutput } : {}),
       ...(result.rawAttempts && result.rawAttempts.length > 0 ? { rawAttempts: [...result.rawAttempts] } : {}),
+      ...(result.blockedErrorDiagnostics !== undefined ? { blockedErrorDiagnostics: result.blockedErrorDiagnostics } : {}),
+      ...(result.blockedErrorCodes ? { blockedErrorCodes: [...result.blockedErrorCodes] } : {}),
     })
     if (result.outcome === 'completed' && result.votes.length > 0) {
       votes.push(...result.votes)
@@ -549,29 +553,26 @@ export async function conductVoting(
 
       const errorDetail = getErrorMessage(error)
       const timedOut = isPhaseDeadlineError(error) || isAiResponseTimeoutError(error) || closed
-      if (timedOut) {
+      const preserveForContinuation = !closed && !isPhaseDeadlineError(error) && sessionId && sessionOwnership
+        ? shouldPreserveSessionForContinuation({
+            error,
+            sessionId,
+            modelId: voter.modelId,
+            sessionOwnership: {
+              ticketId: sessionOwnership.ticketId,
+              phase: sessionOwnership.phase,
+              phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+              memberId: voter.modelId,
+            },
+            signal: memberSignal,
+          })
+        : false
+      const continuationDiagnostics = preserveForContinuation && sessionId
+        ? buildContinuationDiagnostics({ error, sessionId, modelId: voter.modelId })
+        : null
+      if (!preserveForContinuation) {
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedVoterStopError(sessionId)
-      }
-      if (!timedOut) {
-        const preserveForContinuation = sessionId && sessionOwnership
-          ? shouldPreserveSessionForContinuation({
-              error,
-              sessionId,
-              modelId: voter.modelId,
-              sessionOwnership: {
-                ticketId: sessionOwnership.ticketId,
-                phase: sessionOwnership.phase,
-                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
-                memberId: voter.modelId,
-              },
-              signal: memberSignal,
-            })
-          : false
-        if (!preserveForContinuation) {
-          const stopped = await ensureSessionStopped()
-          if (!stopped) throw unconfirmedVoterStopError(sessionId)
-        }
       }
       return {
         outcome: timedOut ? 'timed_out' : 'failed',
@@ -579,6 +580,10 @@ export async function conductVoting(
         error: timedOut ? `AI response timeout reached after ${timeoutMs}ms` : errorDetail,
         ...(response ? { rawResponse: response } : {}),
         rawAttempts: [...rawAttempts],
+        ...(continuationDiagnostics ? {
+          blockedErrorDiagnostics: continuationDiagnostics.diagnostics,
+          blockedErrorCodes: continuationDiagnostics.errorCodes,
+        } : {}),
       }
     } finally {
       deadline.dispose()

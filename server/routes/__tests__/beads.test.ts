@@ -57,13 +57,65 @@ describe('beadsRouter flow validation', () => {
     mkdirSync(outside, { recursive: true })
     symlinkSync(outside, join(paths.worktreePath, 'linked'), 'junction')
     mkdirSync(dirname(paths.beadsPath), { recursive: true })
-    const content = JSON.stringify({ id: 'B-1', title: 'External target', targetFiles: ['linked/new/file.txt'] }) + '\n'
+    const content = JSON.stringify({
+      id: 'B-1', title: 'External target', targetFiles: ['linked/new/file.txt'], externalTargetFiles: ['src/forged.txt'],
+    }) + '\n'
     writeFileSync(paths.beadsPath, content)
     const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
     expect(await response.json()).toMatchObject([{ targetFiles: ['linked/new/file.txt'], externalTargetFiles: ['linked/new/file.txt'] }])
     const raw = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
     expect(await raw.json()).toMatchObject({ content, items: [{ externalTargetFiles: ['linked/new/file.txt'] }] })
     expect(readFileSync(paths.beadsPath, 'utf8')).toBe(content)
+  })
+
+  it('recomputes external targets in save responses and strips submitted classifications', async () => {
+    const { ticket, paths } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    mkdirSync(paths.worktreePath, { recursive: true })
+    const outside = join(paths.projectRoot, 'outside-targets')
+    mkdirSync(outside, { recursive: true })
+    symlinkSync(outside, join(paths.worktreePath, 'linked'), 'junction')
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([{
+        id: 'B-1', title: 'External target', status: 'pending', priority: 1,
+        dependencies: { blocked_by: [], blocks: [] },
+        targetFiles: ['linked/new/file.txt'],
+        externalTargetFiles: ['src/forged.txt'],
+      }]),
+    })
+
+    expect(response.status).toBe(200)
+    const payload = await response.json() as { beads: Array<Record<string, unknown>>; rawContent: string }
+    expect(payload.beads[0]).toMatchObject({ externalTargetFiles: ['linked/new/file.txt'] })
+    expect(JSON.parse(payload.rawContent)).not.toHaveProperty('externalTargetFiles')
+    expect(JSON.parse(readFileSync(paths.beadsPath, 'utf8').trim())).not.toHaveProperty('externalTargetFiles')
+  })
+
+  it.each([
+    { label: 'missing', targetFiles: undefined },
+    { label: 'blank', targetFiles: [''] },
+    { label: 'control character', targetFiles: ['file\u0085name'] },
+  ])('rejects $label targetFiles before writing', async ({ targetFiles }) => {
+    const { ticket, paths } = createBeadsRouteTicket()
+    patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+    const bead = {
+      id: 'B-1', title: 'Invalid target', status: 'pending', priority: 1,
+      dependencies: { blocked_by: [], blocks: [] },
+      ...(targetFiles === undefined ? {} : { targetFiles }),
+    }
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([bead]),
+    })
+
+    expect(response.status).toBe(400)
+    expect((await response.json()).details).toContain('targetFiles')
+    expect(existsSync(paths.beadsPath)).toBe(false)
   })
 
   it('rejects traversal flows before reading or writing beads files', async () => {
@@ -105,6 +157,7 @@ describe('beadsRouter flow validation', () => {
         title: 'Editable bead',
         status: 'pending',
         priority: 1,
+        targetFiles: [],
         dependencies: { blocked_by: [], blocks: [] },
         contextGuidance: { patterns: [], anti_patterns: [] },
         createdAt: '2026-01-01T00:00:00.000Z',
@@ -161,6 +214,7 @@ describe('beadsRouter flow validation', () => {
       title: 'Editable bead',
       status: 'pending',
       priority: 1,
+      targetFiles: [],
       dependencies: { blocked_by: [], blocks: [], related: ['B-9'] },
       future_metadata: { owner: 'planner' },
     }
@@ -184,6 +238,7 @@ describe('beadsRouter flow validation', () => {
       title: 'Editable bead',
       status: 'pending',
       priority: 1,
+      targetFiles: [],
       dependencies: { blocked_by: [], blocks: [] },
       testCommands: [{ mode: 'process', program: 'npm', args: ['test'], note: 'keep this metadata' }],
     }
@@ -217,7 +272,7 @@ describe('beadsRouter flow validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify([{
         id: 'B-1', title: 'Broken bead', status: 'pending', priority: 'high',
-        dependencies: { blocked_by: [], blocks: [] },
+        targetFiles: [], dependencies: { blocked_by: [], blocks: [] },
       }]),
     })
 
@@ -235,7 +290,7 @@ describe('beadsRouter flow validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify([{
         id: 'B-1', title: 'Unknown status', status: 'paused', priority: 1,
-        dependencies: { blocked_by: [], blocks: [] },
+        targetFiles: [], dependencies: { blocked_by: [], blocks: [] },
       }]),
     })
 
@@ -259,7 +314,7 @@ describe('beadsRouter flow validation', () => {
       body: JSON.stringify({
         beads: [{
           id: 'B-1', title: 'Broken bead', status: 'pending', priority: 'high',
-          dependencies: { blocked_by: [], blocks: [] },
+          targetFiles: [], dependencies: { blocked_by: [], blocks: [] },
         }],
         sourceLines: [4],
       }),
@@ -425,7 +480,7 @@ describe('beadsRouter flow validation', () => {
 
   describe('saving over a tracker that changed underneath', () => {
     const bead = (id: string) => ({
-      id, title: id, status: 'pending' as const, priority: 1, dependencies: { blocked_by: [], blocks: [] },
+      id, title: id, status: 'pending' as const, priority: 1, targetFiles: [], dependencies: { blocked_by: [], blocks: [] },
     })
 
     async function save(ticketId: string, body: unknown, headers: Record<string, string> = {}) {
@@ -485,7 +540,7 @@ describe('beadsRouter flow validation', () => {
     patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
     const damaged = `${JSON.stringify({
       id: 'B-1', title: 'B-1', status: 'pending', priority: 1,
-      dependencies: { blocked_by: [], blocks: [] },
+      targetFiles: [], dependencies: { blocked_by: [], blocks: [] },
     })}\nnot-json\n`
     mkdirSync(dirname(paths.beadsPath), { recursive: true })
     writeFileSync(paths.beadsPath, damaged)
@@ -499,7 +554,7 @@ describe('beadsRouter flow validation', () => {
       },
       body: JSON.stringify([{
         id: 'B-1', title: 'One', status: 'pending', priority: 1,
-        dependencies: { blocked_by: [], blocks: [] },
+        targetFiles: [], dependencies: { blocked_by: [], blocks: [] },
       }]),
     })
 
@@ -518,7 +573,7 @@ describe('beadsRouter flow validation', () => {
     }
 
     const bead = (id: string) => JSON.stringify({
-      id, title: id, status: 'pending', priority: 1, dependencies: { blocked_by: [], blocks: [] },
+      id, title: id, status: 'pending', priority: 1, targetFiles: [], dependencies: { blocked_by: [], blocks: [] },
     })
 
     it('names the lines the editor cannot represent, beside the ones that did not parse', async () => {
@@ -599,10 +654,12 @@ describe('beadsRouter flow validation', () => {
   describe('the dependency spelling the interface accepts', () => {
     const rootBead = {
       id: 'B-0', title: 'Root', status: 'pending' as const, priority: 1,
+      targetFiles: [],
       dependencies: { blockedBy: [], blocks: ['stale-inverse'] },
     }
     const camelCaseBead = {
       id: 'B-1', title: 'One', status: 'pending' as const, priority: 1,
+      targetFiles: [],
       dependencies: { blockedBy: ['B-0'] },
     }
 
@@ -639,7 +696,7 @@ describe('beadsRouter flow validation', () => {
     })
   })
   describe('the edit receipt records which editor saved', () => {
-    const bead = { id: 'B-1', title: 'One', status: 'pending' as const, priority: 1, dependencies: { blocked_by: [], blocks: [] } }
+    const bead = { id: 'B-1', title: 'One', status: 'pending' as const, priority: 1, targetFiles: [], dependencies: { blocked_by: [], blocks: [] } }
 
     async function saveFrom(editSurface?: string) {
       const { ticket } = createBeadsRouteTicket()

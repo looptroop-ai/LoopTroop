@@ -3,8 +3,9 @@ import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
-import { opencodeSessions, phaseArtifacts } from '../../db/schema'
+import { interviewBatchClaims, opencodeSessions, phaseArtifacts } from '../../db/schema'
 import { attachProject } from '../../storage/projects'
+import { buildPrdFullAnswersInputHash } from '../../lib/workflowContinuation'
 import {
   createTicket,
   ensureActivePhaseAttempt,
@@ -14,8 +15,16 @@ import {
   patchTicket,
   recordTicketErrorOccurrence,
   upsertLatestPhaseArtifact,
+  writeTicketFile,
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
+import {
+  claimInterviewBatch,
+  getPendingInterviewBatchStop,
+  getPendingInterviewBatchStopToken,
+  markInterviewBatchStopPending,
+} from '../../workflow/phases/interviewPhase'
+import { makeInterviewYaml } from '../../test/factories'
 import {
   clearAllPendingSessionContinuationsForTests,
   getPendingSessionContinuationForTicketPhase,
@@ -291,6 +300,72 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     expect(getTicketByRef(ticket.id)?.availableActions).toContain('continue')
   })
 
+  it.each(['missing', 'corrupt', 'wrong-member', 'wrong-attempt', 'changed-inputs'] as const)(
+    'hides PRD draft Continue when its Full Answers checkpoint is %s', (checkpointState) => {
+      const { ticket } = setupContinueTicketApp()
+      const phase = 'DRAFTING_PRD'
+      ensureActivePhaseAttempt(ticket.id, phase)
+      const interview = makeInterviewYaml()
+      writeTicketFile(ticket.id, 'interview.yaml', interview)
+      blockTicketWithContinuableError(ticket.id, phase, 'ses-continue', {
+        step: 'prd_draft',
+        memberId: checkpointState === 'wrong-member' ? 'test/other-model' : 'test/model',
+      })
+
+      if (checkpointState !== 'missing') {
+        const ticketRow = getTicketByRef(ticket.id)!
+        const inputHash = buildPrdFullAnswersInputHash({
+          title: ticketRow.title,
+          description: ticketRow.description ?? '',
+          relevantFiles: undefined,
+          interview,
+        })
+        const saved = {
+          inputHash: checkpointState === 'changed-inputs' ? 'stale' : inputHash,
+          memberId: 'test/model',
+          phaseAttempt: checkpointState === 'wrong-attempt' ? 2 : 1,
+          content: 'Resolved Full Answers',
+          steeredByOperator: false,
+        }
+        upsertLatestPhaseArtifact(
+          ticket.id,
+          'prd_full_answers_checkpoint:test/model',
+          phase,
+          checkpointState === 'corrupt' ? '{' : JSON.stringify(saved),
+        )
+      }
+
+      expect(getTicketByRef(ticket.id)?.availableActions).not.toContain('continue')
+    },
+  )
+
+  it('advertises PRD draft Continue when the member Full Answers checkpoint matches current inputs and attempt', () => {
+    const { ticket } = setupContinueTicketApp()
+    const phase = 'DRAFTING_PRD'
+    ensureActivePhaseAttempt(ticket.id, phase)
+    const interview = makeInterviewYaml()
+    writeTicketFile(ticket.id, 'interview.yaml', interview)
+    const ticketRow = getTicketByRef(ticket.id)!
+    upsertLatestPhaseArtifact(ticket.id, 'prd_full_answers_checkpoint:test/model', phase, JSON.stringify({
+      inputHash: buildPrdFullAnswersInputHash({
+        title: ticketRow.title,
+        description: ticketRow.description ?? '',
+        relevantFiles: undefined,
+        interview,
+      }),
+      memberId: 'test/model',
+      phaseAttempt: 1,
+      content: 'Resolved Full Answers',
+      steeredByOperator: false,
+    }))
+    blockTicketWithContinuableError(ticket.id, phase, 'ses-continue', {
+      step: 'prd_draft',
+      memberId: 'test/model',
+    })
+
+    expect(getTicketByRef(ticket.id)?.availableActions).toContain('continue')
+  })
+
   it('clears a pending continuation if dispatching CONTINUE fails', async () => {
     const { app, ticket } = setupContinueTicketApp()
     blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
@@ -306,6 +381,44 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
   })
 
+  it('rechecks the continuation candidate after verifying the remote session', async () => {
+    const { app, ticket } = setupContinueTicketApp()
+    blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
+    getSessionMock.mockImplementationOnce(async () => {
+      patchTicket(ticket.id, {
+        xstateSnapshot: JSON.stringify({ context: { previousStatus: 'REFINING_PRD' } }),
+      })
+      return { id: 'ses-continue', projectPath: '/tmp/project' }
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(abortSessionMock).not.toHaveBeenCalled()
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
+  it('returns a conflict when the Continue recovery claim is lost during the stop wait', async () => {
+    const { app, ticket } = setupContinueTicketApp()
+    blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
+    const context = getTicketContext(ticket.id)!
+    abortSessionMock.mockImplementationOnce(async () => {
+      context.projectDb.update(interviewBatchClaims).set({
+        token: 'successor-claim',
+        claimedAt: new Date().toISOString(),
+        expiresAt: '9999-12-31T23:59:59.999Z',
+      }).run()
+      return true
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('ownership was lost') })
+    expect(context.projectDb.select().from(interviewBatchClaims).get()?.token).toBe('successor-claim')
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
   it('withholds Continue when the old turn cannot be confirmed stopped', async () => {
     const { app, ticket } = setupContinueTicketApp()
     ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
@@ -319,6 +432,45 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     expect(sendTicketEvent).not.toHaveBeenCalled()
     expect(hasPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe(false)
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+  })
+
+  it('keeps an interview stop pending when Continue cannot confirm its stop', async () => {
+    const { app, ticket } = setupContinueTicketApp()
+    blockTicketWithContinuableError(ticket.id, 'WAITING_INTERVIEW_ANSWERS')
+    const batchClaim = claimInterviewBatch(ticket.id)
+    expect(batchClaim).toBeTruthy()
+    expect(markInterviewBatchStopPending(ticket.id, batchClaim ?? '', 'answer')).toBe(true)
+    abortSessionMock.mockResolvedValueOnce(false)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    expect(getPendingInterviewBatchStop(ticket.id)).toBe('answer')
+    expect(getPendingInterviewBatchStopToken(ticket.id, 'answer')).toBeTruthy()
+    expect(sendTicketEvent).not.toHaveBeenCalled()
+  })
+
+  it('promotes a pending interview stop after Continue confirms the exact session stopped', async () => {
+    const { app, ticket } = setupContinueTicketApp()
+    blockTicketWithContinuableError(ticket.id, 'WAITING_INTERVIEW_ANSWERS')
+    const batchClaim = claimInterviewBatch(ticket.id)
+    expect(batchClaim).toBeTruthy()
+    expect(markInterviewBatchStopPending(ticket.id, batchClaim ?? '', 'answer')).toBe(true)
+    const context = getTicketContext(ticket.id)!
+    let claimDuringStop: string | null = null
+    abortSessionMock.mockImplementationOnce(async () => {
+      claimDuringStop = context.projectDb.select({ token: interviewBatchClaims.token })
+        .from(interviewBatchClaims).get()?.token ?? null
+      return true
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(claimDuringStop).toContain(':recovery:')
+    expect(getPendingInterviewBatchStop(ticket.id)).toBeNull()
+    expect(context.projectDb.select().from(interviewBatchClaims).get()).toBeUndefined()
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'CONTINUE' })
   })
 
   it('continues when OpenCode list omits a preserved session that exact lookup can still read', async () => {

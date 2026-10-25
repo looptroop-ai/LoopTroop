@@ -1,5 +1,6 @@
 import { isRecord } from '@shared/typeGuards'
 import { commandSpecSchema } from '@shared/commandSpec'
+import { isBeadTargetFiles } from '@shared/beadTargets'
 import { readJsonlWithDiagnostics } from '../../io/jsonl'
 import type { Bead, BeadStatus } from './types'
 import { BEAD_STATUSES, isBeadStatus, resolveBeadStatus } from './types'
@@ -163,7 +164,7 @@ const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   acceptanceCriteria: isStringArray,
   tests: isStringArray,
   labels: isStringArray,
-  targetFiles: isStringArray,
+  targetFiles: isBeadTargetFiles,
   testCommands: isCommandArray,
   failedIterationNotes: isObjectArray,
   userRetryNotes: isObjectArray,

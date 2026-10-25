@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, PromptSessionOptions } from '../../opencode/types'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -121,6 +122,25 @@ function resolvedFullAnswers(): string {
   })
 }
 
+function retryableTimeoutError(sessionId: string): Error & {
+  blockedErrorDiagnostics: BlockedErrorDiagnostics
+  blockedErrorCodes: string[]
+} {
+  const error = new Error('Timeout') as Error & {
+    blockedErrorDiagnostics: BlockedErrorDiagnostics
+    blockedErrorCodes: string[]
+  }
+  error.blockedErrorDiagnostics = {
+    kind: 'timeout',
+    source: 'opencode',
+    summary: 'Provider request timed out',
+    sessionId,
+    isRetryable: true,
+  }
+  error.blockedErrorCodes = []
+  return error
+}
+
 describe('stopping and restarting one council member', () => {
   beforeEach(() => {
     resetTestDb()
@@ -159,6 +179,36 @@ describe('stopping and restarting one council member', () => {
       )
       return { ticket, run, progress }
     }
+
+    it('keeps a retryable raw provider timeout resumable while returning timed_out', async () => {
+      const adapter = new class extends ScriptedAdapter {
+        override async promptSession(
+          sessionId: string,
+          parts: PromptPart[],
+          signal?: AbortSignal,
+          options?: PromptSessionOptions,
+        ): Promise<string> {
+          const model = options?.model ? `${options.model.providerID}/${options.model.modelID}` : 'unknown'
+          if (model === MODEL_B) {
+            this.prompts.push({ model, sessionId, parts })
+            throw retryableTimeoutError(sessionId)
+          }
+          return super.promptSession(sessionId, parts, signal, options)
+        }
+      }({ [MODEL_A]: ['Draft from A'] })
+      const { ticket, run } = await startDrafting(adapter, 'Preserve provider timeout')
+
+      const result = await run
+      const timedOutDraft = result.drafts.find((draft) => draft.memberId === MODEL_B)
+      const sessionId = adapter.promptsFor(MODEL_B)[0]
+
+      expect(timedOutDraft).toMatchObject({
+        outcome: 'timed_out',
+        blockedErrorDiagnostics: { kind: 'timeout', sessionId, isRetryable: true },
+      })
+      expect(adapter.aborted).toContain(sessionId)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toContain(sessionId)
+    })
 
     it('stops a stuck drafter and settles the round without waiting for its timeout', async () => {
       const adapter = new ScriptedAdapter({ [MODEL_A]: ['Draft from A'], [MODEL_B]: ['stall'] })
@@ -309,6 +359,36 @@ describe('stopping and restarting one council member', () => {
       return { ticket, run, progress }
     }
 
+    it('keeps a retryable raw provider timeout resumable while reporting the voter timed_out', async () => {
+      const adapter = new class extends ScriptedAdapter {
+        override async promptSession(
+          sessionId: string,
+          parts: PromptPart[],
+          signal?: AbortSignal,
+          options?: PromptSessionOptions,
+        ): Promise<string> {
+          const model = options?.model ? `${options.model.providerID}/${options.model.modelID}` : 'unknown'
+          if (model === MODEL_B) {
+            this.prompts.push({ model, sessionId, parts })
+            throw retryableTimeoutError(sessionId)
+          }
+          return super.promptSession(sessionId, parts, signal, options)
+        }
+      }({ [MODEL_A]: [scorecard()] })
+      const { ticket, run } = await startVoting(adapter, 'Preserve voter provider timeout')
+
+      const result = await run
+      const timedOutVoter = result.voterDetails.find((detail) => detail.voterId === MODEL_B)
+      const sessionId = adapter.promptsFor(MODEL_B)[0]
+
+      expect(result.memberOutcomes[MODEL_B]).toBe('timed_out')
+      expect(timedOutVoter).toMatchObject({
+        blockedErrorDiagnostics: { kind: 'timeout', sessionId, isRetryable: true },
+      })
+      expect(adapter.aborted).toContain(sessionId)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toContain(sessionId)
+    })
+
     it('stops a stuck voter so its missing scorecard no longer holds the vote', async () => {
       const adapter = new ScriptedAdapter({ [MODEL_A]: [scorecard()], [MODEL_B]: ['stall'] })
       const { ticket, run } = await startVoting(adapter, 'Stop a voter')
@@ -361,7 +441,7 @@ describe('stopping and restarting one council member', () => {
   })
 
   describe('PRD drafting', () => {
-    it.each(['saved', 'missing', 'corrupt', 'changed'] as const)('continues the PRD substep using only its %s Full Answers checkpoint', async (checkpoint) => {
+    it.each(['saved', 'missing', 'corrupt', 'changed', 'wrong-member', 'wrong-attempt'] as const)('continues the PRD substep using only its %s Full Answers checkpoint', async (checkpoint) => {
       const { ticket, paths } = await createInitializedTestTicket(repoManager, { title: 'Continue Part 2' })
       patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
       const state = { ticketId: TEST.externalId, title: 'Continue Part 2', description: 'Keep answered questions.', interview: makeInterviewYaml() }
@@ -379,15 +459,26 @@ describe('stopping and restarting one council member', () => {
       if (checkpoint === 'missing') upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', '{}')
       if (checkpoint === 'corrupt') upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', '{broken')
       if (checkpoint === 'changed') state.description = 'Different approved inputs'
+      if (checkpoint === 'wrong-member' || checkpoint === 'wrong-attempt') {
+        const saved = JSON.parse(getLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD')!.content) as Record<string, unknown>
+        if (checkpoint === 'wrong-member') saved.memberId = MODEL_B
+        else saved.phaseAttempt = 2
+        upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', JSON.stringify(saved))
+      }
       if (checkpoint !== 'saved') {
         await expect(draftPRD(adapter, [member], state, paths.worktreePath, options)).rejects.toThrow('Use Retry to start a fresh attempt')
         expect(adapter.prompts).toHaveLength(2)
         return
       }
       expect(getLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD')).toBeDefined()
+      const saved = JSON.parse(getLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD')!.content) as Record<string, unknown>
+      saved.steeredByOperator = true
+      upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', JSON.stringify(saved))
       const continued = await draftPRD(adapter, [member], state, paths.worktreePath, options)
       expect(continued.drafts[0]?.outcome).toBe('completed')
       expect(continued.fullAnswers[0]?.content).toBe(first.fullAnswers[0]?.content)
+      expect(continued.fullAnswers[0]?.steeredByOperator).toBe(true)
+      expect(continued.drafts[0]?.steeredByOperator).toBe(true)
       expect(adapter.prompts).toHaveLength(3)
       expect(adapter.prompts[2]?.sessionId).toBe(failed.sessionId)
       expect(adapter.prompts[2]?.parts[0]).toEqual({ type: 'text', content: 'continue please' })
@@ -413,6 +504,41 @@ describe('stopping and restarting one council member', () => {
       )
       return { ticket, run, fullAnswerEvents, draftEvents }
     }
+
+    it('carries retryable raw provider timeout diagnostics through PRD timeout classification', async () => {
+      const adapter = new class extends ScriptedAdapter {
+        override async promptSession(
+          sessionId: string,
+          parts: PromptPart[],
+          signal?: AbortSignal,
+          options?: PromptSessionOptions,
+        ): Promise<string> {
+          const model = options?.model ? `${options.model.providerID}/${options.model.modelID}` : 'unknown'
+          const priorPrompts = this.prompts.filter((prompt) => prompt.model === model).length
+          if (model === MODEL_A && priorPrompts > 0) {
+            this.prompts.push({ model, sessionId, parts })
+            throw retryableTimeoutError(sessionId)
+          }
+          return super.promptSession(sessionId, parts, signal, options)
+        }
+      }({
+        [MODEL_A]: [resolvedFullAnswers()],
+        [MODEL_B]: [resolvedFullAnswers(), makePrdYaml()],
+      })
+      const { ticket, run } = await startPrd(adapter, 'Preserve PRD provider timeout')
+
+      const result = await run
+      const timedOutDraft = result.drafts.find((draft) => draft.memberId === MODEL_A)
+      const diagnosticSessionId = timedOutDraft?.blockedErrorDiagnostics?.sessionId
+
+      expect(timedOutDraft).toMatchObject({
+        outcome: 'timed_out',
+        blockedErrorDiagnostics: { kind: 'timeout', isRetryable: true },
+      })
+      expect(adapter.prompts.map((prompt) => prompt.sessionId)).toContain(diagnosticSessionId)
+      expect(adapter.aborted).toContain(diagnosticSessionId)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toContain(diagnosticSessionId)
+    })
 
     it('stops a model during Full Answers, so its PRD draft never starts', async () => {
       const adapter = new ScriptedAdapter({
@@ -455,6 +581,7 @@ describe('stopping and restarting one council member', () => {
 
         expect(result.fullAnswerOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
         expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
+        expect(result.drafts.find((draft) => draft.memberId === MODEL_B)).not.toHaveProperty('blockedErrorDiagnostics')
         expect(adapter.aborted).toContain(adapter.promptsFor(MODEL_B)[0])
       } finally {
         vi.useRealTimers()
@@ -573,12 +700,35 @@ describe('stopping and restarting one council member', () => {
       expect(result.drafts[1]?.steeredByOperator).toBe(true)
       const memberPrompts = adapter.prompts.filter((prompt) => prompt.model === MODEL_B)
       expect(memberPrompts[2]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
-      expect(memberPrompts[3]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(memberPrompts[3]?.parts)).not.toContain(note)
       expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, `prd_full_answers_checkpoint:${MODEL_B}`, 'DRAFTING_PRD')!.content))
+        .toMatchObject({ memberId: MODEL_B, phaseAttempt: 1, steeredByOperator: true })
       expect(result.fullAnswerOutcomes[MODEL_B]).toBe('completed')
       expect(result.memberOutcomes[MODEL_B]).toBe('completed')
       expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))
         .toEqual(['session_created', 'finished', 'restarted', 'session_created', 'finished'])
+    })
+
+    it('routes an unqualified retry note to the first unfinished PRD substep', async () => {
+      const adapter = new ScriptedAdapter({
+        [MODEL_A]: [resolvedFullAnswers(), makePrdYaml()],
+        [MODEL_B]: ['stall', resolvedFullAnswers(), makePrdYaml()],
+      })
+      const { ticket, run } = await startPrd(adapter, 'Retry the unfinished Full Answers step')
+      await waitFor(() => adapter.promptsFor(MODEL_B).length === 1, 'B to start Full Answers')
+
+      const note = 'Use the existing evidence to resolve the unanswered item.'
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, undefined, undefined, note)
+      const result = await run
+      const memberPrompts = adapter.prompts.filter((prompt) => prompt.model === MODEL_B)
+
+      expect(memberPrompts).toHaveLength(3)
+      expect(memberPrompts[1]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(memberPrompts[2]?.parts)).not.toContain(note)
+      expect(result.drafts.find((draft) => draft.memberId === MODEL_B)?.steeredByOperator).toBe(true)
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, `prd_full_answers_checkpoint:${MODEL_B}`, 'DRAFTING_PRD')!.content))
+        .toMatchObject({ memberId: MODEL_B, steeredByOperator: true })
     })
   })
 })

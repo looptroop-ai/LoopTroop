@@ -4,9 +4,9 @@ import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:
 import { join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
-import { createTicket, upsertLatestPhaseArtifact, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
+import { createTicket, ensureActivePhaseAttempt, upsertLatestPhaseArtifact, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
 import { DISPLAY_ONLY_MOCK_BRANCH_NAME, resolveReviewCutoffStatus } from '../ticketQueries'
-import { questionWaits, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../../db/schema'
+import { opencodeSessions, questionWaits, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../../db/schema'
 import { canRetryWithExtraNote } from '../../workflow/retryNotes'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
 
@@ -40,7 +40,7 @@ describe('runtime Manual QA bead origin projection', () => {
   it.each([
     { phase: 'REFINING_PRD', codes: [], diagnostics: null, allowed: true },
     { phase: 'CREATING_PULL_REQUEST', codes: ['PULL_REQUEST_FAILED'], diagnostics: { kind: 'runtime', source: 'system', summary: 'Push failed' }, allowed: false },
-    { phase: 'CREATING_PULL_REQUEST', codes: ['PULL_REQUEST_FAILED'], diagnostics: { kind: 'transport', source: 'opencode', summary: 'Prompt failed' }, allowed: true },
+    { phase: 'CREATING_PULL_REQUEST', codes: ['PULL_REQUEST_FAILED'], diagnostics: { kind: 'transport', source: 'opencode', summary: 'Prompt failed', sessionId: 'ses-pr-failed' }, allowed: true },
     { phase: 'PRE_FLIGHT_CHECK', codes: [], diagnostics: { kind: 'runtime', source: 'system', summary: 'Git unavailable' }, allowed: false },
     { phase: 'WAITING_MANUAL_QA', codes: ['MANUAL_QA_FIX_BEADS_FAILED'], diagnostics: null, allowed: true },
     { phase: 'WAITING_MANUAL_QA', codes: [], diagnostics: null, allowed: false },
@@ -48,6 +48,18 @@ describe('runtime Manual QA bead origin projection', () => {
   ])('advertises the same note capability enforced by the route for $phase ($allowed)', async ({ phase, codes, diagnostics, allowed }) => {
     const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'AI retry capability' })
     const context = getTicketContext(setup.ticket.id)!
+    const failedSessionId = diagnostics && 'sessionId' in diagnostics ? diagnostics.sessionId : undefined
+    if (phase === 'CREATING_PULL_REQUEST' && failedSessionId) {
+      ensureActivePhaseAttempt(setup.ticket.id, phase)
+      context.projectDb.insert(opencodeSessions).values({
+        ticketId: context.localTicketId,
+        sessionId: failedSessionId,
+        phase,
+        phaseAttempt: 1,
+        step: 'pull_request_draft',
+        state: 'abandoned',
+      }).run()
+    }
     context.projectDb.update(tickets).set({
       status: 'BLOCKED_ERROR',
       xstateSnapshot: JSON.stringify({ context: { previousStatus: phase } }),

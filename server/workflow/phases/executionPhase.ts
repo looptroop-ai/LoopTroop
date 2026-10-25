@@ -50,10 +50,7 @@ import {
   updateTicketProgressFromBeads,
 } from "./beadsPhase";
 import { recordBeadMetric } from "../../storage/executionTelemetry";
-import {
-  clearSessionContinuation,
-  hasPendingSessionContinuationForTicketPhase,
-} from "../../opencode/sessionContinuation";
+import { hasPendingSessionContinuationForTicketPhase } from "../../opencode/sessionContinuation";
 import {
   listOpenCodeSessionsForTicket,
   SessionManager,
@@ -136,7 +133,6 @@ async function abandonInterruptedCodingSessions(
         return;
       }
       await sessionManager.abandonSession(session.sessionId);
-      clearSessionContinuation(session.sessionId);
       clearOpenCodePromptDispatchCount(session.sessionId);
     }),
   );

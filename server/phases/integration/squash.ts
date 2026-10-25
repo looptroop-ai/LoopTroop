@@ -97,6 +97,7 @@ export async function prepareSquashCandidate(
     ]))
 
     if (candidateFiles.length === 0) {
+      ensureNoTrackedWorktreeChanges(worktreePath, 'no-change integration')
       return {
         success: true,
         noChanges: true,
@@ -121,6 +122,7 @@ export async function prepareSquashCandidate(
     const stagedChanges = parsePathList(await runGit(['diff', '--cached', '--name-only', '-z', '--', ...REPO_SCOPE_PATHSPECS]))
     if (stagedChanges.length === 0) {
       await runGit(['reset', '--mixed', preSquashHead])
+      ensureNoTrackedWorktreeChanges(worktreePath, 'no-change integration')
       return {
         success: true,
         noChanges: true,

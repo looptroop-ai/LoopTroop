@@ -132,6 +132,33 @@ describe("ticketMachine execution setup flow", () => {
     },
   );
 
+  it('retains preserved OpenCode diagnostics from execution setup failures', () => {
+    const actor = createRestoredActor({ status: 'PREPARING_EXECUTION_ENV' });
+    const diagnostics = {
+      kind: 'timeout' as const,
+      source: 'opencode' as const,
+      summary: 'Execution setup timed out.',
+      sessionId: 'ses-setup-timeout',
+      isRetryable: true,
+    };
+
+    actor.start();
+    actor.send({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: ['Execution setup prompt failed: Timeout'],
+      codes: ['OPENCODE_PROVIDER_ERROR'],
+      diagnostics,
+    });
+
+    expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR');
+    expect(actor.getSnapshot().context.errorCodes).toEqual([
+      'EXECUTION_SETUP_FAILED',
+      'OPENCODE_PROVIDER_ERROR',
+    ]);
+    expect(actor.getSnapshot().context.errorDiagnostics).toEqual(diagnostics);
+    actor.stop();
+  });
+
   it.each([
     {
       stoppingReason:

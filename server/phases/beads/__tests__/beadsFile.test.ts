@@ -277,6 +277,13 @@ describe('readBeadsFile and the top-level spellings', () => {
     )).toEqual([])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "acceptanceCriteria" has the wrong type'))
   })
+
+  it.each([[''], ['file\u0085name'], ['src/file\n/etc/passwd']].map((targetFiles) => ({ targetFiles })))('rejects malformed target paths when reading: %j', ({ targetFiles }) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(readBeadsFile(writeTracker(bead({ targetFiles })), { malformedEntries: 'skip' })).toEqual([])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('field "targetFiles" has the wrong type'))
+  })
 })
 
 /**

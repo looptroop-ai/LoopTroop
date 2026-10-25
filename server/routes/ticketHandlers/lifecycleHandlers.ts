@@ -3,7 +3,9 @@ import { requestManualQaSubmissionRecovery } from '../../phases/manualQa/operati
 import { completeTicketMerge, hasClosedUnmergedReport, hasVerifiedMergeReport, withTicketMergeLock } from '../../workflow/mergeCompletion'
 import type { Context } from 'hono'
 import type { z } from 'zod'
+import { and, eq } from 'drizzle-orm'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
+import { ticketPhaseAttempts } from '../../db/schema'
 import {
   ensureActorForTicket,
   getTicketState,
@@ -73,7 +75,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText } from '@shared/errorDiagnostics'
 import { buildOpenCodeBlockedErrorDiagnostics } from '../../opencode/blockedErrorDiagnostics'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
-import { canRetryWithExtraNote, savePhaseRetryNote } from '../../workflow/retryNotes'
+import { canRetryWithExtraNote, expirePhaseRetryNote, savePhaseRetryNote } from '../../workflow/retryNotes'
 import { broadcaster } from '../../sse/broadcaster'
 import {
   clearSessionContinuation,
@@ -81,8 +83,9 @@ import {
 } from '../../opencode/sessionContinuation'
 import {
   assertPlanningEditClaim,
-  claimPlanningEdit,
-  releasePlanningEdit,
+  claimLifecycleRecovery,
+  confirmLifecycleRecoveryStop,
+  releaseLifecycleRecovery,
   buildExecutionBandConflictMessage,
   emitRoutePhaseLog,
   getProfileDefaults,
@@ -97,7 +100,7 @@ import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { clearTicketWindows } from '../../workflow/questionWindows'
-import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
+import { resolveStoredWorkflowPhase, type WorkflowPhaseId } from '@shared/workflowMeta'
 import { parseLockedCouncilMemberVariants } from '../../storage/ticketQueries'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
@@ -854,6 +857,79 @@ async function clearPendingCancellationForRetry(ticketId: string): Promise<boole
   return windowsCleared && clearTicketCancellationPending(ticketId)
 }
 
+interface RetryAttemptTransition {
+  phase: WorkflowPhaseId
+  previousAttempt: number
+  nextAttempt: number
+}
+
+function rollbackUndispatchedRetry(
+  ticketId: string,
+  expectedFailure: { previousStatus: string; activeErrorOccurrenceId: number | null },
+  transition: RetryAttemptTransition | null,
+  hasRetryNote: boolean,
+): boolean {
+  const ticket = getTicketByRef(ticketId)
+  if (
+    ticket?.status !== 'BLOCKED_ERROR'
+    || ticket.previousStatus !== expectedFailure.previousStatus
+    || ticket.activeErrorOccurrenceId !== expectedFailure.activeErrorOccurrenceId
+  ) return false
+
+  const phase = resolveStoredWorkflowPhase(expectedFailure.previousStatus)
+  const attempt = transition?.nextAttempt ?? getActivePhaseAttempt(ticketId, phase) ?? 1
+  if (listOpenCodeSessionsForTicket(ticketId, []).some(session => (
+    session.phase === phase && session.phaseAttempt === attempt && (transition !== null || session.state === 'active')
+  ))) return false
+
+  const expireRejectedRetryNote = () => {
+    if (!hasRetryNote) return
+    try {
+      expirePhaseRetryNote(ticketId, phase)
+    } catch (error) {
+      logTicketOperationError(ticketId, 'Failed to expire the rejected retry note', error)
+    }
+  }
+
+  if (transition) {
+    const context = getTicketContext(ticketId)
+    if (!context) return false
+    const next = context.projectDb.select().from(ticketPhaseAttempts).where(and(
+      eq(ticketPhaseAttempts.ticketId, context.localTicketId),
+      eq(ticketPhaseAttempts.phase, transition.phase),
+      eq(ticketPhaseAttempts.attemptNumber, transition.nextAttempt),
+    )).get()
+    const previous = context.projectDb.select().from(ticketPhaseAttempts).where(and(
+      eq(ticketPhaseAttempts.ticketId, context.localTicketId),
+      eq(ticketPhaseAttempts.phase, transition.phase),
+      eq(ticketPhaseAttempts.attemptNumber, transition.previousAttempt),
+    )).get()
+    if (!next || next.state !== 'active' || !previous || previous.state !== 'archived'
+      || previous.archivedReason !== 'manual_retry_after_blocked_error') return false
+    expireRejectedRetryNote()
+    try {
+      return context.projectDb.transaction((tx) => {
+        const restored = tx.update(ticketPhaseAttempts)
+          .set({ state: 'active', archivedReason: null, archivedAt: null })
+          .where(and(eq(ticketPhaseAttempts.id, previous.id), eq(ticketPhaseAttempts.state, 'archived')))
+          .run()
+        if (restored.changes === 0) throw new Error('The prior phase attempt could not be restored')
+        const deleted = tx.delete(ticketPhaseAttempts).where(and(
+          eq(ticketPhaseAttempts.id, next.id),
+          eq(ticketPhaseAttempts.state, 'active'),
+        )).run()
+        if (deleted.changes === 0) throw new Error('The undispatched phase attempt could not be removed')
+        return true
+      })
+    } catch (error) {
+      logTicketOperationError(ticketId, 'Failed to roll back the undispatched retry attempt', error)
+      return false
+    }
+  }
+  expireRejectedRetryNote()
+  return true
+}
+
 export async function handleRetryTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
@@ -878,27 +954,51 @@ export async function handleRetryTicket(c: Context) {
   if (!parsedBody.success) {
     return c.json({ error: parsedBody.error.issues[0]?.message ?? 'Invalid retry request' }, 400)
   }
-  const recoveryClaim = claimPlanningEdit(ticketId)
+  const recoveryClaim = claimLifecycleRecovery(ticketId)
   if (!recoveryClaim) return c.json({ error: 'Another ticket recovery or edit is already in progress' }, 409)
+  const failureStillCurrent = () => {
+    const current = getTicketByRef(ticketId)
+    return current?.status === 'BLOCKED_ERROR'
+      && current.previousStatus === ticket.previousStatus
+      && current.activeErrorOccurrenceId === ticket.activeErrorOccurrenceId
+  }
+  let retryAttemptTransition: RetryAttemptTransition | null = null
   try {
-    if (getTicketByRef(ticketId)?.status !== 'BLOCKED_ERROR') {
+    const currentTicket = getTicketByRef(ticketId)
+    if (currentTicket?.status !== 'BLOCKED_ERROR') {
       return c.json({ error: 'Retry only works from BLOCKED_ERROR state' }, 409)
     }
-    const userRetryNote = parsedBody.data.note
-    if (userRetryNote !== undefined && ticket.previousStatus === 'CODING'
-      && hasSuccessfulExecutionCheckpointForFinalization(ticketId)) {
-      return c.json({ error: 'The AI implementation already succeeded; use Retry to finish saving its result' }, 409)
+    if (!currentTicket.previousStatus) {
+      return c.json({ error: 'Retry is not available because the failed status could not be recovered' }, 409)
     }
-    if (userRetryNote !== undefined && !canRetryWithExtraNote(ticketId, ticket.previousStatus)) {
+    if (!failureStillCurrent()) {
+      return c.json({ error: 'The blocked error changed while retrying; refresh and try again' }, 409)
+    }
+    const userRetryNote = parsedBody.data.note
+    if (userRetryNote !== undefined && currentTicket.previousStatus === 'CODING') {
+      let hasSuccessfulCheckpoint: boolean
+      try {
+        hasSuccessfulCheckpoint = hasSuccessfulExecutionCheckpointForFinalization(ticketId)
+      } catch (err) {
+        return c.json({
+          error: 'Retry is not available because the coding tracker could not be read safely',
+          details: getErrorMessage(err),
+        }, 409)
+      }
+      if (hasSuccessfulCheckpoint) {
+        return c.json({ error: 'The AI implementation already succeeded; use Retry to finish saving its result' }, 409)
+      }
+    }
+    if (userRetryNote !== undefined && !canRetryWithExtraNote(ticketId, currentTicket.previousStatus)) {
       return c.json({ error: 'Retry with extra note is only available for failed AI work' }, 409)
     }
 
-    const codingPaths = ticket.previousStatus === 'CODING' ? getTicketPaths(ticketId) : null
-    if (ticket.previousStatus === 'CODING' && !codingPaths) {
+    const codingPaths = currentTicket.previousStatus === 'CODING' ? getTicketPaths(ticketId) : null
+    if (currentTicket.previousStatus === 'CODING' && !codingPaths) {
       return c.json({ error: 'Retry is not available because the ticket workspace could not be resolved' }, 409)
     }
 
-    if (isExecutionBandStatus(ticket.previousStatus)) {
+    if (isExecutionBandStatus(currentTicket.previousStatus)) {
       const executionConflict = findProjectExecutionBandConflict(ticket.projectId, ticket.id)
       if (executionConflict) {
         return c.json({ error: buildExecutionBandConflictMessage(ticket, executionConflict) }, 409)
@@ -906,14 +1006,18 @@ export async function handleRetryTicket(c: Context) {
     }
 
     let retryStep: string | undefined
-    if (['CREATING_PULL_REQUEST', 'VERIFYING_PRD_COVERAGE', 'VERIFYING_BEADS_COVERAGE'].includes(ticket.previousStatus)) {
-      const failedSessionId = ticket.errorOccurrences.find(error => error.id === ticket.activeErrorOccurrenceId)?.diagnostics?.sessionId
-      const attempt = getActivePhaseAttempt(ticketId, ticket.previousStatus) ?? 1
-      const failedSession = listOpenCodeSessionsForTicket(ticketId, [])
-        .filter(session => session.phase === ticket.previousStatus && session.phaseAttempt === attempt
-          && (failedSessionId === undefined || session.sessionId === failedSessionId))
-        .sort((left, right) => right.id - left.id)[0]
-      retryStep = failedSession?.step ?? undefined
+    if (['CREATING_PULL_REQUEST', 'VERIFYING_PRD_COVERAGE', 'VERIFYING_BEADS_COVERAGE'].includes(currentTicket.previousStatus)) {
+      const failedSessionId = currentTicket.errorOccurrences.find(error => error.id === currentTicket.activeErrorOccurrenceId)?.diagnostics?.sessionId
+      if (typeof failedSessionId === 'string' && failedSessionId.trim()) {
+        const attempt = getActivePhaseAttempt(ticketId, currentTicket.previousStatus) ?? 1
+        const failedSession = listOpenCodeSessionsForTicket(ticketId, [])
+          .find(session => session.phase === currentTicket.previousStatus && session.phaseAttempt === attempt
+            && session.sessionId === failedSessionId)
+        retryStep = failedSession?.step ?? undefined
+      }
+      if (userRetryNote !== undefined && !retryStep) {
+        return c.json({ error: 'Retry with extra note is unavailable because the failed AI step could not be identified' }, 409)
+      }
     }
 
     // Retry must never reconnect to work that the previous attempt left running.
@@ -931,17 +1035,26 @@ export async function handleRetryTicket(c: Context) {
         error: 'Retry is not available until the previous OpenCode session stop is confirmed',
       }, 409)
     }
-    assertPlanningEditClaim(ticketId, recoveryClaim)
+    assertPlanningEditClaim(ticketId, recoveryClaim.token)
+    if (!failureStillCurrent()) {
+      return c.json({ error: 'The blocked error changed while retrying; refresh and try again' }, 409)
+    }
+    if (!confirmLifecycleRecoveryStop(ticketId, recoveryClaim)) {
+      return c.json({ error: 'The interview stop changed while retrying; try again shortly' }, 409)
+    }
     if (!await clearPendingCancellationForRetry(ticketId)) {
       return c.json({ error: 'Retry is not available until the previous cancellation cleanup is confirmed' }, 409)
     }
-    assertPlanningEditClaim(ticketId, recoveryClaim)
-    const interviewSnapshot = ticket.previousStatus === 'WAITING_INTERVIEW_ANSWERS'
+    assertPlanningEditClaim(ticketId, recoveryClaim.token)
+    if (!failureStillCurrent()) {
+      return c.json({ error: 'The blocked error changed while retrying; refresh and try again' }, 409)
+    }
+    const interviewSnapshot = currentTicket.previousStatus === 'WAITING_INTERVIEW_ANSWERS'
       ? readInterviewRetrySnapshot(ticketId)
       : null
-    if (ticket.previousStatus === 'WAITING_INTERVIEW_ANSWERS') interviewQASessions.delete(ticketId)
+    if (currentTicket.previousStatus === 'WAITING_INTERVIEW_ANSWERS') interviewQASessions.delete(ticketId)
 
-    if (ticket.previousStatus === 'CODING' && codingPaths) {
+    if (currentTicket.previousStatus === 'CODING' && codingPaths) {
       const paths = codingPaths
       try {
         const finalizedBead = recoverSuccessfulExecutionCheckpointForFinalization(ticketId)
@@ -959,28 +1072,50 @@ export async function handleRetryTicket(c: Context) {
           details: getErrorMessage(err),
         }, 409)
       }
+      assertPlanningEditClaim(ticketId, recoveryClaim.token)
+      if (!failureStillCurrent()) {
+        return c.json({ error: 'The blocked error changed while retrying; refresh and try again' }, 409)
+      }
     }
 
     try {
-      if (isAttemptTrackedPhase(ticket.previousStatus)) {
-        ensureActivePhaseAttempt(ticketId, ticket.previousStatus)
-        archiveActivePhaseAttempts(ticketId, [ticket.previousStatus], 'manual_retry_after_blocked_error')
-        createFreshPhaseAttempts(ticketId, [ticket.previousStatus])
+      if (isAttemptTrackedPhase(currentTicket.previousStatus)) {
+        ensureActivePhaseAttempt(ticketId, currentTicket.previousStatus)
+        const archived = archiveActivePhaseAttempts(ticketId, [currentTicket.previousStatus], 'manual_retry_after_blocked_error')
+        const created = createFreshPhaseAttempts(ticketId, [currentTicket.previousStatus])
+        const previousAttempt = archived.find(attempt => attempt.phase === currentTicket.previousStatus)?.attemptNumber
+        const nextAttempt = created.find(attempt => attempt.phase === currentTicket.previousStatus)?.attemptNumber
+        if (previousAttempt !== undefined && nextAttempt !== undefined) {
+          retryAttemptTransition = {
+            phase: resolveStoredWorkflowPhase(currentTicket.previousStatus),
+            previousAttempt,
+            nextAttempt,
+          }
+        }
       }
       if (interviewSnapshot) persistInterviewRetrySnapshot(ticketId, interviewSnapshot)
-      if (ticket.previousStatus !== 'CODING') {
-        savePhaseRetryNote(ticketId, resolveStoredWorkflowPhase(ticket.previousStatus), userRetryNote, retryStep)
+      if (currentTicket.previousStatus !== 'CODING') {
+        savePhaseRetryNote(ticketId, resolveStoredWorkflowPhase(currentTicket.previousStatus), userRetryNote, retryStep)
       }
-      if (ticket.previousStatus === 'WAITING_MANUAL_QA') requestManualQaSubmissionRecovery(ticketId)
+      if (currentTicket.previousStatus === 'WAITING_MANUAL_QA') requestManualQaSubmissionRecovery(ticketId)
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, { type: 'RETRY' })
     } catch (err) {
-      if (ticket.previousStatus === 'WAITING_MANUAL_QA') requestManualQaSubmissionRecovery(ticketId, false)
-      if (userRetryNote !== undefined && ticket.previousStatus !== 'CODING') {
+      if (currentTicket.previousStatus === 'WAITING_MANUAL_QA') requestManualQaSubmissionRecovery(ticketId, false)
+      const rolledBack = rollbackUndispatchedRetry(ticketId, {
+        previousStatus: ticket.previousStatus,
+        activeErrorOccurrenceId: ticket.activeErrorOccurrenceId,
+      }, retryAttemptTransition, userRetryNote !== undefined && currentTicket.previousStatus !== 'CODING')
+      if (rolledBack && userRetryNote !== undefined) {
+        const phase = resolveStoredWorkflowPhase(currentTicket.previousStatus)
         try {
-          savePhaseRetryNote(ticketId, resolveStoredWorkflowPhase(ticket.previousStatus), undefined)
-        } catch (cleanupError) {
-          logTicketOperationError(ticketId, 'Failed to clear the rejected retry note', cleanupError)
+          emitRoutePhaseLog(ticketId, phase, 'info',
+            `Retry with extra note was not applied because dispatch failed:\n${userRetryNote}`, {
+              userRetryNote,
+              phaseAttempt: retryAttemptTransition?.previousAttempt ?? getActivePhaseAttempt(ticketId, phase) ?? 1,
+            })
+        } catch (logError) {
+          logTicketOperationError(ticketId, 'Failed to retain the rejected retry note in ticket history', logError)
         }
       }
       logTicketOperationError(ticketId, 'Failed to send RETRY to ticket', err)
@@ -988,12 +1123,12 @@ export async function handleRetryTicket(c: Context) {
     }
 
     if (userRetryNote !== undefined) {
-      emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(ticket.previousStatus), 'info',
+      emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(currentTicket.previousStatus), 'info',
         `Retry with extra note:\n${userRetryNote}`, { userRetryNote })
     }
     return respondWithState(c, ticketId, 'Retry action accepted')
   } finally {
-    releasePlanningEdit(ticketId, recoveryClaim)
+    releaseLifecycleRecovery(ticketId, recoveryClaim)
   }
 }
 
@@ -1010,7 +1145,7 @@ export async function handleContinueTicket(c: Context) {
     return c.json({ error: 'Continue is not available because the failed status could not be recovered' }, 409)
   }
 
-  const continuation = resolveTicketContinuationCandidate(ticketId)
+  let continuation = resolveTicketContinuationCandidate(ticketId)
   if (!continuation) {
     return c.json({ error: 'Continue is not available for this blocked error' }, 409)
   }
@@ -1022,12 +1157,26 @@ export async function handleContinueTicket(c: Context) {
     }
   }
 
-  const recoveryClaim = claimPlanningEdit(ticketId)
+  const recoveryClaim = claimLifecycleRecovery(ticketId)
   if (!recoveryClaim) return c.json({ error: 'Another ticket recovery or edit is already in progress' }, 409)
   try {
-    if (getTicketByRef(ticketId)?.status !== 'BLOCKED_ERROR') {
+    const currentTicket = getTicketByRef(ticketId)
+    if (currentTicket?.status !== 'BLOCKED_ERROR'
+      || currentTicket.previousStatus !== ticket.previousStatus
+      || currentTicket.activeErrorOccurrenceId !== ticket.activeErrorOccurrenceId) {
       return c.json({ error: 'Continue only works from BLOCKED_ERROR state' }, 409)
     }
+    let currentContinuation = resolveTicketContinuationCandidate(ticketId)
+    if (!currentContinuation
+      || currentContinuation.previousStatus !== continuation.previousStatus
+      || currentContinuation.sessionId !== continuation.sessionId) {
+      return c.json({ error: 'Continue is not available for this blocked error' }, 409)
+    }
+    if (recoveryClaim.pendingInterviewStop
+      && currentContinuation.previousStatus !== 'WAITING_INTERVIEW_ANSWERS') {
+      return c.json({ error: 'Continue is not available while an interview stop is awaiting confirmation' }, 409)
+    }
+    continuation = currentContinuation
     let liveSession
     try {
       liveSession = await getOpenCodeAdapter().getSession(continuation.sessionId)
@@ -1038,6 +1187,19 @@ export async function handleContinueTicket(c: Context) {
         details: getErrorMessage(err),
       }, 500)
     }
+
+    assertPlanningEditClaim(ticketId, recoveryClaim.token)
+    const latestTicket = getTicketByRef(ticketId)
+    currentContinuation = resolveTicketContinuationCandidate(ticketId)
+    if (latestTicket?.status !== 'BLOCKED_ERROR'
+      || latestTicket.previousStatus !== ticket.previousStatus
+      || latestTicket.activeErrorOccurrenceId !== ticket.activeErrorOccurrenceId
+      || !currentContinuation
+      || currentContinuation.previousStatus !== continuation.previousStatus
+      || currentContinuation.sessionId !== continuation.sessionId) {
+      return c.json({ error: 'Continue is not available because the blocked error changed while verifying the session' }, 409)
+    }
+    continuation = currentContinuation
 
     if (!liveSession) {
       return c.json({
@@ -1054,7 +1216,21 @@ export async function handleContinueTicket(c: Context) {
     if (!stopped) {
       return c.json({ error: 'Continue is not available until the previous OpenCode turn stop is confirmed' }, 409)
     }
-    assertPlanningEditClaim(ticketId, recoveryClaim)
+    assertPlanningEditClaim(ticketId, recoveryClaim.token)
+    const stoppedTicket = getTicketByRef(ticketId)
+    currentContinuation = resolveTicketContinuationCandidate(ticketId)
+    if (stoppedTicket?.status !== 'BLOCKED_ERROR'
+      || stoppedTicket.previousStatus !== ticket.previousStatus
+      || stoppedTicket.activeErrorOccurrenceId !== ticket.activeErrorOccurrenceId
+      || !currentContinuation
+      || currentContinuation.previousStatus !== continuation.previousStatus
+      || currentContinuation.sessionId !== continuation.sessionId) {
+      return c.json({ error: 'Continue is not available because the blocked error changed while stopping the session' }, 409)
+    }
+    continuation = currentContinuation
+    if (!confirmLifecycleRecoveryStop(ticketId, recoveryClaim)) {
+      return c.json({ error: 'The interview stop changed while retrying; try again shortly' }, 409)
+    }
     requestSessionContinuation({
       ticketId,
       phase: resolveStoredWorkflowPhase(continuation.previousStatus),
@@ -1074,6 +1250,6 @@ export async function handleContinueTicket(c: Context) {
 
     return respondWithState(c, ticketId, 'Continue action accepted')
   } finally {
-    releasePlanningEdit(ticketId, recoveryClaim)
+    releaseLifecycleRecovery(ticketId, recoveryClaim)
   }
 }

@@ -3,51 +3,19 @@ import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { listOpenCodeSessionsForTicket } from '../../../opencode/sessionManager'
 import { resolveOpenCodePermissions } from '../../../opencode/toolPolicy'
-import { patchTicket, recordTicketErrorOccurrence, resolveTicketContinuationCandidate } from '../../../storage/tickets'
+import { patchTicket } from '../../../storage/tickets'
+import { archiveActivePhaseAttempts, createFreshPhaseAttempts, ensureActivePhaseAttempt } from '../../../storage/ticketPhaseAttempts'
 import { createTestRepoManager, createUninitializedTestTicket, resetTestDb } from '../../../test/integration'
+import { recordTimeoutAndExpectContinuation } from '../../../test/openCodeContinuation'
+import { SequencedMockOpenCodeAdapter, StructuredRetryTimeoutAdapter } from '../../../test/openCodeAdapters'
 import { generateExecutionSetup } from '../generator'
 
 const repoManager = createTestRepoManager('execution-setup-generator-')
-
-class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
-  private promptCounts = new Map<string, number>()
-
-  override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>) {
-    const sessionId = args[0]
-    const nextCount = (this.promptCounts.get(sessionId) ?? 0) + 1
-    this.promptCounts.set(sessionId, nextCount)
-
-    const queuedResponse = this.mockResponses.get(`${sessionId}#${nextCount}`)
-    if (queuedResponse !== undefined) {
-      this.mockResponses.set(sessionId, queuedResponse)
-    }
-    const queuedStreamEvents = this.mockStreamEvents.get(`${sessionId}#${nextCount}`)
-    if (queuedStreamEvents !== undefined) {
-      this.mockStreamEvents.set(sessionId, queuedStreamEvents)
-    }
-
-    return await super.promptSession(...args)
-  }
-}
 
 class FailingPromptAdapter extends MockOpenCodeAdapter {
   override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
     this.promptCalls.push({ sessionId: args[0], parts: args[1], options: args[3] })
     throw new Error('manual continuation prompt failed')
-  }
-}
-
-class StructuredRetryTimeoutAdapter extends MockOpenCodeAdapter {
-  private promptCount = 0
-
-  override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
-    this.promptCount += 1
-    if (this.promptCount === 2) {
-      this.promptCalls.push({ sessionId: args[0], parts: args[1], options: args[3] })
-      throw new Error('Timeout')
-    }
-    this.mockResponses.set(args[0], 'invalid execution setup response')
-    return await super.promptSession(...args)
   }
 }
 
@@ -254,18 +222,27 @@ describe('generateExecutionSetup', () => {
       title: 'Continue execution-setup retry timeout',
     })
     patchTicket(ticket.id, { status: 'PREPARING_EXECUTION_ENV' })
-    const adapter = new StructuredRetryTimeoutAdapter()
+    ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
+    for (let attempt = 1; attempt < 3; attempt += 1) {
+      archiveActivePhaseAttempts(ticket.id, ['PREPARING_EXECUTION_ENV'], 'retry')
+      createFreshPhaseAttempts(ticket.id, ['PREPARING_EXECUTION_ENV'])
+    }
+    const adapter = new StructuredRetryTimeoutAdapter('invalid execution setup response')
 
     const result = await generateExecutionSetup(
       adapter,
       [{ type: 'text', content: 'Execution setup context' }],
       '/tmp/test',
       undefined,
-      { ticketId: ticket.id, model: 'model-a' },
+      { ticketId: ticket.id, model: 'model-a', iteration: 2 },
     )
 
     expect(result.session?.id).toBe('mock-session-1')
     expect(result.parse.errors).toEqual(['Execution setup prompt failed: Timeout'])
+    expect(result.diagnostics).toMatchObject({ kind: 'timeout', sessionId: 'mock-session-1' })
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toMatchObject([
+      { sessionId: 'mock-session-1', phaseAttempt: 3, iteration: 2 },
+    ])
     const diagnostics: BlockedErrorDiagnostics = {
       kind: 'timeout',
       source: 'opencode',
@@ -273,22 +250,11 @@ describe('generateExecutionSetup', () => {
       sessionId: result.session?.id,
       isRetryable: true,
     }
-    recordTicketErrorOccurrence(ticket.id, {
-      blockedFromStatus: 'PREPARING_EXECUTION_ENV',
-      errorMessage: 'Timeout',
-      diagnostics,
-    })
-    patchTicket(ticket.id, {
-      status: 'BLOCKED_ERROR',
-      xstateSnapshot: JSON.stringify({ context: { previousStatus: 'PREPARING_EXECUTION_ENV' } }),
-      errorMessage: 'Timeout',
-    })
-
-    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId))
-      .toEqual(['mock-session-1'])
-    expect(resolveTicketContinuationCandidate(ticket.id)).toMatchObject({
+    recordTimeoutAndExpectContinuation({
+      ticketId: ticket.id,
       previousStatus: 'PREPARING_EXECUTION_ENV',
       sessionId: 'mock-session-1',
+      diagnostics,
     })
   })
 

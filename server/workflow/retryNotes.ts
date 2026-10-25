@@ -11,17 +11,22 @@ export function canRetryWithExtraNote(ticketId: string, phase: string): boolean 
 }
 
 export function savePhaseRetryNote(ticketId: string, phase: WorkflowPhaseId, note: string | undefined, step?: string): void {
-  if (note === undefined && !getLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase)) return
+  if (note === undefined) {
+    const artifact = getLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase)
+    if (!artifact) return
+    try { if (JSON.parse(artifact.content)?.active === false) return } catch { /* Replace malformed optional guidance. */ }
+  }
   upsertLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase, JSON.stringify({ note: note ?? null, ...(step ? { step } : {}) }))
 }
 
-export function expirePhaseRetryNote(ticketId: string, phase: WorkflowPhaseId): void {
+export function expirePhaseRetryNote(ticketId: string, phase: WorkflowPhaseId, step?: string): void {
   const artifact = getLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase)
   if (!artifact) return
   let parsed: unknown
   try { parsed = JSON.parse(artifact.content) } catch { return }
   if (parsed && typeof parsed === 'object' && 'note' in parsed && typeof parsed.note === 'string'
-    && (!('active' in parsed) || parsed.active !== false)) {
+    && (!('active' in parsed) || parsed.active !== false)
+    && (step === undefined || !('step' in parsed) || parsed.step === step)) {
     upsertLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase, JSON.stringify({ ...parsed, active: false }))
   }
 }

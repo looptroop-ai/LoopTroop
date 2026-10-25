@@ -43,7 +43,12 @@ import { getPendingQuestionSummary } from '../workflow/questionWindows'
 import { getErrorMessage } from '@shared/typeGuards'
 import { supportsRetryNote } from '@shared/aiRetry'
 import { hasSuccessfulExecutionCheckpointForFinalization } from '../phases/execution/checkpoint'
-import { isCandidateFileAuditCheckpoint, isCoverageRevisionCheckpoint } from '../lib/workflowContinuation'
+import {
+  buildPrdFullAnswersInputHash,
+  isCandidateFileAuditCheckpoint,
+  isCoverageRevisionCheckpoint,
+  isPrdFullAnswersCheckpoint,
+} from '../lib/workflowContinuation'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -553,6 +558,36 @@ function hasContinuationCheckpoint(
       activeSession.phaseAttempt,
     ).value
     return isCoverageRevisionCheckpoint(checkpoint)
+  }
+
+  if (previousStatus === 'DRAFTING_PRD' && activeSession.step === 'prd_draft') {
+    const memberId = activeSession.memberId?.trim() ?? ''
+    if (!memberId) return false
+    const ticketRef = buildTicketRef(projectContext.attached.id, ticket.externalId)
+    try {
+      const interview = readTicketFile(ticketRef, 'interview.yaml')
+      if (interview === null) return false
+      const inputHash = buildPrdFullAnswersInputHash({
+        title: ticket.title,
+        description: ticket.description ?? '',
+        relevantFiles: readTicketFile(ticketRef, 'relevant-files.yaml') ?? undefined,
+        interview,
+      })
+      const checkpoint = readContinuationArtifact(
+        projectContext,
+        ticket.id,
+        `prd_full_answers_checkpoint:${memberId}`,
+        'DRAFTING_PRD',
+        activeSession.phaseAttempt,
+      ).value
+      return isPrdFullAnswersCheckpoint(checkpoint, {
+        inputHash,
+        memberId,
+        phaseAttempt: activeSession.phaseAttempt,
+      })
+    } catch {
+      return false
+    }
   }
 
   if (previousStatus !== 'CREATING_PULL_REQUEST') return true
@@ -1078,6 +1113,28 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     : addContinueActionWhenAvailable(getAvailableWorkflowActions(ticket.status), continuationCandidate)
   const activeError = errorOccurrences.find(occurrence => occurrence.id === activeErrorOccurrenceId)
   let retryNoteAvailable = supportsRetryNote(previousStatus, activeError?.errorCodes, activeError?.diagnostics)
+  if (!isMockTicket && ticket.status === 'BLOCKED_ERROR'
+    && (previousStatus === 'CREATING_PULL_REQUEST'
+      || previousStatus === 'VERIFYING_PRD_COVERAGE'
+      || previousStatus === 'VERIFYING_BEADS_COVERAGE')
+    && retryNoteAvailable) {
+    const failedSessionId = activeError?.diagnostics?.sessionId?.trim()
+    const phaseAttempt = projectContext && previousStatus
+      ? activePhaseAttemptNumber(projectContext, ticket.id, previousStatus)
+      : null
+    const failedSession = projectContext && failedSessionId && phaseAttempt !== null
+      ? projectContext.projectDb.select({ step: opencodeSessions.step })
+        .from(opencodeSessions)
+        .where(and(
+          eq(opencodeSessions.ticketId, ticket.id),
+          eq(opencodeSessions.sessionId, failedSessionId),
+          eq(opencodeSessions.phase, previousStatus),
+          eq(opencodeSessions.phaseAttempt, phaseAttempt),
+        ))
+        .get()
+      : null
+    retryNoteAvailable = typeof failedSession?.step === 'string' && failedSession.step.trim().length > 0
+  }
   if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && previousStatus === 'CODING' && retryNoteAvailable) {
     try {
       retryNoteAvailable = !hasSuccessfulExecutionCheckpointForFinalization(buildTicketRef(projectId, ticket.externalId))
@@ -1378,15 +1435,24 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
   }
   try {
     const result = readBeadsFileWithDiagnostics(beadsPath, { malformedEntries: 'skip' })
+    let worktreePath: string | null
+    try {
+      worktreePath = getTicketWorktreePath(projectRoot, externalId)
+    } catch (error) {
+      if (!(error instanceof ContainedPathError)) throw error
+      console.warn(`[tickets] Could not resolve the runtime worktree for ${externalId}; treating bead targets as external.`)
+      worktreePath = null
+    }
     const beads = result.beads.map((bead) => {
       const qaOrigin = RuntimeQaOriginSchema.safeParse(bead.qaOrigin)
+      const targetFiles = Array.isArray(bead.targetFiles) ? bead.targetFiles.filter(isBeadTargetFile) : []
       return {
         id: bead.id,
         title: typeof bead.title === 'string' ? bead.title : 'Untitled',
         status: bead.status,
         iteration: typeof bead.iteration === 'number' ? bead.iteration : 0,
-        externalTargetFiles: getExternalTargetFiles(bead.targetFiles, getTicketWorktreePath(projectRoot, externalId)),
-        targetFiles: Array.isArray(bead.targetFiles) ? bead.targetFiles.filter(isBeadTargetFile) : [],
+        externalTargetFiles: worktreePath ? getExternalTargetFiles(targetFiles, worktreePath) : targetFiles,
+        targetFiles,
         failedIterationNotes: Array.isArray(bead.failedIterationNotes) ? bead.failedIterationNotes : [],
         userRetryNotes: Array.isArray(bead.userRetryNotes) ? bead.userRetryNotes : [],
         finalizationFailureNotes: Array.isArray(bead.finalizationFailureNotes) ? bead.finalizationFailureNotes : [],

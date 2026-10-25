@@ -19,6 +19,7 @@ import {
   getTicketPaths,
   isDisplayOnlyMockTicket,
   insertPhaseArtifact,
+  listPhaseArtifacts,
   listPhaseAttempts,
   listTickets,
   patchTicket,
@@ -50,6 +51,7 @@ import {
   appendManualQaEvent,
   getManualQaChecklistHash,
   getManualQaStoragePaths,
+  listManualQaVersions,
   persistManualQaResults,
   persistManualQaModelCapabilitySnapshot,
   persistManualQaSummary,
@@ -77,8 +79,14 @@ import {
   type ManualQaFixBeadCandidate,
 } from './fixBeads'
 import { emitAiMilestone, emitPhaseLog } from '../../workflow/phases/helpers'
+import {
+  appendBlockedErrorDiagnosticsSummary,
+  buildOpenCodeBlockedErrorDiagnostics,
+  mergeErrorCodes,
+} from '../../opencode/blockedErrorDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
 import { readPhaseRetryNote, savePhaseRetryNote } from '../../workflow/retryNotes'
+import { isCancellationError } from '../../lib/abort'
 
 export interface ManualQaMutationGuard {
   actionId: string
@@ -987,8 +995,78 @@ function finalizeRecoveredOperation(
   persistManualQaDatabaseOperation(ticketId, journal)
 }
 
+function recoverCompletedManualQaSummary(input: {
+  ticketId: string
+  ticketDir: string
+  summary: ManualQaSummary
+  sendEvent: (event: TicketEvent) => void
+}): void {
+  const operationPath = getManualQaStoragePaths(input.ticketDir, input.summary.version).operationPath
+  const journalText = readManualQaText(input.ticketDir, operationPath)
+  const journal = journalText !== null
+    ? JSON.parse(journalText) as ManualQaOperationJournal
+    : null
+  const recoveryActionId = journal?.actionId ?? `manual-qa-recovery-v${input.summary.version}`
+  finalizeRecoveredOperation(input.ticketId, operationPath, journal, input.summary)
+  repairTerminalManualQaArtifacts({
+    ticketId: input.ticketId,
+    ticketDir: input.ticketDir,
+    summary: input.summary,
+    actionId: recoveryActionId,
+  })
+  appendManualQaSummaryEvent(input.ticketDir, input.summary, recoveryActionId)
+  dispatchCompletedManualQaWorkflow({
+    ticketId: input.ticketId,
+    summary: input.summary,
+    journal,
+    sendEvent: input.sendEvent,
+  })
+}
+
 export function requestManualQaSubmissionRecovery(ticketId: string, requested = true): void {
   upsertLatestPhaseArtifact(ticketId, 'manual_qa_recovery_requested', 'WAITING_MANUAL_QA', JSON.stringify({ requested }))
+}
+
+function resolveWaitingManualQaAttemptVersion(ticketId: string, ticketDir: string): number | null {
+  const activeAttempt = listPhaseAttempts(ticketId, 'WAITING_MANUAL_QA')
+    .find((attempt) => attempt.state === 'active')?.attemptNumber
+  if (activeAttempt === undefined) return null
+
+  for (const artifact of listPhaseArtifacts(ticketId, {
+    phase: 'WAITING_MANUAL_QA',
+    phaseAttempt: activeAttempt,
+  })) {
+    if (artifact.content === null) continue
+    try {
+      const parsed = JSON.parse(artifact.content) as { version?: unknown; value?: unknown }
+      const value = parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value)
+        ? parsed.value as { version?: unknown }
+        : parsed
+      const version = value.version ?? parsed.version
+      if (typeof version === 'number' && Number.isInteger(version) && version > 0) {
+        return version
+      }
+    } catch { /* Ignore unrelated phase artifacts. */ }
+  }
+
+  // A completed submission writes its operation journal before its summary.
+  // The journal's source attempt covers the crash window before the summary
+  // phase artifact is inserted.
+  for (const version of listManualQaVersions(ticketDir).toReversed()) {
+    const operationPath = getManualQaStoragePaths(ticketDir, version).operationPath
+    const journalText = readManualQaText(ticketDir, operationPath)
+    if (journalText === null) continue
+    try {
+      const journal = JSON.parse(journalText) as {
+        version?: unknown
+        sourcePhaseAttempts?: Record<string, unknown>
+      }
+      if (journal.version === version && journal.sourcePhaseAttempts?.WAITING_MANUAL_QA === activeAttempt) {
+        return version
+      }
+    } catch { /* Ignore invalid journals; they cannot prove phase ownership. */ }
+  }
+  return null
 }
 
 export async function resumeFailedManualQaSubmission(
@@ -996,24 +1074,56 @@ export async function resumeFailedManualQaSubmission(
   sendEvent: (event: TicketEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const request = getLatestPhaseArtifact(ticketId, 'manual_qa_recovery_requested', 'WAITING_MANUAL_QA')
-  if (!request || request.content !== JSON.stringify({ requested: true })) return
-  // Consume before yielding so an actor restart cannot race the accepted request.
-  requestManualQaSubmissionRecovery(ticketId, false)
+  if (signal?.aborted || getTicketByRef(ticketId)?.status !== 'WAITING_MANUAL_QA') return
   const paths = getTicketPaths(ticketId)
   if (!paths) return
-  const version = resolveActiveManualQaVersion(paths.ticketDir)
-  if (version === null || readManualQaSummary(paths.ticketDir, version)?.outcome !== 'failed') return
+  const request = getLatestPhaseArtifact(ticketId, 'manual_qa_recovery_requested', 'WAITING_MANUAL_QA')
+  const requested = request?.content === JSON.stringify({ requested: true })
+  const waitingAttemptVersion = resolveWaitingManualQaAttemptVersion(ticketId, paths.ticketDir)
+  const activeVersion = resolveActiveManualQaVersion(paths.ticketDir)
+  const latestVersion = listManualQaVersions(paths.ticketDir).at(-1) ?? null
+  const version = waitingAttemptVersion ?? (
+    requested && activeVersion === latestVersion ? activeVersion : null
+  )
+  if (version === null) return
+  const summary = readManualQaSummary(paths.ticketDir, version)
+  if (summary && summary.outcome !== 'failed') {
+    if (waitingAttemptVersion !== version) return
+    if (signal?.aborted || getTicketByRef(ticketId)?.status !== 'WAITING_MANUAL_QA') return
+    if (requested) {
+      // Consume before recovery so a restarted actor cannot race the accepted request.
+      requestManualQaSubmissionRecovery(ticketId, false)
+    }
+    recoverCompletedManualQaSummary({
+      ticketId,
+      ticketDir: paths.ticketDir,
+      summary,
+      sendEvent,
+    })
+    savePhaseRetryNote(ticketId, 'WAITING_MANUAL_QA', undefined)
+    return
+  }
+  if (!requested || summary?.outcome !== 'failed') return
   const results = readManualQaResults(paths.ticketDir, version)
   if (!results) throw new Error('The failed Manual QA submission snapshot was not found.')
   const { artifact: _artifact, actionId, submittedAt: _submittedAt, ...draft } = results
-  await submitManualQa({
-    ticketId, version, draft: { ...draft, artifact: 'manual_qa_draft' }, signal, sendEvent,
-    guard: {
-      actionId, operationType: 'submit', expectedChecklistHash: draft.checklistHash,
-      expectedDraftRevision: draft.draftRevision,
-    },
-  })
+  if (signal?.aborted || getTicketByRef(ticketId)?.status !== 'WAITING_MANUAL_QA') return
+  // Consume before yielding so an actor restart cannot race the accepted request.
+  requestManualQaSubmissionRecovery(ticketId, false)
+  try {
+    await submitManualQa({
+      ticketId, version, draft: { ...draft, artifact: 'manual_qa_draft' }, signal, sendEvent,
+      guard: {
+        actionId, operationType: 'submit', expectedChecklistHash: draft.checklistHash,
+        expectedDraftRevision: draft.draftRevision,
+      },
+    })
+  } catch (error) {
+    if (isCancellationError(error, signal) && getTicketByRef(ticketId)?.status === 'WAITING_MANUAL_QA') {
+      requestManualQaSubmissionRecovery(ticketId)
+    }
+    throw error
+  }
   savePhaseRetryNote(ticketId, 'WAITING_MANUAL_QA', undefined)
 }
 
@@ -1032,23 +1142,10 @@ export async function submitManualQa(input: {
   const existingSummary = readManualQaSummary(paths.ticketDir, input.version)
   const operationPath = getManualQaStoragePaths(paths.ticketDir, input.version).operationPath
   if (existingSummary && existingSummary.outcome !== 'failed') {
-    const journalText = readManualQaText(paths.ticketDir, operationPath)
-    const existingJournal = journalText !== null
-      ? JSON.parse(journalText) as ManualQaOperationJournal
-      : null
-    const recoveryActionId = existingJournal?.actionId ?? `manual-qa-recovery-v${input.version}`
-    finalizeRecoveredOperation(input.ticketId, operationPath, existingJournal, existingSummary)
-    repairTerminalManualQaArtifacts({
+    recoverCompletedManualQaSummary({
       ticketId: input.ticketId,
       ticketDir: paths.ticketDir,
       summary: existingSummary,
-      actionId: recoveryActionId,
-    })
-    appendManualQaSummaryEvent(paths.ticketDir, existingSummary, recoveryActionId)
-    dispatchCompletedManualQaWorkflow({
-      ticketId: input.ticketId,
-      summary: existingSummary,
-      journal: existingJournal,
       sendEvent: input.sendEvent,
     })
     return existingSummary
@@ -1200,14 +1297,22 @@ export async function submitManualQa(input: {
       writeJournal(operationPath, journal)
       persistManualQaDatabaseOperation(input.ticketId, journal)
     } catch (error) {
+      if (isCancellationError(error, input.signal)) throw error
       const message = getErrorMessage(error)
+      const reportedError = error instanceof Error ? error : new Error(message)
+      Object.assign(reportedError, { code: 'MANUAL_QA_FIX_BEADS_FAILED', manualQaErrorReported: true })
+      const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: reportedError, fallbackMessage: message })
+      const errorMessage = `Manual QA fix-bead generation failed: ${message}`
       emitPhaseLog(input.ticketId, ticket.externalId, 'WAITING_MANUAL_QA', 'error', `Manual QA fix-bead generation failed: ${message}`, {
         source: 'system',
         phaseAttempt: resolvePhaseAttempt(input.ticketId, 'WAITING_MANUAL_QA'),
       })
-      input.sendEvent({ type: 'ERROR', message: `Manual QA fix-bead generation failed: ${message}`, codes: ['MANUAL_QA_FIX_BEADS_FAILED'] })
-      const reportedError = error instanceof Error ? error : new Error(message)
-      Object.assign(reportedError, { code: 'MANUAL_QA_FIX_BEADS_FAILED', manualQaErrorReported: true })
+      input.sendEvent({
+        type: 'ERROR',
+        message: appendBlockedErrorDiagnosticsSummary(errorMessage, diagnosticResult.diagnostics),
+        codes: mergeErrorCodes(['MANUAL_QA_FIX_BEADS_FAILED'], diagnosticResult.errorCodes),
+        ...(diagnosticResult.diagnostics ? { diagnostics: diagnosticResult.diagnostics } : {}),
+      })
       throw reportedError
     }
   }
@@ -1380,23 +1485,10 @@ export async function skipManualQa(input: {
   const operationPath = getManualQaStoragePaths(ticketDir, input.version).operationPath
   const existing = readManualQaSummary(ticketDir, input.version)
   if (existing && existing.outcome !== 'failed') {
-    const journalText = readManualQaText(ticketDir, operationPath)
-    const existingJournal = journalText !== null
-      ? JSON.parse(journalText) as ManualQaOperationJournal
-      : null
-    const recoveryActionId = existingJournal?.actionId ?? `manual-qa-recovery-v${input.version}`
-    finalizeRecoveredOperation(input.ticketId, operationPath, existingJournal, existing)
-    repairTerminalManualQaArtifacts({
+    recoverCompletedManualQaSummary({
       ticketId: input.ticketId,
       ticketDir,
       summary: existing,
-      actionId: recoveryActionId,
-    })
-    appendManualQaSummaryEvent(ticketDir, existing, recoveryActionId)
-    dispatchCompletedManualQaWorkflow({
-      ticketId: input.ticketId,
-      summary: existing,
-      journal: existingJournal,
       sendEvent: input.sendEvent,
     })
     return existing

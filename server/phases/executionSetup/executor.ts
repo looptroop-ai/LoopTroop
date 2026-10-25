@@ -224,6 +224,7 @@ export async function executeExecutionSetupWithRetries(
     initialRetryNotes?: string[]
     initialAttempt?: number
     additionalManualIterations?: number
+    continuationIteration?: number | null
   },
   callbacks: {
     evaluateGeneration: (input: {
@@ -313,6 +314,9 @@ export async function executeExecutionSetupWithRetries(
         ...(options.timeoutMs > 0 ? { timeoutDeadline: Date.now() + options.timeoutMs } : {}),
         budget: attemptBudget,
       }
+      const isManualContinuationAttempt = hasManualContinuationBudget
+        && attempt > attemptsUsedAtStart
+        && attempt <= iterationLimit
       await callbacks.onAttemptStart?.(attempt, {
         ...timing,
         baseMaxIterations: options.maxIterations,
@@ -339,10 +343,12 @@ export async function executeExecutionSetupWithRetries(
           timeoutDeadline: timing.timeoutDeadline,
           budget: attemptBudget,
           structuredRetryCount: options.structuredRetryCount,
-          phaseAttempt: attempt,
-          manualContinuation: hasManualContinuationBudget
-            && attempt > attemptsUsedAtStart
-            && attempt <= iterationLimit,
+          iteration: isManualContinuationAttempt
+            && attempt === attemptsUsedAtStart + 1
+            && options.continuationIteration !== undefined
+            ? options.continuationIteration
+            : attempt,
+          manualContinuation: isManualContinuationAttempt,
           onSessionCreated: (sessionId) => {
             callbacks.onSessionCreated?.(sessionId, attempt)
           },

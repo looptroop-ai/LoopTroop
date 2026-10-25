@@ -2,6 +2,7 @@ import type { StructuredFailureClass } from '../lib/structuredOutputRetry'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { CouncilMemberOutcome } from '@shared/councilMembers'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 
 /** Thrown when a ticket is canceled to distinguish from real errors. */
 export class CancelledError extends Error {
@@ -86,6 +87,9 @@ export interface DraftResult {
    * disagreeing with drafts written without that steering.
    */
   steeredByOperator?: boolean
+  /** Internal continuation evidence retained until quorum handling. */
+  blockedErrorDiagnostics?: BlockedErrorDiagnostics | null
+  blockedErrorCodes?: string[]
 }
 
 export interface DraftProgressEvent {
@@ -140,6 +144,9 @@ export interface VoterDetail {
   normalizedResponse?: string
   structuredOutput?: DraftStructuredOutputMeta
   rawAttempts?: RawAttempt[]
+  /** Internal continuation evidence retained until quorum handling. */
+  blockedErrorDiagnostics?: BlockedErrorDiagnostics | null
+  blockedErrorCodes?: string[]
 }
 
 export interface VotingPhaseResult {

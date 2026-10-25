@@ -48,7 +48,7 @@ describe('contained bead approval document', () => {
     },
   )
 
-  it.each([undefined, null, [''], ['file\0name']].map((targetFiles) => ({ targetFiles })))('rejects invalid approval target list %j', ({ targetFiles }) => {
+  it.each([undefined, null, [''], ['file\0name'], ['file\u0085name']].map((targetFiles) => ({ targetFiles })))('rejects invalid approval target list %j', ({ targetFiles }) => {
     const { beadsPath } = fixture()
     const content = JSON.stringify({
       id: 'one', title: 'A bead', status: 'pending', priority: 1,

@@ -1,3 +1,5 @@
+import { resolvePhaseAttempt } from '../../storage/ticketPhaseAttempts'
+import { expirePhaseRetryNote } from '../retryNotes'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { DraftResult, MemberOutcome, Vote, VotePresentationOrder } from '../../council/types'
@@ -183,11 +185,15 @@ const INTERVIEW_FAILED_SUBMISSION_ARTIFACT = 'interview_failed_submission'
 const INTERVIEW_RETRY_REQUESTED_ARTIFACT = 'interview_retry_requested'
 
 export function hasInterviewRecoveryRequested(ticketId: string): boolean {
-  return getPendingSessionContinuationForTicketPhase(ticketId, 'WAITING_INTERVIEW_ANSWERS') !== null
+  const pending = getPendingSessionContinuationForTicketPhase(ticketId, 'WAITING_INTERVIEW_ANSWERS')
+  return Boolean(pending && listOpenCodeSessionsForTicket(ticketId, ['active']).some(session =>
+    session.sessionId === pending.sessionId && session.phase === 'WAITING_INTERVIEW_ANSWERS'
+    && session.phaseAttempt === resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS')))
     || getLatestPhaseArtifact(ticketId, INTERVIEW_RETRY_REQUESTED_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS')?.content === 'true'
 }
 
 function clearInterviewRecoveryArtifacts(ticketId: string): void {
+  expirePhaseRetryNote(ticketId, 'WAITING_INTERVIEW_ANSWERS')
   const context = getTicketContext(ticketId)
   if (!context) return
   for (const artifactType of [INTERVIEW_FAILED_SUBMISSION_ARTIFACT, INTERVIEW_RETRY_REQUESTED_ARTIFACT]) {
@@ -225,14 +231,7 @@ export function readInterviewRetrySnapshot(ticketId: string): InterviewSessionSn
 }
 
 export function persistInterviewRetrySnapshot(ticketId: string, snapshot: InterviewSessionSnapshot): void {
-  const context = getTicketContext(ticketId)
-  if (context) {
-    // Retry has confirmed the old session stopped; retire only its observed batch claim.
-    const claim = context.projectDb.select({ token: interviewBatchClaims.token }).from(interviewBatchClaims)
-      .where(eq(interviewBatchClaims.ticketId, context.localTicketId)).get()
-    if (claim) context.projectDb.delete(interviewBatchClaims)
-      .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, claim.token))).run()
-  }
+  // The caller owns the ticket claim through dispatch; snapshot persistence must not delete it.
   clearInterruptedInterviewBatch(ticketId)
   persistInterviewSession(ticketId, snapshot)
   upsertLatestPhaseArtifact(ticketId, INTERVIEW_RETRY_REQUESTED_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS', 'true')
@@ -428,6 +427,15 @@ function buildPendingStopToken(kind: InterviewBatchStopKind): string {
   return `${INTERVIEW_STOP_PENDING_PREFIX}${kind}:${randomUUID()}`
 }
 
+function isPendingStopRecoveryReservation(token: string): boolean {
+  const parts = token.slice(INTERVIEW_STOP_PENDING_PREFIX.length).split(':')
+  return parts.length === 5 && (parts[0] === 'answer' || parts[0] === 'skip') && parts[1] === 'recovery'
+}
+
+function buildPendingStopRecoveryToken(kind: InterviewBatchStopKind): string {
+  return `${INTERVIEW_STOP_PENDING_PREFIX}${kind}:recovery:${process.pid}:${PROCESS_BOOT_ID}:${randomUUID()}`
+}
+
 function parsePendingStopKind(token: string): InterviewBatchStopKind | null {
   if (!token.startsWith(INTERVIEW_STOP_PENDING_PREFIX)) return null
   const kind = token.slice(INTERVIEW_STOP_PENDING_PREFIX.length).split(':', 1)[0]
@@ -444,14 +452,21 @@ function isoFromEpoch(milliseconds: number): string {
 }
 
 function isClaimOwnerProvablyDead(token: string): boolean {
-  const parts = token.split(':')
-  const ownerPid = Number(parts[0])
+  const parts = token.startsWith(INTERVIEW_STOP_PENDING_PREFIX)
+    ? token.slice(INTERVIEW_STOP_PENDING_PREFIX.length).split(':')
+    : token.split(':')
+  const ownerPid = Number(token.startsWith(INTERVIEW_STOP_PENDING_PREFIX)
+    ? (parts[1] === 'recovery' ? parts[2] : NaN)
+    : parts[0])
   if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return false
+  const ownerBootId = token.startsWith(INTERVIEW_STOP_PENDING_PREFIX)
+    ? (parts[1] === 'recovery' ? parts[3] : undefined)
+    : parts[1]
   if (ownerPid === process.pid) {
     // PID reuse is possible after a daemon restart. New claims carry this
     // process boot id; legacy two-part claims remain protected because they
     // provide no evidence either way.
-    return parts.length >= 3 && parts[1] !== PROCESS_BOOT_ID
+    return parts.length >= 3 && ownerBootId !== undefined && ownerBootId !== PROCESS_BOOT_ID
   }
   try {
     process.kill(ownerPid, 0)
@@ -511,7 +526,7 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
       .from(interviewBatchClaims)
       .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
       .get()
-    if (existing && isClaimOwnerProvablyDead(existing.token)) {
+    if (existing && !parsePendingStopKind(existing.token) && isClaimOwnerProvablyDead(existing.token)) {
       tx.delete(interviewBatchClaims)
         .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, existing.token)))
         .run()
@@ -569,17 +584,22 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
  * expired row that nobody has taken over yet, but it never recreates a row or
  * steals a successor's claim.
  *
- * Pending-stop markers deliberately do not use this lease path. Their
- * non-expiring hand-off and confirmed-stop promotion remain unchanged.
+ * Unreserved pending-stop markers remain non-expiring. A lifecycle recovery
+ * reservation also stays pending until confirmation; this check only verifies
+ * that exact owner token is still present.
  */
 export function renewInterviewBatchClaim(
   ticketId: string,
   claimToken: string,
   ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS,
 ): boolean {
-  if (parsePendingStopKind(claimToken)) return false
   const context = getTicketContext(ticketId)
   if (!context) return false
+  if (parsePendingStopKind(claimToken)) {
+    if (!isPendingStopRecoveryReservation(claimToken)) return false
+    return Boolean(context.projectDb.select({ token: interviewBatchClaims.token }).from(interviewBatchClaims)
+      .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, claimToken))).get())
+  }
   const now = Date.now()
   const updated = context.projectDb
     .update(interviewBatchClaims)
@@ -624,7 +644,55 @@ export function getPendingInterviewBatchStopToken(
     .from(interviewBatchClaims)
     .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
     .get()
-  return existing && parsePendingStopKind(existing.token) === kind ? existing.token : null
+  return existing && !isPendingStopRecoveryReservation(existing.token)
+    && parsePendingStopKind(existing.token) === kind
+    ? existing.token
+    : null
+}
+
+/** Reserves an uncertain stop for one lifecycle recovery before its remote-stop await. */
+export function claimInterviewBatchStopRecovery(
+  ticketId: string,
+  kind: InterviewBatchStopKind,
+): string | null {
+  const context = getTicketContext(ticketId)
+  if (!context) return null
+  const token = buildPendingStopRecoveryToken(kind)
+  const nowIso = new Date().toISOString()
+
+  return context.projectDb.transaction((tx): string | null => {
+    const existing = tx.select({ token: interviewBatchClaims.token })
+      .from(interviewBatchClaims)
+      .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+      .get()
+    if (!existing || parsePendingStopKind(existing.token) !== kind) return null
+    if (isPendingStopRecoveryReservation(existing.token) && !isClaimOwnerProvablyDead(existing.token)) return null
+
+    const updated = tx.update(interviewBatchClaims)
+      .set({ token, claimedAt: nowIso, expiresAt: INTERVIEW_STOP_PENDING_EXPIRY })
+      .where(and(
+        eq(interviewBatchClaims.ticketId, context.localTicketId),
+        eq(interviewBatchClaims.token, existing.token),
+      ))
+      .run()
+    return updated.changes > 0 ? token : null
+  })
+}
+
+/** Returns an unconfirmed stop reservation to a retryable pending marker. */
+export function releaseInterviewBatchStopRecovery(ticketId: string, claimToken: string): boolean {
+  if (!isPendingStopRecoveryReservation(claimToken)) return false
+  const kind = parsePendingStopKind(claimToken)
+  const context = getTicketContext(ticketId)
+  if (!kind || !context) return false
+  const updated = context.projectDb.update(interviewBatchClaims)
+    .set({ token: buildPendingStopToken(kind), claimedAt: new Date().toISOString(), expiresAt: INTERVIEW_STOP_PENDING_EXPIRY })
+    .where(and(
+      eq(interviewBatchClaims.ticketId, context.localTicketId),
+      eq(interviewBatchClaims.token, claimToken),
+    ))
+    .run()
+  return updated.changes > 0
 }
 
 /**
@@ -1779,6 +1847,7 @@ export async function handleInterviewCompile(
       artifactType: 'interview_compiled',
       content: JSON.stringify({
         refinedContent: compiledArtifact.refinedContent,
+        ...(refinementRun.steeredByOperator ? { steeredByOperator: true } : {}),
         ...(refinementRun.rawAttempts.length > 0 ? { rawAttempts: refinementRun.rawAttempts } : {}),
       }),
     })
@@ -1787,6 +1856,7 @@ export async function handleInterviewCompile(
       questions: compiledArtifact.questions,
       questionCount: compiledArtifact.questionCount,
       structuredOutput: structuredMeta,
+      ...(refinementRun.steeredByOperator ? { steeredByOperator: true } : {}),
       ...(refinementRun.rawAttempts.length > 0 ? { rawAttempts: refinementRun.rawAttempts } : {}),
     })
 

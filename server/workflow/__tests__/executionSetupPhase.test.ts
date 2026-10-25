@@ -13,6 +13,7 @@ import type {
 } from '../../phases/executionSetup/types'
 import type { ExecutionSetupAttemptTiming } from '../../phases/executionSetup/executor'
 import type { OpenCodeResponseMeta } from '../../opencode/assistantMessageAnalysis'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import type { PromptPart, Session, StreamEvent } from '../../opencode/types'
 import type { OpenCodePromptCompletedEvent, OpenCodePromptDispatchEvent } from '../runOpenCodePrompt'
 import {
@@ -470,6 +471,49 @@ describe('handleExecutionSetup', () => {
     }))
   })
 
+  it('forwards preserved prompt diagnostics through setup failure events', async () => {
+    const { ticket, context } = createExecutionSetupTestTicket({
+      title: 'Execution setup prompt diagnostics',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    const diagnostics: BlockedErrorDiagnostics = {
+      kind: 'timeout',
+      source: 'opencode',
+      summary: 'Execution setup timed out.',
+      sessionId: 'ses-setup-timeout',
+      isRetryable: true,
+    }
+    mockExecutionSetupGeneration({
+      ...buildExecutionSetupGeneration({ profile: readyExecutionSetupProfile(ticket.externalId) }),
+      session: { id: 'ses-setup-timeout' },
+      output: '',
+      result: null,
+      parse: {
+        markerFound: false,
+        result: null,
+        errors: ['Execution setup prompt failed: Timeout'],
+        validationError: 'Execution setup prompt failed: Timeout',
+      },
+      diagnostics,
+      errorCodes: ['OPENCODE_PROVIDER_ERROR'],
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: expect.arrayContaining(['Execution setup prompt failed: Timeout']),
+      codes: ['OPENCODE_PROVIDER_ERROR'],
+      diagnostics,
+    }))
+  })
+
   it('persists retry notes and reports a terminal tooling blocker', async () => {
     const { ticket, context } = createExecutionSetupTestTicket({
       title: 'Execution setup terminal tooling blocker',
@@ -852,23 +896,29 @@ describe('handleExecutionSetup', () => {
       phase: 'PREPARING_EXECUTION_ENV',
       sessionId: 'ses-setup-5',
       prompt: 'Create file x first.',
-      additionalRetryAttempts: 1,
     })
+    const pendingSessionLookup = vi.spyOn(SessionManager.prototype, 'getPendingContinuationSession')
+      .mockReturnValue({ iteration: 5 } as never)
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
       expect(args[4]).toMatchObject({
         initialAttempt: 6,
         additionalManualIterations: 1,
+        continuationIteration: 5,
       })
       return readyExecutionSetupReport(ticket.externalId)
     })
 
     const sendEvent = vi.fn()
-    await handleExecutionSetup(
-      ticket.id,
-      { ...context, lockedMainImplementer: TEST.implementer },
-      sendEvent,
-      new AbortController().signal,
-    )
+    try {
+      await handleExecutionSetup(
+        ticket.id,
+        { ...context, lockedMainImplementer: TEST.implementer },
+        sendEvent,
+        new AbortController().signal,
+      )
+    } finally {
+      pendingSessionLookup.mockRestore()
+    }
 
     expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
   })

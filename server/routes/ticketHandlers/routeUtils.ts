@@ -22,6 +22,13 @@ import {
   renewInterviewBatchClaim,
 } from '../../workflow/runner'
 import {
+  claimInterviewBatchAfterConfirmedStop,
+  claimInterviewBatchStopRecovery,
+  getPendingInterviewBatchStop,
+  releaseInterviewBatchStopRecovery,
+  type InterviewBatchStopKind,
+} from '../../workflow/phases/interviewPhase'
+import {
   archiveActivePhaseAttempts,
   createFreshPhaseAttempts,
   ensureActivePhaseAttempt,
@@ -184,6 +191,41 @@ export function claimPlanningEdit(ticketId: string): string | null {
 
 export function releasePlanningEdit(ticketId: string, token: string): void {
   releaseInterviewBatch(ticketId, token)
+}
+
+export interface LifecycleRecoveryClaim {
+  token: string
+  pendingInterviewStop: InterviewBatchStopKind | null
+}
+
+/** Takes an exact pending-stop reservation before lifecycle recovery waits on OpenCode. */
+export function claimLifecycleRecovery(ticketId: string): LifecycleRecoveryClaim | null {
+  const claim = claimPlanningEdit(ticketId)
+  if (claim) return { token: claim, pendingInterviewStop: null }
+
+  const pendingInterviewStop = getPendingInterviewBatchStop(ticketId)
+  if (!pendingInterviewStop) return null
+  const token = claimInterviewBatchStopRecovery(ticketId, pendingInterviewStop)
+  return token ? { token, pendingInterviewStop } : null
+}
+
+/** Promotes a pending-stop reservation only after the caller confirmed the remote stop. */
+export function confirmLifecycleRecoveryStop(ticketId: string, claim: LifecycleRecoveryClaim): boolean {
+  if (!claim.pendingInterviewStop) return true
+  const token = claimInterviewBatchAfterConfirmedStop(ticketId, claim.pendingInterviewStop, claim.token)
+  if (!token) return false
+  claim.token = token
+  claim.pendingInterviewStop = null
+  return true
+}
+
+/** Keeps an unconfirmed stop pending, while releasing only this recovery's reservation. */
+export function releaseLifecycleRecovery(ticketId: string, claim: LifecycleRecoveryClaim): void {
+  if (claim.pendingInterviewStop) {
+    releaseInterviewBatchStopRecovery(ticketId, claim.token)
+    return
+  }
+  releasePlanningEdit(ticketId, claim.token)
 }
 
 export class PlanningEditClaimLostError extends Error {

@@ -59,6 +59,17 @@ describe('phase retry notes', () => {
     expect(upsert).not.toHaveBeenCalled()
   })
 
+  it('expires only the recovered substep and keeps history through later ordinary retries', () => {
+    savePhaseRetryNote('1:TEST-1', 'VERIFYING_PRD_COVERAGE', 'Resolve the reported gap', 'revision')
+    expirePhaseRetryNote('1:TEST-1', 'VERIFYING_PRD_COVERAGE', 'audit')
+    expect(readPhaseRetryNote('1:TEST-1', 'VERIFYING_PRD_COVERAGE', undefined, 'revision')).toBe('Resolve the reported gap')
+    expirePhaseRetryNote('1:TEST-1', 'VERIFYING_PRD_COVERAGE', 'revision')
+    const retained = artifacts.get(`1:TEST-1:VERIFYING_PRD_COVERAGE:${PHASE_RETRY_NOTE_ARTIFACT}`)!.content
+    savePhaseRetryNote('1:TEST-1', 'VERIFYING_PRD_COVERAGE', undefined)
+    expect(artifacts.get(`1:TEST-1:VERIFYING_PRD_COVERAGE:${PHASE_RETRY_NOTE_ARTIFACT}`)!.content).toBe(retained)
+    expect(appendPhaseRetryNote([], '1:TEST-1', 'VERIFYING_PRD_COVERAGE', undefined, 'revision')).toEqual([])
+  })
+
   it('applies substep guidance only to the failed substep and avoids duplicate member notes', () => {
     savePhaseRetryNote('1:TEST-1', 'CREATING_PULL_REQUEST', 'Explain the change', 'pull_request_draft')
     const parts: PromptPart[] = [{ type: 'text', content: 'Saved inputs' }]

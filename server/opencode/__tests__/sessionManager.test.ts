@@ -33,6 +33,11 @@ import { readTicketFile, writeTicketFile } from '../../storage/ticketQueries'
 import * as ticketQueries from '../../storage/ticketQueries'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import {
+  clearAllPendingSessionContinuationsForTests,
+  getPendingSessionContinuationForTicketPhase,
+  requestSessionContinuation,
+} from '../sessionContinuation'
 
 class TestOpenCodeAdapter implements OpenCodeAdapter {
   public sessions: Session[] = []
@@ -169,6 +174,7 @@ async function createOwnedSessionFixture(input: {
 
 describe('SessionManager', () => {
   beforeEach(() => {
+    clearAllPendingSessionContinuationsForTests()
     clearProjectDatabaseCache()
     initializeDatabase()
     sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
@@ -550,6 +556,7 @@ describe('SessionManager', () => {
       title: 'Retain uncertain session',
       description: 'An uncertain remote stop remains retryable.',
     })
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'CODING', sessionId: session.id })
     writeTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json', JSON.stringify([{
       sessionId: session.id,
       phase: 'CODING',
@@ -565,6 +572,7 @@ describe('SessionManager', () => {
       .where(eq(opencodeSessions.sessionId, session.id))
       .get()
     expect(row?.state).toBe('completed')
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'CODING')).toBeNull()
     expect(readTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json')).toBeNull()
     expect(adapter.forgetCalls).toContain(session.id)
   })
@@ -654,6 +662,7 @@ describe('SessionManager', () => {
       title: 'Reconnect missing exact session',
       description: 'Ensure missing exact lookup abandons stale active rows.',
     })
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'VERIFYING_PRD_COVERAGE', sessionId: created.id })
     adapter.exactSessionLookup = () => null
 
     await expect(sessionManager.validateAndReconnect(ticket.id, 'VERIFYING_PRD_COVERAGE', {
@@ -663,11 +672,30 @@ describe('SessionManager', () => {
 
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toEqual([])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned']).map((session) => session.sessionId)).toEqual([created.id])
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'VERIFYING_PRD_COVERAGE')).toBeNull()
     // The state filter moved into the query. An empty list still means "every
     // state", which is what the callers that pass one rely on.
     expect(listOpenCodeSessionsForTicket(ticket.id, []).map((session) => session.sessionId)).toEqual([created.id])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active', 'abandoned']).map((session) => session.sessionId)).toEqual([created.id])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['nonexistent-state'])).toEqual([])
+  })
+
+  it('keeps a continuation until abort confirms the session was retired', async () => {
+    const { ticket, adapter, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING',
+      title: 'Keep continuation until stop is confirmed',
+      description: 'A failed remote abort must leave active continuation state intact.',
+    })
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'CODING', sessionId: session.id })
+    adapter.abortResults = [false, true]
+
+    await expect(sessionManager.abortAndAbandonSession(session.id)).resolves.toBe(false)
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'CODING')?.sessionId).toBe(session.id)
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((row) => row.sessionId)).toEqual([session.id])
+
+    await expect(sessionManager.abortAndAbandonSession(session.id)).resolves.toBe(true)
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'CODING')).toBeNull()
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned']).map((row) => row.sessionId)).toEqual([session.id])
   })
 
   it('fails closed when a ticket reference cannot be resolved', async () => {
@@ -847,6 +875,7 @@ describe('SessionManager', () => {
       title: 'Preserve unverified session',
       description: 'A lookup failure must not start replacement work.',
     })
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'CODING', sessionId: created.id })
     adapter.exactSessionLookup = () => {
       throw new Error('ECONNREFUSED')
     }
@@ -855,6 +884,7 @@ describe('SessionManager', () => {
       .toThrow(`Could not verify whether OpenCode session ${created.id} is still active`)
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((row) => row.sessionId))
       .toEqual([created.id])
+    expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'CODING')?.sessionId).toBe(created.id)
     expect(adapter.abortCalls).toEqual([])
   })
 

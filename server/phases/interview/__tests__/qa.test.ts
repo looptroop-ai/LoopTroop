@@ -1,27 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { SILENT_READ_ONLY_PERMISSIONS } from '../../../opencode/toolPolicy'
+import { SequencedMockOpenCodeAdapter } from '../../../test/openCodeAdapters'
 import { startInterviewSession, submitBatchToSession } from '../qa'
 import { buildPersistedBatch, createInterviewSessionSnapshot, recordBatchAnswers, recordPreparedBatch } from '../sessionState'
 import { TEST } from '../../../test/factories'
 import { CancelledError } from '../../../council/types'
-
-class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
-  private promptCounts = new Map<string, number>()
-
-  override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>) {
-    const sessionId = args[0]
-    const nextCount = (this.promptCounts.get(sessionId) ?? 0) + 1
-    this.promptCounts.set(sessionId, nextCount)
-
-    const queuedResponse = this.mockResponses.get(`${sessionId}#${nextCount}`)
-    if (queuedResponse !== undefined) {
-      this.mockResponses.set(sessionId, queuedResponse)
-    }
-
-    return await super.promptSession(...args)
-  }
-}
 
 describe.concurrent('PROM4 interview session parsing', () => {
   const errorStages = ['initial prompt', 'initial parse', 'follow-up prompt', 'follow-up parse'] as const

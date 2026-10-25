@@ -20,6 +20,7 @@ import { contentSha256 } from '../lib/contentHash'
 import { parseJsonlContent } from '../io/jsonl'
 import { isRecord } from '@shared/typeGuards'
 import { commandSpecSchema } from '@shared/commandSpec'
+import { isBeadTargetFiles } from '@shared/beadTargets'
 import { resolveBeadStatus } from '../phases/beads/types'
 import { writeUserEditReceipt } from '../workflow/artifactEditReceipts'
 
@@ -45,6 +46,7 @@ const beadItemSchema = z.object({
   title: z.string().min(1),
   status: beadStatusSchema,
   priority: z.number().int().min(1),
+  targetFiles: z.array(z.string()).refine(isBeadTargetFiles, 'must be a list of valid file paths'),
   // Both spellings in, one spelling out. The interface accepts `blockedBy`
   // because older trackers carry it; refusing it here made a repair typed in
   // the JSONL tab fail with "dependencies.blocked_by: Required" on a file the
@@ -332,10 +334,11 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
     // collections. A user edit must still include the authoritative
     // `blocked_by`/`blockedBy` list; only the derived `blocks` inverse may be
     // absent and filled below.
-    const input = isRecord(body[i])
+    const canonicalInput = isRecord(body[i])
       ? canonicalizeBeadAliases(body[i])
       : null
-    const result = beadItemSchema.safeParse(input)
+    const { externalTargetFiles: _storedClassification, ...input } = canonicalInput ?? {}
+    const result = beadItemSchema.safeParse(canonicalInput ? input : null)
     if (!result.success) {
       validationErrors.push({
         index: i,
@@ -348,14 +351,14 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       continue
     }
     const canonical = normalizeBeadCollections({
-      ...(input ?? {}),
+      ...input,
       ...result.data,
       dependencies: result.data.dependencies,
       // Zod validates command shape but intentionally strips unknown command
       // metadata. Commands are an extensible wire contract, so retain the
       // submitted objects after validation just as we retain unknown bead and
       // dependency fields.
-      ...(Array.isArray(input?.testCommands) ? { testCommands: input.testCommands } : {}),
+      ...(Array.isArray(input.testCommands) ? { testCommands: input.testCommands } : {}),
     }) as Record<string, unknown>
     const shapeProblem = describeBeadShapeProblem(canonical)
     if (shapeProblem) {
@@ -486,7 +489,7 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       // The client caches this exact tuple. Returning the canonical bytes and
       // records together keeps aliases, derived dependency edges, and the
       // concurrency hash aligned after a save.
-      beads: storedBeads,
+      beads: withExternalTargets(storedBeads, ticketId),
       rawContent: jsonl,
       contentSha256: savedContentSha256,
       malformedLines: [],

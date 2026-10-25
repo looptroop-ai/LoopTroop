@@ -721,9 +721,9 @@ export const PROM_MANUAL_QA_FIX_BEADS: PromptTemplate = {
   id: 'PROM_MANUAL_QA_FIX_BEADS',
   description: 'Manual QA Fix Beads Prompt',
   systemRole: 'You are the locked main implementer preparing execution-ready repair beads from failed human QA checks.',
-  task: 'Inspect the repository with read-only tools and produce one complete fix-bead candidate for every supplied Manual QA merge group.',
+  task: 'Inspect the project and relevant files in the environment with read-only tools, then produce one complete fix-bead candidate for every supplied Manual QA merge group.',
   instructions: [
-    'Repository Inspection Is Mandatory: perform at least one successful focused read-only repository tool call before answering. Inspect the files that are most likely to explain each failure, including files outside earlier bead targets when the evidence points there.',
+    'Read-Only Inspection Is Mandatory: before answering, complete at least one successful focused read-only inspection. Relevant files outside the worktree may be inspected when the evidence points there; do not sweep the filesystem.',
     'No Mutation: do not edit files, run mutating commands, install dependencies, or change repository state.',
     'Exact Group Coverage: return exactly one candidate for every supplied merge-group ID, in the supplied order. Do not add, omit, merge, split, or rename groups.',
     'Implementation Quality: each candidate must contain a precise title and description, concrete implementation guidance, acceptance criteria, automated test scenarios, appropriate verification command guidance, useful labels, dependencies, and minimal target files.',

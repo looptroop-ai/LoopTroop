@@ -1,3 +1,4 @@
+import { readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -130,7 +131,6 @@ describe('additional interview phase flows', () => {
       phase: 'WAITING_INTERVIEW_ANSWERS', artifactType: 'interview_qa_session',
       content: JSON.stringify({ sessionId: 'old-session', winnerId }),
     })
-    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(true)
     const recoveredSessionId = action === 'continue' ? 'preserved-session' : 'replacement-session'
     const storageContext = getTicketContext(ticket.id)
     if (!storageContext) throw new Error('Missing ticket storage fixture')
@@ -138,6 +138,7 @@ describe('additional interview phase flows', () => {
       sessionId: recoveredSessionId, ticketId: storageContext.localTicketId,
       phase: 'WAITING_INTERVIEW_ANSWERS', state: 'active',
     }).run()
+    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(true)
     const start = vi.spyOn(interviewQa, 'startInterviewSession').mockResolvedValue({
       sessionId: recoveredSessionId,
       firstBatch: {
@@ -461,6 +462,7 @@ describe('additional interview phase flows', () => {
     const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Restart an interview session after its persisted session is unavailable',
     })
+    savePhaseRetryNote(ticket.id, 'WAITING_INTERVIEW_ANSWERS', 'Recover this batch only')
     makeActiveProm4Batch(ticket.id)
     const claim = claimInterviewBatch(ticket.id)
     expect(claim).toBeTruthy()
@@ -494,6 +496,7 @@ describe('additional interview phase flows', () => {
 
       expect(start).toHaveBeenCalledOnce()
       expect(result).toMatchObject({ batchNumber: 2, questions: [{ id: 'Q02' }] })
+      expect(readPhaseRetryNote(ticket.id, 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
       expect(interviewQASessions.get(ticket.id)).toEqual({
         sessionId: 'replacement-prom4-session',
         winnerId: TEST.councilMembers[0],
@@ -647,6 +650,17 @@ describe('additional interview phase flows', () => {
     expect(receipt.actionId).toBeUndefined()
     expect(listSkipEvents(ticket.id).some((event) => event.actionId === actionId)).toBe(false)
     expect(getLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+  })
+
+  it.each(['abandoned', 'completed'])('does not replay answers for a stale %s continuation marker', async (state) => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const stored = getTicketContext(ticket.id)!
+    stored.projectDb.insert(opencodeSessions).values({
+      ticketId: stored.localTicketId, sessionId: 'retired-interview-session',
+      phase: 'WAITING_INTERVIEW_ANSWERS', phaseAttempt: 1, state,
+    }).run()
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'WAITING_INTERVIEW_ANSWERS', sessionId: 'retired-interview-session' })
+    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(false)
   })
 
   it('replays persisted mock batches after the abandoned mock session is gone', async () => {

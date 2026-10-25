@@ -542,11 +542,12 @@ describe('CodingView', () => {
     it('keeps an external-file indicator on compact numbered beads', () => {
       const beads = Array.from({ length: 20 }, (_, index) => ({
         id: `bead-${index + 1}`, title: `Bead number ${index + 1}`, status: 'pending', iteration: 0,
-        targetFiles: index === 0 ? ['linked/config.json'] : [],
-        externalTargetFiles: index === 0 ? ['linked/config.json'] : [],
+        targetFiles: index === 0 ? ['src/local.ts'] : index === 1 ? ['linked/config.json'] : [],
+        externalTargetFiles: index < 2 ? ['linked/config.json'] : [],
       }))
       renderCoding({ runtime: { beads } })
-      expect(screen.getByRole('button', { name: 'Bead 1: Bead number 1, external files' }).querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+      expect(screen.queryByRole('button', { name: 'Bead 1: Bead number 1, external files' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Bead 2: Bead number 2, external files' }).querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
     })
 
     it('renders chips with titles for small bead count (≤15)', () => {

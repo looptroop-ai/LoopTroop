@@ -1426,7 +1426,7 @@ describe('pull request drafting context', () => {
     expect(mocks.pushBranchRef).not.toHaveBeenCalled()
   })
 
-  it.each(['valid', 'changed-candidate', 'invalid-path', 'invalid-decision', 'inconsistent-files', 'duplicate-path', 'corrupt-json'])('continues PR drafting only with its saved candidate audit (%s)', async checkpointCase => {
+  it.each(['valid', 'opaque-renamed-paths', 'changed-candidate', 'invalid-path', 'invalid-decision', 'inconsistent-files', 'duplicate-path', 'corrupt-json'])('continues PR drafting only with its saved candidate audit (%s)', async checkpointCase => {
     const candidateCommitSha = checkpointCase === 'changed-candidate' ? checkpointCase : 'candidate123'
     resetTestDb()
     const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
@@ -1441,12 +1441,16 @@ describe('pull request drafting context', () => {
       state: 'active',
     }).run()
     requestSessionContinuation({ ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', sessionId: 'pr-draft-to-continue' })
+    const opaqueRenamePaths = ['src/old name.ts', 'src/new \t雪.ts']
+    const entries = checkpointCase === 'opaque-renamed-paths'
+      ? opaqueRenamePaths.map(path => ({ path, decision: 'include' as const, reason: 'Requested change.' }))
+      : [
+        { path: 'src/example.ts', decision: 'include' as const, reason: 'Requested change.' },
+        { path: 'temporary.log', decision: 'exclude' as const, reason: 'Already removed from the candidate.' },
+      ]
     const audit = buildCandidateFileAuditReport({
       status: 'passed', baseCommit: 'base123', originalCandidateCommitSha: 'before-audit', candidateCommitSha,
-      entries: [
-        { path: 'src/example.ts', decision: 'include', reason: 'Requested change.' },
-        { path: 'temporary.log', decision: 'exclude', reason: 'Already removed from the candidate.' },
-      ],
+      entries,
     })
     const firstEntry = audit.entries[0]
     if (!firstEntry) throw new Error('Missing audit fixture entry')
@@ -1454,8 +1458,18 @@ describe('pull request drafting context', () => {
     if (checkpointCase === 'invalid-decision') Object.assign(firstEntry, { decision: 'unknown' })
     if (checkpointCase === 'inconsistent-files') audit.includedFiles = ['unexpected.txt']
     if (checkpointCase === 'duplicate-path') audit.entries.push(firstEntry)
+    if (checkpointCase === 'opaque-renamed-paths') {
+      mocks.readGitDiff.mockReturnValueOnce({
+        stat: '2 files changed, 2 insertions(+), 1 deletion(-)',
+        nameStatus: 'R100\tsrc/old name.ts\t"src/new \\t\\351\\233\\252.ts"',
+        nameStatusZ: `D\0${opaqueRenamePaths[0]}\0A\0${opaqueRenamePaths[1]}\0`,
+        patch: 'diff --git a/src/old name.ts b/src/new file.ts',
+        patchTruncated: false,
+        patchError: null,
+      })
+    }
     upsertLatestPhaseArtifact(ticket.id, 'candidate_file_audit', 'CREATING_PULL_REQUEST', checkpointCase === 'corrupt-json' ? '{' : JSON.stringify(audit))
-    if (checkpointCase === 'valid') {
+    if (checkpointCase === 'valid' || checkpointCase === 'opaque-renamed-paths') {
       mocks.runOpenCodePrompt.mockResolvedValueOnce({
         session: { id: 'pr-draft-to-continue' },
         response: [
@@ -1467,7 +1481,7 @@ describe('pull request drafting context', () => {
     }
     const sendEvent = vi.fn()
     const run = handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
-    if (checkpointCase !== 'valid') {
+    if (checkpointCase !== 'valid' && checkpointCase !== 'opaque-renamed-paths') {
       await expect(run).rejects.toThrow('saved file audit does not match the current candidate')
       expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
       expect(mocks.pushBranchRef).not.toHaveBeenCalled()

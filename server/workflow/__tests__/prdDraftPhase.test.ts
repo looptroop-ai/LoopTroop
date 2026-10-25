@@ -4,20 +4,25 @@ import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import type { DraftResult, Vote } from '../../council/types'
 import type { conductVoting as ConductVoting } from '../../council/voter'
 import type { draftPRD as DraftPrd } from '../../phases/prd/draft'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+import { isContinuableBlockedError } from '../../opencode/sessionContinuation'
+import { MockOpenCodeAdapter } from '../../opencode/mockAdapter'
+import type { PromptPart, PromptSessionOptions } from '../../opencode/types'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { getLatestPhaseArtifact } from '../../storage/tickets'
 import { TEST, makeInterviewYaml, makePrdYaml } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { phaseIntermediate } from '../phases/state'
 
-const { draftPRDMock, conductVotingMock, selectWinnerMock } = vi.hoisted(() => ({
+const { draftPRDMock, conductVotingMock, selectWinnerMock, openCodeAdapterRef } = vi.hoisted(() => ({
   draftPRDMock: vi.fn(),
   conductVotingMock: vi.fn(),
   selectWinnerMock: vi.fn(),
+  openCodeAdapterRef: { current: {} as unknown },
 }))
 
 vi.mock('../../opencode/factory', () => ({
-  getOpenCodeAdapter: () => ({}),
+  getOpenCodeAdapter: () => openCodeAdapterRef.current,
   isMockOpenCodeMode: () => false,
 }))
 
@@ -70,6 +75,7 @@ describe('handlePrdDraft', () => {
     resetTestDb()
     phaseIntermediate.clear()
     draftPRDMock.mockReset()
+    openCodeAdapterRef.current = {}
     conductVotingMock.mockReset()
     selectWinnerMock.mockReset()
   })
@@ -248,6 +254,59 @@ describe('handlePrdDraft', () => {
 
     expect(getLatestPhaseArtifact(ticket.id, 'prd_drafts', 'DRAFTING_PRD')).toBeDefined()
     expect(phaseIntermediate.get(`${ticket.id}:prd`)).toBeUndefined()
+  })
+
+  it('carries a real preserved provider failure through PRD quorum handling for Continue', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    writeFileSync(`${paths.ticketDir}/interview.yaml`, makeInterviewYaml({ ticket_id: ticket.externalId }), 'utf-8')
+    const adapter = new class extends MockOpenCodeAdapter {
+      override async promptSession(
+        sessionId: string,
+        _parts: PromptPart[],
+        _signal?: AbortSignal,
+        _options?: PromptSessionOptions,
+      ): Promise<string> {
+        const error = new Error('socket hang up') as Error & {
+          blockedErrorDiagnostics: BlockedErrorDiagnostics
+          blockedErrorCodes: string[]
+        }
+        error.blockedErrorDiagnostics = {
+          kind: 'transport',
+          source: 'opencode',
+          summary: 'socket hang up',
+          sessionId,
+          isRetryable: true,
+        }
+        error.blockedErrorCodes = []
+        throw error
+      }
+    }()
+    openCodeAdapterRef.current = adapter
+    const actualDraftModule = await vi.importActual<typeof import('../../phases/prd/draft')>('../../phases/prd/draft')
+    draftPRDMock.mockImplementationOnce((...args: unknown[]) => actualDraftModule.draftPRD(
+      ...(args as unknown as Parameters<typeof actualDraftModule.draftPRD>),
+    ))
+
+    let thrown: unknown
+    try {
+      await handlePrdDraft(ticket.id, context, vi.fn(), new AbortController().signal)
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(Error)
+    const blockedError = thrown as Error & { blockedErrorDiagnostics?: BlockedErrorDiagnostics; blockedErrorCodes?: string[] }
+    expect(blockedError.blockedErrorDiagnostics).toMatchObject({
+      kind: 'transport',
+      summary: 'socket hang up',
+      isRetryable: true,
+    })
+    expect(adapter.sessions.map((session) => session.id)).toContain(blockedError.blockedErrorDiagnostics?.sessionId)
+    expect(isContinuableBlockedError({
+      diagnostics: blockedError.blockedErrorDiagnostics,
+      errorCodes: blockedError.blockedErrorCodes,
+    })).toBe(true)
+    expect(adapter.sessions.length).toBeGreaterThan(0)
   })
 
   it('persists invalid draft diagnostics without visible artifact content', async () => {

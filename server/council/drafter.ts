@@ -28,7 +28,8 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { COUNCIL_MEMBER_STOPPED_ERROR } from '@shared/councilMembers'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
-import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+import { buildContinuationDiagnostics, shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+import { readPhaseRetryNote } from '../workflow/retryNotes'
 import { stopCutShortCouncilSession } from './sessionStop'
 import { CouncilMemberInterruptedError, openCouncilRound, type CouncilMemberAttempt } from './memberControl'
 
@@ -180,6 +181,7 @@ export async function generateDrafts(
     let attemptCount = 0
     let closed = false
     let promptReturned = false
+    let phaseRetryNoteApplied = false
     const memberAbortController = new AbortController()
     const memberSignal = AbortSignal.any([
       ...(signal ? [signal] : []),
@@ -197,6 +199,9 @@ export async function generateDrafts(
     let lastFailureClass: DraftStructuredOutputMeta['failureClass']
     let rawResponse: string | undefined
     let normalizedResponse: string | undefined
+    const phaseRetryNote = ownershipScope
+      ? readPhaseRetryNote(ownershipScope.ticketId, ownershipScope.phase)
+      : undefined
     const rawAttempts: RawAttempt[] = []
     const retryDiagnostics: NonNullable<DraftStructuredOutputMeta['retryDiagnostics']> = []
 
@@ -287,6 +292,9 @@ export async function generateDrafts(
           },
           onPromptDispatched: (event) => {
             if (closed) return
+            if (phaseRetryNote !== undefined && event.parts.some((part) => (
+              part.type === 'text' && part.content === `## User Retry Note\n${phaseRetryNote}`
+            ))) phaseRetryNoteApplied = true
             runtimeOptions?.onPromptDispatched?.({
               stage: 'draft',
               memberId: member.modelId,
@@ -372,7 +380,7 @@ export async function generateDrafts(
         })
       }
 
-      const steeredByOperator = attempt.retryNote !== undefined || wasMemberAnswered(
+      const steeredByOperator = attempt.retryNote !== undefined || phaseRetryNoteApplied || wasMemberAnswered(
         runtimeOptions?.ticketId,
         runtimeOptions?.phase,
         ownershipScope?.phaseAttempt ?? 1,
@@ -461,24 +469,7 @@ export async function generateDrafts(
       }
 
       const duration = Date.now() - startTime
-      if (isPhaseDeadlineError(err) || isAiResponseTimeoutError(err) || closed) {
-        const stopped = await ensureSessionStopped()
-        if (!stopped) throw unconfirmedDraftStopError(sessionId)
-        return {
-          draft: {
-            memberId: member.modelId,
-            content: '',
-            outcome: 'timed_out',
-            duration: timeout,
-            error: `AI response timeout reached after ${timeout}ms`,
-            structuredOutput: buildStructuredOutput(),
-            ...buildEvidence(),
-          },
-          sessionId,
-        }
-      }
-
-      const preserveForContinuation = sessionId && ownershipScope
+      const preserveForContinuation = !closed && !isPhaseDeadlineError(err) && sessionId && ownershipScope
         ? shouldPreserveSessionForContinuation({
             error: err,
             sessionId,
@@ -490,6 +481,31 @@ export async function generateDrafts(
             signal: memberSignal,
           })
         : false
+      const continuationDiagnostics = preserveForContinuation && sessionId
+        ? buildContinuationDiagnostics({ error: err, sessionId, modelId: member.modelId })
+        : null
+      if (isPhaseDeadlineError(err) || isAiResponseTimeoutError(err) || closed) {
+        if (!preserveForContinuation) {
+          const stopped = await ensureSessionStopped()
+          if (!stopped) throw unconfirmedDraftStopError(sessionId)
+        }
+        return {
+          draft: {
+            memberId: member.modelId,
+            content: '',
+            outcome: 'timed_out',
+            duration: timeout,
+            error: `AI response timeout reached after ${timeout}ms`,
+            structuredOutput: buildStructuredOutput(),
+            ...buildEvidence(),
+            ...(continuationDiagnostics ? {
+              blockedErrorDiagnostics: continuationDiagnostics.diagnostics,
+              blockedErrorCodes: continuationDiagnostics.errorCodes,
+            } : {}),
+          },
+          sessionId,
+        }
+      }
       if (!preserveForContinuation) {
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedDraftStopError(sessionId)
@@ -518,6 +534,10 @@ export async function generateDrafts(
               : undefined
           ),
           ...buildEvidence(),
+          ...(continuationDiagnostics ? {
+            blockedErrorDiagnostics: continuationDiagnostics.diagnostics,
+            blockedErrorCodes: continuationDiagnostics.errorCodes,
+          } : {}),
         },
         sessionId,
       }

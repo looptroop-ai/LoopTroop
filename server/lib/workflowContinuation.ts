@@ -1,5 +1,6 @@
 import { normalizeRepoScopedPath } from '../git/repoScopedPath'
 import { isRecord } from '../../shared/typeGuards'
+import { contentSha256 } from './contentHash'
 
 interface CoverageRevisionCheckpoint {
   candidateVersion: number
@@ -14,6 +15,14 @@ interface CandidateFileAuditCheckpoint {
   includedFiles: string[]
   excludedFiles: string[]
   entries: Array<{ path: string; decision: 'include' | 'exclude' | 'review'; reason: string }>
+}
+
+interface PrdFullAnswersCheckpoint {
+  inputHash: string
+  memberId: string
+  phaseAttempt: number
+  content: string
+  steeredByOperator: boolean
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -37,6 +46,33 @@ export function isCoverageRevisionCheckpoint(value: unknown): value is CoverageR
     && Array.isArray(envelope.gaps)
     && envelope.gaps.length > 0
     && envelope.gaps.every((gap) => typeof gap === 'string')
+}
+
+export function buildPrdFullAnswersInputHash(input: {
+  title: string | undefined
+  description: string | undefined
+  relevantFiles: string | undefined
+  interview: string
+}): string {
+  return contentSha256(JSON.stringify({
+    title: input.title,
+    description: input.description,
+    relevantFiles: input.relevantFiles,
+    interview: input.interview,
+  }))
+}
+
+export function isPrdFullAnswersCheckpoint(
+  value: unknown,
+  expected: { inputHash: string; memberId: string; phaseAttempt: number },
+): value is PrdFullAnswersCheckpoint {
+  return isRecord(value)
+    && value.inputHash === expected.inputHash
+    && value.memberId === expected.memberId
+    && value.phaseAttempt === expected.phaseAttempt
+    && typeof value.content === 'string'
+    && value.content.trim().length > 0
+    && typeof value.steeredByOperator === 'boolean'
 }
 
 export function isCandidateFileAuditCheckpoint(

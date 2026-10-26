@@ -268,7 +268,7 @@ function promptRequest(
 describe("OpenCode v2 fetch transport", () => {
   it("deletes sessions through the v2 API and treats a confirmed missing session as deleted", async () => {
     let calls = 0;
-    const { transport, requests } = createTransport((request, init) => {
+    const { transport, requests } = createTransport((_request, init) => {
       calls += 1;
       assert(init.signal);
       if (calls === 1) return emptyResponse();

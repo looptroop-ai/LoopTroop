@@ -139,6 +139,7 @@ const clientNodeTests = [
 // commands and failed on CI while passing locally, purely on file order.
 // Reproduce with `--sequence.shuffle.files --sequence.seed=N`.
 const serverIntegrationTests = [
+  'server/assistant/__tests__/*.test.ts',
   'server/lib/__tests__/processTree.test.ts',
   'server/opencode/__tests__/supervisor.test.ts',
   'server/council/__tests__/sessionOwnershipStop.test.ts',

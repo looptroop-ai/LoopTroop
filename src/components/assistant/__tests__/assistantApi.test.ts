@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { fetchAssistantSessions, readAssistantEvents } from '../assistantApi'
+import { fetchAssistantHistory, fetchAssistantSessions, readAssistantEvents } from '../assistantApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -15,6 +15,13 @@ it('keeps dashboard ticket history unfiltered and scopes a ticket session by enc
   const ticketUrl = new URL(fetchMock.mock.calls[1]![0] as string, 'http://localhost')
   expect([...dashboardUrl.searchParams.entries()]).toEqual([['mode', 'tickets']])
   expect([...ticketUrl.searchParams.entries()]).toEqual([['mode', 'tickets'], ['ticketId', 'project/T-4 ?']])
+})
+
+it('loads global history without a mode or ticket filter', async () => {
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('[]')))
+  vi.stubGlobal('fetch', fetchMock)
+  await fetchAssistantHistory(new AbortController().signal)
+  expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions', expect.any(Object))
 })
 
 it('parses SSE events split across arbitrary network chunks', async () => {

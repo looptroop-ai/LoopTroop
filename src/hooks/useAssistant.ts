@@ -16,7 +16,10 @@ function summaryOf(session: AssistantSession): AssistantSessionSummary {
 }
 
 export function useAssistant(scope: AssistantScope, enabled: boolean) {
-  const stableScope = useMemo(() => ({ ...scope }), [scope.mode, scope.ticketId])
+  const stableScope = useMemo<AssistantScope>(() => ({
+    mode: scope.mode,
+    ...(scope.ticketId ? { ticketId: scope.ticketId } : {}),
+  }), [scope.mode, scope.ticketId])
   const [sessions, setSessions] = useState<AssistantSessionSummary[]>([])
   const [openIds, setOpenIds] = useState<string[]>([])
   const [details, setDetails] = useState<Record<string, AssistantSession>>({})
@@ -30,8 +33,11 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
   const [error, setError] = useState<string | null>(null)
   const [refreshToken, setRefreshToken] = useState(0)
   const controllers = useRef(new Set<AbortController>())
+  const activeStream = useRef<{ sessionId: string; controller: AbortController } | null>(null)
+  const sessionsRef = useRef(sessions)
   const openIdsRef = useRef(openIds)
   const activeIdRef = useRef(activeId)
+  sessionsRef.current = sessions
   openIdsRef.current = openIds
   activeIdRef.current = activeId
 
@@ -56,10 +62,12 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     setError(null)
     void fetchAssistantSessions(stableScope, controller.signal).then(nextSessions => {
       if (controller.signal.aborted) return
-      setSessions(nextSessions)
       const knownIds = new Set(nextSessions.map(session => session.id))
+      const carriedSessions = sessionsRef.current.filter(session => openIdsRef.current.includes(session.id) && !knownIds.has(session.id))
+      setSessions([...nextSessions, ...carriedSessions])
+      // An archived conversation opened from global history stays an open tab even though detail GET does not unarchive it.
       const nextOpenIds = [
-        ...openIdsRef.current.filter(id => knownIds.has(id)),
+        ...openIdsRef.current,
         ...nextSessions.filter(session => !session.archived && !openIdsRef.current.includes(session.id)).map(session => session.id),
       ]
       setOpenIds(nextOpenIds)
@@ -96,8 +104,9 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     }
   }, [activeId, beginRequest, details, enabled, endRequest, stableScope])
 
-  const selectSession = useCallback((id: string) => {
+  const selectSession = useCallback((id: string, summary?: AssistantSessionSummary) => {
     setError(null)
+    if (summary) setSessions(current => [summary, ...current.filter(item => item.id !== summary.id)])
     setOpenIds(current => current.includes(id) ? current : [id, ...current])
     setActiveId(id)
   }, [])
@@ -121,13 +130,20 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     }
   }, [beginRequest, endRequest, stableScope])
 
-  const closeSession = useCallback(async (id: string) => {
+  const closeSession = useCallback(async (id: string): Promise<boolean> => {
     const controller = beginRequest()
     setClosingId(id)
     setError(null)
     try {
       await closeAssistantSession(id, stableScope, controller.signal)
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
+      if (activeStream.current?.sessionId === id) {
+        activeStream.current.controller.abort()
+        activeStream.current = null
+        setSendingId(current => current === id ? null : current)
+        setPendingReply(current => current?.sessionId === id ? null : current)
+      }
+      setError(null)
       const nextOpenIds = openIdsRef.current.filter(openId => openId !== id)
       setOpenIds(nextOpenIds)
       setDetails(current => {
@@ -137,18 +153,21 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       })
       if (activeIdRef.current === id) setActiveId(nextOpenIds[0] ?? null)
       setRefreshToken(token => token + 1)
+      return true
     } catch (caught) {
       if (!controller.signal.aborted) setError(describeQueryError(caught) ?? 'Could not close assistant conversation.')
+      return false
     } finally {
       endRequest(controller)
       if (!controller.signal.aborted) setClosingId(current => current === id ? null : current)
     }
   }, [beginRequest, endRequest, stableScope])
 
-  const sendMessage = useCallback(async (message: string) => {
+  const sendMessage = useCallback(async (message: string): Promise<boolean> => {
     const session = activeId ? details[activeId] : null
-    if (!session?.canResume || !message.trim() || sendingId) return
+    if (!session?.canResume || !message.trim() || sendingId) return false
     const controller = beginRequest()
+    activeStream.current = { sessionId: session.id, controller }
     setSendingId(session.id)
     setPendingReply({ sessionId: session.id, message: message.trim(), reply: '' })
     setError(null)
@@ -156,7 +175,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       const response = await sendAssistantMessage(session.id, message.trim(), stableScope, controller.signal)
       let finished = false
       for await (const event of readAssistantEvents(response, controller.signal)) {
-        if (controller.signal.aborted) return
+        if (controller.signal.aborted) return false
         if (event.type === 'delta') {
           setPendingReply(current => current?.sessionId === session.id ? { ...current, reply: current.reply + event.text } : current)
         } else if (event.type === 'error') {
@@ -169,6 +188,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
         }
       }
       if (!finished && !controller.signal.aborted) throw new Error('The assistant response ended before it was complete.')
+      return finished
     } catch (caught) {
       if (!controller.signal.aborted) {
         setPendingReply(null)
@@ -179,8 +199,10 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
           return next
         })
       }
+      return false
     } finally {
       endRequest(controller)
+      if (activeStream.current?.controller === controller) activeStream.current = null
       if (!controller.signal.aborted) setSendingId(current => current === session.id ? null : current)
     }
   }, [activeId, beginRequest, details, endRequest, sendingId, stableScope])

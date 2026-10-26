@@ -17,6 +17,7 @@ const runtimeId = randomUUID()
 const active = new Map<string, { controller: AbortController; done: Promise<void> }>()
 const closing = new Set<string>()
 const temporaryTitles = new Map<string, string>()
+let temporaryCleanup: Promise<void> | undefined
 const sessionRecordSchema = z.object({
   id: z.uuid(),
   mode: z.enum(['help', 'tickets']),
@@ -111,16 +112,26 @@ async function remove(record: SessionRecord): Promise<void> {
   temporaryTitles.delete(record.id)
 }
 
-async function cleanupTemporarySessions(): Promise<void> {
-  for (const record of records()) {
-    if (!record.saved && record.owner !== runtimeId) await remove(record)
-  }
+function cleanupTemporarySessions(): void {
+  if (temporaryCleanup) return
+  temporaryCleanup = (async () => {
+    for (const record of records()) {
+      if (record.saved || record.owner === runtimeId) continue
+      try { await remove(record) }
+      catch (error) {
+        // Keep the cleanup receipt for retry while saved history remains usable offline.
+        console.warn('[assistant] Temporary conversation cleanup will retry:', sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)))
+      }
+    }
+  })().catch(error => {
+    console.warn('[assistant] Temporary conversation cleanup unavailable:', sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)))
+  }).finally(() => { temporaryCleanup = undefined })
 }
 
-export async function listAssistantSessions(scope: AssistantScope): Promise<AssistantSessionSummary[]> {
-  assertAssistantScope(scope)
-  await cleanupTemporarySessions()
-  return records().filter(record => (record.saved || record.owner === runtimeId) && record.mode === scope.mode && record.ticketId === (scope.ticketId ?? null))
+export async function listAssistantSessions(scope?: AssistantScope): Promise<AssistantSessionSummary[]> {
+  if (scope) assertAssistantScope(scope)
+  cleanupTemporarySessions()
+  return records().filter(record => (record.saved || record.owner === runtimeId) && (!scope || (record.mode === scope.mode && record.ticketId === (scope.ticketId ?? null))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(summary)
 }
 
@@ -129,7 +140,7 @@ export async function createAssistantSession(scope: AssistantScope, signal?: Abo
   const profile = configuration()
   const adapter = getOpenCodeAdapter()
   if (!adapter.deleteSession) throw new AssistantError('This OpenCode connection cannot clean up chat sessions.', 503)
-  await cleanupTemporarySessions()
+  cleanupTemporarySessions()
   const id = randomUUID()
   const path = directory(id)
   await mkdir(path, { recursive: true, mode: 0o700 })
@@ -164,6 +175,10 @@ export async function getAssistantSession(id: string, scope: AssistantScope, sig
   return await detail(record, signal)
 }
 
+export function assertAssistantSessionScope(id: string, scope: AssistantScope): void {
+  find(id, scope)
+}
+
 export async function closeAssistantSession(id: string, scope: AssistantScope): Promise<void> {
   const record = find(id, scope)
   if (closing.has(id)) throw new AssistantError('This conversation is already closing.', 409)
@@ -171,11 +186,9 @@ export async function closeAssistantSession(id: string, scope: AssistantScope): 
   try {
     const running = active.get(id)
     running?.controller.abort(new DOMException('Conversation closed', 'AbortError'))
-    if (running) {
-      const stopped = await getOpenCodeAdapter().abortSession(record.openCodeSessionId)
-      await running.done
-      if (!stopped) throw new AssistantError('OpenCode could not confirm that the answer stopped. Try closing this conversation again.', 503)
-    }
+    const stopped = await getOpenCodeAdapter().abortSession(record.openCodeSessionId)
+    await running?.done
+    if (!stopped) throw new AssistantError('OpenCode could not confirm that the answer stopped. Try closing this conversation again.', 503)
     if (record.saved) {
       save({ ...record, archived: true, updatedAt: new Date().toISOString() })
       await rm(directory(id), { recursive: true, force: true })
@@ -206,8 +219,12 @@ export async function promptAssistant(
   try {
     if (!record.saved && record.owner !== runtimeId) throw new AssistantError('This temporary conversation has expired.', 404)
     if (!await adapter.getSession(record.openCodeSessionId, combined)) throw new AssistantError('OpenCode no longer has this conversation. Start a new chat.', 409)
+    // A browser or daemon restart can leave an earlier remote turn running.
+    if (!await adapter.abortSession(record.openCodeSessionId)) throw new AssistantError('OpenCode could not confirm that the previous answer stopped. Try again shortly.', 503)
+    combined.throwIfAborted()
     const previous = await adapter.getSessionMessages(record.openCodeSessionId, combined)
     const questionContext = [...assistantMessages(previous).filter(entry => entry.role === 'user').slice(-3).map(entry => entry.content), message].join('\n')
+    await mkdir(directory(id), { recursive: true, mode: 0o700 })
     const evidence = await prepareAssistantEvidence(scope, directory(id), combined, questionContext)
     const partText = new Map<string, string>()
     const onEvent = (event: StreamEvent) => {

@@ -2314,7 +2314,7 @@ describe('OpenCode adapter transport orchestration', () => {
     )
     await expect(failingAdapter.createSession('/workspace', undefined, {
       permission: [{ permission: 'read', pattern: '*', action: 'allow' }],
-    })).rejects.toThrow(/allow-all permissions.*Upgrade OpenCode/s)
+    })).rejects.toThrow(/requested permissions.*Upgrade OpenCode/s)
 
     const session = { id: 'created-session', directory: '/trusted/worktree' }
     const { transport } = createV2Transport({

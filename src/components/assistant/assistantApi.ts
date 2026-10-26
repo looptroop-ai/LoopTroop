@@ -17,6 +17,12 @@ export async function fetchAssistantSessions(scope: AssistantScope, signal: Abor
   return await response.json() as AssistantSessionSummary[]
 }
 
+export async function fetchAssistantHistory(signal: AbortSignal): Promise<AssistantSessionSummary[]> {
+  const response = await fetch('/api/chat/sessions', { signal })
+  await throwIfNotOk(response, 'Failed to load conversation history')
+  return await response.json() as AssistantSessionSummary[]
+}
+
 export async function createAssistantSession(scope: AssistantScope, signal: AbortSignal): Promise<AssistantSession> {
   const response = await fetch('/api/chat/sessions', {
     method: 'POST',

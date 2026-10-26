@@ -329,8 +329,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const errorMessage = getErrorMessage(err);
       const error = new Error(
         options?.permission
-          ? `Failed to create OpenCode session with allow-all permissions: ${errorMessage}. ` +
-            "Allow-all sessions require an OpenCode server that supports session-scoped permissions. " +
+          ? `Failed to create OpenCode session with requested permissions: ${errorMessage}. ` +
+            "Custom permissions require an OpenCode server that supports session-scoped permissions. " +
             "Upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses."
           : `Failed to create OpenCode session: ${errorMessage}`,
         { cause: err },

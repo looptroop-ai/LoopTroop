@@ -1,9 +1,9 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import type { AssistantScope, AssistantStreamEvent } from '@shared/assistant'
 import { sanitizeDiagnosticText } from '@shared/errorDiagnostics'
-import { AssistantError, closeAssistantSession, createAssistantSession, getAssistantSession, listAssistantSessions, promptAssistant } from '../assistant/sessions'
+import { AssistantError, assertAssistantSessionScope, closeAssistantSession, createAssistantSession, getAssistantSession, listAssistantSessions, promptAssistant } from '../assistant/sessions'
 
 const scopeSchema = z.object({ mode: z.enum(['help', 'tickets']), ticketId: z.string().min(1).max(200).optional() }).strict()
 const messageSchema = scopeSchema.extend({ message: z.string().trim().min(1).max(20_000) })
@@ -17,12 +17,18 @@ function parseScope(value: unknown): AssistantScope {
   return result.data
 }
 
+async function body(c: Context): Promise<unknown> {
+  try { return await c.req.json() }
+  catch { throw new AssistantError('Invalid JSON in request body.') }
+}
+
 chatRouter.get('/chat/sessions', async c => {
-  return c.json(await listAssistantSessions(parseScope(c.req.query())))
+  const query = c.req.query()
+  return c.json(await listAssistantSessions(Object.keys(query).length === 0 ? undefined : parseScope(query)))
 })
 
 chatRouter.post('/chat/sessions', async c => {
-  return c.json(await createAssistantSession(parseScope(await c.req.json()), c.req.raw.signal), 201)
+  return c.json(await createAssistantSession(parseScope(await body(c)), c.req.raw.signal), 201)
 })
 
 chatRouter.get('/chat/sessions/:id', async c => {
@@ -30,16 +36,16 @@ chatRouter.get('/chat/sessions/:id', async c => {
 })
 
 chatRouter.post('/chat/sessions/:id/close', async c => {
-  await closeAssistantSession(c.req.param('id'), parseScope(await c.req.json()))
+  await closeAssistantSession(c.req.param('id'), parseScope(await body(c)))
   return c.json({ ok: true })
 })
 
 chatRouter.post('/chat/sessions/:id/messages', async c => {
-  const result = messageSchema.safeParse(await c.req.json())
+  const result = messageSchema.safeParse(await body(c))
   if (!result.success) throw new AssistantError('Enter a message of at most 20,000 characters and a valid chat scope.')
   const { message, ...scope } = result.data
   // Validate scope before opening the stream so a stale ticket cannot receive another ticket's answer.
-  await getAssistantSession(c.req.param('id'), scope, c.req.raw.signal)
+  assertAssistantSessionScope(c.req.param('id'), scope)
   return streamSSE(c, async stream => {
     const controller = new AbortController()
     stream.onAbort(() => controller.abort(new DOMException('Chat disconnected', 'AbortError')))

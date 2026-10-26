@@ -76,10 +76,11 @@ afterAll(() => {
 })
 
 describe('chat session routes', () => {
-  it('requires a strict Help or Tickets query and rejects unknown query keys', async () => {
+  it('returns global history without a query and validates scoped list queries strictly', async () => {
+    expect((await app.request('/api/chat/sessions')).status).toBe(200)
     expect((await app.request('/api/chat/sessions?mode=help')).status).toBe(200)
-    expect((await app.request('/api/chat/sessions')).status).toBe(400)
     expect((await app.request(`/api/chat/sessions?mode=help&extra=${randomUUID()}`)).status).toBe(400)
+    expect((await app.request(`/api/chat/sessions?ticketId=${randomUUID()}`)).status).toBe(400)
     expect((await app.request(`/api/chat/sessions?mode=tickets&ticketId=${randomUUID()}`)).status).toBe(404)
   })
 
@@ -122,6 +123,8 @@ describe('chat session routes', () => {
   it('validates message bodies and stale ticket scope before opening an SSE response', async () => {
     configureProfile()
     const session = await createAssistantSession({ mode: 'help' })
+    const getSession = vi.spyOn(adapter, 'getSession')
+    const getMessages = vi.spyOn(adapter, 'getSessionMessages')
     const invalidBodies = [
       { mode: 'help' },
       { mode: 'help', message: '   ' },
@@ -140,12 +143,15 @@ describe('chat session routes', () => {
       body: JSON.stringify({ mode: 'tickets', ticketId: randomUUID(), message: 'question' }),
     })
     expect(staleScope.status).toBe(404)
+    expect(getSession).not.toHaveBeenCalled()
+    expect(getMessages).not.toHaveBeenCalled()
     expect(adapter.promptCalls).toHaveLength(0)
   })
 
   it('streams text deltas followed by a done event', async () => {
     configureProfile()
     const session = await createAssistantSession({ mode: 'help' })
+    const getMessages = vi.spyOn(adapter, 'getSessionMessages')
     const response = await app.request(`/api/chat/sessions/${session.id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'help', message: 'Explain the project' }),
@@ -157,6 +163,7 @@ describe('chat session routes', () => {
     expect(events[0]).toMatchObject({ type: 'delta' })
     expect(events.at(-1)).toMatchObject({ type: 'done', session: { id: session.id } })
     expect(events.some(event => event.type === 'error')).toBe(false)
+    expect(getMessages).toHaveBeenCalledTimes(2)
   })
 
   it('sends prompt failures as SSE error events', async () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -23,8 +23,7 @@ const previousConfigDir = process.env.LOOPTROOP_CONFIG_DIR
 const configDir = makeTempDir('looptroop-assistant-sessions-')
 process.env.LOOPTROOP_CONFIG_DIR = configDir
 
-const [{ initializeDatabase }, { APP_CONFIG_DIR, closeDatabase, db }, { appMeta, profiles }, { MockOpenCodeAdapter }, integration, sessions] = await Promise.all([
-  import('../../db/init'),
+const [{ APP_CONFIG_DIR, closeDatabase, db }, { appMeta, profiles }, { MockOpenCodeAdapter }, integration, sessions] = await Promise.all([
   import('../../db/index'),
   import('../../db/schema'),
   import('../../opencode/mockAdapter'),
@@ -69,6 +68,7 @@ function deferred<T>() {
 }
 
 beforeEach(async () => {
+  vi.restoreAllMocks()
   await rm(join(APP_CONFIG_DIR, 'assistant'), { recursive: true, force: true })
   resetTestDb()
   db.delete(appMeta).run()
@@ -99,6 +99,7 @@ describe('assistant session persistence', () => {
   })
 
   it('rejects missing chat models and unsupported cleanup before creating an OpenCode session', async () => {
+    await expect(sessions.createAssistantSession({ mode: 'help' })).rejects.toMatchObject({ status: 409 })
     configureProfile({ chatModel: null })
     await expect(sessions.createAssistantSession({ mode: 'help' })).rejects.toMatchObject({ status: 409 })
     expect(adapter.sessionCreateCalls).toHaveLength(0)
@@ -109,6 +110,15 @@ describe('assistant session persistence', () => {
     await expect(sessions.createAssistantSession({ mode: 'help' })).rejects.toMatchObject({ status: 503 })
     expect(adapter.sessionCreateCalls).toHaveLength(0)
     expect(existsSync(join(APP_CONFIG_DIR, 'assistant'))).toBe(false)
+  })
+
+  it('removes the temporary workspace when OpenCode session creation fails', async () => {
+    configureProfile({ saveChatSessions: false })
+    adapter.mockSessionCreateFailures.push(new Error('OpenCode unavailable'))
+
+    await expect(sessions.createAssistantSession({ mode: 'help' })).rejects.toThrow('OpenCode unavailable')
+    expect(db.select().from(appMeta).all()).toEqual([])
+    expect(await readdir(join(APP_CONFIG_DIR, 'assistant'))).toEqual([])
   })
 
   it('keeps Help unscoped and rejects invalid or stale ticket scopes', async () => {
@@ -123,9 +133,11 @@ describe('assistant session persistence', () => {
     const secondScope = makeTicketScope()
     const first = await sessions.createAssistantSession(firstScope)
     const second = await sessions.createAssistantSession(secondScope)
+    const help = await sessions.createAssistantSession({ mode: 'help' })
 
-    expect((await sessions.listAssistantSessions({ mode: 'tickets' })).map(entry => entry.id).sort())
-      .toEqual([first.id, second.id].sort())
+    expect((await sessions.listAssistantSessions()).map(entry => entry.id).sort())
+      .toEqual([first.id, second.id, help.id].sort())
+    expect(await sessions.listAssistantSessions({ mode: 'tickets' })).toEqual([])
     expect(await sessions.listAssistantSessions(firstScope)).toMatchObject([{ id: first.id, ticketId: firstScope.ticketId }])
   })
 
@@ -138,6 +150,7 @@ describe('assistant session persistence', () => {
     await expect(sessions.getAssistantSession(session.id, otherScope)).rejects.toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(session.id, { mode: 'help' })).rejects.toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(`${session.id}-invalid`, firstScope)).rejects.toMatchObject({ status: 404 })
+    await expect(sessions.getAssistantSession(randomUUID(), firstScope)).rejects.toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(session.id, firstScope)).resolves.toMatchObject({ id: session.id })
   })
 
@@ -151,9 +164,45 @@ describe('assistant session persistence', () => {
       .where(eq(appMeta.key, `assistant.session.${session.id}`)).run()
 
     expect(await sessions.listAssistantSessions({ mode: 'help' })).toEqual([])
-    expect(adapter.sessions.some(entry => entry.id === remoteId)).toBe(false)
-    expect(storedRecord(session.id)).toBeUndefined()
+    await vi.waitFor(() => {
+      expect(adapter.sessions.some(entry => entry.id === remoteId)).toBe(false)
+      expect(storedRecord(session.id)).toBeUndefined()
+    })
     expect(JSON.stringify(adapter.promptCalls)).not.toContain('private temporary question')
+  })
+
+  it('does not block saved history or creation on stale cleanup and retries a failed remote delete', async () => {
+    configureProfile({ saveChatSessions: true })
+    const saved = await sessions.createAssistantSession({ mode: 'help' })
+    db.update(profiles).set({ saveChatSessions: false }).run()
+    const stale = await sessions.createAssistantSession({ mode: 'help' })
+    const remoteId = remoteSessionId(stale.id)
+    const record = storedRecord(stale.id)!
+    db.update(appMeta).set({ value: JSON.stringify({ ...record, owner: 'previous-runtime' }) })
+      .where(eq(appMeta.key, `assistant.session.${stale.id}`)).run()
+
+    const deletion = deferred<void>()
+    const removeRemote = vi.spyOn(adapter, 'deleteSession').mockImplementation(() => deletion.promise)
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect((await sessions.listAssistantSessions()).map(entry => entry.id)).toEqual([saved.id])
+    await vi.waitFor(() => expect(removeRemote).toHaveBeenCalledWith(remoteId, expect.any(AbortSignal)))
+    expect(storedRecord(stale.id)).toBeDefined()
+
+    await expect(sessions.createAssistantSession({ mode: 'help' })).resolves.toMatchObject({ saved: false })
+    expect(removeRemote).toHaveBeenCalledTimes(1)
+    deletion.reject(new Error('Authorization: Bearer sensitive-token'))
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled())
+    const warningText = warning.mock.calls.flat().join(' ')
+    expect(warningText).toContain('[redacted]')
+    expect(warningText).not.toContain('sensitive-token')
+    expect(storedRecord(stale.id)).toBeDefined()
+
+    removeRemote.mockResolvedValue()
+    await vi.waitFor(async () => {
+      await sessions.listAssistantSessions()
+      expect(removeRemote).toHaveBeenCalledTimes(2)
+      expect(storedRecord(stale.id)).toBeUndefined()
+    })
   })
 
   it('keeps a current temporary conversation visible while its title and transcript stay out of app metadata', async () => {
@@ -163,7 +212,7 @@ describe('assistant session persistence', () => {
 
     await sessions.promptAssistant(session.id, { mode: 'help' }, 'Private temporary title', new AbortController().signal, () => undefined)
 
-    expect(await sessions.listAssistantSessions({ mode: 'help' })).toMatchObject([{ id: session.id, title: 'New chat' }])
+    expect(await sessions.listAssistantSessions({ mode: 'help' })).toMatchObject([{ id: session.id, title: 'Private temporary title' }])
     expect(storedRecord(session.id)).toMatchObject({ saved: false, title: 'New chat' })
     expect(JSON.stringify(storedRecord(session.id))).not.toContain('Private temporary title')
     expect(adapter.messages.get(remoteId)?.some(message => message.content === 'Private temporary title')).toBe(true)
@@ -186,12 +235,13 @@ describe('assistant session persistence', () => {
     const session = await sessions.createAssistantSession({ mode: 'help' })
     const remoteId = remoteSessionId(session.id)
     const directory = join(APP_CONFIG_DIR, 'assistant', session.id)
+    const removeRemote = vi.spyOn(adapter, 'deleteSession')
 
     await sessions.closeAssistantSession(session.id, { mode: 'help' })
 
     expect(storedRecord(session.id)).toMatchObject({ saved: true, archived: true })
     expect(adapter.sessions.some(entry => entry.id === remoteId)).toBe(true)
-    expect(adapter.deleteSession).not.toHaveBeenCalled()
+    expect(removeRemote).not.toHaveBeenCalled()
     expect(existsSync(directory)).toBe(false)
   })
 
@@ -291,6 +341,19 @@ describe('assistant prompts', () => {
       .resolves.toMatchObject({ id: session.id })
   })
 
+  it('does not read history or prompt while a previous remote answer may still be running', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({ mode: 'help' })
+    const getMessages = vi.spyOn(adapter, 'getSessionMessages')
+    const stop = vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+
+    await expect(sessions.promptAssistant(session.id, { mode: 'help' }, 'Question', new AbortController().signal, () => undefined))
+      .rejects.toMatchObject({ status: 503 })
+    expect(getMessages).not.toHaveBeenCalled()
+    expect(adapter.promptCalls).toHaveLength(0)
+    stop.mockResolvedValue(true)
+  })
+
   it('deduplicates cumulative text snapshots and ignores reasoning events', async () => {
     configureProfile()
     const session = await sessions.createAssistantSession({ mode: 'help' })
@@ -326,12 +389,13 @@ describe('assistant prompts', () => {
       })
     }
     const first = sessions.promptAssistant(session.id, { mode: 'help' }, 'First', new AbortController().signal, () => undefined)
+      .then(() => undefined, error => error)
     await started.promise
 
     await expect(sessions.promptAssistant(session.id, { mode: 'help' }, 'Second', new AbortController().signal, () => undefined))
       .rejects.toMatchObject({ status: 409 })
     await expect(sessions.closeAssistantSession(session.id, { mode: 'help' })).resolves.toBeUndefined()
-    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await first).toMatchObject({ name: 'AbortError' })
   })
 
   it('does not resurrect a temporary session or its directory when close aborts an active prompt', async () => {
@@ -347,10 +411,11 @@ describe('assistant prompts', () => {
       })
     }
     const answer = sessions.promptAssistant(session.id, { mode: 'help' }, 'Do not retain this', new AbortController().signal, () => undefined)
+      .then(() => undefined, error => error)
     await started.promise
 
     await sessions.closeAssistantSession(session.id, { mode: 'help' })
-    await expect(answer).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await answer).toMatchObject({ name: 'AbortError' })
     expect(storedRecord(session.id)).toBeUndefined()
     expect(existsSync(directory)).toBe(false)
   })
@@ -371,12 +436,15 @@ describe('assistant prompts', () => {
       })
     }
     const prompt = sessions.promptAssistant(session.id, { mode: 'help' }, 'Wait', new AbortController().signal, () => undefined)
+      .then(() => undefined, error => error)
     await started.promise
     timeout.abort(new DOMException('Prompt timed out', 'TimeoutError'))
 
-    await expect(prompt).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(await prompt).toMatchObject({ name: 'TimeoutError' })
     expect(timeoutSpy).toHaveBeenCalledWith(180_000)
     expect(abortSession).toHaveBeenCalledWith(remoteId)
+    timeoutSpy.mockRestore()
+    adapter.promptSession = async () => 'retry response'
     await expect(sessions.promptAssistant(session.id, { mode: 'help' }, 'Retry', new AbortController().signal, () => undefined))
       .resolves.toMatchObject({ id: session.id })
   })
@@ -392,13 +460,17 @@ describe('assistant prompts', () => {
         else signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
       })
     }
-    vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+    const stop = vi.spyOn(adapter, 'abortSession').mockResolvedValueOnce(true).mockResolvedValue(false)
     const prompt = sessions.promptAssistant(session.id, { mode: 'help' }, 'Question', new AbortController().signal, () => undefined)
+      .then(() => undefined, error => error)
     await started.promise
 
     await expect(sessions.closeAssistantSession(session.id, { mode: 'help' })).rejects.toMatchObject({ status: 503 })
-    await expect(prompt).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await prompt).toMatchObject({ name: 'AbortError' })
     expect(storedRecord(session.id)).toMatchObject({ archived: false, saved: true })
+    await expect(sessions.closeAssistantSession(session.id, { mode: 'help' })).rejects.toMatchObject({ status: 503 })
+    expect(storedRecord(session.id)).toMatchObject({ archived: false, saved: true })
+    stop.mockResolvedValue(true)
     await sessions.closeAssistantSession(session.id, { mode: 'help' })
     expect(storedRecord(session.id)).toMatchObject({ archived: true })
   })

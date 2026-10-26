@@ -322,7 +322,7 @@ function AssistantConversation({
             <div
               id={listId}
               className="absolute right-0 top-full z-[70] mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-xl"
-              aria-label="Archived conversations"
+              aria-label="Conversation history"
               onKeyDown={event => {
                 if (event.key !== 'Escape') return
                 event.stopPropagation()
@@ -341,7 +341,7 @@ function AssistantConversation({
                   <li key={session.id}>
                     <button
                       type="button"
-                      aria-label={`Open ${session.title || 'Untitled conversation'} — ${label} — ${new Date(session.updatedAt).toLocaleString()} — ${session.id}`}
+                      aria-label={`Open ${session.title || 'Untitled conversation'} — ${label} — ${new Date(session.updatedAt).toLocaleString()}`}
                       onClick={() => selectHistory(session)}
                       className="w-full rounded-md px-2 py-2 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >

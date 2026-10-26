@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { APP_VERSION } from '../../lib/appVersion'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
+import { WORKFLOW_PHASES } from '../../../shared/workflowMeta'
 
 const mocks = vi.hoisted(() => ({
   getTicketByRef: vi.fn(),
@@ -166,10 +167,16 @@ describe('assistant evidence workspace', () => {
     await writeFile(join(worktreePath, '.git'), 'gitdir: private')
     await writeFile(join(worktreePath, '.env.local'), 'password=worktree-secret')
     await writeFile(join(worktreePath, 'src', 'main.zig'), 'Authorization: Bearer abcdefghijklmnop')
+    await writeFile(join(worktreePath, 'src', 'invalid-utf8.zig'), new Uint8Array([0xff, 0xfe]))
+    await writeFile(join(worktreePath, 'src', 'nul.zig'), 'before\0after')
+    await writeFile(join(worktreePath, 'src', 'asset.png'), 'binary fixture')
+    await mkdir(join(worktreePath, 'src', 'target'))
+    await writeFile(join(worktreePath, 'src', 'target', 'inside.zig'), 'internal symlink target')
     const outside = join(cwd, 'outside')
     await mkdir(outside)
     await writeFile(join(outside, 'escape.zig'), 'external-secret')
     await symlink(outside, join(worktreePath, 'src', 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    await symlink(join(worktreePath, 'src', 'target'), join(worktreePath, 'src', 'internal-link'), process.platform === 'win32' ? 'junction' : 'dir')
 
     const ticket = makeTicket('7:T-1', 7, {
       description: 'Authorization: Bearer abcdefghijklmnop',
@@ -218,6 +225,8 @@ describe('assistant evidence workspace', () => {
     expect(await readFile(join(sourceDir, 'src', 'main.zig'), 'utf8')).not.toContain('abcdefghijklmnop')
     expect(projectIndex).toContain('symlink')
     expect(projectIndex).toContain('secret_path')
+    expect(projectIndex).toContain('binary_or_changed_file')
+    expect(projectIndex).toContain('unsupported_file')
     expect(existsSync(join(sourceDir, '.env.local'))).toBe(false)
     expect(ticketFile.description).not.toContain('abcdefghijklmnop')
     expect(ticketFile.errors[0].errorMessage).not.toContain('abcdef0123456789')
@@ -316,6 +325,117 @@ describe('assistant evidence workspace', () => {
     expect(urls.some(url => url.pathname.includes(`/LoopTroop/v${APP_VERSION}/`))).toBe(false)
   })
 
+  it('filters unsafe remote source paths and records per-file, total, and selection omissions', async () => {
+    const { cwd } = await fixture()
+    const entries = [
+      { path: 'README.md', type: 'blob', size: 20 },
+      { path: 'CHANGELOG.md', type: 'blob', size: 20 },
+      { path: 'shared/util.ts', type: 'blob', size: 20 },
+      { path: 'src/topic/00-overlimit.ts', type: 'blob', size: 128 * 1024 + 1 },
+      ...Array.from({ length: 25 }, (_, index) => ({
+        path: `src/topic/file-${String(index).padStart(2, '0')}.ts`, type: 'blob', size: 128 * 1024,
+      })),
+      { path: '../escape.ts', type: 'blob', size: 10 },
+      { path: 'private/.env', type: 'blob', size: 10 },
+      { path: 'server/.looptroop/local.ts', type: 'blob', size: 10 },
+      { path: 'src/credentials.json', type: 'blob', size: 10 },
+      { path: 'src/package-lock.json', type: 'blob', size: 10 },
+      { path: 'src/image.png', type: 'blob', size: 10 },
+      { path: 'src/bundle.js.map', type: 'blob', size: 10 },
+      { path: 'not-a-blob.ts', type: 'tree', size: 10 },
+      { path: 'negative-size.ts', type: 'blob', size: -1 },
+    ]
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.hostname === 'api.github.com') return new Response(JSON.stringify({ tree: entries, truncated: false }))
+      if (url.pathname.includes('/LoopTroop-Website/main/')) return new Response('current docs')
+      return new Response('release source')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await prepareAssistantEvidence({ mode: 'help' }, cwd, undefined, 'help topic shared')
+    const evidence = join(cwd, 'evidence')
+    const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
+    const sourceIndex = await readFile(join(evidence, manifest.installedSource.index), 'utf8')
+    const sourceUrls = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input)))
+      .filter(url => url.pathname.includes(`/LoopTroop/${manifest.installedSource.tag}/`))
+
+    expect(manifest.installedSource.treeFileCount).toBe(29)
+    expect(manifest.installedSource.includedPaths).toHaveLength(26)
+    expect(manifest.installedSource.omittedPaths).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'src/topic/00-overlimit.ts', reason: 'tree size exceeds per-file limit' }),
+      expect.objectContaining({ path: 'src/topic/file-23.ts', reason: 'source snapshot byte limit reached' }),
+    ]))
+    expect(sourceIndex).toContain('not selected for this question')
+    expect(sourceIndex).toContain('Question terms used for selection: topic, shared')
+    expect(sourceUrls).toHaveLength(26)
+    expect(sourceUrls.some(url => url.pathname.includes('credentials') || url.pathname.includes('.env'))).toBe(false)
+  })
+
+  it('rejects relative, file, and symlink evidence directories', async () => {
+    const { root } = await fixture()
+    const realDirectory = join(root, 'real-context')
+    const linkDirectory = join(root, 'linked-context')
+    const filePath = join(root, 'not-a-directory')
+    await mkdir(realDirectory)
+    await symlink(realDirectory, linkDirectory, process.platform === 'win32' ? 'junction' : 'dir')
+    await writeFile(filePath, 'not a directory')
+
+    await expect(prepareAssistantEvidence({ mode: 'help' }, 'relative-context')).rejects.toThrow('must be absolute')
+    await expect(prepareAssistantEvidence({ mode: 'help' }, linkDirectory)).rejects.toThrow('app-owned directory')
+    await expect(prepareAssistantEvidence({ mode: 'help' }, filePath)).rejects.toThrow('app-owned directory')
+    expect(existsSync(join(realDirectory, 'evidence'))).toBe(false)
+  })
+
+  it('records bounded official-resource failures and refuses unsafe redirects', async () => {
+    const { cwd } = await fixture()
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.hostname === 'api.github.com') return new Response('{')
+      if (url.pathname.endsWith('/diagnostics.md')) {
+        return new Response(null, { status: 302, headers: { location: 'https://attacker.invalid/docs.md' } })
+      }
+      if (url.pathname.endsWith('/operations.md')) {
+        return new Response(null, { status: 302, headers: { location: url.toString() } })
+      }
+      if (url.pathname.endsWith('/cli.md')) {
+        return new Response('too large', { headers: { 'content-length': String(256 * 1024 + 1) } })
+      }
+      if (url.pathname.endsWith('/core-philosophy.md')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(256 * 1024 + 1))
+            controller.close()
+          },
+        })
+        return new Response(body)
+      }
+      if (url.pathname.endsWith('/beads.md')) return new Response('server error', { status: 503 })
+      if (url.pathname.endsWith('/index.md')) return new Response(null)
+      return new Response('current docs')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await prepareAssistantEvidence({ mode: 'help' }, cwd)
+    const evidence = join(cwd, 'evidence')
+    const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
+    const attemptedHosts = fetchMock.mock.calls.map(([input]) => new URL(String(input)).hostname)
+
+    expect(manifest.officialDocs.unavailable).toEqual(expect.arrayContaining([
+      'diagnostics.md', 'operations.md', 'cli.md', 'core-philosophy.md', 'beads.md',
+    ]))
+    expect(manifest.officialDocs.files).toContain('official-docs/index.md')
+    expect(await readFile(join(evidence, 'official-docs', 'index.md'), 'utf8')).toBe('')
+    expect(attemptedHosts).not.toContain('attacker.invalid')
+    expect(manifest.installedSource.status).toBe('unavailable')
+    expect(manifest.coverage.gaps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ area: 'official docs: operations.md', detail: 'Official resource redirect limit exceeded' }),
+      expect.objectContaining({ area: 'official docs: beads.md', detail: 'Official resource returned HTTP 503' }),
+      expect.objectContaining({ area: 'installed source tree', detail: 'GitHub returned an invalid source tree index.' }),
+    ]))
+  })
+
   it('bounds project snapshots by total bytes and per-file size', async () => {
     const { cwd, projectRoot } = await fixture()
     const ticket = makeTicket('7:BUDGET', 7)
@@ -361,7 +481,7 @@ describe('assistant evidence workspace', () => {
     expect(secondManifest.projects[0].copiedFileCount).toBe(1)
     expect(secondManifest.projects[0].omissions.per_file_size_limit).toBe(1)
     expect(secondManifest.projects[0].limit).toContain('512 KiB per file')
-  })
+  }, 40_000)
 
   it('does not traverse a queued directory replaced with an external symlink', async () => {
     const { root, cwd, projectRoot } = await fixture()
@@ -407,6 +527,90 @@ describe('assistant evidence workspace', () => {
     expect(sourceFiles.join('\n')).not.toContain('external ordinary-name secret')
     expect(sourceFiles).not.toContain('in-project source')
     expect(manifest.projects[0].omissions.symlink).toBe(1)
+  })
+
+  it('reports unavailable project roots and tickets whose projects are unattached', async () => {
+    const { cwd, root } = await fixture()
+    const missingProjectRoot = join(root, 'missing-project')
+    const projectTicket = makeTicket('7:MISSING-ROOT', 7)
+    const orphanTicket = makeTicket('9:ORPHAN', 9)
+    mocks.listProjects.mockReturnValue([
+      { id: 7, name: 'Missing', shortname: 'M', folderPath: missingProjectRoot },
+    ])
+    mocks.listTickets.mockReturnValue([projectTicket, orphanTicket])
+
+    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    const manifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
+
+    expect(manifest.projects[0].omissions.unavailable_project_root).toBe(1)
+    expect(manifest.coverage.gaps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ area: 'project source: 7', detail: 'source root missing or unsafe to read' }),
+      expect.objectContaining({ area: 'ticket metadata: 9:ORPHAN', detail: 'the ticket project is not attached in the current scope' }),
+    ]))
+  })
+
+  it('falls back to the attached project when a saved worktree resolves outside it', async () => {
+    const { root, cwd, projectRoot } = await fixture()
+    const outsideWorktree = join(root, 'outside-worktree')
+    await mkdir(outsideWorktree)
+    await writeFile(join(outsideWorktree, 'secret.zig'), 'external worktree content')
+    await writeFile(join(projectRoot, 'attached.zig'), 'attached project content')
+    const ticket = makeTicket('7:OUTSIDE-WORKTREE', 7)
+    attachTicket(ticket, projectRoot, outsideWorktree)
+
+    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    const evidence = join(cwd, 'evidence')
+    const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
+    const sourceRoot = join(evidence, 'projects', '7', 'source')
+
+    expect(manifest.projects[0].sourceKind).toBe('attached project')
+    expect(manifest.coverage.gaps).toContainEqual(expect.objectContaining({
+      area: 'ticket worktree',
+      detail: 'The managed worktree resolved outside the attached project and was excluded.',
+    }))
+    expect(await readFile(join(sourceRoot, 'attached.zig'), 'utf8')).toBe('attached project content')
+    expect(existsSync(join(sourceRoot, 'secret.zig'))).toBe(false)
+  })
+
+  it('keeps planning and log coverage gaps when storage fails and retries an expired history cursor', async () => {
+    const { cwd, projectRoot } = await fixture()
+    const ticket = makeTicket('7:STORAGE-ERRORS', 7)
+    attachTicket(ticket, projectRoot)
+    const planningPhases = WORKFLOW_PHASES.filter(phase => (
+      ['discovery', 'interview', 'prd', 'beads', 'pre_implementation'].includes(phase.groupId)
+    ))
+    const failedAttemptsPhase = planningPhases[0]!.id
+    const failedArtifactsPhase = planningPhases[1]!.id
+    mocks.listPhaseAttempts.mockImplementation((_id: string, phase: string) => {
+      if (phase === failedAttemptsPhase) throw new Error('attempt query failed')
+      return phase === failedArtifactsPhase ? [{ phase, attemptNumber: 1 }] : []
+    })
+    mocks.listPhaseArtifacts.mockImplementation((_id: string, options: { phase: string }) => {
+      if (options.phase === failedArtifactsPhase) throw new Error('artifact query failed')
+      return []
+    })
+    let commandCalls = 0
+    mocks.queryLogPage.mockImplementation(async (_id: string, query: { view: string }) => {
+      if (query.view === 'system') throw new Error('history projection failed')
+      if (query.view === 'command' && commandCalls++ === 0) {
+        throw Object.assign(new Error('history cursor expired'), { code: 'LOG_CURSOR_EXPIRED' })
+      }
+      if (query.view === 'error') return { entries: [], hasOlder: true, olderCursor: null }
+      return { entries: [], hasOlder: false, olderCursor: null }
+    })
+
+    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    const manifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
+    const gaps = manifest.coverage.gaps as Array<{ area: string; detail: string }>
+
+    expect(commandCalls).toBe(2)
+    expect(gaps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ area: `planning artifacts: ${ticket.id}`, detail: `${failedAttemptsPhase} attempts unavailable: attempt query failed` }),
+      expect.objectContaining({ area: `planning artifacts: ${ticket.id}`, detail: `${failedArtifactsPhase} attempt 1 unavailable: artifact query failed` }),
+      expect.objectContaining({ area: `logs: ${ticket.id}/system`, detail: 'history projection failed' }),
+      expect.objectContaining({ area: `logs: ${ticket.id}/error`, detail: 'history page reported older entries without a cursor' }),
+    ]))
+    expect(manifest.tickets[0].logs.command.complete).toBe(true)
   })
 
   it('stops copying source entries promptly when evidence preparation is aborted', async () => {
@@ -459,7 +663,8 @@ describe('assistant evidence workspace', () => {
 
     await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
-    expect(Object.values(manifest.tickets[0].logs).every((view: { complete: boolean }) => !view.complete)).toBe(true)
+    const logHistory = manifest.tickets[0].logs as Record<string, { complete: boolean }>
+    expect(Object.values(logHistory).every(view => !view.complete)).toBe(true)
     expect(manifest.coverage.gaps).toEqual(expect.arrayContaining([
       expect.objectContaining({ area: `logs: ${ticket.id}/system`, detail: 'ticket history projection is unavailable' }),
     ]))

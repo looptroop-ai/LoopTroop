@@ -185,6 +185,65 @@ it('restores same-runtime temporary tabs when switching away from and back to th
   expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/close$/), expect.anything())
 })
 
+it('switches between open conversation tabs without creating or closing a session', async () => {
+  const first = summary({ id: 'first-session', title: 'First chat' })
+  const second = detail({ id: 'second-session', title: 'Second chat' })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(second)
+    if (url.pathname === `/api/chat/sessions/${first.id}`) return jsonResponse(detail(first))
+    return jsonResponse([first])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  expect(await screen.findByRole('button', { name: 'First chat', pressed: true })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+  expect(await screen.findByRole('button', { name: 'Second chat', pressed: true })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'First chat', pressed: false }))
+  expect(screen.getByRole('button', { name: 'First chat', pressed: true })).toBeInTheDocument()
+})
+
+it('closes history on outside click and Escape, and reports conversations for deleted tickets', async () => {
+  const missingTicketChat = summary({ id: 'missing-ticket-session', mode: 'tickets', ticketId: 'missing-ticket', title: 'Deleted ticket chat', archived: true })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && !url.search) return jsonResponse([missingTicketChat])
+    return jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const dispatch = vi.fn()
+  render(widget(baseUiState, true, vi.fn(), dispatch))
+
+  const historyButton = await screen.findByRole('button', { name: 'Conversation history' })
+  fireEvent.click(historyButton)
+  fireEvent.click(await screen.findByRole('button', { name: /Open Deleted ticket chat/ }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('is no longer available')
+  expect(dispatch).not.toHaveBeenCalled()
+
+  fireEvent.pointerDown(document.body)
+  await waitFor(() => expect(historyButton).toHaveAttribute('aria-expanded', 'false'))
+  fireEvent.click(historyButton)
+  const search = await screen.findByRole('textbox', { name: 'Search conversation history' })
+  fireEvent.keyDown(search, { key: 'Escape' })
+  await waitFor(() => expect(historyButton).toHaveAttribute('aria-expanded', 'false'))
+  expect(historyButton).toHaveFocus()
+})
+
+it('shows a useful error when global history cannot be loaded', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    return url.pathname === '/api/chat/sessions' && !url.search
+      ? jsonResponse({ error: 'History unavailable' }, 503)
+      : jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation history' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load conversation history (HTTP 503: History unavailable)')
+})
+
 it('restores the composer draft when the send request fails before the assistant accepts it', async () => {
   const chat = detail({ id: 'failed-send-session', title: 'Retry chat' })
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -321,6 +380,54 @@ it('lets closing the active tab stop and archive a running reply', async () => {
   await waitFor(() => expect(sentSignal?.aborted).toBe(true))
   expect(screen.queryByText('working')).not.toBeInTheDocument()
   expect(composer).toHaveValue('')
+})
+
+it('restores a failed message after closing its tab fails', async () => {
+  const chat = detail({ id: 'close-failure-session', title: 'Close failure chat' })
+  const closeResolvers: Array<(response: Response) => void> = []
+  const failStreams: Array<() => void> = []
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(chat)
+    if (url.pathname.endsWith('/messages')) {
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"delta","text":"working"}\n\n'))
+          failStreams.push(() => {
+            controller.enqueue(encoder.encode('data: {"type":"error","error":"Provider rejected the message"}\n\n'))
+            controller.close()
+          })
+        },
+      })
+      return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    if (url.pathname.endsWith('/close')) return new Promise<Response>(resolve => closeResolvers.push(resolve))
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(chat)
+    return jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  const message = 'Keep this draft if closing fails.'
+  fireEvent.change(composer, { target: { value: message } })
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  expect(await screen.findByText('working')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Close Close failure chat conversation' }))
+  await waitFor(() => expect(closeResolvers).toHaveLength(1))
+
+  const failStream = failStreams[0]
+  if (!failStream) throw new Error('Expected the pending assistant response')
+  failStream()
+  await screen.findByRole('alert')
+  expect(composer).toHaveValue('')
+  const resolveClose = closeResolvers[0]
+  if (!resolveClose) throw new Error('Expected pending assistant close request')
+  resolveClose(jsonResponse({ error: 'Close unavailable' }, 503))
+
+  await waitFor(() => expect(composer).toHaveValue(message))
 })
 
 it('renders model image markdown as a user-activated link without loading the image', async () => {

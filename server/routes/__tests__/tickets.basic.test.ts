@@ -514,6 +514,8 @@ describe('ticketRouter basic ticket routes', () => {
 
   it('announces a completed asynchronous batch after accepting it', async () => {
     const ticket = createInterviewBatchTicket()
+    vi.mocked(claimInterviewBatch).mockImplementationOnce(claimDurableInterviewBatch)
+    vi.mocked(releaseInterviewBatch).mockImplementationOnce(releaseDurableInterviewBatch)
     const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
     delete process.env.LOOPTROOP_OPENCODE_MODE
     vi.mocked(processInterviewBatchAsync).mockResolvedValueOnce({
@@ -561,6 +563,8 @@ describe('ticketRouter basic ticket routes', () => {
 
   it('blocks a failed asynchronous AI submission with diagnostics so recovery actions can be offered', async () => {
     const ticket = createInterviewBatchTicket()
+    vi.mocked(claimInterviewBatch).mockImplementationOnce(claimDurableInterviewBatch)
+    vi.mocked(releaseInterviewBatch).mockImplementationOnce(releaseDurableInterviewBatch)
     const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
     delete process.env.LOOPTROOP_OPENCODE_MODE
     const diagnostics = {

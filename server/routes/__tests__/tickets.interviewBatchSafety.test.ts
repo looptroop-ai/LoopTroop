@@ -17,7 +17,7 @@ import {
   updateInterviewAnswer,
 } from '../../phases/interview/sessionState'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
-import { getPendingInterviewBatchStop, readInterviewRetrySnapshot } from '../../workflow/phases/interviewPhase'
+import { claimInterviewBatch, releaseInterviewBatch, getPendingInterviewBatchStop, readInterviewRetrySnapshot } from '../../workflow/phases/interviewPhase'
 import { interviewQASessions } from '../../workflow/phases/state'
 import {
   resolveAiResponseTimeoutForTicket,
@@ -170,7 +170,7 @@ describe('answer-batch stop confirmation and retry', () => {
           ?.currentBatch?.batchNumber,
       ).toBe(2))
       expect(getPendingInterviewBatchStop(ticket.id)).toBeNull()
-      expect(context?.projectDb.select().from(interviewBatchClaims).get()).toBeUndefined()
+      await vi.waitFor(() => expect(context?.projectDb.select().from(interviewBatchClaims).get()).toBeUndefined())
       expect(getLatestPhaseArtifact(ticket.id, 'interview_failed_submission', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
 
       // The first fixture deliberately ignores the abort. Its late result must
@@ -185,7 +185,7 @@ describe('answer-batch stop confirmation and retry', () => {
       vi.useRealTimers()
     }
   })
-  it('blocks an owned terminal request failure even without model or session diagnostics', async () => {
+  it.each(['owned', 'replaced'])('fences terminal request failures without model diagnostics to the %s claim', async (ownership) => {
     const ticket = await seedInterviewBatch()
     let rejectModel: ((error: Error) => void) | undefined
     submitBatchToSessionMock.mockImplementation(() => new Promise<BatchResponse>((_, reject) => { rejectModel = reject }))
@@ -197,9 +197,31 @@ describe('answer-batch stop confirmation and retry', () => {
     })
     expect(response.status).toBe(202)
     await vi.waitFor(() => expect(submitBatchToSessionMock).toHaveBeenCalledOnce())
+    let successorClaim: string | null = null
+    if (ownership === 'replaced') {
+      const context = getTicketContext(ticket.id)
+      context?.projectDb.update(interviewBatchClaims).set({ expiresAt: '2000-01-01T00:00:00.000Z' }).run()
+      successorClaim = claimInterviewBatch(ticket.id)
+      expect(successorClaim).not.toBeNull()
+    }
+    let claimDuringError: string | null | undefined
+    vi.mocked(sendTicketEvent).mockImplementation((id, event) => {
+      if (event.type === 'ERROR') claimDuringError = claimInterviewBatch(id)
+    })
     rejectModel?.(new Error('Unexpected request failure'))
+    if (ownership === 'replaced') {
+      await new Promise(resolve => setImmediate(resolve))
+      expect(vi.mocked(sendTicketEvent).mock.calls.some(([, event]) => event.type === 'ERROR')).toBe(false)
+      expect(getTicketContext(ticket.id)?.projectDb.select().from(interviewBatchClaims).get()?.token).toBe(successorClaim)
+      if (successorClaim) releaseInterviewBatch(ticket.id, successorClaim)
+      return
+    }
     await vi.waitFor(() => expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, expect.objectContaining({ type: 'ERROR', message: 'Unexpected request failure' })))
+    expect(claimDuringError).toBeNull()
     expect(readInterviewRetrySnapshot(ticket.id)?.answers.Q01?.answer).toBe('Keep this answer.')
+    const nextClaim = claimInterviewBatch(ticket.id)
+    expect(nextClaim).not.toBeNull()
+    if (nextClaim) releaseInterviewBatch(ticket.id, nextClaim)
   })
 
   it('reports an AI failure without blocking or overwriting a newer answer edit', async () => {

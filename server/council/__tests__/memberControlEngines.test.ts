@@ -16,7 +16,7 @@ import {
   stopCouncilMember,
 } from '../memberControl'
 import { VOTING_RUBRIC_INTERVIEW, type DraftProgressEvent, type DraftResult, type MemberOutcome, type Vote } from '../types'
-import { patchTicket } from '../../storage/tickets'
+import { getTicketByRef, patchTicket, recordTicketErrorOccurrence } from '../../storage/tickets'
 import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
 import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
 import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
@@ -541,7 +541,7 @@ describe('stopping and restarting one council member', () => {
           [MODEL_A]: [resolvedFullAnswers(), makePrdYaml()],
           [MODEL_B]: ['hang'],
         })
-        const { run, draftEvents } = await startPrd(adapter, 'A PRD model that never answers', timeoutMs)
+        const { ticket, run, draftEvents } = await startPrd(adapter, 'A PRD model that never answers', timeoutMs)
         let ended = false
         run.then(() => { ended = true }, () => { ended = true })
         await waitFor(
@@ -556,7 +556,14 @@ describe('stopping and restarting one council member', () => {
 
         expect(result.fullAnswerOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
         expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
-        expect(result.drafts.find((draft) => draft.memberId === MODEL_B)).not.toHaveProperty('blockedErrorDiagnostics')
+        const failedDraft = result.drafts.find((draft) => draft.memberId === MODEL_B)
+        const failedSessionId = adapter.promptsFor(MODEL_B)[0]
+        expect(failedDraft?.blockedErrorDiagnostics?.sessionId).toBe(failedSessionId)
+        expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map(session => session.sessionId)).not.toContain(failedSessionId)
+        recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'DRAFTING_PRD', errorMessage: failedDraft?.error ?? 'Deadline reached', diagnostics: failedDraft?.blockedErrorDiagnostics })
+        patchTicket(ticket.id, { status: 'BLOCKED_ERROR', xstateSnapshot: JSON.stringify({ context: { previousStatus: 'DRAFTING_PRD' } }) })
+        expect(getTicketByRef(ticket.id)?.availableActions).toContain('retry_with_note')
+        expect(getTicketByRef(ticket.id)?.availableActions).not.toContain('continue')
         expect(adapter.aborted).toContain(adapter.promptsFor(MODEL_B)[0])
       } finally {
         vi.useRealTimers()

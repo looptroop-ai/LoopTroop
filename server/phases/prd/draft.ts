@@ -1364,7 +1364,7 @@ export async function draftPRD(
         sessionOwnership: options.ticketId ? { ticketId: options.ticketId, phase: 'DRAFTING_PRD' } : undefined,
         signal: memberSignal,
       })
-      const failureDiagnostics = !timedOut && !isPhaseDeadlineError(error) && failedSessionId
+      const failureDiagnostics = failedSessionId
         ? buildContinuationDiagnostics({ error, sessionId: failedSessionId, modelId: member.modelId })
         : undefined
       if (!preserveForContinuation) {

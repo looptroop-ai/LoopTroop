@@ -419,7 +419,7 @@ const WORKFLOW_PHASE_DETAILS = {
   },
   DRAFTING_PRD: {
     overview:
-      "The council is turning the approved interview into competing PRDs. First, each model fills skipped answers in its own Full Answers artifact. Then that same model uses its completed answer set to draft a full specification. The models work independently so the vote can compare both their assumptions and their PRDs. Retry guidance stays with the failed part, and stopping a model discards its saved answers.",
+      "The council is turning the approved interview into competing PRDs. First, each model fills skipped answers in its own Full Answers artifact. Then that same model uses its completed answer set to draft a full specification. The models work independently so the vote can compare both their assumptions and their PRDs. Retry guidance stays with the failed part, including after a timeout, and stopping a model discards its saved answers.",
     steps: [
       "Part 1, Full Answers: For each skipped interview question, each council model writes its own best answer from the available context. It may inspect a small repository area read-only when the supplied context does not prove a technical fact.",
       "Why per-model answers matter: Different models may make different reasonable assumptions. Keeping Full Answers per model lets the vote compare a PRD together with the assumptions that produced it.",
@@ -443,7 +443,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       `${MEMBER_RETRY_NOTE_HELP} PRD Part 1 and Part 2 retry boundaries still apply.`,
       AI_RECOVERY_HELP,
-      "This phase has two internal parts with different context slices: Interview Results for Full Answers, then Full Answers for PRD drafting. Continue at Part 2 reuses saved, validated Full Answers only when its original inputs still match. Stopping a model or restarting Part 1 invalidates its saved answers, so a later Continue cannot restore discarded work. Phase retry notes apply only to the failed part. Missing, damaged, or changed checkpoints require a fresh Retry instead of silently repeating Part 1.",
+      "This phase has two internal parts with different context slices: Interview Results for Full Answers, then Full Answers for PRD drafting. Continue at Part 2 reuses saved, validated Full Answers only when its original inputs still match. Stopping a model or restarting Part 1 invalidates its saved answers, so a later Continue cannot restore discarded work. Phase retry notes apply only to the failed part; timed-out sessions retain that identity for a fresh Retry without becoming eligible for Continue. Missing, damaged, or changed checkpoints require a fresh Retry instead of silently repeating Part 1.",
       "Malformed Full Answers or PRD text stays diagnostic-only. Safe parser repairs fix formatting, not meaning.",
       "This is the stage that turns interview intent into a formal implementation specification.",
       "The vote later selects both a PRD approach and the assumptions behind it.",

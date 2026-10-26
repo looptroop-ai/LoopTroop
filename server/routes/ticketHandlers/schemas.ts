@@ -313,6 +313,7 @@ export const councilMemberStopSchema = z.object({
 
 export const councilMemberRetrySchema = councilMemberStopSchema.extend({
   part: z.enum(COUNCIL_MEMBER_RETRY_PARTS).optional(),
+  note: retryTicketSchema.shape.note,
 }).strict().refine(
   // Only PRD drafting has parts. Accepting one elsewhere would answer 200 for a
   // request that asked for something no other step can do.
@@ -334,6 +335,7 @@ export const devEventSchema = z.object({
     'ALL_BEADS_DONE',
     'TESTS_PASSED',
     'INTEGRATION_DONE',
+    'INTEGRATION_NO_CHANGES',
     'PULL_REQUEST_READY',
     'MERGE_COMPLETE',
     'CLOSE_UNMERGED_COMPLETE',

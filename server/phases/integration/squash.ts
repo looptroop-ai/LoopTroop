@@ -28,6 +28,7 @@ async function runSquashGit(worktreePath: string, args: string[]): Promise<strin
 
 export interface SquashResult {
   success: boolean
+  noChanges?: boolean
   message: string
   commitHash?: string
   mergeBase?: string
@@ -96,8 +97,10 @@ export async function prepareSquashCandidate(
     ]))
 
     if (candidateFiles.length === 0) {
+      ensureNoTrackedWorktreeChanges(worktreePath, 'no-change integration')
       return {
-        success: false,
+        success: true,
+        noChanges: true,
         message: 'No candidate changes were available to squash',
         mergeBase,
         preSquashHead,
@@ -119,8 +122,10 @@ export async function prepareSquashCandidate(
     const stagedChanges = parsePathList(await runGit(['diff', '--cached', '--name-only', '-z', '--', ...REPO_SCOPE_PATHSPECS]))
     if (stagedChanges.length === 0) {
       await runGit(['reset', '--mixed', preSquashHead])
+      ensureNoTrackedWorktreeChanges(worktreePath, 'no-change integration')
       return {
-        success: false,
+        success: true,
+        noChanges: true,
         message: 'No candidate changes were available to squash',
         mergeBase,
         preSquashHead,

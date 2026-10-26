@@ -9,6 +9,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { classifyStructuredFailureFromError, getStructuredRetryDecision } from '../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
+import { hasSessionRetryGuidance } from '../workflow/retryNotes'
 import {
   attachOpenCodeBlockedErrorDiagnostics,
   buildOutputTruncatedBlockedErrorDiagnostics,
@@ -18,6 +19,7 @@ import type { WorkflowPhaseId } from '@shared/workflowMeta'
 export interface RefineDraftResult {
   content: string
   rawAttempts: RawAttempt[]
+  steeredByOperator?: boolean
 }
 
 const RAW_ATTEMPTS_ERROR_KEY = '__loopTroopRawAttempts'
@@ -117,6 +119,7 @@ export async function refineDraft(
   let attemptCount = 0
   const normalizedMaxStructuredRetries = normalizeStructuredRetryCount(maxStructuredRetries)
   const rawAttempts: RawAttempt[] = []
+  let phaseRetryNoteApplied = false
 
   while (true) {
     let result: Awaited<ReturnType<typeof runOpenCodePrompt>>
@@ -135,7 +138,7 @@ export async function refineDraft(
               sessionOwnership: {
                 ticketId: sessionOwnership.ticketId,
                 phase: sessionOwnership.phase,
-                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+                phaseAttempt: sessionOwnership.phaseAttempt,
                 memberId: winnerDraft.memberId,
               },
             }
@@ -152,6 +155,7 @@ export async function refineDraft(
           })
         },
         onPromptDispatched: (event) => {
+          if (sessionOwnership && hasSessionRetryGuidance(sessionOwnership.ticketId, sessionOwnership.phase, event.session.id, sessionOwnership.phaseAttempt)) phaseRetryNoteApplied = true
           onOpenCodePromptDispatched?.({
             stage: 'refine',
             memberId: winnerDraft.memberId,
@@ -200,7 +204,11 @@ export async function refineDraft(
         rawResponse: refined,
         initialInput,
       })
-      return { content: validation.content, rawAttempts }
+      return {
+        content: validation.content,
+        rawAttempts,
+        ...(phaseRetryNoteApplied || winnerDraft.steeredByOperator === true ? { steeredByOperator: true } : {}),
+      }
     }
 
     const error = validation.error

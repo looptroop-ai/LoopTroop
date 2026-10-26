@@ -6,6 +6,7 @@ import * as jsYaml from 'js-yaml'
 import type { InterviewDocument, InterviewDocumentQuestion } from '@shared/interviewArtifact'
 import type { PrdDocument } from '../structuredOutput/types'
 import type { TicketContext } from '../machines/types'
+import type { Bead } from '../phases/beads/types'
 import { createShellCommandSpec } from '@shared/commandSpec'
 
 interface TicketLike {
@@ -33,6 +34,36 @@ export const TEST = {
   councilMembers: ['test-vendor/council-a', 'test-vendor/council-b'],
   timestamp: '2026-01-01T00:00:00.000Z',
 } as const
+
+export function buildBead(overrides: Partial<Bead> = {}): Bead {
+  return {
+    id: 'bead-1',
+    title: 'Normalize structured outputs',
+    prdRefs: ['EPIC-1 / US-1'],
+    description: 'Repair machine-readable marker mistakes before failing.',
+    contextGuidance: { patterns: ['Keep the retry limited to marker correction only.'], anti_patterns: ['Do not retry for non-marker issues.'] },
+    acceptanceCriteria: ['Repairable marker formatting does not fail the iteration immediately.'],
+    tests: ['Structured marker retry is covered by tests.'],
+    testCommands: [],
+    priority: 1,
+    status: 'pending',
+    issueType: 'task',
+    externalRef: '',
+    labels: [],
+    dependencies: { blocked_by: [], blocks: [] },
+    targetFiles: [],
+    failedIterationNotes: [],
+    userRetryNotes: [],
+    finalizationFailureNotes: [],
+    iteration: 1,
+    createdAt: '',
+    updatedAt: '',
+    completedAt: '',
+    startedAt: '',
+    beadStartCommit: null,
+    ...overrides,
+  }
+}
 
 function buildYamlDocument(value: unknown): string {
   return jsYaml.dump(value, { lineWidth: 120, noRefs: true }) as string

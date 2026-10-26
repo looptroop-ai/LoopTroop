@@ -1,4 +1,6 @@
+import { savePhaseRetryNote } from '../../workflow/retryNotes'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, PromptSessionOptions } from '../../opencode/types'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -14,6 +16,10 @@ import {
   stopCouncilMember,
 } from '../memberControl'
 import { VOTING_RUBRIC_INTERVIEW, type DraftProgressEvent, type DraftResult, type MemberOutcome, type Vote } from '../types'
+import { getTicketByRef, patchTicket, recordTicketErrorOccurrence } from '../../storage/tickets'
+import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
+import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 
 const repoManager = createTestRepoManager('council-member-control-')
 const MODEL_A = 'test/model-a'
@@ -28,7 +34,7 @@ const LONG_TIMEOUT_MS = 300_000
  * `stall` never answers until its prompt is aborted; `hang` ignores the abort
  * too, like a prompt request OpenCode leaves pending; a string is the answer.
  */
-type Script = Array<string | 'stall' | 'hang'>
+type Script = Array<string | Error | ((sessionId: string) => Error)>
 
 /**
  * Answers each model from its own script, in order.
@@ -37,7 +43,7 @@ type Script = Array<string | 'stall' | 'hang'>
  * one member's attempts whatever order the sessions are created in.
  */
 class ScriptedAdapter extends MockOpenCodeAdapter {
-  readonly prompts: Array<{ model: string; sessionId: string }> = []
+  readonly prompts: Array<{ model: string; sessionId: string; parts: PromptPart[] }> = []
   readonly aborted: string[] = []
   private readonly scripts: Map<string, Script>
 
@@ -57,8 +63,10 @@ class ScriptedAdapter extends MockOpenCodeAdapter {
     options?: PromptSessionOptions,
   ): Promise<string> {
     const model = options?.model ? `${options.model.providerID}/${options.model.modelID}` : 'unknown'
-    this.prompts.push({ model, sessionId })
+    this.prompts.push({ model, sessionId, parts })
     const next = this.scripts.get(model)?.shift()
+    if (typeof next === 'function') throw next(sessionId)
+    if (next instanceof Error) throw next
     if (next === 'hang') return new Promise(() => {})
     if (next === 'stall') {
       return new Promise((_resolve, reject) => {
@@ -116,6 +124,25 @@ function resolvedFullAnswers(): string {
   })
 }
 
+function retryableTimeoutError(sessionId: string): Error & {
+  blockedErrorDiagnostics: BlockedErrorDiagnostics
+  blockedErrorCodes: string[]
+} {
+  const error = new Error('Timeout') as Error & {
+    blockedErrorDiagnostics: BlockedErrorDiagnostics
+    blockedErrorCodes: string[]
+  }
+  error.blockedErrorDiagnostics = {
+    kind: 'timeout',
+    source: 'opencode',
+    summary: 'Provider request timed out',
+    sessionId,
+    isRetryable: true,
+  }
+  error.blockedErrorCodes = []
+  return error
+}
+
 describe('stopping and restarting one council member', () => {
   beforeEach(() => {
     resetTestDb()
@@ -123,6 +150,7 @@ describe('stopping and restarting one council member', () => {
 
   afterEach(() => {
     resetCouncilRounds()
+    clearAllPendingSessionContinuationsForTests()
   })
 
   afterAll(() => {
@@ -153,6 +181,38 @@ describe('stopping and restarting one council member', () => {
       )
       return { ticket, run, progress }
     }
+
+    it('keeps the operator-guidance notice when a noted draft fails and is continued', async () => {
+      const { ticket, paths } = await createInitializedTestTicket(repoManager)
+      patchTicket(ticket.id, { status: 'COUNCIL_DELIBERATING' })
+      savePhaseRetryNote(ticket.id, 'COUNCIL_DELIBERATING', 'Use the operator constraint.')
+      const adapter = new ScriptedAdapter({ [MODEL_A]: [retryableTimeoutError, 'Recovered draft'] })
+      const run = () => generateDrafts(adapter, [MEMBERS[0]!], [{ type: 'text', content: 'Draft questions.' }], paths.worktreePath,
+        LONG_TIMEOUT_MS, undefined, undefined, undefined, undefined, undefined, { ticketId: ticket.id, phase: 'COUNCIL_DELIBERATING' })
+      const failed = await run()
+      const sessionId = failed.drafts[0]?.blockedErrorDiagnostics?.sessionId
+      if (!sessionId) throw new Error('Missing preserved session')
+      requestSessionContinuation({ ticketId: ticket.id, phase: 'COUNCIL_DELIBERATING', sessionId })
+      const continued = await run()
+      expect(continued.drafts[0]?.steeredByOperator).toBe(true)
+      expect(adapter.prompts.at(-1)?.parts[0]).toEqual({ type: 'text', content: 'continue please' })
+    })
+
+    it('keeps a retryable raw provider timeout resumable while returning timed_out', async () => {
+      const adapter = new ScriptedAdapter({ [MODEL_A]: ['Draft from A'], [MODEL_B]: [retryableTimeoutError] })
+      const { ticket, run } = await startDrafting(adapter, 'Preserve provider timeout')
+
+      const result = await run
+      const timedOutDraft = result.drafts.find((draft) => draft.memberId === MODEL_B)
+      const sessionId = adapter.promptsFor(MODEL_B)[0]
+
+      expect(timedOutDraft).toMatchObject({
+        outcome: 'timed_out',
+        blockedErrorDiagnostics: { kind: 'timeout', sessionId, isRetryable: true },
+      })
+      expect(adapter.aborted).toContain(sessionId)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toContain(sessionId)
+    })
 
     it('stops a stuck drafter and settles the round without waiting for its timeout', async () => {
       const adapter = new ScriptedAdapter({ [MODEL_A]: ['Draft from A'], [MODEL_B]: ['stall'] })
@@ -185,7 +245,8 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, progress } = await startDrafting(adapter, 'Restart a drafter')
       await waitFor(() => adapter.promptsFor(MODEL_B).length === 1, 'B to start drafting')
 
-      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B)
+      const note = '  Focus on the missing prerequisite.\nUse the provided evidence.  '
+      await retryCouncilMember(ticket.id, 'COUNCIL_DELIBERATING', MODEL_B, undefined, undefined, note)
       const result = await run
 
       const [firstSession, secondSession] = adapter.promptsFor(MODEL_B)
@@ -194,6 +255,13 @@ describe('stopping and restarting one council member', () => {
       expect(adapter.aborted).toContain(firstSession)
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'completed' })
       expect(result.drafts[1]?.content).toBe('Second draft from B')
+      expect(result.drafts[1]?.steeredByOperator).toBe(true)
+      expect(result.drafts[0]?.steeredByOperator).toBeUndefined()
+      expect(adapter.prompts.filter((prompt) => prompt.model === MODEL_B)[1]?.parts)
+        .toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(adapter.prompts.filter((prompt) => prompt.model === MODEL_A)).toHaveLength(1)
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
+      expect(result.drafts[1]?.rawAttempts?.[0]?.initialInput).toContain(note)
       const bEvents = progress.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status)
       expect(bEvents).toEqual(['session_created', 'restarted', 'session_created', 'finished'])
     })
@@ -295,6 +363,22 @@ describe('stopping and restarting one council member', () => {
       return { ticket, run, progress }
     }
 
+    it('keeps a retryable raw provider timeout resumable while reporting the voter timed_out', async () => {
+      const adapter = new ScriptedAdapter({ [MODEL_A]: [scorecard()], [MODEL_B]: [retryableTimeoutError] })
+      const { ticket, run } = await startVoting(adapter, 'Preserve voter provider timeout')
+
+      const result = await run
+      const timedOutVoter = result.voterDetails.find((detail) => detail.voterId === MODEL_B)
+      const sessionId = adapter.promptsFor(MODEL_B)[0]
+
+      expect(result.memberOutcomes[MODEL_B]).toBe('timed_out')
+      expect(timedOutVoter).toMatchObject({
+        blockedErrorDiagnostics: { kind: 'timeout', sessionId, isRetryable: true },
+      })
+      expect(adapter.aborted).toContain(sessionId)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toContain(sessionId)
+    })
+
     it('stops a stuck voter so its missing scorecard no longer holds the vote', async () => {
       const adapter = new ScriptedAdapter({ [MODEL_A]: [scorecard()], [MODEL_B]: ['stall'] })
       const { ticket, run } = await startVoting(adapter, 'Stop a voter')
@@ -327,7 +411,8 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, progress } = await startVoting(adapter, 'Restart a voter')
       await waitFor(() => progress.some((entry) => entry.memberId === MODEL_A) && adapter.promptsFor(MODEL_B).length === 1, 'A to vote')
 
-      await retryCouncilMember(ticket.id, 'COUNCIL_VOTING_INTERVIEW', MODEL_A)
+      const note = '  Recheck the supplied coverage evidence.  '
+      await retryCouncilMember(ticket.id, 'COUNCIL_VOTING_INTERVIEW', MODEL_A, undefined, undefined, note)
       await waitFor(() => progress.filter((entry) => entry.memberId === MODEL_A).length === 3, 'A to vote again')
       await stopCouncilMember(ticket.id, 'COUNCIL_VOTING_INTERVIEW', MODEL_B)
       const result = await run
@@ -339,12 +424,59 @@ describe('stopping and restarting one council member', () => {
       ])
       expect(result.votes.filter((vote) => vote.voterId === MODEL_A)).toHaveLength(2)
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
+      expect(adapter.prompts.filter((prompt) => prompt.model === MODEL_A)[1]?.parts)
+        .toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_B))).not.toContain(note)
     })
   })
 
   describe('PRD drafting', () => {
+    it.each(['saved', 'missing', 'corrupt', 'changed', 'wrong-member', 'wrong-attempt'] as const)('continues the PRD substep using only its %s Full Answers checkpoint', async (checkpoint) => {
+      const { ticket, paths } = await createInitializedTestTicket(repoManager, { title: 'Continue Part 2' })
+      patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
+      const state = { ticketId: TEST.externalId, title: 'Continue Part 2', description: 'Keep answered questions.', interview: makeInterviewYaml() }
+      const options = { draftTimeoutMs: LONG_TIMEOUT_MS, minQuorum: 1, ticketId: ticket.id, ticketExternalId: TEST.externalId }
+      const adapter = new ScriptedAdapter({ [MODEL_A]: [resolvedFullAnswers(), new Error('Failed to prompt OpenCode session: socket hang up'), makePrdYaml()] })
+      const member = { modelId: MODEL_A, name: 'Model A' }
+      const first = await draftPRD(adapter, [member], state, paths.worktreePath, options)
+      expect(first.fullAnswers[0]?.outcome).toBe('completed')
+      expect(first.drafts[0]?.outcome).not.toBe('completed')
+      const failed = listOpenCodeSessionsForTicket(ticket.id, ['active']).find(session => session.step === 'prd_draft')
+      expect(failed).toBeDefined()
+      if (!failed) throw new Error('Missing retained PRD session')
+      requestSessionContinuation({ ticketId: ticket.id, phase: 'DRAFTING_PRD', sessionId: failed.sessionId })
+      const type = `prd_full_answers_checkpoint:${MODEL_A}`
+      if (checkpoint === 'missing') upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', '{}')
+      if (checkpoint === 'corrupt') upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', '{broken')
+      if (checkpoint === 'changed') state.description = 'Different approved inputs'
+      if (checkpoint === 'wrong-member' || checkpoint === 'wrong-attempt') {
+        const saved = JSON.parse(getLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD')!.content) as Record<string, unknown>
+        if (checkpoint === 'wrong-member') saved.memberId = MODEL_B
+        else saved.phaseAttempt = 2
+        upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', JSON.stringify(saved))
+      }
+      if (checkpoint !== 'saved') {
+        await expect(draftPRD(adapter, [member], state, paths.worktreePath, options)).rejects.toThrow('Use Retry to start a fresh attempt')
+        expect(adapter.prompts).toHaveLength(2)
+        return
+      }
+      expect(getLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD')).toBeDefined()
+      const saved = JSON.parse(getLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD')!.content) as Record<string, unknown>
+      saved.steeredByOperator = true
+      upsertLatestPhaseArtifact(ticket.id, type, 'DRAFTING_PRD', JSON.stringify(saved))
+      const continued = await draftPRD(adapter, [member], state, paths.worktreePath, options)
+      expect(continued.drafts[0]?.outcome).toBe('completed')
+      expect(continued.fullAnswers[0]?.content).toBe(first.fullAnswers[0]?.content)
+      expect(continued.fullAnswers[0]?.steeredByOperator).toBe(true)
+      expect(continued.drafts[0]?.steeredByOperator).toBe(true)
+      expect(adapter.prompts).toHaveLength(3)
+      expect(adapter.prompts[2]?.sessionId).toBe(failed.sessionId)
+      expect(adapter.prompts[2]?.parts[0]).toEqual({ type: 'text', content: 'continue please' })
+    })
+
     async function startPrd(adapter: ScriptedAdapter, title: string, timeoutMs = LONG_TIMEOUT_MS) {
       const { ticket, paths } = await createInitializedTestTicket(repoManager, { title })
+      patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
       const fullAnswerEvents: DraftProgressEvent[] = []
       const draftEvents: DraftProgressEvent[] = []
       const run = draftPRD(
@@ -362,6 +494,26 @@ describe('stopping and restarting one council member', () => {
       )
       return { ticket, run, fullAnswerEvents, draftEvents }
     }
+
+    it('carries retryable raw provider timeout diagnostics through PRD timeout classification', async () => {
+      const adapter = new ScriptedAdapter({
+        [MODEL_A]: [resolvedFullAnswers(), retryableTimeoutError],
+        [MODEL_B]: [resolvedFullAnswers(), makePrdYaml()],
+      })
+      const { ticket, run } = await startPrd(adapter, 'Preserve PRD provider timeout')
+
+      const result = await run
+      const timedOutDraft = result.drafts.find((draft) => draft.memberId === MODEL_A)
+      const diagnosticSessionId = timedOutDraft?.blockedErrorDiagnostics?.sessionId
+
+      expect(timedOutDraft).toMatchObject({
+        outcome: 'timed_out',
+        blockedErrorDiagnostics: { kind: 'timeout', isRetryable: true },
+      })
+      expect(adapter.prompts.map((prompt) => prompt.sessionId)).toContain(diagnosticSessionId)
+      expect(adapter.aborted).toContain(diagnosticSessionId)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toContain(diagnosticSessionId)
+    })
 
     it('stops a model during Full Answers, so its PRD draft never starts', async () => {
       const adapter = new ScriptedAdapter({
@@ -389,7 +541,7 @@ describe('stopping and restarting one council member', () => {
           [MODEL_A]: [resolvedFullAnswers(), makePrdYaml()],
           [MODEL_B]: ['hang'],
         })
-        const { run, draftEvents } = await startPrd(adapter, 'A PRD model that never answers', timeoutMs)
+        const { ticket, run, draftEvents } = await startPrd(adapter, 'A PRD model that never answers', timeoutMs)
         let ended = false
         run.then(() => { ended = true }, () => { ended = true })
         await waitFor(
@@ -404,6 +556,14 @@ describe('stopping and restarting one council member', () => {
 
         expect(result.fullAnswerOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
         expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'timed_out' })
+        const failedDraft = result.drafts.find((draft) => draft.memberId === MODEL_B)
+        const failedSessionId = adapter.promptsFor(MODEL_B)[0]
+        expect(failedDraft?.blockedErrorDiagnostics?.sessionId).toBe(failedSessionId)
+        expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map(session => session.sessionId)).not.toContain(failedSessionId)
+        recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'DRAFTING_PRD', errorMessage: failedDraft?.error ?? 'Deadline reached', diagnostics: failedDraft?.blockedErrorDiagnostics })
+        patchTicket(ticket.id, { status: 'BLOCKED_ERROR', xstateSnapshot: JSON.stringify({ context: { previousStatus: 'DRAFTING_PRD' } }) })
+        expect(getTicketByRef(ticket.id)?.availableActions).toContain('retry_with_note')
+        expect(getTicketByRef(ticket.id)?.availableActions).not.toContain('continue')
         expect(adapter.aborted).toContain(adapter.promptsFor(MODEL_B)[0])
       } finally {
         vi.useRealTimers()
@@ -418,10 +578,16 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, fullAnswerEvents, draftEvents } = await startPrd(adapter, 'Restart the PRD draft')
       await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its PRD draft')
 
-      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'prd_draft')
+      const note = '  Keep the saved answers and clarify the requirement.  '
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'prd_draft', undefined, note)
       const result = await run
 
       expect(adapter.promptsFor(MODEL_B)).toHaveLength(3)
+      expect(result.drafts[1]?.steeredByOperator).toBe(true)
+      const memberPrompts = adapter.prompts.filter((prompt) => prompt.model === MODEL_B)
+      expect(memberPrompts[2]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(memberPrompts.slice(0, 2))).not.toContain(note)
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'completed' })
       expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))
         .toEqual(['session_created', 'finished'])
@@ -440,6 +606,7 @@ describe('stopping and restarting one council member', () => {
       await stopCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B)
       const result = await run
 
+      expect(getLatestPhaseArtifact(ticket.id, `prd_full_answers_checkpoint:${MODEL_B}`, 'DRAFTING_PRD')?.content).toBe('null')
       // Nothing of a stopped model reaches the vote or the refinement.
       expect(result.fullAnswerOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
       expect(result.memberOutcomes).toEqual({ [MODEL_A]: 'completed', [MODEL_B]: 'stopped' })
@@ -508,14 +675,43 @@ describe('stopping and restarting one council member', () => {
       const { ticket, run, fullAnswerEvents } = await startPrd(adapter, 'Restart from Full Answers')
       await waitFor(() => adapter.promptsFor(MODEL_B).length === 2, 'B to start its PRD draft')
 
-      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'full_answers')
+      const note = '  Reconsider the skipped answer using the existing evidence.  '
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, 'full_answers', undefined, note)
       const result = await run
 
       expect(adapter.promptsFor(MODEL_B)).toHaveLength(4)
+      expect(result.drafts[1]?.steeredByOperator).toBe(true)
+      const memberPrompts = adapter.prompts.filter((prompt) => prompt.model === MODEL_B)
+      expect(memberPrompts[2]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(memberPrompts[3]?.parts)).not.toContain(note)
+      expect(JSON.stringify(adapter.prompts.filter((prompt) => prompt.model === MODEL_A))).not.toContain(note)
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, `prd_full_answers_checkpoint:${MODEL_B}`, 'DRAFTING_PRD')!.content))
+        .toMatchObject({ memberId: MODEL_B, phaseAttempt: 1, steeredByOperator: true })
       expect(result.fullAnswerOutcomes[MODEL_B]).toBe('completed')
       expect(result.memberOutcomes[MODEL_B]).toBe('completed')
       expect(fullAnswerEvents.filter((entry) => entry.memberId === MODEL_B).map((entry) => entry.status))
         .toEqual(['session_created', 'finished', 'restarted', 'session_created', 'finished'])
+    })
+
+    it('routes an unqualified retry note to the first unfinished PRD substep', async () => {
+      const adapter = new ScriptedAdapter({
+        [MODEL_A]: [resolvedFullAnswers(), makePrdYaml()],
+        [MODEL_B]: ['stall', resolvedFullAnswers(), makePrdYaml()],
+      })
+      const { ticket, run } = await startPrd(adapter, 'Retry the unfinished Full Answers step')
+      await waitFor(() => adapter.promptsFor(MODEL_B).length === 1, 'B to start Full Answers')
+
+      const note = 'Use the existing evidence to resolve the unanswered item.'
+      await retryCouncilMember(ticket.id, 'DRAFTING_PRD', MODEL_B, undefined, undefined, note)
+      const result = await run
+      const memberPrompts = adapter.prompts.filter((prompt) => prompt.model === MODEL_B)
+
+      expect(memberPrompts).toHaveLength(3)
+      expect(memberPrompts[1]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+      expect(JSON.stringify(memberPrompts[2]?.parts)).not.toContain(note)
+      expect(result.drafts.find((draft) => draft.memberId === MODEL_B)?.steeredByOperator).toBe(true)
+      expect(JSON.parse(getLatestPhaseArtifact(ticket.id, `prd_full_answers_checkpoint:${MODEL_B}`, 'DRAFTING_PRD')!.content))
+        .toMatchObject({ memberId: MODEL_B, steeredByOperator: true })
     })
   })
 })

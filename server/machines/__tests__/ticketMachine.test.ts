@@ -27,6 +27,16 @@ function createRestoredActor(overrides: Partial<TicketContext>) {
 }
 
 describe("ticketMachine states", () => {
+  it("cleans up a completed ticket without creating a pull request when integration has no changes", () => {
+    const actor = createRestoredActor({ status: "INTEGRATING_CHANGES" });
+    actor.start();
+    actor.send({ type: "INTEGRATION_NO_CHANGES" });
+    expect(actor.getSnapshot().value).toBe("CLEANING_ENV");
+    actor.send({ type: "CLEANUP_DONE" });
+    expect(actor.getSnapshot().value).toBe("COMPLETED");
+    actor.stop();
+  });
+
   it.each(["CREATING_PULL_REQUEST", "WAITING_PR_REVIEW"] as const)(
     "returns to Final Testing when an early merge needs a corrective candidate from %s",
     (status) => {
@@ -121,6 +131,33 @@ describe("ticketMachine execution setup flow", () => {
       actor.stop();
     },
   );
+
+  it('retains preserved OpenCode diagnostics from execution setup failures', () => {
+    const actor = createRestoredActor({ status: 'PREPARING_EXECUTION_ENV' });
+    const diagnostics = {
+      kind: 'timeout' as const,
+      source: 'opencode' as const,
+      summary: 'Execution setup timed out.',
+      sessionId: 'ses-setup-timeout',
+      isRetryable: true,
+    };
+
+    actor.start();
+    actor.send({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: ['Execution setup prompt failed: Timeout'],
+      codes: ['OPENCODE_PROVIDER_ERROR'],
+      diagnostics,
+    });
+
+    expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR');
+    expect(actor.getSnapshot().context.errorCodes).toEqual([
+      'EXECUTION_SETUP_FAILED',
+      'OPENCODE_PROVIDER_ERROR',
+    ]);
+    expect(actor.getSnapshot().context.errorDiagnostics).toEqual(diagnostics);
+    actor.stop();
+  });
 
   it.each([
     {

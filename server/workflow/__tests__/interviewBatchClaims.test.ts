@@ -9,12 +9,14 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import {
   claimInterviewBatch,
   claimInterviewBatchAfterConfirmedStop,
+  claimInterviewBatchStopRecovery,
   getPendingInterviewBatchStop,
   getPendingInterviewBatchStopToken,
   hasInFlightInterviewBatch,
   markInterviewBatchStopPending,
   renewInterviewBatchClaim,
   releaseInterviewBatch,
+  releaseInterviewBatchStopRecovery,
 } from '../phases/interviewPhase'
 
 const repoManager = createFixtureRepoManager({
@@ -100,6 +102,91 @@ describe('interview batch claim ownership across daemon boots', () => {
     expect(retryClaim).toBeTruthy()
     expect(getPendingInterviewBatchStop(ticket)).toBeNull()
     releaseInterviewBatch(ticket, retryClaim ?? undefined)
+  })
+
+  it('reserves a pending stop for one lifecycle recovery without clearing the stop fence', () => {
+    const ticket = makeTicket()
+    const batchClaim = claimInterviewBatch(ticket)
+    expect(batchClaim).toBeTruthy()
+    expect(markInterviewBatchStopPending(ticket, batchClaim ?? '', 'answer')).toBe(true)
+
+    const recoveryClaim = claimInterviewBatchStopRecovery(ticket, 'answer')
+    expect(recoveryClaim).toContain(':recovery:')
+    expect(getPendingInterviewBatchStop(ticket)).toBe('answer')
+    expect(getPendingInterviewBatchStopToken(ticket, 'answer')).toBeNull()
+    expect(claimInterviewBatchStopRecovery(ticket, 'answer')).toBeNull()
+    expect(claimInterviewBatch(ticket)).toBeNull()
+    expect(renewInterviewBatchClaim(ticket, recoveryClaim ?? '')).toBe(true)
+
+    expect(releaseInterviewBatchStopRecovery(ticket, recoveryClaim ?? '')).toBe(true)
+    expect(getPendingInterviewBatchStopToken(ticket, 'answer')).not.toBe(recoveryClaim)
+    expect(claimInterviewBatch(ticket)).toBeNull()
+  })
+
+  it('recovers only a pending-stop reservation whose daemon boot is proven dead', () => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket)
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 424242) throw Object.assign(new Error('gone'), { code: 'ESRCH' })
+      return true
+    })
+    try {
+      context!.projectDb.insert(interviewBatchClaims).values({
+        ticketId: context!.localTicketId,
+        token: 'interview-stop-pending:answer:recovery:424242:old-boot:old-claim',
+        claimedAt: '2026-10-01T00:00:00.000Z',
+        expiresAt: '9999-12-31T23:59:59.999Z',
+      }).run()
+
+      expect(claimInterviewBatch(ticket)).toBeNull()
+      const recovered = claimInterviewBatchStopRecovery(ticket, 'answer')
+      expect(recovered).toContain(':recovery:')
+      expect(getPendingInterviewBatchStop(ticket)).toBe('answer')
+      expect(kill).toHaveBeenCalledWith(424242, 0)
+    } finally {
+      kill.mockRestore()
+    }
+  })
+
+  it.each(['alive', 'permission-denied'])('reclaims an aged reservation with %s liveness while retaining the stop fence', (liveness) => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket)!
+    context.projectDb.insert(interviewBatchClaims).values({
+      ticketId: context.localTicketId,
+      token: 'interview-stop-pending:answer:recovery:424242:recycled-boot:old-claim',
+      claimedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      expiresAt: '9999-12-31T23:59:59.999Z',
+    }).run()
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      if (liveness === 'permission-denied') throw Object.assign(new Error('not permitted'), { code: 'EPERM' })
+      return true
+    })
+    try {
+      const recovered = claimInterviewBatchStopRecovery(ticket, 'answer')
+      expect(recovered).toContain(':recovery:')
+      expect(claimInterviewBatch(ticket)).toBeNull()
+      expect(claimInterviewBatchStopRecovery(ticket, 'answer')).toBeNull()
+      expect(getPendingInterviewBatchStop(ticket)).toBe('answer')
+    } finally { kill.mockRestore() }
+  })
+
+  it('promotes the lifecycle stop reservation only after confirmed stop and keeps the resulting claim releasable', () => {
+    const ticket = makeTicket()
+    const batchClaim = claimInterviewBatch(ticket)
+    expect(batchClaim).toBeTruthy()
+    expect(markInterviewBatchStopPending(ticket, batchClaim ?? '', 'answer')).toBe(true)
+
+    const recoveryClaim = claimInterviewBatchStopRecovery(ticket, 'answer')
+    expect(recoveryClaim).toBeTruthy()
+    const confirmedClaim = claimInterviewBatchAfterConfirmedStop(ticket, 'answer', recoveryClaim ?? '')
+
+    expect(confirmedClaim).toBeTruthy()
+    expect(getPendingInterviewBatchStop(ticket)).toBeNull()
+    expect(claimInterviewBatch(ticket)).toBeNull()
+    releaseInterviewBatch(ticket, confirmedClaim ?? undefined)
+    const nextClaim = claimInterviewBatch(ticket)
+    expect(nextClaim).toBeTruthy()
+    releaseInterviewBatch(ticket, nextClaim ?? undefined)
   })
 
   it('renews only the current lease generation and fences an expired successor', () => {

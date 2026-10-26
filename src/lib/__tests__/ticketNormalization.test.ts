@@ -94,6 +94,8 @@ describe('normalizeTicketResponse', () => {
         beads: [{
           id: 'bead-1',
           title: 'Fix the importer',
+          targetFiles: ['/outside/settings.json', 'src/local.json', null, 42, 'bad\npath'],
+          externalTargetFiles: ['src/local.json', null, 'bad\npath'],
           status: 'completed',
           iteration: 1,
           completedAt: '2026-09-01T10:04:00.000Z',
@@ -115,6 +117,8 @@ describe('normalizeTicketResponse', () => {
     }))
 
     const bead = ticket.runtime.beads?.[0]
+    expect(bead?.targetFiles).toEqual(['/outside/settings.json', 'src/local.json'])
+    expect(bead?.externalTargetFiles).toEqual(['src/local.json'])
     expect(bead?.completedAt).toBe('2026-09-01T10:04:00.000Z')
     expect(bead?.qaOrigin?.version).toBe(2)
     expect(bead?.qaOrigin?.sourceTicketExternalId).toBe('QA-9')

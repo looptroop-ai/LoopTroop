@@ -486,6 +486,7 @@ describe('executeExecutionSetupWithRetries', () => {
         initialAttempt: nextAttempt,
         initialRetryNotes: Array.from({ length: priorNotes }, (_, index) => `Note ${index + 1}`),
         additionalManualIterations: 1,
+        continuationIteration: nextAttempt - 1,
       },
       {
         evaluateGeneration: async ({ attempt }) => buildToolingFailureReport(attempt, [{
@@ -507,10 +508,11 @@ describe('executeExecutionSetupWithRetries', () => {
       '/tmp/project',
       undefined,
       expect.objectContaining({
-        phaseAttempt: nextAttempt,
+        iteration: nextAttempt - 1,
         manualContinuation: true,
       }),
     )
+    expect(generateExecutionSetupMock.mock.calls[0]?.[4]).not.toHaveProperty('phaseAttempt')
     expect(onAttemptStart).toHaveBeenCalledWith(nextAttempt, expect.objectContaining({
       isManualContinuationAttempt: true,
       isExtraToolingPersistenceAttempt: false,

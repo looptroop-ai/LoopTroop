@@ -1,3 +1,4 @@
+import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { randomUUID } from 'node:crypto'
 import type { OpenCodeAdapter } from '../opencode/adapter'
 import type {
@@ -29,7 +30,7 @@ import { isAbortError } from '../lib/abort'
 import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
-import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+import { buildContinuationDiagnostics, shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
 import { stopCutShortCouncilSession } from './sessionStop'
 import { CouncilMemberInterruptedError, openCouncilRound, type CouncilMemberAttempt } from './memberControl'
 import { COUNCIL_MEMBER_STOPPED_ERROR } from '@shared/councilMembers'
@@ -100,7 +101,7 @@ export function buildVotePresentationOrder(
     // draft that followed an instruction it never saw as simply wrong, and the
     // one draft with the most information in it is the one most likely to lose.
     content: draft.steeredByOperator
-      ? `Draft ${index + 1}:\n[Note: while writing this draft its author asked the operator a question and was given an answer. The other drafts were written without it. Judge this draft on its merits; do not mark it down merely for differing from the others.]\n${draft.content}`
+      ? `Draft ${index + 1}:\n[Note: this draft's author received additional operator guidance. Other drafts may have been written without that guidance. Judge this draft on its merits; do not mark it down merely for differing from the others.]\n${draft.content}`
       : `Draft ${index + 1}:\n${draft.content}`,
   }))
 }
@@ -114,6 +115,8 @@ interface VoteAttemptResult {
   rawResponse?: string
   normalizedResponse?: string
   rawAttempts?: RawAttempt[]
+  blockedErrorDiagnostics?: VoterDetail['blockedErrorDiagnostics']
+  blockedErrorCodes?: string[]
 }
 
 export async function conductVoting(
@@ -168,6 +171,12 @@ export async function conductVoting(
   toolPolicy: OpenCodeToolPolicy = 'default',
   maxStructuredRetries: number = 1,
 ): Promise<VotingPhaseResult> {
+  if (sessionOwnership) {
+    sessionOwnership = {
+      ...sessionOwnership,
+      phaseAttempt: resolvePhaseAttempt(sessionOwnership.ticketId, sessionOwnership.phase, sessionOwnership.phaseAttempt),
+    }
+  }
   const votes: Vote[] = []
   const validDrafts = drafts.filter(d => d.outcome === 'completed' && d.content)
   const rubric = phase ? getVotingRubricForPhase(phase) : VOTING_RUBRIC
@@ -213,6 +222,8 @@ export async function conductVoting(
       ...(typeof result.normalizedResponse === 'string' ? { normalizedResponse: result.normalizedResponse } : {}),
       ...(result.structuredOutput ? { structuredOutput: result.structuredOutput } : {}),
       ...(result.rawAttempts && result.rawAttempts.length > 0 ? { rawAttempts: [...result.rawAttempts] } : {}),
+      ...(result.blockedErrorDiagnostics !== undefined ? { blockedErrorDiagnostics: result.blockedErrorDiagnostics } : {}),
+      ...(result.blockedErrorCodes ? { blockedErrorCodes: [...result.blockedErrorCodes] } : {}),
     })
     if (result.outcome === 'completed' && result.votes.length > 0) {
       votes.push(...result.votes)
@@ -296,7 +307,7 @@ export async function conductVoting(
     }
 
     const executeVote = (async (): Promise<VoteAttemptResult> => {
-      const votingPrompt = buildPromptForVoter
+      const baseVotingPrompt = buildPromptForVoter
         ? buildPromptForVoter({ voter, anonymizedDrafts: anonymized, rubric })
         : [
             ...contextParts,
@@ -312,6 +323,9 @@ export async function conductVoting(
               ].join('\n'),
             },
           ]
+      const votingPrompt: PromptPart[] = attempt.retryNote === undefined
+        ? baseVotingPrompt
+        : [...baseVotingPrompt, { type: 'text', content: `## User Retry Note\n${attempt.retryNote}` }]
       let promptParts = votingPrompt
       const initialInput = formatPromptText(votingPrompt)
       let result: Awaited<ReturnType<typeof runOpenCodePrompt>> | undefined
@@ -539,29 +553,26 @@ export async function conductVoting(
 
       const errorDetail = getErrorMessage(error)
       const timedOut = isPhaseDeadlineError(error) || isAiResponseTimeoutError(error) || closed
-      if (timedOut) {
+      const preserveForContinuation = !closed && !isPhaseDeadlineError(error) && sessionId && sessionOwnership
+        ? shouldPreserveSessionForContinuation({
+            error,
+            sessionId,
+            modelId: voter.modelId,
+            sessionOwnership: {
+              ticketId: sessionOwnership.ticketId,
+              phase: sessionOwnership.phase,
+              phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
+              memberId: voter.modelId,
+            },
+            signal: memberSignal,
+          })
+        : false
+      const continuationDiagnostics = preserveForContinuation && sessionId
+        ? buildContinuationDiagnostics({ error, sessionId, modelId: voter.modelId })
+        : null
+      if (!preserveForContinuation) {
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedVoterStopError(sessionId)
-      }
-      if (!timedOut) {
-        const preserveForContinuation = sessionId && sessionOwnership
-          ? shouldPreserveSessionForContinuation({
-              error,
-              sessionId,
-              modelId: voter.modelId,
-              sessionOwnership: {
-                ticketId: sessionOwnership.ticketId,
-                phase: sessionOwnership.phase,
-                phaseAttempt: sessionOwnership.phaseAttempt ?? 1,
-                memberId: voter.modelId,
-              },
-              signal: memberSignal,
-            })
-          : false
-        if (!preserveForContinuation) {
-          const stopped = await ensureSessionStopped()
-          if (!stopped) throw unconfirmedVoterStopError(sessionId)
-        }
       }
       return {
         outcome: timedOut ? 'timed_out' : 'failed',
@@ -569,6 +580,10 @@ export async function conductVoting(
         error: timedOut ? `AI response timeout reached after ${timeoutMs}ms` : errorDetail,
         ...(response ? { rawResponse: response } : {}),
         rawAttempts: [...rawAttempts],
+        ...(continuationDiagnostics ? {
+          blockedErrorDiagnostics: continuationDiagnostics.diagnostics,
+          blockedErrorCodes: continuationDiagnostics.errorCodes,
+        } : {}),
       }
     } finally {
       deadline.dispose()

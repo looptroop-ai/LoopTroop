@@ -1,3 +1,4 @@
+import { resolvePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type {
   CouncilMember,
@@ -37,6 +38,11 @@ import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagn
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../../lib/structuredRawAttempts'
 import { getErrorMessage } from '@shared/typeGuards'
+import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
+import { buildPrdFullAnswersInputHash, isPrdFullAnswersCheckpoint } from '../../lib/workflowContinuation'
+import { buildContinuationDiagnostics, shouldPreserveSessionForContinuation } from '../../opencode/sessionContinuation'
+import type { OpenCodeBlockedErrorDiagnosticsResult } from '../../opencode/blockedErrorDiagnostics'
+import { hasSessionRetryGuidance } from '../../workflow/retryNotes'
 
 interface StepValidationResult {
   questionCount?: number
@@ -504,7 +510,7 @@ async function executeStructuredStep(
     ? {
         ticketId: options.ticketId,
         phase: 'DRAFTING_PRD' as const,
-        phaseAttempt: options.phaseAttempt ?? 1,
+        phaseAttempt: resolvePhaseAttempt(options.ticketId, 'DRAFTING_PRD', options.phaseAttempt),
         memberId: member.modelId,
         step: options.step,
         keepActive: true,
@@ -691,14 +697,19 @@ function toFinishedProgress(memberId: string, draft: DraftResult, sessionId?: st
 function buildPrdMemberFailure(
   memberId: string,
   error: unknown,
-  options: { stoppedByPerson: boolean; duration: number; timeoutMs: number },
+  options: {
+    stoppedByPerson: boolean
+    duration: number
+    timeoutMs: number
+    failureDiagnostics?: OpenCodeBlockedErrorDiagnosticsResult
+  },
 ): DraftResult {
   // A stop keeps nothing the model wrote, earlier rejected attempts included.
   if (options.stoppedByPerson) return buildFailedDraft(memberId, 'stopped', options.duration, COUNCIL_MEMBER_STOPPED_ERROR)
   const structuredError = error instanceof StructuredStepError ? error : null
   const errorContent = structuredError?.content ?? ''
   if (isPhaseDeadlineError(error) || (error instanceof Error && error.message === 'Timeout')) {
-    return buildFailedDraft(
+    const failed = buildFailedDraft(
       memberId,
       'timed_out',
       options.timeoutMs,
@@ -711,12 +722,19 @@ function buildPrdMemberFailure(
       undefined,
       structuredError?.rawAttempts,
     )
+    return options.failureDiagnostics
+      ? {
+          ...failed,
+          blockedErrorDiagnostics: options.failureDiagnostics.diagnostics,
+          blockedErrorCodes: options.failureDiagnostics.errorCodes,
+        }
+      : failed
   }
   const { outcome, errorDetail, failureClass } = classifyDraftFailure(error, {
     content: errorContent,
     failureClass: structuredError?.structuredOutput.failureClass,
   })
-  return buildFailedDraft(
+  const failed = buildFailedDraft(
     memberId,
     outcome,
     options.duration,
@@ -731,6 +749,13 @@ function buildPrdMemberFailure(
     undefined,
     structuredError?.rawAttempts,
   )
+  return options.failureDiagnostics
+    ? {
+        ...failed,
+        blockedErrorDiagnostics: options.failureDiagnostics.diagnostics,
+        blockedErrorCodes: options.failureDiagnostics.errorCodes,
+      }
+    : failed
 }
 
 export async function draftPRD(
@@ -800,7 +825,7 @@ export async function draftPRD(
       .map((question) => question.id)
     : []
   const shouldResolveGaps = skippedQuestionIds.length > 0
-  const phaseAttempt = options.phaseAttempt ?? 1
+  const phaseAttempt = options.ticketId ? resolvePhaseAttempt(options.ticketId, 'DRAFTING_PRD', options.phaseAttempt) : 1
 
   /**
    * A member's finished Full Answers, kept across a restart of its PRD draft.
@@ -809,6 +834,60 @@ export async function draftPRD(
    * or one while Full Answers was still unfinished, redoes both parts.
    */
   const keptFullAnswers = new Map<string, { result: DraftResult; resolvedInterviewContent: string }>()
+  const fullAnswersInputHash = buildPrdFullAnswersInputHash({
+    title: ticketState.title, description: ticketState.description,
+    relevantFiles: ticketState.relevantFiles, interview: canonicalInterview,
+  })
+  if (options.ticketId) {
+    const sessionManager = new SessionManager(adapter)
+    const pendingSession = sessionManager.getPendingContinuationSession(options.ticketId, 'DRAFTING_PRD')
+    const continuationMemberId = pendingSession?.memberId
+    const continuationStep = pendingSession?.step
+    const checkpointPhaseAttempt = pendingSession?.phaseAttempt ?? phaseAttempt
+    for (const member of members) {
+      const isActiveContinuationMember = member.modelId === continuationMemberId
+      // A failed Full Answers session may have left an older valid checkpoint
+      // from a previous attempt. Its own answers must be regenerated when that
+      // session resumes; Part 2 continuation still requires the saved answers.
+      if (isActiveContinuationMember && continuationStep !== 'prd_draft') continue
+      const requiresCheckpoint = isActiveContinuationMember && continuationStep === 'prd_draft'
+      const artifact = getLatestPhaseArtifact(
+        options.ticketId,
+        `prd_full_answers_checkpoint:${member.modelId}`,
+        'DRAFTING_PRD',
+        checkpointPhaseAttempt,
+      )
+      try {
+        const saved: unknown = artifact ? JSON.parse(artifact.content) : null
+        if (!isPrdFullAnswersCheckpoint(saved, {
+          inputHash: fullAnswersInputHash,
+          memberId: member.modelId,
+          phaseAttempt: checkpointPhaseAttempt,
+        })) throw new Error('Missing or changed Full Answers')
+        const validated = validateResolvedInterview(saved.content, {
+          ticketId: options.ticketExternalId ?? options.ticketId,
+          canonicalInterviewContent: canonicalInterview, memberId: member.modelId,
+        })
+        const result = buildCompletedDraft(member.modelId, 0, validated.normalizedContent, validated.questionCount)
+        if (saved.steeredByOperator) result.steeredByOperator = true
+        keptFullAnswers.set(member.modelId, {
+          result,
+          resolvedInterviewContent: validated.normalizedContent,
+        })
+      } catch {
+        if (requiresCheckpoint) {
+          budget.release()
+          throw new Error('Cannot continue the PRD draft without its saved Full Answers and unchanged inputs. Use Retry to start a fresh attempt.')
+        }
+      }
+    }
+  }
+  const discardFullAnswers = (memberId: string) => {
+    keptFullAnswers.delete(memberId)
+    if (options.ticketId && getLatestPhaseArtifact(options.ticketId, `prd_full_answers_checkpoint:${memberId}`, 'DRAFTING_PRD', phaseAttempt)) {
+      upsertLatestPhaseArtifact(options.ticketId, `prd_full_answers_checkpoint:${memberId}`, 'DRAFTING_PRD', 'null', phaseAttempt)
+    }
+  }
   const keepsFullAnswers = (memberId: string, part: CouncilMemberRetryPart | undefined) => (
     part !== 'full_answers' && keptFullAnswers.has(memberId)
   )
@@ -821,7 +900,7 @@ export async function draftPRD(
     outcomeOf: (result) => result.prd.outcome,
     onRestart: (memberId, restart) => {
       if (!keepsFullAnswers(memberId, restart.part)) {
-        keptFullAnswers.delete(memberId)
+        discardFullAnswers(memberId)
         onFullAnswersProgress?.({ memberId, status: 'restarted' })
       }
       onDraftProgress?.({ memberId, status: 'restarted' })
@@ -846,6 +925,7 @@ export async function draftPRD(
     let currentSession: Session | undefined
     let fullAnswersResult: DraftResult | null = kept?.result ?? null
     let prdResult: DraftResult | null = null
+    const phaseRetryNotesApplied = new Set<PrdDraftSubstep>()
     // Where the member is, and the session it most recently opened there, so a
     // stop can find what to close while a step is still running.
     let currentStep: PrdDraftSubstep = kept ? 'prd_draft' : 'full_answers'
@@ -921,7 +1001,12 @@ export async function draftPRD(
     }
 
     /** Records how the member's attempt ended without a PRD draft, and returns what stands. */
-    const settleFailedMember = (error: unknown, step: PrdDraftSubstep, stoppedByPerson: boolean): PrdMemberResult => {
+    const settleFailedMember = (
+      error: unknown,
+      step: PrdDraftSubstep,
+      stoppedByPerson: boolean,
+      failureDiagnostics?: OpenCodeBlockedErrorDiagnosticsResult,
+    ): PrdMemberResult => {
       if (!stoppedByPerson && (signal?.aborted || error instanceof CancelledError || (isAbortError(error) && signal?.aborted))) {
         throw new CancelledError()
       }
@@ -929,6 +1014,7 @@ export async function draftPRD(
         stoppedByPerson,
         duration: Date.now() - memberStart,
         timeoutMs: options.draftTimeoutMs,
+        ...(failureDiagnostics ? { failureDiagnostics } : {}),
       })
       const sessionId = currentSession?.id ?? stepSessionId
       onStepEvent?.({
@@ -943,7 +1029,7 @@ export async function draftPRD(
       // A stop throws away everything the model did in this step, finished Part 1
       // answers included, so nothing of a stopped model reaches the vote or the
       // refinement. A later retry then redoes both parts.
-      if (stoppedByPerson) keptFullAnswers.delete(member.modelId)
+      if (stoppedByPerson) discardFullAnswers(member.modelId)
       const answers = fullAnswersResult && !stoppedByPerson ? fullAnswersResult : failed
       if (answers !== fullAnswersResult) {
         fullAnswersResult = answers
@@ -951,8 +1037,15 @@ export async function draftPRD(
         onFullAnswersProgress?.(toFinishedProgress(member.modelId, answers, step === 'full_answers' ? sessionId : undefined))
       }
 
-      const draft = prdResult ?? (step === 'full_answers'
+      const skippedPrdDraft = step === 'full_answers'
         ? buildSkippedPrdDraftAfterFullAnswers(member.modelId, failed.outcome)
+        : null
+      const draft = prdResult ?? (skippedPrdDraft
+        ? {
+            ...skippedPrdDraft,
+            ...(failed.blockedErrorDiagnostics !== undefined ? { blockedErrorDiagnostics: failed.blockedErrorDiagnostics } : {}),
+            ...(failed.blockedErrorCodes ? { blockedErrorCodes: [...failed.blockedErrorCodes] } : {}),
+          }
         : failed)
       if (!prdResult) {
         prdResult = draft
@@ -998,6 +1091,10 @@ export async function draftPRD(
           ],
         )
 
+        const retryNoteForFullAnswers = attempt.retryPart === 'prd_draft' ? undefined : attempt.retryNote
+        if (retryNoteForFullAnswers !== undefined) {
+          gapResolutionParts.push({ type: 'text', content: `## User Retry Note\n${attempt.retryNote}` })
+        }
         const fullAnswersStep = await executeStructuredStep(adapter, member, projectPath, gapResolutionParts, {
           step: 'full_answers',
           signal: memberSignal,
@@ -1031,7 +1128,10 @@ export async function draftPRD(
           }),
           onOpenCodeSessionLog,
           onOpenCodeStreamEvent,
-          onOpenCodePromptDispatched,
+          onOpenCodePromptDispatched: (entry) => {
+            if (options.ticketId && hasSessionRetryGuidance(options.ticketId, 'DRAFTING_PRD', entry.event.session.id, phaseAttempt)) phaseRetryNotesApplied.add('full_answers')
+            onOpenCodePromptDispatched?.(entry)
+          },
           onSessionCreated: (sessionId) => {
             noteSessionCreated(sessionId)
             onFullAnswersProgress?.({
@@ -1056,6 +1156,9 @@ export async function draftPRD(
           fullAnswersStep.normalizedResponse,
           fullAnswersStep.rawAttempts,
         )
+        if (retryNoteForFullAnswers !== undefined || phaseRetryNotesApplied.has('full_answers')) {
+          fullAnswersResult.steeredByOperator = true
+        }
         keptFullAnswers.set(member.modelId, { result: fullAnswersResult, resolvedInterviewContent })
         onFullAnswersProgress?.({
           memberId: member.modelId,
@@ -1120,6 +1223,13 @@ export async function draftPRD(
       }
 
       throwIfInterrupted()
+      if (options.ticketId && !kept) upsertLatestPhaseArtifact(options.ticketId, `prd_full_answers_checkpoint:${member.modelId}`, 'DRAFTING_PRD', JSON.stringify({
+        inputHash: fullAnswersInputHash,
+        memberId: member.modelId,
+        phaseAttempt,
+        content: resolvedInterviewContent,
+        steeredByOperator: fullAnswersResult?.steeredByOperator === true,
+      }), phaseAttempt)
       enterStep('prd_draft')
       onStepEvent?.({ memberId: member.modelId, step: 'prd_draft', status: 'started' })
       const prdPromptParts = buildPromptParts(
@@ -1130,6 +1240,12 @@ export async function draftPRD(
           fullAnswers: [resolvedInterviewContent],
         }),
       )
+      const retryNoteForPrdDraft = attempt.retryPart !== 'prd_draft' && !kept && shouldResolveGaps
+        ? undefined
+        : attempt.retryNote
+      if (retryNoteForPrdDraft !== undefined) {
+        prdPromptParts.push({ type: 'text', content: `## User Retry Note\n${attempt.retryNote}` })
+      }
 
       const prdStep = await executeStructuredStep(adapter, member, projectPath, prdPromptParts, {
         step: 'prd_draft',
@@ -1157,7 +1273,10 @@ export async function draftPRD(
         schemaReminder: PROM10b.outputFormat,
         onOpenCodeSessionLog,
         onOpenCodeStreamEvent,
-        onOpenCodePromptDispatched,
+        onOpenCodePromptDispatched: (entry) => {
+          if (options.ticketId && hasSessionRetryGuidance(options.ticketId, 'DRAFTING_PRD', entry.event.session.id, phaseAttempt)) phaseRetryNotesApplied.add('prd_draft')
+          onOpenCodePromptDispatched?.(entry)
+        },
         onSessionCreated: (sessionId) => {
           noteSessionCreated(sessionId)
           onDraftProgress?.({
@@ -1181,6 +1300,9 @@ export async function draftPRD(
         prdStep.normalizedResponse,
         prdStep.rawAttempts,
       )
+      if (retryNoteForPrdDraft !== undefined || phaseRetryNotesApplied.has('prd_draft') || fullAnswersResult?.steeredByOperator) {
+        prdResult.steeredByOperator = true
+      }
       onDraftProgress?.({
         memberId: member.modelId,
         status: 'finished',
@@ -1236,15 +1358,24 @@ export async function draftPRD(
         return settleFailedMember(error, fullAnswersResult ? 'prd_draft' : 'full_answers', true)
       }
 
-      if (currentSession) {
-        await stopPrdSession(adapter, sessionManager, currentSession.id, signal)
-      } else if (!signal?.aborted) {
-        // The step failed before handing its session back (structured retries
-        // ran out, or its time did). Each step's session stays open after its
-        // prompt, so stop the one it opened. A cancel stops every session itself.
-        await stopStepSession()
+      const failedSessionId = currentSession?.id ?? stepSessionId
+      const preserveForContinuation = !timedOut && !isPhaseDeadlineError(error) && shouldPreserveSessionForContinuation({
+        error, sessionId: failedSessionId, modelId: member.modelId,
+        sessionOwnership: options.ticketId ? { ticketId: options.ticketId, phase: 'DRAFTING_PRD' } : undefined,
+        signal: memberSignal,
+      })
+      const failureDiagnostics = failedSessionId
+        ? buildContinuationDiagnostics({ error, sessionId: failedSessionId, modelId: member.modelId })
+        : undefined
+      if (!preserveForContinuation) {
+        if (currentSession) {
+          await stopPrdSession(adapter, sessionManager, currentSession.id, signal)
+        } else if (!signal?.aborted) {
+          // The step failed before handing its session back. A cancel stops every session itself.
+          await stopStepSession()
+        }
       }
-      return settleFailedMember(error, fullAnswersResult ? 'prd_draft' : 'full_answers', false)
+      return settleFailedMember(error, fullAnswersResult ? 'prd_draft' : 'full_answers', false, failureDiagnostics)
     } finally {
       deadline.dispose()
       if (attemptBudget !== budget) attemptBudget.release()

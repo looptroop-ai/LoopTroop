@@ -1,3 +1,4 @@
+import { isBeadTargetFile } from '@shared/beadTargets'
 import type {
   BeadsRuntimeDiagnostics,
   ManualQaBeadOrigin,
@@ -169,6 +170,8 @@ function normalizeRuntimeBeads(value: unknown): TicketRuntime['beads'] {
       title: stringOrFallback(bead.title, 'Untitled'),
       status: stringOrFallback(bead.status, 'pending'),
       iteration: numberOrFallback(bead.iteration, 0),
+      externalTargetFiles: Array.isArray(bead.externalTargetFiles) ? bead.externalTargetFiles.filter(isBeadTargetFile) : [],
+      targetFiles: Array.isArray(bead.targetFiles) ? bead.targetFiles.filter(isBeadTargetFile) : [],
       failedIterationNotes: normalizeBeadNoteEntries(bead.failedIterationNotes),
       userRetryNotes: normalizeBeadNoteEntries(bead.userRetryNotes),
       finalizationFailureNotes: normalizeBeadNoteEntries(bead.finalizationFailureNotes),

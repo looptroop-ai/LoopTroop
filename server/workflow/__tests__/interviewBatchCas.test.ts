@@ -35,6 +35,7 @@ import {
   processInterviewBatchAsync,
   releaseInterviewBatch,
   restoreInterviewQASession,
+  readInterviewRetrySnapshot,
 } from '../phases/interviewPhase'
 import { abortTicketWork } from '../phases/state'
 
@@ -208,49 +209,58 @@ describe('interview batch durable CAS', () => {
     expect(listSkipEvents(ticket.id).some((event) => event.actionId === skipEvent?.actionId)).toBe(false)
   })
 
-  it('reactivates an abandoned PROM4 session when the remote session still exists', async () => {
-    const { ticket } = await seedInterviewBatch()
-    const context = getTicketContext(ticket.id)
-    expect(context).not.toBeNull()
-    context!.projectDb.insert(opencodeSessions).values({
-      sessionId: 'session-1',
-      ticketId: context!.localTicketId,
-      phase: 'WAITING_INTERVIEW_ANSWERS',
-      state: 'abandoned',
-    }).run()
-    interviewQASessions.delete(ticket.id)
-    const remoteSession = vi.spyOn(getOpenCodeAdapter(), 'getSession').mockResolvedValue({ id: 'session-1' })
-
-    await expect(restoreInterviewQASession(ticket.id)).resolves.toEqual({
-      sessionId: 'session-1',
-      winnerId: 'model-a',
-    })
-
-    expect(remoteSession).toHaveBeenCalledWith('session-1', undefined)
-    expect(listOpenCodeSessionsForTicket(ticket.id)).toEqual([
-      expect.objectContaining({ sessionId: 'session-1', state: 'active' }),
-    ])
-    expect(interviewQASessions.get(ticket.id)).toEqual({ sessionId: 'session-1', winnerId: 'model-a' })
+  it('keeps the submitted answers as the next AI retry input after restoring the visible batch', async () => {
+    const { ticket, original } = await seedInterviewBatch()
+    let rejectModel: ((error: Error) => void) | undefined
+    submitBatchToSessionMock.mockImplementation(() => new Promise<BatchResponse>((_, reject) => { rejectModel = reject }))
+    const { processing } = await startInterviewBatch(ticket.id, original)
+    rejectModel?.(new Error('Model failed'))
+    await expect(processing).rejects.toThrow('Model failed')
+    expect(readInterviewRetrySnapshot(ticket.id)?.answers.Q01?.answer).toBe('The first answer.')
+    const edited = JSON.parse(JSON.stringify(original)) as typeof original
+    edited.answers.Q01 = { answer: 'A newer user edit.', skipped: false, answeredAt: '2099-09-17T00:00:00.000Z', skippedAt: null, batchNumber: 1 }
+    upsertLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT, 'WAITING_INTERVIEW_ANSWERS', serializeInterviewSessionSnapshot(edited))
+    expect(readInterviewRetrySnapshot(ticket.id)?.answers.Q01?.answer).toBe('A newer user edit.')
+    expect(parseInterviewSessionSnapshot(getLatestPhaseArtifact(ticket.id, INTERVIEW_SESSION_ARTIFACT)?.content)?.currentBatch)
+      .toEqual(original.currentBatch)
   })
 
-  it('drops a cached PROM4 session when its abandoned remote session is gone', async () => {
+  it.each(['abandoned', 'completed'] as const)('does not reactivate a %s PROM4 session even when the remote still exists', async (state) => {
     const { ticket } = await seedInterviewBatch()
     const context = getTicketContext(ticket.id)
-    expect(context).not.toBeNull()
     context!.projectDb.insert(opencodeSessions).values({
       sessionId: 'session-1',
       ticketId: context!.localTicketId,
       phase: 'WAITING_INTERVIEW_ANSWERS',
-      state: 'abandoned',
+      state,
     }).run()
-    const remoteSession = vi.spyOn(getOpenCodeAdapter(), 'getSession').mockResolvedValue(null)
+    const remoteSession = vi.spyOn(getOpenCodeAdapter(), 'getSession').mockResolvedValue({ id: 'session-1' })
 
     await expect(restoreInterviewQASession(ticket.id)).resolves.toBeNull()
 
-    expect(remoteSession).toHaveBeenCalledWith('session-1', undefined)
+    expect(remoteSession).not.toHaveBeenCalled()
     expect(interviewQASessions.has(ticket.id)).toBe(false)
-    expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toEqual([
-      expect.objectContaining({ sessionId: 'session-1', state: 'abandoned' }),
+    expect(listOpenCodeSessionsForTicket(ticket.id, [state])).toEqual([
+      expect.objectContaining({ sessionId: 'session-1', state }),
+    ])
+  })
+
+  it('restores an active PROM4 session without changing its ownership', async () => {
+    const { ticket } = await seedInterviewBatch()
+    const context = getTicketContext(ticket.id)
+    context!.projectDb.insert(opencodeSessions).values({
+      sessionId: 'session-1',
+      ticketId: context!.localTicketId,
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      state: 'active',
+    }).run()
+    interviewQASessions.delete(ticket.id)
+
+    await expect(restoreInterviewQASession(ticket.id)).resolves.toEqual({
+      sessionId: 'session-1', winnerId: 'model-a',
+    })
+    expect(listOpenCodeSessionsForTicket(ticket.id)).toEqual([
+      expect.objectContaining({ sessionId: 'session-1', state: 'active' }),
     ])
   })
 

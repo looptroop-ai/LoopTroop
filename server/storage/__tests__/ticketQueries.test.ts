@@ -4,9 +4,10 @@ import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:
 import { join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
-import { createTicket, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
+import { createTicket, ensureActivePhaseAttempt, upsertLatestPhaseArtifact, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
 import { DISPLAY_ONLY_MOCK_BRANCH_NAME, resolveReviewCutoffStatus } from '../ticketQueries'
-import { questionWaits, ticketStatusHistory, tickets } from '../../db/schema'
+import { opencodeSessions, questionWaits, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../../db/schema'
+import { canRetryWithExtraNote } from '../../workflow/retryNotes'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
 
 const runtimeRepoManager = createTestRepoManager('ticket-runtime-qa-origin-')
@@ -34,6 +35,73 @@ describe('runtime Manual QA bead origin projection', () => {
   afterAll(() => {
     resetTestDb()
     runtimeRepoManager.cleanup()
+  })
+
+  it.each([
+    { phase: 'REFINING_PRD', codes: [], diagnostics: null, allowed: true },
+    { phase: 'CREATING_PULL_REQUEST', codes: ['PULL_REQUEST_FAILED'], diagnostics: { kind: 'runtime', source: 'system', summary: 'Push failed' }, allowed: false },
+    { phase: 'CREATING_PULL_REQUEST', codes: ['PULL_REQUEST_FAILED'], diagnostics: { kind: 'transport', source: 'opencode', summary: 'Prompt failed', sessionId: 'ses-pr-failed' }, allowed: true },
+    { phase: 'PRE_FLIGHT_CHECK', codes: [], diagnostics: { kind: 'runtime', source: 'system', summary: 'Git unavailable' }, allowed: false },
+    { phase: 'WAITING_MANUAL_QA', codes: ['MANUAL_QA_FIX_BEADS_FAILED'], diagnostics: null, allowed: true },
+    { phase: 'WAITING_MANUAL_QA', codes: [], diagnostics: null, allowed: false },
+    { phase: 'CODING', codes: ['BEAD_FINALIZATION_FAILED'], diagnostics: null, allowed: false },
+  ])('advertises the same note capability enforced by the route for $phase ($allowed)', async ({ phase, codes, diagnostics, allowed }) => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'AI retry capability' })
+    const context = getTicketContext(setup.ticket.id)!
+    const failedSessionId = diagnostics && 'sessionId' in diagnostics ? diagnostics.sessionId : undefined
+    if (phase === 'CREATING_PULL_REQUEST' && failedSessionId) {
+      ensureActivePhaseAttempt(setup.ticket.id, phase)
+      context.projectDb.insert(opencodeSessions).values({
+        ticketId: context.localTicketId,
+        sessionId: failedSessionId,
+        phase,
+        phaseAttempt: 1,
+        step: 'pull_request_draft',
+        state: 'abandoned',
+      }).run()
+    }
+    context.projectDb.update(tickets).set({
+      status: 'BLOCKED_ERROR',
+      xstateSnapshot: JSON.stringify({ context: { previousStatus: phase } }),
+    }).where(eq(tickets.id, context.localTicketId)).run()
+    context.projectDb.insert(ticketErrorOccurrences).values({
+      ticketId: context.localTicketId,
+      occurrenceNumber: 1,
+      blockedFromStatus: phase,
+      errorCodes: JSON.stringify(codes),
+      diagnosticDetails: diagnostics ? JSON.stringify(diagnostics) : null,
+    }).run()
+    expect(getTicketByRef(setup.ticket.id)!.availableActions.includes('retry_with_note')).toBe(allowed)
+    expect(canRetryWithExtraNote(setup.ticket.id, phase)).toBe(allowed)
+  })
+
+  it('hides note retries when a current successful coding result only needs finalization', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Successful coding checkpoint' })
+    const context = getTicketContext(setup.ticket.id)
+    if (!context) throw new Error('Ticket storage missing')
+    const bead = {
+      id: 'B1', title: 'Completed implementation', status: 'error', iteration: 2,
+      startedAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:01:00.000Z',
+      beadStartCommit: 'abc123',
+    }
+    writeJsonl(setup.paths.beadsPath, [bead])
+    upsertLatestPhaseArtifact(setup.ticket.id, 'bead_execution:B1', 'CODING', JSON.stringify({
+      beadId: 'B1', success: true, iteration: 2, output: 'Done', errors: [],
+      checkpoint: { beadId: 'B1', iteration: 2, startedAt: bead.startedAt, updatedAt: bead.updatedAt, beadStartCommit: bead.beadStartCommit },
+    }))
+    context.projectDb.update(tickets).set({
+      status: 'BLOCKED_ERROR', xstateSnapshot: JSON.stringify({ context: { previousStatus: 'CODING' } }),
+    }).where(eq(tickets.id, context.localTicketId)).run()
+    context.projectDb.insert(ticketErrorOccurrences).values({
+      ticketId: context.localTicketId, occurrenceNumber: 1, blockedFromStatus: 'CODING',
+      errorCodes: '["CODING_FAILED"]',
+    }).run()
+    expect(getTicketByRef(setup.ticket.id)?.availableActions).not.toContain('retry_with_note')
+    expect(canRetryWithExtraNote(setup.ticket.id, 'CODING')).toBe(false)
+
+    writeJsonl(setup.paths.beadsPath, [{ ...bead, iteration: 3 }])
+    expect(getTicketByRef(setup.ticket.id)?.availableActions).toContain('retry_with_note')
+    expect(canRetryWithExtraNote(setup.ticket.id, 'CODING')).toBe(true)
   })
 
   it.each(['PREPARING_EXECUTION_ENV', 'WAITING_EXECUTION_SETUP_APPROVAL', 'CODING'])(
@@ -174,7 +242,7 @@ describe('runtime Manual QA bead origin projection', () => {
       imageDelivery: 'attached',
     }
     writeJsonl(setup.paths.beadsPath, [
-      { id: 'qa-fix-valid', title: 'Fix deletion', status: 'pending', iteration: 1, qaOrigin: origin },
+      { id: 'qa-fix-valid', title: 'Fix deletion', targetFiles: ['/outside/settings.json', 'src/local.json'], status: 'pending', iteration: 1, qaOrigin: origin },
       {
         id: 'qa-fix-unsafe-link',
         title: 'Reject unsafe origin',
@@ -188,6 +256,7 @@ describe('runtime Manual QA bead origin projection', () => {
     ])
 
     const runtimeBeads = getTicketByRef(setup.ticket.id)?.runtime.beads
+    expect(runtimeBeads?.[0]?.targetFiles).toEqual(['/outside/settings.json', 'src/local.json'])
     expect(runtimeBeads?.[0]?.qaOrigin).toEqual(origin)
     expect(runtimeBeads?.[1]?.qaOrigin).toBeNull()
   })

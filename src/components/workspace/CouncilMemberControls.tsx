@@ -1,4 +1,4 @@
-import { LoaderCircle, RotateCcw, Square, type LucideIcon } from 'lucide-react'
+import { LoaderCircle, MessageSquarePlus, RotateCcw, Square, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
@@ -15,13 +15,15 @@ import {
 // RotateCcw rather than RefreshCw: the spinning RefreshCw already means "refining".
 // The hints stay general: what a stop or retry does here depends on the round,
 // and the confirmation says it.
-const ACTIONS: Record<CouncilMemberControlAction, { label: string; hint: string; Icon: LucideIcon }> = {
+type CouncilMemberButtonAction = CouncilMemberControlAction | 'retry_with_note'
+const ACTIONS: Record<CouncilMemberButtonAction, { label: string; hint: string; Icon: LucideIcon }> = {
   stop: { label: 'Stop', hint: 'Stop this model.', Icon: Square },
   retry: { label: 'Retry', hint: 'Run this model again.', Icon: RotateCcw },
+  retry_with_note: { label: 'Retry with extra note', hint: 'Restart this model with your guidance in a new session.', Icon: MessageSquarePlus },
 }
 
 export function CouncilMemberControlButton({ action, memberId, onClick, disabled, iconOnly = false }: {
-  action: CouncilMemberControlAction
+  action: CouncilMemberButtonAction
   memberId: string
   onClick: () => void
   disabled?: boolean
@@ -76,6 +78,23 @@ export function CouncilMemberConfirmStrip({ confirmation, control }: {
           <span className="text-muted-foreground">{copy.consequence}</span>
         </p>
         {copy.warning ? <p className="text-amber-700 dark:text-amber-400">{copy.warning}</p> : null}
+        {request.action === 'retry' && request.note !== undefined ? (
+          <div className="space-y-1">
+            <p className="text-muted-foreground">This model starts a new session with the saved inputs and your note unchanged. Other council models keep their work.</p>
+            <label className="block space-y-1">
+              <span>Extra note</span>
+              <textarea
+                value={request.note}
+                onChange={(event) => confirmation.updateNote(event.target.value.slice(0, 20_000))}
+                maxLength={20_000}
+                required
+                disabled={confirmation.isPending}
+                className="block min-h-24 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-xs disabled:opacity-50"
+              />
+            </label>
+            <p className="text-right text-muted-foreground">{request.note.length.toLocaleString()} / 20,000 characters</p>
+          </div>
+        ) : null}
         {error ? <p role="alert" className="text-destructive">{error}</p> : null}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" size="sm" className="h-7" disabled={confirmation.isPending} onClick={confirmation.cancel}>
@@ -86,11 +105,11 @@ export function CouncilMemberConfirmStrip({ confirmation, control }: {
             variant={copy.destructive ? 'destructive' : 'default'}
             size="sm"
             className="h-7"
-            disabled={confirmation.isPending}
+            disabled={confirmation.isPending || (request.note !== undefined && !request.note.trim())}
             onClick={confirmation.confirm}
           >
             {confirmation.isPending ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : null}
-            {copy.confirmLabel}
+            {request.note !== undefined ? 'Add note and retry model' : copy.confirmLabel}
           </Button>
         </div>
       </div>
@@ -136,6 +155,13 @@ export function CouncilMemberDialogControls({ scope, control }: {
             memberId={control.memberId}
             disabled={confirmation.isPending}
             onClick={() => confirmation.open({ action: 'retry', memberId: control.memberId, part: control.part })}
+          />
+          <CouncilMemberControlButton
+            iconOnly
+            action="retry_with_note"
+            memberId={control.memberId}
+            disabled={confirmation.isPending}
+            onClick={() => confirmation.open({ action: 'retry', memberId: control.memberId, part: control.part, note: '' })}
           />
         </div>
       ) : null}

@@ -25,6 +25,7 @@ import {
   attachOpenCodeBlockedErrorDiagnostics,
   buildOutputTruncatedBlockedErrorDiagnostics,
 } from '../../opencode/blockedErrorDiagnostics'
+import { isContinuableBlockedError } from '../../opencode/sessionContinuation'
 import { persistUiArtifactCompanionArtifact } from '../artifactCompanions'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
@@ -70,12 +71,26 @@ type StructuredFailureDiagnosticSource = {
   outcome?: MemberOutcome
   structuredOutput?: DraftStructuredOutputMeta
   rawAttempts?: RawAttempt[]
+  blockedErrorDiagnostics?: DraftResult['blockedErrorDiagnostics']
+  blockedErrorCodes?: string[]
 }
 
 export function buildCouncilQuorumErrorWithDiagnostics(
   message: string,
   sources: StructuredFailureDiagnosticSource[],
 ): Error {
+  const continuableSource = sources.find((source) => source.outcome !== 'completed'
+    && isContinuableBlockedError({
+      diagnostics: source.blockedErrorDiagnostics,
+      errorCodes: source.blockedErrorCodes,
+    }))
+  if (continuableSource?.blockedErrorDiagnostics) {
+    return attachOpenCodeBlockedErrorDiagnostics(new Error(message), {
+      diagnostics: continuableSource.blockedErrorDiagnostics,
+      errorCodes: continuableSource.blockedErrorCodes ?? [],
+    })
+  }
+
   const truncatedSource = sources.find((source) =>
     source.outcome !== 'completed'
     && (
@@ -83,13 +98,19 @@ export function buildCouncilQuorumErrorWithDiagnostics(
       || source.rawAttempts?.some((attempt) => attempt.failureClass === 'output_truncated')
     ),
   )
-  if (!truncatedSource) return new Error(message)
+  if (!truncatedSource) {
+    const failedSource = sources.find(source => source.outcome !== 'completed' && source.outcome !== 'stopped' && source.blockedErrorDiagnostics)
+    return failedSource?.blockedErrorDiagnostics
+      ? attachOpenCodeBlockedErrorDiagnostics(new Error(message), { diagnostics: failedSource.blockedErrorDiagnostics, errorCodes: failedSource.blockedErrorCodes ?? [] })
+      : new Error(message)
+  }
   const modelId = truncatedSource.memberId ?? truncatedSource.voterId
 
   return attachOpenCodeBlockedErrorDiagnostics(
     new Error(message),
     buildOutputTruncatedBlockedErrorDiagnostics({
       ...(modelId ? { modelId } : {}),
+      sessionId: truncatedSource.blockedErrorDiagnostics?.sessionId,
     }),
   )
 }

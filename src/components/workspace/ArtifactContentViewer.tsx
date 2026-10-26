@@ -39,6 +39,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/comp
 import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/interviewDocument'
 import { renderWordDiffSegments } from './diffWordHighlights'
 import { InterviewDocumentView } from './InterviewDocumentView'
+import { ExternalFilesBadge } from './ExternalFilesBadge'
 import {
   getCouncilStatusLabel,
   readCouncilRoundMeta,
@@ -1776,6 +1777,7 @@ function ExpandedPlanDiffView({ content, initialPlanBeads, initialExpandedBeads 
         const title = getBeadStringValue(expandedBead, 'title') || getBeadStringValue(planBead ?? {}, 'title') || `Bead ${index + 1}`
         const planId = getBeadStringValue(planBead ?? {}, 'id')
         const expandedId = getBeadStringValue(expandedBead, 'id')
+        const targetFiles = getBeadStringArray(expandedBead, 'targetFiles')
         const groups = buildExpansionAddedGroups(planBead, expandedBead, index)
 
         return (
@@ -1788,6 +1790,7 @@ function ExpandedPlanDiffView({ content, initialPlanBeads, initialExpandedBeads 
                   #{index + 1}
                 </span>
                 <span className="min-w-0 truncate">{title}</span>
+                <ExternalFilesBadge targetFiles={targetFiles} />
                 {planId && expandedId && planId !== expandedId ? (
                   <span className="font-mono text-[10px] text-muted-foreground">{planId} -&gt; {expandedId}</span>
                 ) : null}
@@ -2024,6 +2027,9 @@ export function BeadsDraftView({ content, parsedBeads }: { content: string; pars
             const title = getBeadStringValue(bead, 'title') || `Bead ${index + 1}`
             const issueType = getBeadStringValue(bead, 'issueType')
             const externalRef = getBeadStringValue(bead, 'externalRef')
+            const externalTargetFiles = Array.isArray(bead.externalTargetFiles)
+              ? bead.externalTargetFiles.filter((file): file is string => typeof file === 'string')
+              : []
             const notes = getBeadStringValue(bead, 'notes')
             const iteration = getBeadNumberValue(bead, 'iteration')
             const createdAt = getBeadStringValue(bead, 'createdAt')
@@ -2050,6 +2056,7 @@ export function BeadsDraftView({ content, parsedBeads }: { content: string; pars
                       #{order}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{title}</span>
+                    <ExternalFilesBadge targetFiles={targetFiles} externalTargetFiles={externalTargetFiles} />
                     {qaOrigin && <ManualQaOriginBadge origin={qaOrigin} />}
                   </span>
                 )}
@@ -2327,6 +2334,13 @@ function LiveVoterStatusBadges({ scope, voters, minQuorum, roundOpen }: {
                 memberId={voterId}
                 disabled={confirmation.isPending}
                 onClick={() => confirmation.open({ action: 'retry', memberId: voterId })}
+              />
+              <CouncilMemberControlButton
+                iconOnly
+                action="retry_with_note"
+                memberId={voterId}
+                disabled={confirmation.isPending}
+                onClick={() => confirmation.open({ action: 'retry', memberId: voterId, note: '' })}
               />
             </div>
           )

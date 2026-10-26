@@ -154,7 +154,12 @@ export type TicketEvent =
   | { type: "APPROVE_EXECUTION_SETUP_PLAN" }
   | { type: "EXECUTION_SETUP_EVIDENCE_CHANGED" }
   | { type: "EXECUTION_SETUP_READY" }
-  | { type: "EXECUTION_SETUP_FAILED"; errors?: string[] }
+  | {
+      type: "EXECUTION_SETUP_FAILED";
+      errors?: string[];
+      codes?: string[];
+      diagnostics?: BlockedErrorDiagnostics | null;
+    }
   | {
       type: "CHECKS_FAILED";
       errors: string[];
@@ -176,6 +181,7 @@ export type TicketEvent =
   | { type: "MANUAL_QA_SKIPPED" }
   | { type: "MANUAL_QA_FIXES_CREATED" }
   | { type: "INTEGRATION_DONE" }
+  | { type: "INTEGRATION_NO_CHANGES" }
   | { type: "PULL_REQUEST_READY" }
   | { type: "EARLY_MERGE_CORRECTION_READY" }
   | { type: "MERGE_COMPLETE" }

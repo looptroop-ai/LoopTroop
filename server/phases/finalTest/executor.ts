@@ -169,7 +169,7 @@ export async function executeFinalTestWithRetries(
         variant: options.variant,
         timeoutMs: options.aiResponseTimeoutMs ?? options.timeoutMs,
         structuredRetryCount: options.structuredRetryCount,
-        phaseAttempt: attempt,
+        iteration: attempt,
         onSessionCreated: (sessionId) => {
           callbacks.onSessionCreated?.(sessionId, attempt)
         },

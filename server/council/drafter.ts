@@ -1,3 +1,4 @@
+import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import type { OpenCodeAdapter } from '../opencode/adapter'
 import type {
   CouncilMember,
@@ -27,7 +28,8 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { COUNCIL_MEMBER_STOPPED_ERROR } from '@shared/councilMembers'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
-import { shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+import { buildContinuationDiagnostics, shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
+import { hasSessionRetryGuidance } from '../workflow/retryNotes'
 import { stopCutShortCouncilSession } from './sessionStop'
 import { CouncilMemberInterruptedError, openCouncilRound, type CouncilMemberAttempt } from './memberControl'
 
@@ -115,7 +117,7 @@ export async function generateDrafts(
     ? {
         ticketId: runtimeOptions.ticketId,
         phase: runtimeOptions.phase,
-        phaseAttempt: runtimeOptions.phaseAttempt ?? 1,
+        phaseAttempt: resolvePhaseAttempt(runtimeOptions.ticketId, runtimeOptions.phase, runtimeOptions.phaseAttempt),
       }
     : null
   const sessionManager = ownershipScope ? new SessionManager(adapter) : null
@@ -179,6 +181,7 @@ export async function generateDrafts(
     let attemptCount = 0
     let closed = false
     let promptReturned = false
+    let phaseRetryNoteApplied = false
     const memberAbortController = new AbortController()
     const memberSignal = AbortSignal.any([
       ...(signal ? [signal] : []),
@@ -228,8 +231,11 @@ export async function generateDrafts(
 
     const executeDraft = (async (): Promise<DraftResult> => {
       if (signal?.aborted) throw new CancelledError()
-      let promptParts = contextParts
-      const initialInput = formatPromptText(contextParts)
+      const memberContextParts: PromptPart[] = attempt.retryNote === undefined
+        ? contextParts
+        : [...contextParts, { type: 'text', content: `## User Retry Note\n${attempt.retryNote}` }]
+      let promptParts = memberContextParts
+      const initialInput = formatPromptText(memberContextParts)
       let result: Awaited<ReturnType<typeof runOpenCodePrompt>> | undefined
       const maxStructuredRetries = normalizeStructuredRetryCount(runtimeOptions?.maxStructuredRetries)
 
@@ -283,6 +289,7 @@ export async function generateDrafts(
           },
           onPromptDispatched: (event) => {
             if (closed) return
+            if (ownershipScope && hasSessionRetryGuidance(ownershipScope.ticketId, ownershipScope.phase, event.session.id, ownershipScope.phaseAttempt)) phaseRetryNoteApplied = true
             runtimeOptions?.onPromptDispatched?.({
               stage: 'draft',
               memberId: member.modelId,
@@ -351,12 +358,12 @@ export async function generateDrafts(
           }
           attemptCount += 1
           promptParts = retryDecision.useStructuredRetryPrompt
-            ? buildStructuredRetryPrompt(contextParts, {
+            ? buildStructuredRetryPrompt(memberContextParts, {
                 validationError,
                 rawResponse: content,
                 schemaReminder: runtimeOptions?.structuredRetrySchemaReminder,
               })
-            : contextParts
+            : memberContextParts
         }
       }
 
@@ -368,10 +375,10 @@ export async function generateDrafts(
         })
       }
 
-      const steeredByOperator = wasMemberAnswered(
+      const steeredByOperator = attempt.retryNote !== undefined || phaseRetryNoteApplied || wasMemberAnswered(
         runtimeOptions?.ticketId,
         runtimeOptions?.phase,
-        runtimeOptions?.phaseAttempt ?? 1,
+        ownershipScope?.phaseAttempt ?? 1,
         member.modelId,
       )
 
@@ -457,24 +464,7 @@ export async function generateDrafts(
       }
 
       const duration = Date.now() - startTime
-      if (isPhaseDeadlineError(err) || isAiResponseTimeoutError(err) || closed) {
-        const stopped = await ensureSessionStopped()
-        if (!stopped) throw unconfirmedDraftStopError(sessionId)
-        return {
-          draft: {
-            memberId: member.modelId,
-            content: '',
-            outcome: 'timed_out',
-            duration: timeout,
-            error: `AI response timeout reached after ${timeout}ms`,
-            structuredOutput: buildStructuredOutput(),
-            ...buildEvidence(),
-          },
-          sessionId,
-        }
-      }
-
-      const preserveForContinuation = sessionId && ownershipScope
+      const preserveForContinuation = !closed && !isPhaseDeadlineError(err) && sessionId && ownershipScope
         ? shouldPreserveSessionForContinuation({
             error: err,
             sessionId,
@@ -486,6 +476,31 @@ export async function generateDrafts(
             signal: memberSignal,
           })
         : false
+      const continuationDiagnostics = preserveForContinuation && sessionId
+        ? buildContinuationDiagnostics({ error: err, sessionId, modelId: member.modelId })
+        : null
+      if (isPhaseDeadlineError(err) || isAiResponseTimeoutError(err) || closed) {
+        if (!preserveForContinuation) {
+          const stopped = await ensureSessionStopped()
+          if (!stopped) throw unconfirmedDraftStopError(sessionId)
+        }
+        return {
+          draft: {
+            memberId: member.modelId,
+            content: '',
+            outcome: 'timed_out',
+            duration: timeout,
+            error: `AI response timeout reached after ${timeout}ms`,
+            structuredOutput: buildStructuredOutput(),
+            ...buildEvidence(),
+            ...(continuationDiagnostics ? {
+              blockedErrorDiagnostics: continuationDiagnostics.diagnostics,
+              blockedErrorCodes: continuationDiagnostics.errorCodes,
+            } : {}),
+          },
+          sessionId,
+        }
+      }
       if (!preserveForContinuation) {
         const stopped = await ensureSessionStopped()
         if (!stopped) throw unconfirmedDraftStopError(sessionId)
@@ -514,6 +529,10 @@ export async function generateDrafts(
               : undefined
           ),
           ...buildEvidence(),
+          ...(continuationDiagnostics ? {
+            blockedErrorDiagnostics: continuationDiagnostics.diagnostics,
+            blockedErrorCodes: continuationDiagnostics.errorCodes,
+          } : {}),
         },
         sessionId,
       }

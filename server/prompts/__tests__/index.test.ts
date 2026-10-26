@@ -476,9 +476,10 @@ describe.concurrent('structured prompt hardening', () => {
     expect(expandPrompt).toContain('Do not edit files, run commands, or change the repository')
   })
 
-  it('requires Manual QA fix-bead generation to inspect the repository and return every full candidate', () => {
+  it('requires focused read-only Manual QA inspection and returns every full candidate', () => {
     const prompt = buildPromptFromTemplate(PROM_MANUAL_QA_FIX_BEADS, [])
-    expect(prompt).toContain('at least one successful focused read-only repository tool call')
+    expect(prompt).toContain('at least one successful focused read-only inspection')
+    expect(prompt).toContain('Relevant files outside the worktree may be inspected')
     expect(prompt).toContain('exactly one candidate for every supplied merge-group ID')
     expect(prompt).toContain('acceptance criteria, automated test scenarios, appropriate verification command guidance')
     expect(prompt).toContain('Detailed tests and acceptance criteria do not each require a matching command')

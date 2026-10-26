@@ -3,7 +3,8 @@ import { useLogs } from '@/context/useLogContext'
 import { getLogEntryIdentity, mergeEntriesBatch, type LogEntry } from '@/context/logUtils'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M, QUERY_STALE_TIME_5S, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
-import { CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
+import { isBeadTargetFile, isExternalTargetFile } from '@shared/beadTargets'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { CodingProgressHeader } from './CodingProgressHeader'
@@ -41,6 +42,7 @@ import { stripAnsiSequences } from '@shared/ansi'
 import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
+import { ExternalFilesBadge } from './ExternalFilesBadge'
 
 interface CodingViewProps {
   ticket: Ticket
@@ -63,6 +65,7 @@ interface TicketBead {
   testCommands: CommandSpec[]
   testCommandReason?: string
   targetFiles: string[]
+  externalTargetFiles?: string[]
   contextGuidance: { patterns: string[]; anti_patterns: string[] }
   dependencies: { blocked_by: string[]; blocks: string[] }
   failedIterationNotes: BeadNoteEntry[]
@@ -232,6 +235,7 @@ function normalizeBead(input: {
   testCommands?: CommandSpec[]
   testCommandReason?: string
   targetFiles?: string[]
+  externalTargetFiles?: string[]
   contextGuidance?: { patterns?: string[]; anti_patterns?: string[] }
   dependencies?: { blocked_by?: string[]; blocks?: string[] }
   failedIterationNotes?: BeadNoteEntry[]
@@ -279,7 +283,8 @@ function normalizeBead(input: {
     tests: input.tests ?? [],
     testCommands: input.testCommands ?? [],
     ...(input.testCommandReason ? { testCommandReason: input.testCommandReason } : {}),
-    targetFiles: Array.isArray(input.targetFiles) ? input.targetFiles : [],
+    externalTargetFiles: Array.isArray(input.externalTargetFiles) ? input.externalTargetFiles.filter(isBeadTargetFile) : [],
+    targetFiles: Array.isArray(input.targetFiles) ? input.targetFiles.filter(isBeadTargetFile) : [],
     contextGuidance,
     dependencies,
     failedIterationNotes: normalizeNoteEntries(input.failedIterationNotes),
@@ -366,6 +371,7 @@ async function fetchTicketBeads(ticketId: string, signal?: AbortSignal): Promise
           testCommands?: CommandSpec[]
           testCommandReason?: string
           targetFiles?: string[]
+          externalTargetFiles?: string[]
           contextGuidance?: { patterns?: string[]; anti_patterns?: string[] }
           dependencies?: { blocked_by?: string[]; blocks?: string[] }
           failedIterationNotes?: BeadNoteEntry[]
@@ -1000,6 +1006,7 @@ function BeadGrid({
   onSelect: (id: string | null) => void
 }) {
   const compact = beads.length > COMPACT_THRESHOLD
+  const hasExternalTargets = (bead: TicketBead) => bead.targetFiles.some(file => isExternalTargetFile(file) || bead.externalTargetFiles?.includes(file))
 
   if (compact) {
     return (
@@ -1012,6 +1019,7 @@ function BeadGrid({
               <TooltipTrigger asChild>
                 <button
                           onClick={() => onSelect(viewingBeadId === bead.id ? null : bead.id)}
+                          aria-label={hasExternalTargets(bead) ? `Bead ${index + 1}: ${bead.title}, external files` : undefined}
                           className={cn(
                             'h-7 w-full rounded text-[10px] font-mono font-medium transition-colors',
                             bead.status === 'completed' || bead.status === 'skipped'
@@ -1025,9 +1033,10 @@ function BeadGrid({
                           )}
                         >
                           {index + 1}
+                          {hasExternalTargets(bead) && <AlertTriangle aria-hidden="true" className="ml-0.5 inline h-2.5 w-2.5 text-amber-700 dark:text-amber-300" />}
                         </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-xs text-center text-balance">{`#${index + 1}: ${bead.title}${bead.iteration > 0 ? ` (${bead.iteration}x)` : ''}`}</TooltipContent>
+              <TooltipContent className="max-w-xs text-center text-balance">{`#${index + 1}: ${bead.title}${bead.iteration > 0 ? ` (${bead.iteration}x)` : ''}${hasExternalTargets(bead) ? ' · External files' : ''}`}</TooltipContent>
             </Tooltip>
         ))}
       </div>
@@ -1052,6 +1061,7 @@ function BeadGrid({
                     >
                       {statusIcon(bead.status)}
                       <span>{bead.title || `Bead ${index + 1}`}</span>
+                      <ExternalFilesBadge targetFiles={bead.targetFiles} externalTargetFiles={bead.externalTargetFiles} />
                       {bead.qaOrigin && <Badge variant="secondary" className="h-4 px-1 text-[9px]">Manual QA Fix</Badge>}
                       {bead.iteration > 0 && (
                         <Badge variant="outline" className="text-[10px] h-4 px-1">
@@ -1670,6 +1680,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                     <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-[10px]">{viewedBead.id}</code>
+                    <ExternalFilesBadge targetFiles={viewedBead.targetFiles} externalTargetFiles={viewedBead.externalTargetFiles} />
                     {viewedBead.priority > 0 && (
                       <span className="flex items-center gap-0.5">
                         <span className="font-medium text-foreground">#{viewedBead.priority}</span> priority

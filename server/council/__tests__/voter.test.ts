@@ -3,7 +3,7 @@ import { MockOpenCodeAdapter } from '../../opencode/adapter'
 import { SILENT_DISABLED_PERMISSIONS } from '../../opencode/toolPolicy'
 import type { CouncilMember, DraftResult } from '../types'
 import { VOTING_RUBRIC_BEADS, VOTING_RUBRIC_INTERVIEW, VOTING_RUBRIC_PRD } from '../types'
-import { conductVoting } from '../voter'
+import { buildVotePresentationOrder, conductVoting } from '../voter'
 import type { PromptPart } from '../../opencode/types'
 
 function stalledPrompt(signal?: AbortSignal): Promise<string> {
@@ -17,6 +17,21 @@ function stalledPrompt(signal?: AbortSignal): Promise<string> {
 }
 
 describe('conductVoting', () => {
+  it('identifies operator-guided drafts anonymously for voters', () => {
+    const drafts: DraftResult[] = [
+      { memberId: 'guided-model', content: 'A guided draft.', outcome: 'completed', duration: 1, steeredByOperator: true },
+      { memberId: 'other-model', content: 'An independent draft.', outcome: 'completed', duration: 1 },
+    ]
+
+    const presented = buildVotePresentationOrder(drafts, 'repeatable-order')
+    const guided = presented.find((draft) => draft.draftId === 'guided-model')
+    const other = presented.find((draft) => draft.draftId === 'other-model')
+    expect(guided?.content).toContain('received additional operator guidance')
+    expect(guided?.content).not.toContain('guided-model')
+    expect(guided?.content).not.toContain('asked the operator a question')
+    expect(other?.content).not.toContain('operator guidance')
+  })
+
   const cases = [
     { phase: 'interview_draft', rubric: VOTING_RUBRIC_INTERVIEW },
     { phase: 'prd_draft', rubric: VOTING_RUBRIC_PRD },

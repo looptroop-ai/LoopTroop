@@ -329,7 +329,7 @@ function explainBlockedError(
   const codes = new Set(errorCodes);
   const canRetry = availableActions.includes("retry");
   const canContinue = availableActions.includes("continue");
-  const canRetryWithNote = blockedFromStatus === "CODING" && canRetry;
+  const canRetryWithNote = canRetry && availableActions.includes("retry_with_note");
   const retryRecommendation = canRetryWithNote
     ? "Retry with an extra note that clarifies the approach or the remaining problem."
     : canRetry
@@ -931,9 +931,8 @@ export function ErrorView({
   const canCancel = isLiveError && ticket.availableActions.includes("cancel");
   const canRetryWithNote =
     isLiveError &&
-    (visibleOccurrence?.blockedFromStatus === "CODING" ||
-      visibleOccurrence?.blockedFromStatus === "PREPARING_EXECUTION_ENV") &&
-    ticket.availableActions.includes("retry");
+    canRetry &&
+    ticket.availableActions.includes("retry_with_note");
   const canEditExecutionSetupPlan =
     isSetupRuntimeError &&
     visibleOccurrence?.blockedFromStatus === "PREPARING_EXECUTION_ENV" &&
@@ -971,7 +970,7 @@ export function ErrorView({
     diagnosticSummary.length > 0 &&
     normalizedPrimaryError.length > 0 &&
     !normalizedPrimaryError.includes(normalizedDiagnosticSummary);
-  const handleAction = (action: WorkflowAction) => {
+  const handleAction = (action: 'retry' | 'continue') => {
     setActionError(null);
     performAction(
       { id: ticket.id, action },
@@ -1216,6 +1215,11 @@ export function ErrorView({
                       interruption clears.
                     </p>
                   )}
+                  {canRetryWithNote && (
+                    <p className="text-right text-[11px] leading-snug text-muted-foreground">
+                      Retry starts the failed AI step in a new session using its saved inputs.
+                    </p>
+                  )}
                 </div>
               )}
               {isLiveCodingError && <LiveCodingBeadContext ticket={ticket} />}
@@ -1249,12 +1253,12 @@ export function ErrorView({
             <DialogTitle>
               {isSetupRuntimeError
                 ? "Retry workspace setup with an extra note"
-                : "Retry implementation with an extra note"}
+                : isLiveCodingError
+                  ? "Retry implementation with an extra note"
+                  : "Retry with an extra note"}
             </DialogTitle>
             <DialogDescription id="retry-note-description">
-              {isSetupRuntimeError
-                ? "Send guidance to the current workspace setup session. LoopTroop sends only this note and runs one extra attempt beyond the configured retry limit."
-                : "Add guidance for the next fresh implementation attempt. The note will be appended to User Retry Notes; nothing already there will be replaced."}
+              Add guidance for a fresh attempt of this AI step. LoopTroop stops the old session and starts a new one with the saved inputs and your note unchanged. Completed earlier work is preserved.
             </DialogDescription>
           </DialogHeader>
           <form

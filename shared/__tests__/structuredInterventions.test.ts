@@ -412,6 +412,16 @@ describe('cleanup interventions', () => {
     expectIntervention(i, { code: 'cleanup_context_guidance', stage: 'normalize', category: 'cleanup' })
   })
 
+  it('shows the affected bead and exact single-path list correction', () => {
+    const before = JSON.stringify('C:/Users/Example/config.json')
+    const after = JSON.stringify(['C:/Users/Example/config.json'])
+    const i = deriveOne(`Wrapped the single targetFiles path at bead index 2 in a list: ${before} -> ${after}.`)
+    expectIntervention(i, { code: 'cleanup_target_files_list', stage: 'normalize', category: 'cleanup' })
+    expect(i.target).toBe('beads[2].targetFiles')
+    expect(i.exactCorrection).toContain('without inventing or redirecting')
+    expect(i.examples).toEqual([{ scope: 'beads[2].targetFiles', before, after }])
+  })
+
   it('maps inline context guidance canonicalization', () => {
     const i = deriveOne('Canonicalized inline string context guidance at index 1 into patterns/anti_patterns object.')
     expectIntervention(i, { code: 'cleanup_context_guidance', stage: 'normalize', category: 'cleanup' })

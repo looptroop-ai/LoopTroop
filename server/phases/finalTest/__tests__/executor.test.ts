@@ -92,9 +92,10 @@ describe('executeFinalTestWithRetries', () => {
     expect(generatePlan).toHaveBeenCalledTimes(1)
     expect(generatePlan.mock.calls[0]?.[4]).toMatchObject({
       timeoutMs: 1234,
-      phaseAttempt: 1,
+      iteration: 1,
       model: 'test-vendor/test-implementer',
     })
+    expect(generatePlan.mock.calls[0]?.[4]).not.toHaveProperty('phaseAttempt')
     expect(executePlan).toHaveBeenCalledTimes(1)
     expect(onFailedAttempt).not.toHaveBeenCalled()
     expect(beforeRetry).not.toHaveBeenCalled()

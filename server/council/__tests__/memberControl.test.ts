@@ -198,6 +198,29 @@ describe('council member control', () => {
     ])
   })
 
+  it('carries a note only into the selected member\'s next attempt and clears it on a plain retry', async () => {
+    const control = controllableAttempts()
+    const { round, restarts } = openRound(['a', 'b'])
+    const runA = round.run('a', control.run('a'))
+    const runB = round.run('b', control.run('b'))
+    const note = '  Use the existing configuration.\nKeep the checks focused.  '
+
+    await retryCouncilMember(TICKET, PHASE, 'a', undefined, undefined, note)
+    expect(control.attempts.filter((entry) => entry.memberId === 'a').map((entry) => entry.attempt.retryNote))
+      .toEqual([undefined, note])
+    expect(control.attempts.find((entry) => entry.memberId === 'b')?.attempt.retryNote).toBeUndefined()
+    expect(restarts).toContainEqual({ memberId: 'a', part: undefined, note })
+
+    control.finish('a', 'failed')
+    await flush()
+    await retryCouncilMember(TICKET, PHASE, 'a')
+    expect(control.attempts.filter((entry) => entry.memberId === 'a').map((entry) => entry.attempt.retryNote))
+      .toEqual([undefined, note, undefined])
+    control.finish('a')
+    control.finish('b')
+    await Promise.all([runA, runB])
+  })
+
   it('reports a stop whose session could not be confirmed, and closes once the rest settle', async () => {
     const control = controllableAttempts()
     const { round, failed } = openRound(['a', 'b'])

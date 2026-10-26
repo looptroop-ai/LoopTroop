@@ -1,4 +1,8 @@
+import { expirePhaseRetryNote } from '../retryNotes';
+import { SessionManager } from "../../opencode/sessionManager";
+import { shouldPreserveSessionForContinuation } from "../../opencode/sessionContinuation";
 import { TicketWorkspaceNotInitializedError } from "../../lib/workflowErrors";
+import { isCoverageRevisionCheckpoint } from "../../lib/workflowContinuation";
 import type { TicketContext, TicketEvent } from "../../machines/types";
 import { withCommandLoggingAsync } from "../../log/commandLogger";
 import { handleMockExecutionUnsupported } from "./executionPhase";
@@ -290,7 +294,8 @@ function createOpenCodeDiagnosticTracker(modelId: string) {
         attemptMeta: runResult.attemptMeta,
         modelId,
         sessionId: runResult.session.id,
-        fallbackMessage: sessionRetryFallback,
+        // Retain exact session ownership if a completed response later fails validation.
+        fallbackMessage: sessionRetryFallback ?? "The AI response failed structured-output validation.",
       });
     },
   };
@@ -1210,6 +1215,7 @@ async function runPrdCoverageAuditPrompt(params: {
           ticketId: params.ticketId,
           phase: params.stateLabel,
           memberId: params.winnerId,
+          step: "audit",
         },
         onSessionCreated: (session, acquisition) => {
           sessionId = session.id;
@@ -1430,6 +1436,7 @@ async function runPrdCoverageAuditPrompt(params: {
     );
   }
 
+  expirePhaseRetryNote(params.ticketId, params.stateLabel, "audit");
   return {
     response,
     envelope: coverageEnvelope.value,
@@ -1504,6 +1511,7 @@ async function runPrdCoverageResolutionPrompt(params: {
           ticketId: params.ticketId,
           phase: params.stateLabel,
           memberId: params.winnerId,
+          step: "revision",
         },
         onSessionCreated: (session, acquisition) => {
           sessionId = session.id;
@@ -1587,6 +1595,7 @@ async function runPrdCoverageResolutionPrompt(params: {
         initialInput,
       });
 
+      expirePhaseRetryNote(params.ticketId, params.stateLabel, "revision");
       return { response, revision, structuredMeta, rawAttempts };
     } catch (error) {
       const validationError = getErrorMessage(error);
@@ -1716,6 +1725,7 @@ async function runBeadsCoverageAuditPrompt(params: {
           ticketId: params.ticketId,
           phase: params.stateLabel,
           memberId: params.winnerId,
+          step: "audit",
         },
         onSessionCreated: (session, acquisition) => {
           sessionId = session.id;
@@ -1936,6 +1946,7 @@ async function runBeadsCoverageAuditPrompt(params: {
     );
   }
 
+  expirePhaseRetryNote(params.ticketId, params.stateLabel, "audit");
   return {
     response,
     envelope: coverageEnvelope.value,
@@ -2009,6 +2020,7 @@ async function runBeadsCoverageResolutionPrompt(params: {
           ticketId: params.ticketId,
           phase: params.stateLabel,
           memberId: params.winnerId,
+          step: "revision",
         },
         onSessionCreated: (session, acquisition) => {
           sessionId = session.id;
@@ -2090,6 +2102,7 @@ async function runBeadsCoverageResolutionPrompt(params: {
         initialInput,
       });
 
+      expirePhaseRetryNote(params.ticketId, params.stateLabel, "revision");
       return { response, revision, structuredMeta, rawAttempts };
     } catch (error) {
       const validationError = getErrorMessage(error);
@@ -2284,6 +2297,29 @@ async function finalizeBeadsCoverageExpansion(params: {
   );
 }
 
+type CoverageAuditResult = Awaited<ReturnType<typeof runPrdCoverageAuditPrompt>>;
+
+function loadCoverageRevisionContinuation(
+  ticketId: string,
+  phase: "prd" | "beads",
+  stateLabel: WorkflowPhaseId,
+): { candidateVersion: number; refinedContent: string; auditResult: CoverageAuditResult } | null {
+  const session = new SessionManager(adapter).getPendingContinuationSession(ticketId, stateLabel);
+  if (session?.step !== "revision") return null;
+
+  const artifact = getLatestPhaseArtifact(ticketId, `${phase}_coverage_input`, stateLabel);
+  let checkpoint: unknown = null;
+  try { checkpoint = artifact ? JSON.parse(artifact.content) : null; } catch { /* Invalid checkpoints require Retry. */ }
+  if (!isCoverageRevisionCheckpoint(checkpoint)) {
+    throw new Error(`Cannot continue ${phase} coverage revision without its saved candidate and audit result`);
+  }
+  return {
+    candidateVersion: checkpoint.candidateVersion,
+    refinedContent: checkpoint.refinedContent,
+    auditResult: checkpoint.auditResult as CoverageAuditResult,
+  };
+}
+
 async function handlePrdCoverageVerificationLoop(params: {
   ticketId: string;
   context: TicketContext;
@@ -2324,6 +2360,12 @@ async function handlePrdCoverageVerificationLoop(params: {
       params.stateLabel,
     ) + 1;
 
+  let revisionContinuation = loadCoverageRevisionContinuation(params.ticketId, "prd", params.stateLabel);
+  if (revisionContinuation) {
+    currentCandidateContent = revisionContinuation.refinedContent;
+    currentCandidateVersion = revisionContinuation.candidateVersion;
+  }
+
   while (true) {
     const completedCoveragePasses = attempts.length;
     const coverageRunState = resolveCoverageRunState(
@@ -2361,7 +2403,7 @@ async function handlePrdCoverageVerificationLoop(params: {
       [...coverageContext, coveragePromptConfiguration],
     );
 
-    const auditResult = await runPrdCoverageAuditPrompt({
+    const auditResult = revisionContinuation?.auditResult ?? await runPrdCoverageAuditPrompt({
       ticketId: params.ticketId,
       externalId: params.context.externalId,
       stateLabel: params.stateLabel,
@@ -2385,6 +2427,7 @@ async function handlePrdCoverageVerificationLoop(params: {
       content: JSON.stringify({
         candidateVersion: currentCandidateVersion,
         refinedContent: currentCandidateContent,
+        auditResult,
       }),
     });
     persistUiArtifactCompanionArtifact(
@@ -2678,6 +2721,7 @@ async function handlePrdCoverageVerificationLoop(params: {
     transitions = nextTransitions;
     currentCandidateContent = revisionArtifact.refinedContent;
     currentCandidateVersion = nextCandidateVersion;
+    revisionContinuation = null;
   }
 }
 
@@ -2719,6 +2763,12 @@ async function handleBeadsCoverageVerificationLoop(params: {
       params.stateLabel,
     ) + 1;
 
+  let revisionContinuation = loadCoverageRevisionContinuation(params.ticketId, "beads", params.stateLabel);
+  if (revisionContinuation) {
+    currentCandidateContent = revisionContinuation.refinedContent;
+    currentCandidateVersion = revisionContinuation.candidateVersion;
+  }
+
   while (true) {
     const completedCoveragePasses = attempts.length;
     const coverageRunState = resolveCoverageRunState(
@@ -2757,7 +2807,7 @@ async function handleBeadsCoverageVerificationLoop(params: {
       [...coverageContext, coveragePromptConfiguration],
     );
 
-    const auditResult = await runBeadsCoverageAuditPrompt({
+    const auditResult = revisionContinuation?.auditResult ?? await runBeadsCoverageAuditPrompt({
       ticketId: params.ticketId,
       externalId: params.context.externalId,
       stateLabel: params.stateLabel,
@@ -2781,6 +2831,7 @@ async function handleBeadsCoverageVerificationLoop(params: {
       content: JSON.stringify({
         candidateVersion: currentCandidateVersion,
         refinedContent: currentCandidateContent,
+        auditResult,
       }),
     });
     persistUiArtifactCompanionArtifact(
@@ -3066,6 +3117,7 @@ async function handleBeadsCoverageVerificationLoop(params: {
     transitions = nextTransitions;
     currentCandidateContent = revisionArtifact.refinedContent;
     currentCandidateVersion = nextCandidateVersion;
+    revisionContinuation = null;
   }
 }
 
@@ -3783,6 +3835,7 @@ export async function handleRelevantFilesScan(
       variant: modelVariant,
       erroredSessionPolicy: "discard_errored_session_output",
       toolPolicy: PROM0.toolPolicy,
+      sessionOwnership: { ticketId, phase, memberId: codingModelId, keepActive: true },
       onSessionCreated: (session) => {
         sessionId = session.id;
         emitAiMilestone(
@@ -3907,6 +3960,7 @@ export async function handleRelevantFilesScan(
           variant: modelVariant,
           erroredSessionPolicy: "discard_errored_session_output",
           toolPolicy: PROM0.toolPolicy,
+          sessionOwnership: { ticketId, phase, memberId: codingModelId, keepActive: true },
           onStreamEvent: (event) => {
             if (!sessionId) return;
             emitOpenCodeStreamEvent(
@@ -3959,6 +4013,7 @@ export async function handleRelevantFilesScan(
           variant: modelVariant,
           erroredSessionPolicy: "discard_errored_session_output",
           toolPolicy: PROM0.toolPolicy,
+          sessionOwnership: { ticketId, phase, memberId: codingModelId, keepActive: true, forceFresh: true },
           onSessionCreated: (session) => {
             sessionId = session.id;
             emitAiMilestone(
@@ -4064,6 +4119,9 @@ export async function handleRelevantFilesScan(
           errors: [normalized.error],
         }),
       });
+      if (sessionId && !await new SessionManager(adapter).abortAndAbandonSession(sessionId)) {
+        throw new Error(`Could not confirm abort of relevant-files scan session ${sessionId}`);
+      }
       sendEvent({
         type: "ERROR",
         message: msg,
@@ -4141,8 +4199,20 @@ export async function handleRelevantFilesScan(
       "info",
       `Relevant files scan completed: ${parsed.file_count} files extracted.`,
     );
+    await new SessionManager(adapter).completeSession(sessionId);
     sendEvent({ type: "RELEVANT_FILES_READY" });
   } catch (err) {
+    if (sessionId && !shouldPreserveSessionForContinuation({
+      error: err,
+      signal,
+      sessionId,
+      sessionOwnership: { ticketId, phase },
+      modelId: codingModelId,
+    })) {
+      if (!await new SessionManager(adapter).abortAndAbandonSession(sessionId)) {
+        throw new Error(`Could not confirm abort of relevant-files scan session ${sessionId}`, { cause: err });
+      }
+    }
     if (err instanceof CancelledError) throw err;
     if (err instanceof Error && err.message === "Timeout") {
       const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({
@@ -4899,6 +4969,8 @@ export async function handleCoverageVerification(
     });
     return;
   }
+
+  expirePhaseRetryNote(ticketId, stateLabel);
 
   persistUiArtifactCompanionArtifact(
     ticketId,

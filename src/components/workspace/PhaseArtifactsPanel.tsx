@@ -867,7 +867,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
           onOpenAutoFocus={memberControl ? focusDialogItself : undefined}
         >
           {/* Padded clear of the member controls, which sit over its top right. */}
-          <DialogHeader className={memberControl ? 'pr-20 sm:pr-36' : undefined}>
+          <DialogHeader className={memberControl ? 'pr-28 sm:pr-44' : undefined}>
             <DialogTitle className="text-sm font-mono font-semibold flex items-center gap-2">
               {viewingArtifact?.icon ?? null}
               {viewingArtifact?.label}

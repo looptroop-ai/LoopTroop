@@ -1,3 +1,4 @@
+import { isContinuableBlockedError } from '../../../opencode/sessionContinuation'
 import { describe, expect, it } from 'vitest'
 import {
   applyDraftProgress,
@@ -135,6 +136,48 @@ describe('buildCouncilQuorumErrorWithDiagnostics', () => {
     ])
 
     expect(error).not.toHaveProperty('blockedErrorDiagnostics')
+  })
+
+  it('preserves exact continuable session diagnostics on the quorum error', () => {
+    const diagnostics = {
+      kind: 'transport' as const,
+      source: 'opencode' as const,
+      summary: 'socket hang up',
+      sessionId: 'session-preserved',
+      isRetryable: true,
+    }
+    const error = buildCouncilQuorumErrorWithDiagnostics('quorum not met', [
+      {
+        memberId: 'model-a',
+        outcome: 'failed',
+        blockedErrorDiagnostics: diagnostics,
+        blockedErrorCodes: [],
+      },
+    ]) as Error & { blockedErrorDiagnostics?: typeof diagnostics; blockedErrorCodes?: string[] }
+
+    expect(error.blockedErrorDiagnostics).toEqual(diagnostics)
+    expect(error.blockedErrorCodes).toEqual([])
+  })
+
+  it('does not make a non-continuable session error resumable through quorum handling', () => {
+    const error = buildCouncilQuorumErrorWithDiagnostics('quorum not met', [
+      {
+        memberId: 'model-a',
+        outcome: 'failed',
+        blockedErrorDiagnostics: {
+          kind: 'runtime',
+          source: 'opencode',
+          summary: 'bad request',
+          sessionId: 'session-not-resumable',
+          statusCode: 400,
+        },
+        blockedErrorCodes: [],
+      },
+    ])
+
+    const diagnostics = (error as Error & Pick<DraftResult, 'blockedErrorDiagnostics'>).blockedErrorDiagnostics
+    expect(diagnostics?.sessionId).toBe('session-not-resumable')
+    expect(isContinuableBlockedError({ diagnostics })).toBe(false)
   })
 })
 

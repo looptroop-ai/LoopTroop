@@ -33,7 +33,6 @@ import {
 } from '../../opencode/blockedErrorDiagnostics'
 import {
   attachContinuationDiagnostics,
-  clearSessionContinuation,
   shouldPreserveSessionForContinuation,
 } from '../../opencode/sessionContinuation'
 import { isContinuableOpenCodeRetryMessage, type OpenCodeRetryPolicy } from '../../opencode/retryPolicy'
@@ -881,7 +880,6 @@ export async function executeBead(
       } finally {
         if (contextWipeSessionId && sessionManager) {
           await sessionManager.abandonSession(contextWipeSessionId)
-          clearSessionContinuation(contextWipeSessionId)
           clearOpenCodePromptDispatchCount(contextWipeSessionId)
         }
       }

@@ -939,6 +939,7 @@ export async function handlePrdRefine(
     artifactType: 'prd_refined',
     content: JSON.stringify({
       refinedContent: refinedArtifact.refinedContent,
+      ...(refinementRun.steeredByOperator ? { steeredByOperator: true } : {}),
       ...(refinementRun.rawAttempts.length > 0 ? { rawAttempts: refinementRun.rawAttempts } : {}),
     }),
   })
@@ -946,6 +947,7 @@ export async function handlePrdRefine(
     winnerDraftContent: refinedArtifact.winnerDraftContent,
     draftMetrics: refinedArtifact.draftMetrics,
     structuredOutput: refinedArtifact.structuredOutput ?? null,
+    ...(refinementRun.steeredByOperator ? { steeredByOperator: true } : {}),
     ...(refinementRun.rawAttempts.length > 0 ? { rawAttempts: refinementRun.rawAttempts } : {}),
   })
 

@@ -20,7 +20,9 @@ import {
   getPendingInterviewBatchStopToken,
   InterviewBatchChangedError,
   markInterviewBatchStopPending,
+  renewInterviewBatchClaim,
   restoreInterviewBatchAfterFailure,
+  readInterviewSessionSnapshotArtifact,
   snapshotFingerprint,
   type InterviewBatchSkipReceipt,
 } from '../../workflow/phases/interviewPhase'
@@ -32,6 +34,7 @@ import {
 import {
   getLatestPhaseArtifact,
   getTicketByRef,
+  resolvePhaseAttempt,
   resolveTicketContainedPath,
 } from '../../storage/tickets'
 import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
@@ -55,6 +58,8 @@ import {
 } from '../../phases/interview/finalDocument'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isCancellationError } from '../../lib/abort'
+import { buildOpenCodeBlockedErrorDiagnostics } from '../../opencode/blockedErrorDiagnostics'
 import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
@@ -563,11 +568,13 @@ export async function handleAnswerBatch(c: Context) {
       // currentBatch cleared) synchronously before its first await, so the
       // snapshot is consistent by the time we return.
       ensureActorForTicket(ticketId)
+      const phaseAttempt = resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS')
       sendTicketEvent(ticketId, { type: 'BATCH_ANSWERED', batchAnswers: parsed.data.answers, selectedOptions: parsed.data.selectedOptions })
 
       let timeoutId: ReturnType<typeof setTimeout> | null = null
       let timeoutTriggered = false
       let remoteStopConfirmed = false
+      let completionClaimToken = claimToken
       let persistedReceipt: InterviewBatchSkipReceipt | undefined
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
@@ -589,6 +596,7 @@ export async function handleAnswerBatch(c: Context) {
             reject(new Error('Could not retain the interview stop for retry'))
             return
           }
+          completionClaimToken = pendingStopToken
           // If the callback was delayed past the lease, the first restore is
           // correctly rejected by the live-claim guard. The marker is an
           // exact-token hand-off, so retry the same CAS now that it carries a
@@ -624,7 +632,7 @@ export async function handleAnswerBatch(c: Context) {
                 return
               }
               remoteStopConfirmed = true
-              releaseInterviewBatch(ticketId, confirmedClaim)
+              completionClaimToken = confirmedClaim
               reject(new Error('Async batch processing timed out'))
             })
             .catch((error) => {
@@ -642,17 +650,18 @@ export async function handleAnswerBatch(c: Context) {
           parsed.data.selectedOptions,
           parsed.data.skipReasons,
           claimToken,
-          () => !timeoutTriggered || remoteStopConfirmed,
+          () => false,
           (receipt) => {
             persistedReceipt = receipt
           },
-        ),
+        ).finally(() => timeoutTriggered ? timeoutPromise : undefined),
         timeoutPromise,
       ])
         .finally(() => {
           if (timeoutId) clearTimeout(timeoutId)
         })
         .then(result => {
+          if (!renewInterviewBatchClaim(ticketId, completionClaimToken)) return
           ensureActorForTicket(ticketId)
           if (result.isComplete) {
             sendTicketEvent(ticketId, { type: 'INTERVIEW_COMPLETE' })
@@ -665,12 +674,40 @@ export async function handleAnswerBatch(c: Context) {
           }
         })
         .catch(err => {
+          if (!renewInterviewBatchClaim(ticketId, completionClaimToken)
+            && getPendingInterviewBatchStopToken(ticketId, 'answer') !== completionClaimToken) return
           logTicketOperationError(ticketId, 'Async batch processing failed for', err)
+          const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({ error: err })
+          const current = readInterviewSessionSnapshotArtifact(ticketId)
+          const currentFingerprint = current ? snapshotFingerprint(current) : null
+          const ownsFailedSnapshot = currentFingerprint === snapshotFingerprint(asyncSession)
+            || currentFingerprint === persistedReceipt?.persistedSnapshotFingerprint
+          if (err instanceof InterviewBatchChangedError
+            || (isCancellationError(err) && !timeoutTriggered)
+            || getTicketByRef(ticketId)?.status !== 'WAITING_INTERVIEW_ANSWERS'
+            || resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS') !== phaseAttempt) return
+          if (ownsFailedSnapshot) {
+            try {
+              ensureActorForTicket(ticketId)
+              sendTicketEvent(ticketId, {
+                type: 'ERROR',
+                message: getErrorMessage(err),
+                codes: diagnosticResult.errorCodes,
+                ...(diagnosticResult.diagnostics ? { diagnostics: diagnosticResult.diagnostics } : {}),
+              })
+            } catch (transitionError) {
+              logTicketOperationError(ticketId, 'Failed to block the interview after its AI request failed', transitionError)
+            }
+          }
           broadcaster.broadcast(ticketId, 'needs_input', {
             ticketId,
             type: 'interview_error',
             error: getErrorMessage(err),
           })
+        })
+        .finally(() => {
+          // Keep ownership through terminal handling; uncertain remote stops retain their fence.
+          if (!timeoutTriggered || remoteStopConfirmed) releaseInterviewBatch(ticketId, completionClaimToken)
         })
 
       return c.json({ accepted: true }, 202)

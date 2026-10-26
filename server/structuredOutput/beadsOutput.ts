@@ -26,6 +26,7 @@ import {
 import { takeRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isBeadTargetFile } from '@shared/beadTargets'
 import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 
 function normalizeCommandSpecs(value: unknown, label: string): CommandSpec[] {
@@ -822,6 +823,15 @@ function normalizeBeadIteration(value: unknown, label: string, repairWarnings: s
 function normalizeBeadRecord(value: unknown, index: number, repairWarnings: string[]): Bead {
   if (!isRecord(value)) throw new Error(`Bead JSONL entry at index ${index} is not an object`)
 
+  const rawTargetFiles = getValueByAliases(value, ['targetFiles', 'target_files'])
+  const targetFiles = typeof rawTargetFiles === 'string' ? [rawTargetFiles] : rawTargetFiles
+  if (!Array.isArray(targetFiles) || !targetFiles.every(isBeadTargetFile)) {
+    throw new Error(`Bead at index ${index} must include a targetFiles list of non-empty file paths; use [] when no files are targeted`)
+  }
+  if (typeof rawTargetFiles === 'string') {
+    repairWarnings.push(`Wrapped the single targetFiles path at bead index ${index} in a list: ${JSON.stringify(rawTargetFiles)} -> ${JSON.stringify(targetFiles.map(filePath => filePath.trim()))}.`)
+  }
+
   const dependencies = normalizeDependencies(getValueByAliases(value, ['dependencies']))
 
   const normalizedGuidance = normalizeContextGuidance(
@@ -856,7 +866,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     externalRef: getStringByAliases(value, ['externalRef', 'external_ref'])?.trim() ?? '',
     labels: toStringArray(getValueByAliases(value, ['labels'])),
     dependencies,
-    targetFiles: toStringArray(getValueByAliases(value, ['targetFiles', 'target_files'])),
+    targetFiles: targetFiles.map((filePath) => filePath.trim()),
     failedIterationNotes: normalizeNoteHistory(getValueByAliases(value, ['failedIterationNotes', 'failed_iteration_notes'])),
     userRetryNotes: normalizeNoteHistory(getValueByAliases(value, ['userRetryNotes', 'user_retry_notes'])),
     finalizationFailureNotes: normalizeNoteHistory(getValueByAliases(value, ['finalizationFailureNotes', 'finalization_failure_notes'])),

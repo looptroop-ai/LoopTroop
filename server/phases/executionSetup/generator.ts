@@ -13,6 +13,10 @@ import { throwIfCancelled } from '../../lib/abort'
 import { buildStructuredRetryPrompt } from '../../structuredOutput'
 import { buildStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import { SessionManager } from '../../opencode/sessionManager'
+import {
+  buildContinuationDiagnostics,
+  shouldPreserveSessionForContinuation,
+} from '../../opencode/sessionContinuation'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../../lib/constants'
 import { classifyStructuredFailureFromError, getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
@@ -86,6 +90,7 @@ function buildPromptFailureGeneration(
   initialInput?: string,
 ): GenerateExecutionSetupResult {
   const validationError = `Execution setup prompt failed: ${getErrorMessage(error)}`
+  const promptDiagnostics = buildContinuationDiagnostics({ error, sessionId: session?.id })
   const failureClass = classifyStructuredFailureFromError(error)
   const rawAttempts: RawAttempt[] = [...previousRawAttempts]
   const rawAttempt = appendRejectedRawAttempt(rawAttempts, {
@@ -119,6 +124,8 @@ function buildPromptFailureGeneration(
       validationError,
       retryDiagnostics,
     }),
+    ...(promptDiagnostics.diagnostics ? { diagnostics: promptDiagnostics.diagnostics } : {}),
+    ...(promptDiagnostics.errorCodes.length > 0 ? { errorCodes: promptDiagnostics.errorCodes } : {}),
     rawAttempts,
   }
 }
@@ -136,7 +143,7 @@ export async function generateExecutionSetup(
     timeoutDeadline?: number
     budget?: WorkBudget
     structuredRetryCount?: number
-    phaseAttempt?: number
+    iteration?: number | null
     manualContinuation?: boolean
     onSessionCreated?: (sessionId: string) => void
     onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void
@@ -172,6 +179,22 @@ export async function generateExecutionSetup(
       throw new Error(`Could not confirm abort of OpenCode session ${sessionIdToStop}`)
     }
   }
+  const shouldPreserveActiveSessionForContinuation = (error: unknown): boolean => Boolean(
+    activeSessionId && shouldPreserveSessionForContinuation({
+      error,
+      sessionId: activeSessionId,
+      modelId: callbacks?.model,
+      sessionOwnership: callbacks?.ticketId
+        ? {
+            ticketId: callbacks.ticketId,
+            phase: 'PREPARING_EXECUTION_ENV',
+            iteration: callbacks.iteration,
+            ...(callbacks.model ? { memberId: callbacks.model } : {}),
+          }
+        : undefined,
+      signal,
+    }),
+  )
   throwIfAborted(signal)
 
   const runMainSetupPrompt = async () => await runOpenCodePrompt({
@@ -190,7 +213,7 @@ export async function generateExecutionSetup(
           sessionOwnership: {
             ticketId: callbacks.ticketId,
             phase: 'PREPARING_EXECUTION_ENV',
-            phaseAttempt: callbacks.phaseAttempt ?? 1,
+            iteration: callbacks.iteration,
             keepActive: true,
             ...(callbacks.model ? { memberId: callbacks.model } : {}),
           },
@@ -219,7 +242,7 @@ export async function generateExecutionSetup(
     result = await runMainSetupPrompt()
   } catch (error) {
     const failedSession = activeSession
-    if (activeSessionId) {
+    if (activeSessionId && !shouldPreserveActiveSessionForContinuation(error)) {
       await stopActiveSession(activeSessionId)
       activeSessionId = null
       activeSession = null
@@ -240,7 +263,7 @@ export async function generateExecutionSetup(
       result = await runMainSetupPrompt()
     } catch (retryError) {
       const failedRetrySession = activeSession
-      if (activeSessionId) {
+      if (activeSessionId && !shouldPreserveActiveSessionForContinuation(retryError)) {
         await stopActiveSession(activeSessionId)
         activeSessionId = null
         activeSession = null
@@ -363,7 +386,7 @@ export async function generateExecutionSetup(
         continue
       } catch (error) {
         const failedProgressSession = activeSession
-        if (activeSessionId) {
+        if (activeSessionId && !shouldPreserveActiveSessionForContinuation(error)) {
           await stopActiveSession(activeSessionId)
           activeSessionId = null
           activeSession = null
@@ -446,7 +469,7 @@ export async function generateExecutionSetup(
                 sessionOwnership: {
                   ticketId: callbacks.ticketId,
                   phase: 'PREPARING_EXECUTION_ENV',
-                  phaseAttempt: callbacks.phaseAttempt ?? 1,
+                  iteration: callbacks.iteration,
                   keepActive: true,
                   ...(callbacks.model ? { memberId: callbacks.model } : {}),
                 },
@@ -476,7 +499,7 @@ export async function generateExecutionSetup(
       }
     } catch (error) {
       const failedRetrySession = activeSession
-      if (activeSessionId) {
+      if (activeSessionId && !shouldPreserveActiveSessionForContinuation(error)) {
         await stopActiveSession(activeSessionId)
         activeSessionId = null
         activeSession = null

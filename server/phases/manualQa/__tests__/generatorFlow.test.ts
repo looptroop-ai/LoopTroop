@@ -312,7 +312,7 @@ describe('Manual QA generation orchestration', () => {
     expect(mocks.runOpenCodePrompt).toHaveBeenCalledTimes(2)
     expect(mocks.runOpenCodePrompt.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
       parts: [expect.objectContaining({ content: expect.stringContaining('One tagged document is required.') })],
-      sessionOwnership: expect.objectContaining({ step: 'structured-retry-1', forceFresh: true }),
+      sessionOwnership: expect.objectContaining({ step: 'generate', forceFresh: true }),
     }))
     expect(mocks.persistUiArtifactCompanionArtifact).toHaveBeenCalledWith(
       TEST.ticketId,

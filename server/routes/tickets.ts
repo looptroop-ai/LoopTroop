@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { ContainedPathError } from '../lib/containedPath'
+import { PlanningEditClaimLostError } from './ticketHandlers/routeUtils'
 import {
   handleListTickets,
   handleGetTicket,
@@ -64,6 +65,7 @@ import {
 const ticketRouter = new Hono()
 ticketRouter.onError((error, c) => {
   if (error instanceof ContainedPathError) return c.json({ error: error.message }, 400)
+  if (error instanceof PlanningEditClaimLostError) return c.json({ error: error.message }, 409)
   throw error
 })
 

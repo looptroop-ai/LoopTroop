@@ -14,6 +14,7 @@ import { parseFinalTestCommands, type FinalTestCommandPlan } from './parser'
 import { buildStructuredRetryPrompt } from '../../structuredOutput'
 import { buildStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import { SessionManager } from '../../opencode/sessionManager'
+import { shouldPreserveSessionForContinuation } from '../../opencode/sessionContinuation'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../../lib/constants'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import type { StructuredOutputMetadata } from '../../structuredOutput/types'
@@ -53,7 +54,7 @@ export async function generateFinalTests(
     variant?: string
     timeoutMs?: number
     structuredRetryCount?: number
-    phaseAttempt?: number
+    iteration?: number
     onSessionCreated?: (sessionId: string) => void
     onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void
     onPromptDispatched?: (entry: { sessionId: string; event: OpenCodePromptDispatchEvent }) => void
@@ -86,6 +87,21 @@ export async function generateFinalTests(
       throw new Error(`Could not confirm abort of OpenCode session ${sessionIdToStop}`)
     }
   }
+  const shouldPreserveActiveSession = (error: unknown): boolean => activeSessionId !== null
+    && shouldPreserveSessionForContinuation({
+      error,
+      sessionId: activeSessionId,
+      modelId: callbacks?.model,
+      sessionOwnership: callbacks?.ticketId
+        ? {
+            ticketId: callbacks.ticketId,
+            phase: 'RUNNING_FINAL_TEST',
+            iteration: callbacks.iteration,
+            ...(callbacks.model ? { memberId: callbacks.model } : {}),
+          }
+        : undefined,
+      signal,
+    })
   throwIfAborted(signal)
   let result: Awaited<ReturnType<typeof runOpenCodePrompt>>
   try {
@@ -105,7 +121,7 @@ export async function generateFinalTests(
             sessionOwnership: {
               ticketId: callbacks.ticketId,
               phase: 'RUNNING_FINAL_TEST',
-              phaseAttempt: callbacks.phaseAttempt ?? 1,
+            iteration: callbacks.iteration,
               keepActive: true,
               ...(callbacks.model ? { memberId: callbacks.model } : {}),
             },
@@ -137,7 +153,7 @@ export async function generateFinalTests(
       },
     })
   } catch (error) {
-    if (activeSessionId) {
+    if (activeSessionId && !shouldPreserveActiveSession(error)) {
       await stopActiveSession(activeSessionId)
     }
     throwIfCancelled(error, signal)
@@ -248,7 +264,7 @@ export async function generateFinalTests(
                 sessionOwnership: {
                   ticketId: callbacks.ticketId,
                   phase: 'RUNNING_FINAL_TEST',
-                  phaseAttempt: callbacks.phaseAttempt ?? 1,
+                  iteration: callbacks.iteration,
                   keepActive: true,
                   ...(callbacks.model ? { memberId: callbacks.model } : {}),
                 },
@@ -284,7 +300,7 @@ export async function generateFinalTests(
         response = result.response
       }
     } catch (error) {
-      if (activeSessionId) {
+      if (activeSessionId && !shouldPreserveActiveSession(error)) {
         await stopActiveSession(activeSessionId)
         activeSessionId = null
       }

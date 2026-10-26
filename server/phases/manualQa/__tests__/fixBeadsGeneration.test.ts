@@ -173,6 +173,21 @@ beforeEach(() => {
 })
 
 describe('Manual QA fix-bead generation', () => {
+  it('requires inspection in the fresh structured-retry session rather than borrowing it from the failed session', async () => {
+    mocks.runOpenCodePrompt
+      .mockResolvedValueOnce({
+        session: { id: 'inspected-invalid' }, response: 'not tagged YAML',
+        messages: [{ role: 'assistant', parts: [{
+          type: 'tool', tool: 'read',
+          state: { status: 'completed', input: { path: 'src/preferences/store.ts' } },
+        }] }],
+      })
+      .mockResolvedValueOnce({ session: { id: 'uninspected-retry' }, response, messages: [] })
+    await expect(generateManualQaFixBeadCandidates(input())).rejects.toThrow(
+      'The model did not complete a required read-only inspection tool call successfully.',
+    )
+  })
+
   it('builds a grounded prompt, repairs an invalid response, and accepts candidates after repository inspection', async () => {
     mocks.runOpenCodePrompt
       .mockResolvedValueOnce({
@@ -238,7 +253,7 @@ describe('Manual QA fix-bead generation', () => {
       },
     })
     expect(mocks.runOpenCodePrompt.mock.calls[1]?.[0]).toMatchObject({
-      sessionOwnership: { step: 'fix-beads-structured-retry-1', forceFresh: true },
+      sessionOwnership: { step: 'generate-fix-beads', forceFresh: true },
     })
     const prompt = mocks.runOpenCodePrompt.mock.calls[0]?.[0]?.parts[0]?.content ?? ''
     const retryPrompt = mocks.runOpenCodePrompt.mock.calls[1]?.[0]?.parts[0]?.content ?? ''
@@ -291,7 +306,7 @@ describe('Manual QA fix-bead generation', () => {
     mocks.runOpenCodePrompt.mockResolvedValue({ session: { id: 'fix-beads-no-inspection' }, response, messages: [] })
 
     await expect(generateManualQaFixBeadCandidates(input())).rejects.toThrow(
-      'The model did not complete the required read-only repository inspection tool call.',
+      'The model did not complete a required read-only inspection tool call successfully.',
     )
     expect(mocks.emitAiMilestone).not.toHaveBeenCalledWith(
       expect.anything(),

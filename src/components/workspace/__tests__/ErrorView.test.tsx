@@ -58,6 +58,7 @@ function makeLiveErrorTicket(
   > = {},
   availableActions: ReturnType<typeof makeTicket>["availableActions"] = [
     "retry",
+    "retry_with_note",
     "cancel",
   ],
 ) {
@@ -1158,7 +1159,7 @@ describe("ErrorView", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
-  it("offers an extra-note retry only for a live retryable implementation error", () => {
+  it("offers an extra-note retry only when advertised for a live retryable AI error", () => {
     const liveView = renderWithProviders(
       <ErrorView ticket={makeLiveErrorTicket()} />,
     );
@@ -1174,11 +1175,11 @@ describe("ErrorView", () => {
     assert(baseOccurrence);
     const nonCodingTicket = makeTicket({
       ...baseTicket,
-      previousStatus: "GENERATING_PRD",
+      previousStatus: "REFINING_PRD",
       errorOccurrences: [
         {
           ...baseOccurrence,
-          blockedFromStatus: "GENERATING_PRD",
+          blockedFromStatus: "REFINING_PRD",
         },
       ],
     });
@@ -1186,9 +1187,15 @@ describe("ErrorView", () => {
       <ErrorView ticket={nonCodingTicket} />,
     );
     expect(
-      screen.queryByRole("button", { name: "Retry with extra note..." }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Retry with extra note..." }),
+    ).toBeInTheDocument();
     nonCodingView.unmount();
+
+    const unadvertisedView = renderWithProviders(
+      <ErrorView ticket={{ ...nonCodingTicket, availableActions: ["retry", "cancel"] }} />,
+    );
+    expect(screen.queryByRole("button", { name: "Retry with extra note..." })).not.toBeInTheDocument();
+    unadvertisedView.unmount();
 
     const historyView = renderWithProviders(
       <ErrorView ticket={makeLiveErrorTicket()} readOnly />,
@@ -1208,6 +1215,24 @@ describe("ErrorView", () => {
       screen.queryByRole("button", { name: "Retry" }),
     ).not.toBeInTheDocument();
   });
+
+  it.each(["REFINING_PRD", "VERIFYING_BEADS_COVERAGE", "EXPANDING_BEADS", "RUNNING_FINAL_TEST"])(
+    "sends an unchanged extra note for an advertised failed AI step: %s", (phase) => {
+      const mutate = vi.fn();
+      mockUseTicketAction.mockReturnValue({ mutate, isPending: false });
+      const ticket = makeLiveErrorTicket({ blockedFromStatus: phase });
+      renderWithProviders(<ErrorView ticket={ticket} />);
+      fireEvent.click(screen.getByRole("button", { name: "Retry with extra note..." }));
+      expect(screen.getByRole("dialog", { name: "Retry with an extra note" })).toBeInTheDocument();
+      const note = "  Preserve the accepted requirements.\nCheck the source again.  ";
+      fireEvent.change(screen.getByRole("textbox", { name: /Extra note/ }), { target: { value: note } });
+      fireEvent.click(screen.getByRole("button", { name: "Add note and retry" }));
+      expect(mutate).toHaveBeenCalledWith(
+        { id: ticket.id, action: "retry", payload: { kind: "retry_note", note } },
+        expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+      );
+    },
+  );
 
   it("does not invent recovery controls for setup approval errors", () => {
     const ticket = makeTicket({
@@ -1258,8 +1283,8 @@ describe("ErrorView", () => {
         status: "BLOCKED_ERROR",
         previousStatus: "PREPARING_EXECUTION_ENV",
         availableActions: canEditPlan
-          ? ["retry", "cancel", "edit_execution_setup_plan"]
-          : ["retry", "cancel"],
+          ? ["retry", "retry_with_note", "cancel", "edit_execution_setup_plan"]
+          : ["retry", "retry_with_note", "cancel"],
         activeErrorOccurrenceId: "setup-error",
         errorOccurrences: [
           {
@@ -1287,6 +1312,8 @@ describe("ErrorView", () => {
           name: "Retry workspace setup with an extra note",
         }),
       ).toBeInTheDocument();
+      expect(screen.getByText(/stops the old session and starts a new one/)).toBeInTheDocument();
+      expect(screen.queryByText(/current workspace setup session/)).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       if (!canEditPlan) {
         expect(
@@ -1573,7 +1600,7 @@ describe("ErrorView", () => {
       const ticket = makeTicket({
         status: "BLOCKED_ERROR",
         previousStatus: "CODING",
-        availableActions: ["retry", "continue", "cancel"],
+        availableActions: ["retry", "retry_with_note", "continue", "cancel"],
         activeErrorOccurrenceId: "coding-paused",
         errorOccurrences: [
           {

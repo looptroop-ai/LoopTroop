@@ -6,7 +6,11 @@ import {
   makePrdYaml,
 } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
-import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketContext, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { opencodeSessions } from '../../db/schema'
+import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
+import { buildCandidateFileAuditReport } from '../../phases/integration/candidateFileAudit'
+import { SessionManager } from '../../opencode/sessionManager'
 import { updateProject } from '../../storage/projects'
 import type { OpenCodePromptCompletedEvent, runOpenCodePrompt } from '../runOpenCodePrompt'
 import {
@@ -52,7 +56,7 @@ vi.mock('../runOpenCodePrompt', () => ({
 }))
 
 vi.mock('../../opencode/factory', () => ({
-  getOpenCodeAdapter: () => ({}),
+  getOpenCodeAdapter: () => ({ abortSession: vi.fn(async () => true) }),
   isMockOpenCodeMode: () => false,
 }))
 
@@ -108,6 +112,9 @@ describe('pull request drafting context', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.runOpenCodePrompt.mockReset()
+    mocks.runOpenCodeSessionPrompt.mockReset()
+    clearAllPendingSessionContinuationsForTests()
     mocks.readGitDiff.mockReturnValue({
       stat: '1 file changed, 2 insertions(+)',
       nameStatus: 'M\tsrc/example.ts',
@@ -1419,6 +1426,76 @@ describe('pull request drafting context', () => {
     expect(mocks.pushBranchRef).not.toHaveBeenCalled()
   })
 
+  it.each(['valid', 'opaque-renamed-paths', 'changed-candidate', 'invalid-path', 'invalid-decision', 'inconsistent-files', 'duplicate-path', 'corrupt-json'])('continues PR drafting only with its saved candidate audit (%s)', async checkpointCase => {
+    const candidateCommitSha = checkpointCase === 'changed-candidate' ? checkpointCase : 'candidate123'
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    const ticketContext = getTicketContext(ticket.id)!
+    ticketContext.projectDb.insert(opencodeSessions).values({
+      ticketId: ticketContext.localTicketId,
+      sessionId: 'pr-draft-to-continue',
+      phase: 'CREATING_PULL_REQUEST',
+      phaseAttempt: 1,
+      memberId: context.lockedMainImplementer,
+      step: 'pull_request_draft',
+      state: 'active',
+    }).run()
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', sessionId: 'pr-draft-to-continue' })
+    const opaqueRenamePaths = ['src/old name.ts', 'src/new \t雪.ts']
+    const entries = checkpointCase === 'opaque-renamed-paths'
+      ? opaqueRenamePaths.map(path => ({ path, decision: 'include' as const, reason: 'Requested change.' }))
+      : [
+        { path: 'src/example.ts', decision: 'include' as const, reason: 'Requested change.' },
+        { path: 'temporary.log', decision: 'exclude' as const, reason: 'Already removed from the candidate.' },
+      ]
+    const audit = buildCandidateFileAuditReport({
+      status: 'passed', baseCommit: 'base123', originalCandidateCommitSha: 'before-audit', candidateCommitSha,
+      entries,
+    })
+    const firstEntry = audit.entries[0]
+    if (!firstEntry) throw new Error('Missing audit fixture entry')
+    if (checkpointCase === 'invalid-path') firstEntry.path = '../outside.txt'
+    if (checkpointCase === 'invalid-decision') Object.assign(firstEntry, { decision: 'unknown' })
+    if (checkpointCase === 'inconsistent-files') audit.includedFiles = ['unexpected.txt']
+    if (checkpointCase === 'duplicate-path') audit.entries.push(firstEntry)
+    if (checkpointCase === 'opaque-renamed-paths') {
+      mocks.readGitDiff.mockReturnValueOnce({
+        stat: '2 files changed, 2 insertions(+), 1 deletion(-)',
+        nameStatus: 'R100\tsrc/old name.ts\t"src/new \\t\\351\\233\\252.ts"',
+        nameStatusZ: `D\0${opaqueRenamePaths[0]}\0A\0${opaqueRenamePaths[1]}\0`,
+        patch: 'diff --git a/src/old name.ts b/src/new file.ts',
+        patchTruncated: false,
+        patchError: null,
+      })
+    }
+    upsertLatestPhaseArtifact(ticket.id, 'candidate_file_audit', 'CREATING_PULL_REQUEST', checkpointCase === 'corrupt-json' ? '{' : JSON.stringify(audit))
+    if (checkpointCase === 'valid' || checkpointCase === 'opaque-renamed-paths') {
+      mocks.runOpenCodePrompt.mockResolvedValueOnce({
+        session: { id: 'pr-draft-to-continue' },
+        response: [
+          'title: Continued pull request', 'summary: [Completed work.]', 'why: [Requested behavior.]',
+          'what_changed: [Updated source.]', 'validation: [Tests passed.]', 'follow_ups: []',
+        ].join('\n'),
+        messages: [],
+      })
+    }
+    const sendEvent = vi.fn()
+    const run = handleCreatePullRequest(ticket.id, context, sendEvent, new AbortController().signal)
+    if (checkpointCase !== 'valid' && checkpointCase !== 'opaque-renamed-paths') {
+      await expect(run).rejects.toThrow('saved file audit does not match the current candidate')
+      expect(mocks.runOpenCodePrompt).not.toHaveBeenCalled()
+      expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+      return
+    }
+    await run
+    expect(mocks.runOpenCodePrompt).toHaveBeenCalledOnce()
+    expect(mocks.runOpenCodePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      sessionOwnership: expect.objectContaining({ step: 'pull_request_draft' }),
+    }))
+    expect(mocks.createOrUpdateDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({ title: 'Continued pull request' }))
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'PULL_REQUEST_READY' })
+  })
+
   it('retries malformed PR drafts before push and PR side effects', async () => {
     resetTestDb()
     const { ticket, context, project, paths } = await createPullRequestReadyTicket({ structuredRetryCount: 1 })
@@ -1590,6 +1667,55 @@ describe('pull request drafting context', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'PULL_REQUEST_READY' })
   })
 
+  it.each([true, false])('requires the failed audit to stop before using fallback text (confirmed: %s)', async stopped => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    const cleanup = vi.spyOn(SessionManager.prototype, 'abortAndAbandonSession').mockResolvedValue(stopped)
+    try {
+      mocks.runOpenCodePrompt.mockImplementationOnce(async (input: { onSessionCreated?: (session: { id: string }) => void }) => {
+        input.onSessionCreated?.({ id: 'audit-to-stop' })
+        throw new Error('Timeout')
+      })
+      if (stopped) mocks.runOpenCodePrompt.mockResolvedValueOnce({
+        session: { id: 'fresh-pr-draft' },
+        response: 'title: Enough metadata is missing to use fallback text',
+        messages: [],
+      })
+      const run = handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)
+      if (stopped) {
+        await run
+        expect(mocks.runOpenCodePrompt).toHaveBeenCalledTimes(2)
+        expect(mocks.pushBranchRef).toHaveBeenCalledOnce()
+      } else {
+        await expect(run).rejects.toThrow('Could not confirm abort of candidate file audit session audit-to-stop')
+        expect(mocks.runOpenCodePrompt).toHaveBeenCalledOnce()
+        expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+      }
+      expect(cleanup).toHaveBeenCalledWith('audit-to-stop')
+    } finally {
+      cleanup.mockRestore()
+    }
+  })
+
+  it('preserves a timed-out draft session so Continue can finish the same draft', async () => {
+    resetTestDb()
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    mocks.runOpenCodePrompt.mockResolvedValueOnce({
+      session: { id: 'completed-audit' }, response: validCandidateAuditResponse(), messages: [],
+    })
+    const failure = Object.assign(new Error('Timeout'), {
+      blockedErrorDiagnostics: { kind: 'timeout', source: 'opencode', sessionId: 'timed-out-pr-draft', isRetryable: true },
+    })
+    mocks.runOpenCodePrompt.mockImplementationOnce(async (input: { onSessionCreated?: (session: { id: string }) => void }) => {
+      input.onSessionCreated?.({ id: 'timed-out-pr-draft' })
+      throw failure
+    })
+    await expect(handleCreatePullRequest(ticket.id, context, vi.fn(), new AbortController().signal)).rejects.toBe(failure)
+    expect(failure.blockedErrorDiagnostics.source).toBe('opencode')
+    expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+    expect(mocks.createOrUpdateDraftPullRequest).not.toHaveBeenCalled()
+  })
+
   it('does not continue to git side effects when a draft session stop is unconfirmed', async () => {
     resetTestDb()
     const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
@@ -1603,17 +1729,21 @@ describe('pull request drafting context', () => {
       onSessionCreated?: (session: { id: string }) => void
     }) => {
       input.onSessionCreated?.({ id: 'pr-draft-paused' })
-      throw new Error('draft transport failed')
+      throw new Error('Invalid API key')
     })
-
-    await expect(handleCreatePullRequest(
-      ticket.id,
-      context,
-      vi.fn(),
-      new AbortController().signal,
-    )).rejects.toThrow('Could not confirm abort of pull request draft session pr-draft-paused')
-    expect(mocks.pushBranchRef).not.toHaveBeenCalled()
-    expect(mocks.createOrUpdateDraftPullRequest).not.toHaveBeenCalled()
+    const cleanup = vi.spyOn(SessionManager.prototype, 'abortAndAbandonSession').mockResolvedValue(false)
+    try {
+      await expect(handleCreatePullRequest(
+        ticket.id,
+        context,
+        vi.fn(),
+        new AbortController().signal,
+      )).rejects.toThrow('Could not confirm abort of pull request draft session pr-draft-paused')
+      expect(mocks.pushBranchRef).not.toHaveBeenCalled()
+      expect(mocks.createOrUpdateDraftPullRequest).not.toHaveBeenCalled()
+    } finally {
+      cleanup.mockRestore()
+    }
   })
 
   it('does not retry git push side effects after a valid PR draft', async () => {
@@ -1648,7 +1778,10 @@ describe('pull request drafting context', () => {
       context,
       vi.fn(),
       new AbortController().signal,
-    )).rejects.toThrow('remote rejected push')
+    )).rejects.toMatchObject({
+      message: 'remote rejected push',
+      blockedErrorDiagnostics: { kind: 'runtime', source: 'system', summary: 'remote rejected push' },
+    })
 
     expect(mocks.runOpenCodeSessionPrompt).not.toHaveBeenCalled()
     expect(mocks.pushBranchRef).toHaveBeenCalledTimes(1)

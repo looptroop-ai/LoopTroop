@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import path from 'node:path'
 import { z } from 'zod'
 import { isRecord } from '@shared/typeGuards'
+import { isBeadTargetFile } from '@shared/beadTargets'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext } from '../../machines/types'
 import type { Message, StreamEvent } from '../../opencode/types'
@@ -52,7 +52,7 @@ const CandidateSchema = z.object({
   testCommandReason: z.string().trim().min(1).optional(),
   labels: z.array(z.string().trim().min(1)).min(1),
   blockedByGroupIds: z.array(z.string().trim().min(1)).default([]),
-  targetFiles: z.array(z.string().trim().min(1)).min(1),
+  targetFiles: z.array(z.string().trim().min(1).refine(isBeadTargetFile)),
 }).strict().superRefine((candidate, ctx) => {
   if (candidate.testCommands.length === 0 && !candidate.testCommandReason) {
     ctx.addIssue({ code: 'custom', path: ['testCommandReason'], message: 'testCommandReason is required when testCommands is empty.' })
@@ -70,6 +70,7 @@ const PersistedCandidateDocumentSchema = z.object({
   schemaVersion: z.literal(MANUAL_QA_FIX_BEADS_SCHEMA_VERSION),
   artifact: z.literal('manual_qa_fix_beads'),
   version: z.number().int().positive(),
+  retryNote: z.string().nullable().optional(),
   beads: z.array(CandidateSchema).min(1),
 }).strict()
 
@@ -102,12 +103,6 @@ export function buildManualQaFixGroups(
       itemById.get(result.itemId)?.prdRefs.map((entry) => entry.ref) ?? [],
     )),
   }))
-}
-
-function isProjectRelativePath(value: string): boolean {
-  if (!value.trim() || path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) return false
-  const normalized = path.posix.normalize(value.replace(/\\/g, '/'))
-  return normalized !== '.' && !normalized.startsWith('../') && !normalized.includes('/../')
 }
 
 function sameStringSet(left: string[], right: string[]): boolean {
@@ -158,127 +153,51 @@ export function validateManualQaFixBeadCandidates(
       if (dependencyIndex >= index) throw new Error(`Manual QA fix bead ${bead.groupId} may depend only on an earlier merge group.`)
     }
     for (const targetFile of bead.targetFiles) {
-      if (!isProjectRelativePath(targetFile)) {
+      if (!isBeadTargetFile(targetFile)) {
         throw new Error(`Manual QA fix bead ${bead.groupId} has invalid target file path "${targetFile}".`)
       }
     }
   }
 }
 
-// The tool names below are exactly PROM_MANUAL_QA_FIX_BEADS's read_only policy
-// allowlist (`server/opencode/toolPolicy.ts`), which is what "a focused
-// read-only repository inspection" can mean. `bash` is denied by that policy, so
-// a `bash: git diff` does not qualify and is not listed here.
-
-/**
- * Which of each tool's arguments name a location, and which are query text.
- *
- * The distinction matters in both directions. `grep`'s `pattern` is a regular
- * expression, so path-scoping it fails a genuine inspection that searches for
- * the literal `../` — while `glob`'s `pattern` really is a path and has to be
- * scoped. Keys are compared in normalised form, because OpenCode writes
- * `filePath` where the schema calls it `file_path`, and an argument nobody
- * recognises is an argument nobody checks.
- */
-const TOOL_ARGUMENT_ROLES = new Map<string, { paths: readonly string[]; requiresPath?: boolean }>([
-  ['read', { paths: ['path', 'filepath', 'file'], requiresPath: true }],
-  ['grep', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob'] }],
-  ['glob', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob', 'pattern'] }],
-  ['list', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob'] }],
-  ['codesearch', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob'] }],
-  ['lsp', { paths: ['path', 'filepath', 'file'] }],
-])
+const READ_ONLY_INSPECTION_TOOLS = new Set(['read', 'grep', 'glob', 'list', 'codesearch', 'lsp'])
+const READ_PATH_ARGUMENTS = new Set(['path', 'filepath', 'file'])
 
 function normalizeArgumentKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
 /**
- * Whether one argument names a location inside the ticket worktree.
- *
- * The relative branch used to test the normalised string for a `../` prefix or
- * an embedded `/../`. `path.posix.normalize` collapses the embedded form, so
- * that half was dead, and a candidate that normalises to exactly `..` — plain
- * `..`, or `src/../..` — has no prefix to match and was accepted. Resolving
- * against the worktree and reusing the absolute containment test has no such
- * gap.
- */
-function isRepoScopedToolArgument(value: unknown, projectPath: string): boolean {
-  // These arguments are lists as often as they are single values — `grep`'s
-  // `include`, `glob`'s `path`. Passing an array used to satisfy the check
-  // without any of its entries being looked at.
-  if (Array.isArray(value)) return value.every((entry) => isRepoScopedToolArgument(entry, projectPath))
-  if (typeof value !== 'string') return true
-  const candidate = value.trim()
-  if (!candidate) return true
-
-  const normalizedRoot = path.resolve(projectPath)
-  // A drive-letter path is absolute on Windows and meaningless anywhere else.
-  // Resolving it with POSIX semantics turned `C:\Windows\System32` into
-  // `<cwd>/C:\Windows\System32`, which is inside the worktree whenever the
-  // daemon runs from it — so the check passed on the one input it should
-  // refuse hardest.
-  const looksWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(candidate)
-  if (looksWindowsAbsolute) {
-    if (path.sep !== path.win32.sep) return false
-    const winRoot = path.win32.resolve(projectPath)
-    const winCandidate = path.win32.resolve(candidate)
-    return winCandidate === winRoot || winCandidate.startsWith(`${winRoot}${path.win32.sep}`)
-  }
-
-  const normalizedCandidate = path.isAbsolute(candidate)
-    ? path.resolve(candidate)
-    : path.resolve(normalizedRoot, candidate.replace(/\\/g, '/'))
-  return normalizedCandidate === normalizedRoot
-    || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
-}
-
-/**
- * Whether one tool call is the read-only repository inspection the prompt makes
- * mandatory.
+ * Whether one completed read-only tool call satisfies the prompt's mandatory
+ * inspection. Relevant files may be outside the worktree.
  *
  * This used to accept any tool part that reached `completed` — not the tool's
- * name, not that it was read-only, not that it touched the repository — so a
- * single `todowrite` satisfied the requirement.
+ * name or that it was read-only — so a single `todowrite` satisfied the
+ * requirement.
  */
 export function isManualQaRepositoryInspectionToolCall(
   call: { tool?: unknown; status?: unknown; input?: unknown },
-  projectPath: string,
 ): boolean {
   if (call.status !== 'completed') return false
   if (typeof call.tool !== 'string') return false
-  const roles = TOOL_ARGUMENT_ROLES.get(call.tool.trim().toLowerCase())
-  if (!roles) return false
-  const input = call.input
-  if (!isRecord(input)) return !roles.requiresPath
-
-  // A list counts as naming a path too. Teaching the containment check to walk
-  // arrays without teaching this flag about them turned `read({ path: ['a.ts'] })`
-  // — every entry of which is checked and inside the worktree — into a call that
-  // named no file at all.
-  const namesAPath = (value: unknown): boolean => Array.isArray(value)
-    ? value.some(namesAPath)
-    : typeof value === 'string' && value.trim().length > 0
-
-  let namedAPath = false
-  for (const [key, value] of Object.entries(input)) {
-    if (!roles.paths.includes(normalizeArgumentKey(key))) continue
-    if (namesAPath(value)) namedAPath = true
-    if (!isRepoScopedToolArgument(value, projectPath)) return false
-  }
-
-  // `list` on the worktree root is a real inspection; a `read` that names no
-  // file read nothing at all.
-  return roles.requiresPath ? namedAPath : true
+  const tool = call.tool.trim().toLowerCase()
+  if (!READ_ONLY_INSPECTION_TOOLS.has(tool)) return false
+  if (tool !== 'read') return true
+  if (!isRecord(call.input)) return false
+  return Object.entries(call.input).some(([key, value]) => {
+    if (!READ_PATH_ARGUMENTS.has(normalizeArgumentKey(key))) return false
+    return Array.isArray(value)
+      ? value.some((entry) => typeof entry === 'string' && entry.trim().length > 0)
+      : typeof value === 'string' && value.trim().length > 0
+  })
 }
 
-export function hasSuccessfulManualQaRepositoryToolCall(messages: Message[], projectPath: string): boolean {
+export function hasSuccessfulManualQaRepositoryToolCall(messages: Message[]): boolean {
   return messages.some((message) => message.parts?.some((part) => {
     if (part.type !== 'tool') return false
     const state = (part as { state?: { status?: string; input?: unknown } }).state
     return isManualQaRepositoryInspectionToolCall(
       { tool: (part as { tool?: unknown }).tool, status: state?.status, input: state?.input },
-      projectPath,
     )
   }))
 }
@@ -382,10 +301,10 @@ export async function generateManualQaFixBeadCandidates(
   const maxRetries = resolveStructuredRetryRuntimeSettings(input.context).structuredRetryCount
   let correction = ''
   let lastError = 'Manual QA fix-bead generation failed.'
-  let observedSuccessfulTool = false
 
   emitAiMilestone(input.ticketId, input.context.externalId, phase, 'Generating execution-ready beads for failed Manual QA checks.', 'fix-beads-started')
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    let observedSuccessfulTool = false
     let sessionId = ''
     const streamState = createOpenCodeStreamState()
     const result = await runOpenCodePrompt({
@@ -403,19 +322,19 @@ export async function generateManualQaFixBeadCandidates(
         phase,
         phaseAttempt,
         memberId: model,
-        step: attempt === 0 ? 'generate-fix-beads' : `fix-beads-structured-retry-${attempt}`,
+        step: 'generate-fix-beads',
         forceFresh: attempt > 0,
       },
       onSessionCreated: (session) => { sessionId = session.id },
       onPromptDispatched: (event) => emitOpenCodePromptLog(input.ticketId, input.context.externalId, phase, model, event),
       onStreamEvent: (event: StreamEvent) => {
-        if (event.type === 'tool' && isManualQaRepositoryInspectionToolCall(event, paths.worktreePath)) {
+        if (event.type === 'tool' && isManualQaRepositoryInspectionToolCall(event)) {
           observedSuccessfulTool = true
         }
         if (sessionId) emitOpenCodeStreamEvent(input.ticketId, input.context.externalId, phase, model, sessionId, event, streamState)
       },
     })
-    observedSuccessfulTool ||= hasSuccessfulManualQaRepositoryToolCall(result.messages, paths.worktreePath)
+    observedSuccessfulTool ||= hasSuccessfulManualQaRepositoryToolCall(result.messages)
     emitOpenCodeSessionLogs(
       input.ticketId,
       input.context.externalId,
@@ -428,7 +347,7 @@ export async function generateManualQaFixBeadCandidates(
       streamState,
     )
     try {
-      if (!observedSuccessfulTool) throw new Error('The model did not complete the required read-only repository inspection tool call.')
+      if (!observedSuccessfulTool) throw new Error('The model did not complete a required read-only inspection tool call successfully.')
       const parsed = parseManualQaFixBeadsOutput(result.response, groups)
       emitAiMilestone(input.ticketId, input.context.externalId, phase, `Validated ${parsed.length} Manual QA fix bead candidate${parsed.length === 1 ? '' : 's'}.`, 'fix-beads-validated')
       return parsed
@@ -437,7 +356,7 @@ export async function generateManualQaFixBeadCandidates(
       correction = [
         '\n\n## Structured-output correction',
         `The previous attempt was invalid: ${lastError}`,
-        'Perform a successful focused read-only repository inspection if one has not completed, then return the corrected tagged YAML only.',
+        'Complete a successful focused read-only inspection in this session, then return the corrected tagged YAML only.',
         'Previous invalid response:',
         result.response.slice(0, STRUCTURED_CORRECTION_ECHO_LENGTH),
       ].join('\n')
@@ -450,12 +369,14 @@ export function persistManualQaFixBeadCandidates(
   ticketDir: string,
   version: number,
   candidates: ManualQaFixBeadCandidate[],
+  retryNote?: string,
 ): string {
   const path = getManualQaStoragePaths(ticketDir, version).fixBeadsPath
   const content = buildYamlDocument({
     schemaVersion: MANUAL_QA_FIX_BEADS_SCHEMA_VERSION,
     artifact: 'manual_qa_fix_beads',
     version,
+    retryNote: retryNote ?? null,
     beads: candidates,
   })
   writeManualQaText(ticketDir, path, content)
@@ -466,6 +387,7 @@ export function readManualQaFixBeadCandidates(
   ticketDir: string,
   version: number,
   groups: ManualQaFixGroup[],
+  retryNote?: string,
 ): ManualQaFixBeadCandidate[] | null {
   const path = getManualQaStoragePaths(ticketDir, version).fixBeadsPath
   const content = readManualQaText(ticketDir, path)
@@ -477,6 +399,7 @@ export function readManualQaFixBeadCandidates(
   if (isRecord(loaded) && loaded.schemaVersion === 1) return null
   const parsed = PersistedCandidateDocumentSchema.parse(loaded)
   if (parsed.version !== version) throw new Error('Persisted Manual QA fix beads belong to a different version.')
+  if ((parsed.retryNote ?? null) !== (retryNote ?? null)) return null
   validateManualQaFixBeadCandidates(parsed.beads, groups)
   return parsed.beads
 }

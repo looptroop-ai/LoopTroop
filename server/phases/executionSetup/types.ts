@@ -4,6 +4,7 @@ import type {
   StructuredOutputMetadata,
 } from '../../structuredOutput/types'
 import type { Session } from '../../opencode/types'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { RawAttempt } from '../../council/types'
 import type { CommandSpec } from '@shared/commandSpec'
@@ -39,6 +40,8 @@ export interface ExecutionSetupGenerationResult {
   result: ExecutionSetupResult | null
   parse: ExecutionSetupParseResult
   structuredOutput: StructuredOutputMetadata
+  diagnostics?: BlockedErrorDiagnostics | null
+  errorCodes?: string[]
   rawAttempts?: RawAttempt[]
 }
 
@@ -65,6 +68,8 @@ export interface ExecutionSetupReport {
   checks: ExecutionSetupResult['checks'] | null
   modelOutput: string
   errors: string[]
+  diagnostics?: BlockedErrorDiagnostics | null
+  errorCodes?: string[]
   worktreeWarnings?: string[]
   structuredOutput?: StructuredOutputMetadata
   rawAttempts?: RawAttempt[]

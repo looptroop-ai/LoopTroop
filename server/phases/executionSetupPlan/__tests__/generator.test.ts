@@ -1,31 +1,13 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { listOpenCodeSessionsForTicket } from '../../../opencode/sessionManager'
 import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
+import { recordTimeoutAndExpectContinuation } from '../../../test/openCodeContinuation'
+import { SequencedMockOpenCodeAdapter, StructuredRetryTimeoutAdapter } from '../../../test/openCodeAdapters'
 import type { OpenCodePromptDispatchEvent } from '../../../workflow/runOpenCodePrompt'
 import { generateExecutionSetupPlan } from '../generator'
-
-class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
-  private promptCounts = new Map<string, number>()
-
-  override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>) {
-    const sessionId = args[0]
-    const nextCount = (this.promptCounts.get(sessionId) ?? 0) + 1
-    this.promptCounts.set(sessionId, nextCount)
-
-    const queuedResponse = this.mockResponses.get(`${sessionId}#${nextCount}`)
-    if (queuedResponse !== undefined) {
-      this.mockResponses.set(sessionId, queuedResponse)
-    }
-    const queuedAssistantInfo = this.mockAssistantInfos.get(`${sessionId}#${nextCount}`)
-    if (queuedAssistantInfo !== undefined) {
-      this.mockAssistantInfos.set(sessionId, queuedAssistantInfo)
-    }
-
-    return await super.promptSession(...args)
-  }
-}
 
 function buildReadyPlanResponse(): string {
   return [
@@ -71,6 +53,8 @@ function buildReadyPlanResponse(): string {
 }
 
 describe('generateExecutionSetupPlan', () => {
+  beforeEach(() => resetTestDb())
+
   const repoManager = createTestRepoManager('execution-setup-plan-generator-')
 
   afterAll(() => {
@@ -126,6 +110,42 @@ describe('generateExecutionSetupPlan', () => {
     expect(retryPrompt).toContain('LoopTroop supplies ticket identity, schema/artifact/status, temp roots, host facts')
   })
 
+  it.each([['initial prompt', 1], ['structured retry', 2]] as const)(
+    'keeps a timed-out %s session available to Continue', async (_stage, timeoutOnPrompt) => {
+      resetTestDb()
+      const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+        title: 'Continue setup-plan retry timeout',
+      })
+      patchTicket(ticket.id, { status: 'GENERATING_EXECUTION_SETUP_PLAN' })
+      const adapter = new StructuredRetryTimeoutAdapter('invalid setup plan', timeoutOnPrompt)
+      let failure: unknown
+
+      try {
+        await generateExecutionSetupPlan(
+          adapter,
+          [{ type: 'text', content: 'Execution setup plan context' }],
+          paths.worktreePath,
+          undefined,
+          { ticketId: ticket.id, model: 'model-a' },
+        )
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toMatchObject({
+        message: 'Timeout',
+        blockedErrorDiagnostics: expect.objectContaining({ kind: 'timeout', sessionId: 'mock-session-1' }),
+      })
+      const diagnostics = (failure as Error & { blockedErrorDiagnostics?: BlockedErrorDiagnostics }).blockedErrorDiagnostics
+      recordTimeoutAndExpectContinuation({
+        ticketId: ticket.id,
+        previousStatus: 'GENERATING_EXECUTION_SETUP_PLAN',
+        sessionId: 'mock-session-1',
+        diagnostics,
+      })
+    },
+  )
+
   it('uses the structured retry loop to replace a semantically incompatible plan', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.mockResponses.set('mock-session-1#1', buildReadyPlanResponse())
@@ -172,7 +192,7 @@ describe('generateExecutionSetupPlan', () => {
     const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Replace errored setup plan session',
     })
-    patchTicket(ticket.id, { status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+    patchTicket(ticket.id, { status: 'GENERATING_EXECUTION_SETUP_PLAN' })
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.mockResponses.set('mock-session-1#1', 'provider error response')
     adapter.mockAssistantInfos.set('mock-session-1#1', { error: new Error('provider returned error') })
@@ -265,7 +285,7 @@ describe('generateExecutionSetupPlan', () => {
     const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Complete setup plan session',
     })
-    patchTicket(ticket.id, { status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+    patchTicket(ticket.id, { status: 'GENERATING_EXECUTION_SETUP_PLAN' })
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.mockResponses.set('mock-session-1#1', buildReadyPlanResponse())
     const dispatched: OpenCodePromptDispatchEvent[] = []
@@ -301,7 +321,7 @@ describe('generateExecutionSetupPlan', () => {
     const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Abandon setup plan session',
     })
-    patchTicket(ticket.id, { status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+    patchTicket(ticket.id, { status: 'GENERATING_EXECUTION_SETUP_PLAN' })
     const adapter = new SequencedMockOpenCodeAdapter()
     adapter.mockResponses.set('mock-session-1#1', 'not a setup plan')
     adapter.mockResponses.set('mock-session-1#2', 'still not a setup plan')

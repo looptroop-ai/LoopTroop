@@ -7,6 +7,7 @@ import type { Bead } from '../../beads/types'
 import { PROFILE_DEFAULTS } from '../../../db/defaults'
 import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
+import { buildBead } from '../../../test/factories'
 import { createShellCommandSpec } from '@shared/commandSpec'
 import {
   BEAD_AGENT_RESPONSE_INVALID,
@@ -76,36 +77,6 @@ class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
     this.abortCalls.push(sessionId)
     if (!this.abortResult) return false
     return await super.abortSession(sessionId)
-  }
-}
-
-function buildBead(overrides: Partial<Bead> = {}): Bead {
-  return {
-    id: 'bead-1',
-    title: 'Normalize structured outputs',
-    prdRefs: ['EPIC-1 / US-1'],
-    description: 'Repair machine-readable marker mistakes before failing.',
-    contextGuidance: { patterns: ['Keep the retry limited to marker correction only.'], anti_patterns: ['Do not retry for non-marker issues.'] },
-    acceptanceCriteria: ['Repairable marker formatting does not fail the iteration immediately.'],
-    tests: ['Structured marker retry is covered by tests.'],
-    testCommands: [],
-    priority: 1,
-    status: 'pending',
-    issueType: 'task',
-    externalRef: '',
-    labels: [],
-    dependencies: { blocked_by: [], blocks: [] },
-    targetFiles: [],
-    failedIterationNotes: [],
-    userRetryNotes: [],
-    finalizationFailureNotes: [],
-    iteration: 1,
-    createdAt: '',
-    updatedAt: '',
-    completedAt: '',
-    startedAt: '',
-    beadStartCommit: null,
-    ...overrides,
   }
 }
 

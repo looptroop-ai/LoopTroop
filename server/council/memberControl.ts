@@ -69,10 +69,12 @@ export interface CouncilMemberAttempt {
   interruption(): CouncilMemberInterruption | null
   /** Where the restart that began this attempt asked to start. Undefined on a first run. */
   readonly retryPart: CouncilMemberRetryPart | undefined
+  readonly retryNote?: string
 }
 
 export interface CouncilMemberRestart {
   part: CouncilMemberRetryPart | undefined
+  note?: string
 }
 
 export interface CouncilRoundOptions<T> {
@@ -98,7 +100,7 @@ export interface CouncilRoundOptions<T> {
 type ResumeDecision =
   | { kind: 'close' }
   /** `started` resolves once the run loop has dealt with the restart. */
-  | { kind: 'retry'; part: CouncilMemberRetryPart | undefined; started: Deferred<undefined> }
+  | { kind: 'retry'; part: CouncilMemberRetryPart | undefined; note?: string; started: Deferred<undefined> }
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -121,6 +123,7 @@ interface AttemptControl {
   readonly controller: AbortController
   interruption: CouncilMemberInterruption | null
   retryPart: CouncilMemberRetryPart | undefined
+  retryNote?: string
   readonly interrupted: Deferred<never>
   /** Resolves once the run loop has dealt with this attempt's end. */
   readonly done: Deferred<undefined>
@@ -137,7 +140,7 @@ interface MemberSlot {
   resume: ((decision: ResumeDecision) => void) | null
 }
 
-function beginAttempt(slot: MemberSlot, part: CouncilMemberRetryPart | undefined): AttemptControl {
+function beginAttempt(slot: MemberSlot, part: CouncilMemberRetryPart | undefined, note?: string): AttemptControl {
   slot.attempts += 1
   slot.state = 'running'
   slot.outcome = null
@@ -159,6 +162,7 @@ function beginAttempt(slot: MemberSlot, part: CouncilMemberRetryPart | undefined
     interrupted: interrupted.promise,
     interruption: () => control.interruption,
     retryPart: part,
+    ...(note !== undefined ? { retryNote: note } : {}),
   }
   slot.attempt = control
   return control
@@ -168,9 +172,11 @@ function interruptAttempt(
   control: AttemptControl,
   reason: CouncilMemberInterruption,
   part?: CouncilMemberRetryPart,
+  note?: string,
 ): void {
   control.interruption = reason
   control.retryPart = part
+  control.retryNote = note
   // A plain abort, so code below that tells an abort apart by its
   // `AbortError` name keeps doing so.
   control.controller.abort()
@@ -238,8 +244,9 @@ export class CouncilRound<T> {
     const slot = this.slots.get(memberId)
     if (!slot) throw new Error(`Council member ${memberId} is not part of this round`)
     let part: CouncilMemberRetryPart | undefined
+    let note: string | undefined
     for (;;) {
-      const control = beginAttempt(slot, part)
+      const control = beginAttempt(slot, part, note)
       let result: T
       try {
         result = await runAttempt(control.view)
@@ -248,7 +255,8 @@ export class CouncilRound<T> {
           // Started again before `done` resolves, so the person who asked for
           // the restart is answered only once the new attempt is running.
           part = control.retryPart
-          this.options.onRestart?.(memberId, { part })
+          note = control.retryNote
+          this.options.onRestart?.(memberId, { part, ...(note !== undefined ? { note } : {}) })
           control.done.resolve(undefined)
           continue
         }
@@ -269,8 +277,9 @@ export class CouncilRound<T> {
         return result
       }
       part = decision.part
+      note = decision.note
       try {
-        this.options.onRestart?.(memberId, { part })
+        this.options.onRestart?.(memberId, { part, ...(note !== undefined ? { note } : {}) })
       } catch (error) {
         this.failMember(slot, error)
         throw error
@@ -309,7 +318,7 @@ export class CouncilRound<T> {
    * the restart failed. `beforeInterrupt` runs after the checks and right
    * before the restart, as for a stop.
    */
-  async retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void): Promise<void> {
+  async retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void, note?: string): Promise<void> {
     const slot = this.requireLiveSlot(memberId)
     if (slot.state === 'settled') {
       const resume = slot.resume
@@ -322,14 +331,14 @@ export class CouncilRound<T> {
       slot.resume = null
       slot.state = 'running'
       const started = createDeferred<undefined>()
-      resume({ kind: 'retry', part, started })
+      resume({ kind: 'retry', part, note, started })
       await started.promise
       throwIfMemberDied(slot)
       return
     }
     const control = requireInterruptibleAttempt(slot)
     beforeInterrupt?.()
-    interruptAttempt(control, 'retry', part)
+    interruptAttempt(control, 'retry', part, note)
     await control.done.promise
     throwIfMemberDied(slot)
   }
@@ -402,7 +411,7 @@ export function openCouncilRound<T>(options: CouncilRoundOptions<T>): CouncilRou
 interface CouncilRoundHandle {
   readonly isClosed: boolean
   stop(memberId: string, beforeInterrupt?: () => void): Promise<MemberOutcome>
-  retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void): Promise<void>
+  retry(memberId: string, part?: CouncilMemberRetryPart, beforeInterrupt?: () => void, note?: string): Promise<void>
   close(): void
 }
 
@@ -465,8 +474,9 @@ export async function retryCouncilMember(
   memberId: string,
   part?: CouncilMemberRetryPart,
   beforeInterrupt?: () => void,
+  note?: string,
 ): Promise<void> {
-  await requireRound(ticketId, phase).retry(memberId, part, beforeInterrupt)
+  await requireRound(ticketId, phase).retry(memberId, part, beforeInterrupt, note)
 }
 
 /** Test seam. Never called from production paths. */

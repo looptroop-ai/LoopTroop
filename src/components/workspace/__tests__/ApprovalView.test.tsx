@@ -987,6 +987,29 @@ describe('Read-only approval attempts', () => {
     })
   })
 
+  it('shows server-classified external targets in the live read-only beads view', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+        return createJsonResponse([{
+          id: 'B-1',
+          title: 'Check linked configuration',
+          targetFiles: ['linked/config.json'],
+          externalTargetFiles: ['linked/config.json'],
+        }])
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <ApprovalView ticket={makeTicket({ status: 'WAITING_BEADS_APPROVAL' })} artifactType="beads" readOnly />,
+    )
+
+    expect(await screen.findByText('External files')).toBeInTheDocument()
+  })
+
   it('says the PRD request failed instead of drawing an empty artifact', async () => {
     let prdReads = 0
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {

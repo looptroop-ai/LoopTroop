@@ -11,6 +11,8 @@ import {
 import { getErrorMessage } from '@shared/typeGuards'
 import { abortTicketSessions } from '../opencode/sessionManager'
 import { clearTicketWindows } from './questionWindows'
+import { expirePhaseRetryNote } from './retryNotes'
+import { hasInterviewRecoveryRequested } from './phases/interviewPhase'
 
 const ERR_DELIBERATION_DATA_LOST = 'Council data lost after restart. Retry to re-run deliberation.'
 const ERR_PRD_DATA_LOST = 'Council data lost after restart. Retry to re-run PRD drafting.'
@@ -94,7 +96,7 @@ import {
   // Cleanup phase
   handleCleanup,
 } from './phases'
-import { handleManualQaChecklistGeneration } from '../phases/manualQa'
+import { handleManualQaChecklistGeneration, resumeFailedManualQaSubmission } from '../phases/manualQa'
 import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
 
@@ -401,8 +403,14 @@ export function attachWorkflowRunner(
   sendEvent: (event: TicketEvent) => void,
   options?: { processInitialSnapshot?: boolean },
 ) {
+  let previousState: string | undefined
   const processSnapshot = (snapshot: ReturnType<typeof actor.getSnapshot>) => {
     const state = resolveSnapshotState(snapshot)
+    if (previousState && previousState !== state && isWorkflowPhaseId(previousState)
+      && state !== 'BLOCKED_ERROR' && state !== 'CANCELED') {
+      expirePhaseRetryNote(ticketId, previousState)
+    }
+    previousState = state
     const context = snapshot.context
     const key = `${ticketId}:${state}`
 
@@ -517,7 +525,7 @@ export function attachWorkflowRunner(
     } else if (state === 'WAITING_INTERVIEW_ANSWERS') {
       // Start PROM4 session if not already running
       const qaInitKey = `${ticketId}:interview_qa_init`
-      if (!interviewQASessions.has(ticketId) && !runningPhases.has(qaInitKey)) {
+      if ((!interviewQASessions.has(ticketId) || hasInterviewRecoveryRequested(ticketId)) && !runningPhases.has(qaInitKey)) {
         runningPhases.add(qaInitKey)
         handleInterviewQAStart(ticketId, context, sendEvent, signal)
           .catch(err => {
@@ -724,6 +732,19 @@ export function attachWorkflowRunner(
           const errMsg = getErrorMessage(err)
           emitPhaseLog(ticketId, context.externalId, 'GENERATING_QA_CHECKLIST', 'error', errMsg)
           sendEvent(buildWorkflowErrorEvent(errMsg, ['MANUAL_QA_CHECKLIST_FAILED'], err))
+        })
+        .finally(() => {
+          runningPhases.delete(key)
+        })
+    } else if (state === 'WAITING_MANUAL_QA') {
+      runningPhases.add(key)
+      resumeFailedManualQaSubmission(ticketId, sendEvent, signal)
+        .catch(err => {
+          if (isCancellationError(err, signal)) return
+          if (err?.manualQaErrorReported === true) return
+          const errMsg = getErrorMessage(err)
+          emitPhaseLog(ticketId, context.externalId, 'WAITING_MANUAL_QA', 'error', errMsg)
+          sendEvent(buildWorkflowErrorEvent(errMsg, [typeof err?.code === 'string' ? err.code : 'MANUAL_QA_SUBMISSION_RESUME_FAILED'], err))
         })
         .finally(() => {
           runningPhases.delete(key)

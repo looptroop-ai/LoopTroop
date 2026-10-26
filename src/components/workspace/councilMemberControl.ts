@@ -248,6 +248,7 @@ export interface CouncilMemberControlRequest {
   action: CouncilMemberControlAction
   memberId: string
   part?: CouncilMemberRetryPart
+  note?: string
 }
 
 /**
@@ -283,8 +284,11 @@ export function useCouncilMemberConfirmation(scope: CouncilMemberControlScope) {
       sending.current = false
       setRequest(null)
     },
+    updateNote(note: string) {
+      setRequest((current) => current ? { ...current, note } : null)
+    },
     confirm() {
-      if (!request || sending.current) return
+      if (!request || sending.current || (request.note !== undefined && !request.note.trim())) return
       sending.current = true
       const sent = request
       control.mutate({ ...sent, ticketId: scope.ticketId, phase: scope.phase }, {

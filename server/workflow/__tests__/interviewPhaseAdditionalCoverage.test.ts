@@ -1,20 +1,23 @@
+import { readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildPersistedBatch,
   createInterviewSessionSnapshot,
   recordPreparedBatch,
+  recordBatchAnswers,
 } from '../../phases/interview/sessionState'
 import type { DraftPhaseResult } from '../../council/types'
 import type { deliberateInterview as DeliberateInterview } from '../../phases/interview/deliberate'
 import { opencodeSessions } from '../../db/schema'
-import { getLatestPhaseArtifact, getTicketContext, insertPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketContext, insertPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import * as atomicWrite from '../../io/atomicWrite'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { listSkipEvents, writeSkipReceipts } from '../skipReceipts'
 import { interviewQASessions, phaseIntermediate } from '../phases/state'
 import * as interviewQa from '../../phases/interview/qa'
+import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation } from '../../opencode/sessionContinuation'
 import { openCodeAuthAdvice } from '../../opencode/connection'
 import { buildStructuredOutputMetadata } from '../../structuredOutput'
 
@@ -41,6 +44,10 @@ import {
   handleMockInterviewQAStart,
   processInterviewBatchAsync,
   readInterviewSessionSnapshotArtifact,
+  persistInterviewRetrySnapshot,
+  hasInterviewRecoveryRequested,
+  readInterviewRetrySnapshot,
+  snapshotFingerprint,
   releaseInterviewBatch,
   writeInterviewSessionSnapshotArtifact,
 } from '../phases/interviewPhase'
@@ -85,6 +92,7 @@ describe('additional interview phase flows', () => {
     resetTestDb()
     phaseIntermediate.clear()
     interviewQASessions.clear()
+    clearAllPendingSessionContinuationsForTests()
     checkHealthMock.mockReset().mockResolvedValue({ available: true, version: 'test' })
     getSessionMock.mockReset().mockResolvedValue(null)
     deliberateInterviewMock.mockReset()
@@ -96,6 +104,75 @@ describe('additional interview phase flows', () => {
     repoManager.cleanup()
     if (originalMockMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
     else process.env.LOOPTROOP_OPENCODE_MODE = originalMockMode
+  })
+
+  it.each(['retry', 'continue'] as const)('dispatches the failed interview AI work on %s while retaining submitted answers', async (action) => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
+    const winnerId = TEST.councilMembers[0]
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COMPILING_INTERVIEW', artifactType: 'interview_winner', content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COMPILING_INTERVIEW', artifactType: 'interview_compiled',
+      content: JSON.stringify({ refinedContent: draftContent('Which outcome matters most?') }),
+    })
+    const original = makeActiveProm4Batch(ticket.id)
+    const answered = recordBatchAnswers(original, { Q01: 'Preserve this submitted answer.' })
+    upsertLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS', JSON.stringify({
+      originalSnapshot: original, answeredSnapshotFingerprint: snapshotFingerprint(answered),
+    }))
+    if (action === 'retry') persistInterviewRetrySnapshot(ticket.id, answered)
+    else {
+      writeInterviewSessionSnapshotArtifact(ticket.id, answered)
+      requestSessionContinuation({ ticketId: ticket.id, phase: 'WAITING_INTERVIEW_ANSWERS', sessionId: 'preserved-session' })
+    }
+    interviewQASessions.set(ticket.id, { sessionId: 'old-session', winnerId })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'WAITING_INTERVIEW_ANSWERS', artifactType: 'interview_qa_session',
+      content: JSON.stringify({ sessionId: 'old-session', winnerId }),
+    })
+    const recoveredSessionId = action === 'continue' ? 'preserved-session' : 'replacement-session'
+    const storageContext = getTicketContext(ticket.id)
+    if (!storageContext) throw new Error('Missing ticket storage fixture')
+    storageContext.projectDb.insert(opencodeSessions).values({
+      sessionId: recoveredSessionId, ticketId: storageContext.localTicketId,
+      phase: 'WAITING_INTERVIEW_ANSWERS', state: 'active',
+    }).run()
+    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(true)
+    const start = vi.spyOn(interviewQa, 'startInterviewSession').mockResolvedValue({
+      sessionId: recoveredSessionId,
+      firstBatch: {
+        questions: [], progress: { current: 1, total: 1 }, isComplete: true,
+        isFinalFreeForm: false, aiCommentary: 'Complete.', batchNumber: 1,
+      },
+    })
+    try {
+      const sendEvent = vi.fn()
+      await handleInterviewQAStart(ticket.id, context, sendEvent, new AbortController().signal)
+      expect(start).toHaveBeenCalledOnce()
+      expect(start.mock.calls[0]?.[13]).toMatchObject({ answers: { Q01: { answer: 'Preserve this submitted answer.' } } })
+      expect(readInterviewSessionSnapshotArtifact(ticket.id)?.answers.Q01?.answer).toBe('Preserve this submitted answer.')
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'INTERVIEW_COMPLETE' })
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_failed_submission', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_retry_requested', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(interviewQASessions.has(ticket.id)).toBe(false)
+      expect(getLatestPhaseArtifact(ticket.id, 'interview_qa_session', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
+      expect(storageContext.projectDb.select().from(opencodeSessions).get()?.state).toBe('completed')
+    } finally {
+      start.mockRestore()
+      clearAllPendingSessionContinuationsForTests()
+    }
+  })
+
+  it('keeps current saved answers authoritative over corrupt or outdated recovery artifacts', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const current = makeActiveProm4Batch(ticket.id)
+    for (const content of ['{invalid', JSON.stringify({ snapshot: {}, baselineFingerprint: 'outdated' })]) {
+      upsertLatestPhaseArtifact(ticket.id, 'interview_failed_submission', 'WAITING_INTERVIEW_ANSWERS', content)
+      expect(readInterviewRetrySnapshot(ticket.id)).toEqual(current)
+    }
+    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(false)
   })
 
   it.each(['repair', 'retry', 'clean'])('persists the first PROM4 batch with appropriate %s notices', async (kind) => {
@@ -385,6 +462,7 @@ describe('additional interview phase flows', () => {
     const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Restart an interview session after its persisted session is unavailable',
     })
+    savePhaseRetryNote(ticket.id, 'WAITING_INTERVIEW_ANSWERS', 'Recover this batch only')
     makeActiveProm4Batch(ticket.id)
     const claim = claimInterviewBatch(ticket.id)
     expect(claim).toBeTruthy()
@@ -418,6 +496,7 @@ describe('additional interview phase flows', () => {
 
       expect(start).toHaveBeenCalledOnce()
       expect(result).toMatchObject({ batchNumber: 2, questions: [{ id: 'Q02' }] })
+      expect(readPhaseRetryNote(ticket.id, 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
       expect(interviewQASessions.get(ticket.id)).toEqual({
         sessionId: 'replacement-prom4-session',
         winnerId: TEST.councilMembers[0],
@@ -573,6 +652,17 @@ describe('additional interview phase flows', () => {
     expect(getLatestPhaseArtifact(ticket.id, 'interview_batch_in_flight', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
   })
 
+  it.each(['abandoned', 'completed'])('does not replay answers for a stale %s continuation marker', async (state) => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
+    const stored = getTicketContext(ticket.id)!
+    stored.projectDb.insert(opencodeSessions).values({
+      ticketId: stored.localTicketId, sessionId: 'retired-interview-session',
+      phase: 'WAITING_INTERVIEW_ANSWERS', phaseAttempt: 1, state,
+    }).run()
+    requestSessionContinuation({ ticketId: ticket.id, phase: 'WAITING_INTERVIEW_ANSWERS', sessionId: 'retired-interview-session' })
+    expect(hasInterviewRecoveryRequested(ticket.id)).toBe(false)
+  })
+
   it('replays persisted mock batches after the abandoned mock session is gone', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Resume a mock interview after restart',
@@ -604,7 +694,7 @@ describe('additional interview phase flows', () => {
         claim ?? undefined,
       )
       expect(firstReplay).toMatchObject({ batchNumber: 2, isComplete: false, questions: [{ id: 'tradeoffs' }] })
-      expect(getSessionMock).toHaveBeenCalledWith('mock-session', expect.any(AbortSignal))
+      expect(getSessionMock).not.toHaveBeenCalled()
 
       const followUp = readInterviewSessionSnapshotArtifact(ticket.id)
       const secondReplay = await handleInterviewQABatch(

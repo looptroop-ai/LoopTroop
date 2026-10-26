@@ -1,4 +1,4 @@
-import path from 'node:path'
+import { isBeadTargetFile } from '@shared/beadTargets'
 import type { Bead, BeadDependencies, BeadSubset } from './types'
 
 export interface BeadExpansionCandidate {
@@ -181,17 +181,6 @@ function collectPreservedFieldDrift(subset: BeadSubset, bead: Bead): PreservedFi
   return { cosmeticPaths, substantivePaths, commandPaths }
 }
 
-function isProjectRelativePath(filePath: string): boolean {
-  if (!filePath.trim()) return false
-  if (path.isAbsolute(filePath)) return false
-  if (/^[A-Za-z]:[\\/]/.test(filePath)) return false
-  const normalized = path.posix.normalize(filePath.replace(/\\/g, '/'))
-  if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized.includes('/../')) {
-    return false
-  }
-  return true
-}
-
 export function validateBeadExpansion(subsetBeads: BeadSubset[], expandedBeads: Bead[]): string[] {
   if (expandedBeads.length !== subsetBeads.length) {
     throw new Error(`Expanded bead count ${expandedBeads.length} does not match refined blueprint count ${subsetBeads.length}`)
@@ -234,12 +223,12 @@ export function validateBeadExpansion(subsetBeads: BeadSubset[], expandedBeads: 
       throw new Error(`Expanded bead ${bead.id} must include at least one non-empty label`)
     }
 
-    if (!Array.isArray(bead.targetFiles) || bead.targetFiles.length === 0) {
-      throw new Error(`Expanded bead ${bead.id} must include at least one target file`)
+    if (!Array.isArray(bead.targetFiles)) {
+      throw new Error(`Expanded bead ${bead.id} must include a targetFiles list`)
     }
 
     for (const targetFile of bead.targetFiles) {
-      if (!isProjectRelativePath(targetFile)) {
+      if (!isBeadTargetFile(targetFile)) {
         throw new Error(`Expanded bead ${bead.id} has invalid target file path "${targetFile}"`)
       }
     }

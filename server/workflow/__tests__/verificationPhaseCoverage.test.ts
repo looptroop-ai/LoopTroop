@@ -4,6 +4,7 @@ import { readFileNoFollowSync } from '../../io/readFile'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { makePrdYaml, TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
+import { readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
 import { getLatestPhaseArtifact, insertPhaseArtifact } from '../../storage/tickets'
 import {
   buildPersistedBatch,
@@ -449,6 +450,7 @@ describe('interview coverage recovery', () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const { winnerId } = await createCompletedInterviewSnapshot(ticket.id)
     context.lockedStructuredRetryCount = 2
+    savePhaseRetryNote(ticket.id, 'VERIFYING_INTERVIEW_COVERAGE', 'Keep this until the audit succeeds')
     const connectionError = new Error('Failed to prompt OpenCode session: fetch failed')
     runOpenCodePromptMock.mockImplementationOnce(async (options: Parameters<typeof import('../runOpenCodePrompt').runOpenCodePrompt>[0]) => {
       options.onSessionCreated?.({ id: 'interview-connection-failure', projectPath: paths.worktreePath }, { reconnected: false })
@@ -458,6 +460,7 @@ describe('interview coverage recovery', () => {
     const error = await handleCoverageVerification(ticket.id, context, vi.fn(), 'interview', new AbortController().signal)
       .then(() => null, (caught: unknown) => caught)
 
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_INTERVIEW_COVERAGE')).toBe('Keep this until the audit succeeds')
     expect((error as Error).message).toContain('Interview coverage check 1 of 2: auditing the interview; response attempt 1 of 3 failed:')
     expect(error).toMatchObject({ cause: connectionError, blockedErrorDiagnostics: { modelId: winnerId, sessionId: 'interview-connection-failure' } })
     const entries = readFileSync(paths.executionLogPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
@@ -527,9 +530,27 @@ describe('interview coverage recovery', () => {
     expect(sendEvent).not.toHaveBeenCalled()
   })
 
+  it('retains exact session attribution and guidance when a completed audit fails validation', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    await createCompletedInterviewSnapshot(ticket.id)
+    context.lockedStructuredRetryCount = 0
+    savePhaseRetryNote(ticket.id, 'VERIFYING_INTERVIEW_COVERAGE', 'Recover this audit only')
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'invalid-coverage-response', projectPath: paths.worktreePath },
+      response: 'This is not a coverage result.', messages: [],
+    })
+    const sendEvent = vi.fn()
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'interview', new AbortController().signal)
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ERROR', diagnostics: expect.objectContaining({ sessionId: 'invalid-coverage-response', source: 'opencode' }),
+    }))
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_INTERVIEW_COVERAGE')).toBe('Recover this audit only')
+  })
+
   it('rebuilds missing interview.yaml from the session snapshot before clean coverage', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const { questions } = await createCompletedInterviewSnapshot(ticket.id)
+    savePhaseRetryNote(ticket.id, 'VERIFYING_INTERVIEW_COVERAGE', 'Recover this audit only')
     const interviewPath = `${paths.ticketDir}/interview.yaml`
     expect(existsSync(interviewPath)).toBe(false)
     runOpenCodePromptMock.mockResolvedValueOnce({
@@ -541,6 +562,7 @@ describe('interview coverage recovery', () => {
 
     await handleCoverageVerification(ticket.id, context, sendEvent, 'interview', new AbortController().signal)
 
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_INTERVIEW_COVERAGE')).toBeUndefined()
     expect(existsSync(interviewPath)).toBe(true)
     const canonicalInterview = readFileSync(interviewPath, 'utf-8')
     expect(canonicalInterview).toContain('Answer 1')

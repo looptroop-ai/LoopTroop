@@ -126,6 +126,13 @@ user can still replace an ancestor between validation and a filesystem call.
 Verified file descriptors and repeated containment checks narrow that race.
 The AI agent's own command execution retains the local user's permissions.
 
+External folders have no allowlist or separate approval step. Planning models
+may read files outside the repository before bead approval; read-only phases
+still prohibit edits. Execution may read and write external files, subject to
+the host account's permissions and existing managed-state protections. External
+target warnings identify declared paths, including resolved symbolic links;
+they do not limit access. Git recovery does not undo external file changes.
+
 Generated runtime launchers validate shell environment names and encode or quote
 values as literal data. Shell-specific inputs that cannot be represented safely
 are rejected before the launcher is written.

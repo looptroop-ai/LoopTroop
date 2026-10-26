@@ -26,6 +26,7 @@ import {
 import type { InterviewSessionSnapshot } from '@shared/interviewSession'
 import { buildInterviewQuestionViews } from './sessionState'
 import { SessionManager } from '../../opencode/sessionManager'
+import { shouldPreserveSessionForContinuation } from '../../opencode/sessionContinuation'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import {
@@ -245,7 +246,10 @@ export async function startInterviewSession(
   } catch (error) {
     let failure = withInterviewErrorDiagnostics(error, winnerId, sessionId || undefined)
     try {
-      if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+      if (sessionId && !shouldPreserveSessionForContinuation({
+        error: failure, sessionId, modelId: winnerId, signal,
+        ...(ticketId ? { sessionOwnership: { ticketId, phase: 'WAITING_INTERVIEW_ANSWERS' } } : {}),
+      })) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
     } catch (cleanupError) {
       failure = withInterviewCleanupCause(cleanupError, failure)
     }
@@ -313,7 +317,10 @@ export async function startInterviewSession(
   } catch (error) {
     let failure = withInterviewErrorDiagnostics(error, winnerId, sessionId || undefined)
     try {
-      if (sessionId) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
+      if (sessionId && !shouldPreserveSessionForContinuation({
+        error: failure, sessionId, modelId: winnerId, signal,
+        ...(ticketId ? { sessionOwnership: { ticketId, phase: 'WAITING_INTERVIEW_ANSWERS' } } : {}),
+      })) await stopInterviewSession(adapter, sessionManager, sessionId, signal)
     } catch (cleanupError) {
       failure = withInterviewCleanupCause(cleanupError, failure)
     }
@@ -371,6 +378,9 @@ export async function submitBatchToSession(
       timeoutKind: 'ai_response',
       model,
       toolPolicy: PROM4.toolPolicy,
+      ...(ticketId ? { sessionOwnership: {
+        ticketId, phase: 'WAITING_INTERVIEW_ANSWERS', memberId: model, keepActive: true,
+      } } : {}),
       onStreamEvent: (event) => {
         onOpenCodeStreamEvent?.({
           sessionId: currentSessionId,
@@ -387,7 +397,10 @@ export async function submitBatchToSession(
   } catch (error) {
     let failure = withInterviewErrorDiagnostics(error, model, currentSessionId)
     try {
-      await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+      if (!shouldPreserveSessionForContinuation({
+        error: failure, sessionId: currentSessionId, modelId: model, signal,
+        ...(ticketId ? { sessionOwnership: { ticketId, phase: 'WAITING_INTERVIEW_ANSWERS' } } : {}),
+      })) await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
     } catch (cleanupError) {
       failure = withInterviewCleanupCause(cleanupError, failure)
     }
@@ -460,7 +473,10 @@ export async function submitBatchToSession(
   } catch (error) {
     let failure = withInterviewErrorDiagnostics(error, model, currentSessionId || undefined)
     try {
-      if (currentSessionId) await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
+      if (currentSessionId && !shouldPreserveSessionForContinuation({
+        error: failure, sessionId: currentSessionId, modelId: model, signal,
+        ...(ticketId ? { sessionOwnership: { ticketId, phase: 'WAITING_INTERVIEW_ANSWERS' } } : {}),
+      })) await stopInterviewSession(adapter, sessionManager, currentSessionId, signal)
     } catch (cleanupError) {
       failure = withInterviewCleanupCause(cleanupError, failure)
     }
@@ -578,6 +594,9 @@ async function parseBatchResponseWithRetry(input: {
         timeoutKind: 'ai_response',
         model: input.model,
         toolPolicy: PROM4.toolPolicy,
+        ...(input.ticketId ? { sessionOwnership: {
+          ticketId: input.ticketId, phase: 'WAITING_INTERVIEW_ANSWERS', memberId: input.model, keepActive: true,
+        } } : {}),
         onStreamEvent: (event) => {
           input.onOpenCodeStreamEvent?.({
             sessionId,

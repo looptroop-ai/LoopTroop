@@ -1,3 +1,5 @@
+import { getExternalTargetFiles } from '../lib/beadTargets'
+import { isBeadTargetFile } from '../../shared/beadTargets'
 import { TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
 import { and, asc, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { z } from 'zod'
@@ -7,7 +9,7 @@ import { ContainedPathError } from '../lib/containedPath'
 import { db as appDb } from '../db/index'
 import { PROFILE_DEFAULTS } from '../db/defaults'
 import { getProjectContextById, getProjectById, listProjects } from './projects'
-import { attachedProjects, opencodeSessions, phaseArtifacts, profiles, projects, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../db/schema'
+import { attachedProjects, opencodeSessions, phaseArtifacts, profiles, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
 import {
   getTicketAiLogPath,
   getTicketDir,
@@ -39,6 +41,14 @@ import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { questionWaitOverlapMs } from './questionWaits'
 import { getPendingQuestionSummary } from '../workflow/questionWindows'
 import { getErrorMessage } from '@shared/typeGuards'
+import { supportsRetryNote } from '@shared/aiRetry'
+import { hasSuccessfulExecutionCheckpointForFinalization } from '../phases/execution/checkpoint'
+import {
+  buildPrdFullAnswersInputHash,
+  isCandidateFileAuditCheckpoint,
+  isCoverageRevisionCheckpoint,
+  isPrdFullAnswersCheckpoint,
+} from '../lib/workflowContinuation'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -254,6 +264,8 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
       title: string
       status: string
       iteration: number
+      targetFiles: string[]
+      externalTargetFiles: string[]
       failedIterationNotes: BeadNoteEntry[]
       userRetryNotes: BeadNoteEntry[]
       finalizationFailureNotes: BeadNoteEntry[]
@@ -477,6 +489,127 @@ export interface TicketContinuationCandidate {
   sessionId: string
 }
 
+function readContinuationArtifact(
+  projectContext: NonNullable<ReturnType<typeof getProjectContextById>>,
+  ticketId: number,
+  artifactType: string,
+  phase?: string,
+  phaseAttempt?: number,
+): { found: boolean; value: Record<string, unknown> | null } {
+  const conditions = [eq(phaseArtifacts.ticketId, ticketId), eq(phaseArtifacts.artifactType, artifactType)]
+  if (phase) conditions.push(eq(phaseArtifacts.phase, phase))
+  if (phaseAttempt !== undefined) conditions.push(eq(phaseArtifacts.phaseAttempt, phaseAttempt))
+  const artifact = projectContext.projectDb.select({ content: phaseArtifacts.content })
+    .from(phaseArtifacts)
+    .where(and(...conditions))
+    .orderBy(desc(phaseArtifacts.id))
+    .get()
+  if (!artifact) return { found: false, value: null }
+  try {
+    const parsed: unknown = JSON.parse(artifact.content)
+    return {
+      found: true,
+      value: parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null,
+    }
+  } catch {
+    return { found: true, value: null }
+  }
+}
+
+function activePhaseAttemptNumber(
+  projectContext: NonNullable<ReturnType<typeof getProjectContextById>>,
+  ticketId: number,
+  phase: string,
+): number {
+  return projectContext.projectDb.select({ attemptNumber: ticketPhaseAttempts.attemptNumber })
+    .from(ticketPhaseAttempts)
+    .where(and(
+      eq(ticketPhaseAttempts.ticketId, ticketId),
+      eq(ticketPhaseAttempts.phase, phase),
+      eq(ticketPhaseAttempts.state, 'active'),
+    ))
+    .get()?.attemptNumber ?? 1
+}
+
+function hasContinuationCheckpoint(
+  projectContext: NonNullable<ReturnType<typeof getProjectContextById>>,
+  ticket: LocalTicketRow,
+  previousStatus: string,
+  activeSession: { phaseAttempt: number; step: string | null; memberId: string | null },
+): boolean {
+  if (previousStatus === 'VERIFYING_PRD_COVERAGE' || previousStatus === 'VERIFYING_BEADS_COVERAGE') {
+    const isPrd = previousStatus === 'VERIFYING_PRD_COVERAGE'
+    const primaryWinner = readContinuationArtifact(projectContext, ticket.id, isPrd ? 'prd_winner' : 'beads_winner')
+    const winner = primaryWinner.found
+      ? primaryWinner.value
+      : readContinuationArtifact(projectContext, ticket.id, isPrd ? 'prd_votes' : 'beads_votes').value
+    const expectedMember = typeof winner?.winnerId === 'string' ? winner.winnerId.trim() : ''
+    if (!expectedMember || activeSession.memberId !== expectedMember
+      || (activeSession.step !== 'audit' && activeSession.step !== 'revision')) return false
+    if (activeSession.step === 'audit') return true
+
+    const checkpoint = readContinuationArtifact(
+      projectContext,
+      ticket.id,
+      isPrd ? 'prd_coverage_input' : 'beads_coverage_input',
+      previousStatus,
+      activeSession.phaseAttempt,
+    ).value
+    return isCoverageRevisionCheckpoint(checkpoint)
+  }
+
+  if (previousStatus === 'DRAFTING_PRD' && activeSession.step === 'prd_draft') {
+    const memberId = activeSession.memberId?.trim() ?? ''
+    if (!memberId) return false
+    const ticketRef = buildTicketRef(projectContext.attached.id, ticket.externalId)
+    try {
+      const interview = readTicketFile(ticketRef, 'interview.yaml')
+      if (interview === null) return false
+      const inputHash = buildPrdFullAnswersInputHash({
+        title: ticket.title,
+        description: ticket.description ?? '',
+        relevantFiles: readTicketFile(ticketRef, 'relevant-files.yaml') ?? undefined,
+        interview,
+      })
+      const checkpoint = readContinuationArtifact(
+        projectContext,
+        ticket.id,
+        `prd_full_answers_checkpoint:${memberId}`,
+        'DRAFTING_PRD',
+        activeSession.phaseAttempt,
+      ).value
+      return isPrdFullAnswersCheckpoint(checkpoint, {
+        inputHash,
+        memberId,
+        phaseAttempt: activeSession.phaseAttempt,
+      })
+    } catch {
+      return false
+    }
+  }
+
+  if (previousStatus !== 'CREATING_PULL_REQUEST') return true
+  if (!ticket.lockedMainImplementer || activeSession.memberId !== ticket.lockedMainImplementer) return false
+  if (activeSession.step !== 'pull_request_draft') return true
+
+  const integrationAttempt = activePhaseAttemptNumber(projectContext, ticket.id, 'INTEGRATING_CHANGES')
+  const integration = readContinuationArtifact(projectContext, ticket.id, 'integration_report', 'INTEGRATING_CHANGES', integrationAttempt).value
+  const baseCommit = typeof integration?.mergeBase === 'string' ? integration.mergeBase.trim() : ''
+  const candidateCommitSha = typeof integration?.candidateCommitSha === 'string' ? integration.candidateCommitSha.trim() : ''
+  if (!baseCommit || !candidateCommitSha) return false
+
+  const audit = readContinuationArtifact(
+    projectContext,
+    ticket.id,
+    'candidate_file_audit',
+    'CREATING_PULL_REQUEST',
+    activeSession.phaseAttempt,
+  ).value
+  return isCandidateFileAuditCheckpoint(audit, { baseCommit, candidateCommitSha })
+}
+
 function resolveTicketContinuationCandidateFromRows(
   projectContext: NonNullable<ReturnType<typeof getProjectContextById>> | null | undefined,
   projectId: number,
@@ -501,7 +634,11 @@ function resolveTicketContinuationCandidateFromRows(
   const sessionId = occurrence.diagnostics?.sessionId?.trim()
   if (!sessionId) return null
 
-  const activeSession = projectContext.projectDb.select({ id: opencodeSessions.id })
+  const activeSession = projectContext.projectDb.select({
+    phaseAttempt: opencodeSessions.phaseAttempt,
+    step: opencodeSessions.step,
+    memberId: opencodeSessions.memberId,
+  })
     .from(opencodeSessions)
     .where(and(
       eq(opencodeSessions.ticketId, ticket.id),
@@ -511,6 +648,11 @@ function resolveTicketContinuationCandidateFromRows(
     ))
     .get()
   if (!activeSession) return null
+  const phaseAttempt = activePhaseAttemptNumber(projectContext, ticket.id, previousStatus)
+  if (activeSession.phaseAttempt !== phaseAttempt) return null
+  if (!hasContinuationCheckpoint(projectContext, ticket, previousStatus, {
+    ...activeSession, phaseAttempt,
+  })) return null
 
   return {
     ticketId: buildTicketRef(projectId, ticket.externalId),
@@ -969,6 +1111,41 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
   const availableActions = isMockTicket
     ? getDisplayOnlyMockTicketActions(ticket.status)
     : addContinueActionWhenAvailable(getAvailableWorkflowActions(ticket.status), continuationCandidate)
+  const activeError = errorOccurrences.find(occurrence => occurrence.id === activeErrorOccurrenceId)
+  let retryNoteAvailable = supportsRetryNote(previousStatus, activeError?.errorCodes, activeError?.diagnostics)
+  if (!isMockTicket && ticket.status === 'BLOCKED_ERROR'
+    && (previousStatus === 'DRAFTING_PRD' || previousStatus === 'CREATING_PULL_REQUEST'
+      || previousStatus === 'VERIFYING_PRD_COVERAGE'
+      || previousStatus === 'VERIFYING_BEADS_COVERAGE')
+    && retryNoteAvailable) {
+    const failedSessionId = activeError?.diagnostics?.sessionId?.trim()
+    const phaseAttempt = projectContext && previousStatus
+      ? activePhaseAttemptNumber(projectContext, ticket.id, previousStatus)
+      : null
+    const failedSession = projectContext && failedSessionId && phaseAttempt !== null
+      ? projectContext.projectDb.select({ step: opencodeSessions.step })
+        .from(opencodeSessions)
+        .where(and(
+          eq(opencodeSessions.ticketId, ticket.id),
+          eq(opencodeSessions.sessionId, failedSessionId),
+          eq(opencodeSessions.phase, previousStatus),
+          eq(opencodeSessions.phaseAttempt, phaseAttempt),
+        ))
+        .get()
+      : null
+    retryNoteAvailable = typeof failedSession?.step === 'string' && failedSession.step.trim().length > 0
+  }
+  if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && previousStatus === 'CODING' && retryNoteAvailable) {
+    try {
+      retryNoteAvailable = !hasSuccessfulExecutionCheckpointForFinalization(buildTicketRef(projectId, ticket.externalId))
+    } catch {
+      // An unreadable tracker must not hide the ticket or offer a destructive AI restart.
+      retryNoteAvailable = false
+    }
+  }
+  if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && retryNoteAvailable) {
+    availableActions.push('retry_with_note')
+  }
   if (!isMockTicket && ticket.status === 'BLOCKED_ERROR' && previousStatus === 'PREPARING_EXECUTION_ENV') {
     availableActions.push('edit_execution_setup_plan')
   }
@@ -1208,6 +1385,8 @@ function buildRuntime(
       title: bead.title,
       status: bead.status,
       iteration: bead.iteration,
+      targetFiles: bead.targetFiles,
+      externalTargetFiles: bead.externalTargetFiles,
       failedIterationNotes: bead.failedIterationNotes,
       userRetryNotes: bead.userRetryNotes,
       finalizationFailureNotes: bead.finalizationFailureNotes,
@@ -1256,13 +1435,24 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
   }
   try {
     const result = readBeadsFileWithDiagnostics(beadsPath, { malformedEntries: 'skip' })
+    let worktreePath: string | null
+    try {
+      worktreePath = getTicketWorktreePath(projectRoot, externalId)
+    } catch (error) {
+      if (!(error instanceof ContainedPathError)) throw error
+      console.warn(`[tickets] Could not resolve the runtime worktree for ${externalId}; treating bead targets as external.`)
+      worktreePath = null
+    }
     const beads = result.beads.map((bead) => {
       const qaOrigin = RuntimeQaOriginSchema.safeParse(bead.qaOrigin)
+      const targetFiles = Array.isArray(bead.targetFiles) ? bead.targetFiles.filter(isBeadTargetFile) : []
       return {
         id: bead.id,
         title: typeof bead.title === 'string' ? bead.title : 'Untitled',
         status: bead.status,
         iteration: typeof bead.iteration === 'number' ? bead.iteration : 0,
+        externalTargetFiles: worktreePath ? getExternalTargetFiles(targetFiles, worktreePath) : targetFiles,
+        targetFiles,
         failedIterationNotes: Array.isArray(bead.failedIterationNotes) ? bead.failedIterationNotes : [],
         userRetryNotes: Array.isArray(bead.userRetryNotes) ? bead.userRetryNotes : [],
         finalizationFailureNotes: Array.isArray(bead.finalizationFailureNotes) ? bead.finalizationFailureNotes : [],

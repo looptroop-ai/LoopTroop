@@ -34,6 +34,31 @@ const approvalArrays = {
 }
 
 describe('contained bead approval document', () => {
+  it.each([[], ['/outside/settings.json'], ['C:/Users/User/settings.json'], ['../shared/settings.json']].map((targetFiles) => ({ targetFiles })))(
+    'approves explicit target list %j without altering its paths',
+    ({ targetFiles }) => {
+      const { beadsPath } = fixture()
+      const content = JSON.stringify({
+        id: 'one', title: 'A bead', status: 'pending', priority: 1,
+        ...approvalArrays, targetFiles, testCommands: [], testCommandReason: 'Manual verification.',
+      }) + '\n'
+      writeFileSync(beadsPath, content)
+      approveBeadsDocument('1:DEMO-1', contentSha256(content))
+      expect(JSON.parse(readFileSync(beadsPath, 'utf8')).targetFiles).toEqual(targetFiles)
+    },
+  )
+
+  it.each([undefined, null, [''], ['file\0name'], ['file\u0085name']].map((targetFiles) => ({ targetFiles })))('rejects invalid approval target list %j', ({ targetFiles }) => {
+    const { beadsPath } = fixture()
+    const content = JSON.stringify({
+      id: 'one', title: 'A bead', status: 'pending', priority: 1,
+      ...approvalArrays, targetFiles, testCommands: [], testCommandReason: 'Manual verification.',
+    }) + '\n'
+    writeFileSync(beadsPath, content)
+    expect(() => approveBeadsDocument('1:DEMO-1', contentSha256(content))).toThrow(/targetFiles|target file/)
+    expect(writeTicketFile).not.toHaveBeenCalled()
+  })
+
   it('atomically stamps the document while retaining the reviewed hash and updated snapshot', () => {
     const { beadsPath } = fixture()
     const content = JSON.stringify({ id: 'one', title: 'A bead', status: 'pending', priority: 1, ...approvalArrays, testCommands: [], testCommandReason: 'Manual verification.' }) + '\n'

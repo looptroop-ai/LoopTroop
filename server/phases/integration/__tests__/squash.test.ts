@@ -129,15 +129,72 @@ describe('prepareSquashCandidate', () => {
     expect(commitMsg).toBe(`${BRANCH}: Add features`)
   })
 
-  it('returns failure when no changes exist relative to base', async () => {
+  it('reports a successful no-change result without creating a commit', async () => {
     const repoDir = repoManager.createRepo()
 
     git(repoDir, ['checkout', '-b', BRANCH])
 
+    const before = git(repoDir, ['rev-parse', 'HEAD'])
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Empty', BRANCH)
+
+    expect(result).toMatchObject({ success: true, noChanges: true })
+    expect(result.commitHash).toBeUndefined()
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(before)
+    expect(result.message).toContain('No candidate changes')
+  })
+
+  it('keeps untracked local-only output when no candidate changes exist', async () => {
+    const repoDir = repoManager.createRepo()
+    git(repoDir, ['checkout', '-b', BRANCH])
+    const output = resolve(repoDir, 'local-output.log')
+    writeFileSync(output, 'keep locally\n')
+
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Empty', BRANCH)
+
+    expect(result).toMatchObject({ success: true, noChanges: true })
+    expect(readFileSync(output, 'utf8')).toBe('keep locally\n')
+  })
+
+  it('refuses no-change completion when unselected tracked work remains dirty', async () => {
+    const repoDir = repoManager.createRepo()
+    git(repoDir, ['checkout', '-b', BRANCH])
+    writeFileSync(resolve(repoDir, 'README.md'), 'local tracked work\n')
+    const before = git(repoDir, ['rev-parse', 'HEAD'])
+
     const result = await prepareSquashCandidate(repoDir, 'main', 'Empty', BRANCH)
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('No candidate changes')
+    expect(result.message).toContain('tracked changes')
+    expect(readFileSync(resolve(repoDir, 'README.md'), 'utf8')).toBe('local tracked work\n')
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(before)
+  })
+
+  it('reports no changes when an explicitly selected file still matches the base', async () => {
+    const repoDir = repoManager.createRepo()
+    git(repoDir, ['checkout', '-b', BRANCH])
+    const before = git(repoDir, ['rev-parse', 'HEAD'])
+
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Verification only', BRANCH, ['README.md'])
+
+    expect(result).toMatchObject({ success: true, noChanges: true })
+    expect(result.commitHash).toBeUndefined()
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(before)
+    expect(git(repoDir, ['status', '--porcelain'])).toBe('')
+  })
+
+  it('refuses an empty selected candidate when other tracked work remains dirty', async () => {
+    const repoDir = repoManager.createRepo()
+    writeFileSync(resolve(repoDir, 'other.ts'), 'base\n')
+    git(repoDir, ['add', 'other.ts'])
+    git(repoDir, ['commit', '-m', 'add unrelated tracked file'])
+    git(repoDir, ['checkout', '-b', BRANCH])
+    writeFileSync(resolve(repoDir, 'README.md'), 'local tracked work\n')
+
+    const result = await prepareSquashCandidate(repoDir, 'main', 'Verification only', BRANCH, ['other.ts'])
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('tracked changes')
+    expect(readFileSync(resolve(repoDir, 'README.md'), 'utf8')).toBe('local tracked work\n')
   })
 
   it('returns failure for an invalid worktree path', async () => {

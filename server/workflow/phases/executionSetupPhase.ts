@@ -151,6 +151,8 @@ function buildExecutionSetupReport(input: {
     checks: input.generation.result?.checks ?? null,
     modelOutput: input.generation.output,
     errors: input.errors,
+    ...(input.generation.diagnostics ? { diagnostics: input.generation.diagnostics } : {}),
+    ...(input.generation.errorCodes?.length ? { errorCodes: input.generation.errorCodes } : {}),
     ...(input.worktreeWarnings?.length ? { worktreeWarnings: input.worktreeWarnings } : {}),
     structuredOutput: input.generation.structuredOutput,
     rawAttempts: input.generation.rawAttempts,
@@ -594,6 +596,9 @@ export async function handleExecutionSetup(
         ticketId,
         'PREPARING_EXECUTION_ENV',
       )
+      const pendingContinuationSession = pendingContinuation
+        ? sessionManager.getPendingContinuationSession(ticketId, 'PREPARING_EXECUTION_ENV')
+        : undefined
 
       const report = await executeExecutionSetupWithRetries(
         adapter,
@@ -609,7 +614,10 @@ export async function handleExecutionSetup(
           structuredRetryCount: resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
           initialRetryNotes: retryNotes,
           initialAttempt: Math.max(retryNotes.length, previousReportAttempt) + 1,
-          additionalManualIterations: pendingContinuation?.additionalRetryAttempts ?? 0,
+          additionalManualIterations: pendingContinuation
+            ? pendingContinuation.additionalRetryAttempts ?? 1
+            : 0,
+          continuationIteration: pendingContinuationSession?.iteration,
         },
         {
           evaluateGeneration: async ({ generation, timing }) => {
@@ -987,7 +995,12 @@ export async function handleExecutionSetup(
         return
       }
 
-      sendEvent({ type: 'EXECUTION_SETUP_FAILED', errors: report.errors })
+      sendEvent({
+        type: 'EXECUTION_SETUP_FAILED',
+        errors: report.errors,
+        ...(report.errorCodes?.length ? { codes: report.errorCodes } : {}),
+        ...(report.diagnostics ? { diagnostics: report.diagnostics } : {}),
+      })
     },
     (phase, type, content) => emitPhaseLog(ticketId, context.externalId, phase, type, content, { source: 'system', audience: 'all' }),
   )

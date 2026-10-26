@@ -173,6 +173,7 @@ function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
     test_commands: _testCommandsAlias,
     test_command_reason: _testCommandReasonAlias,
     target_files: _targetFilesAlias,
+    externalTargetFiles: _externalTargetFiles,
     prd_refs: _prdRefsAlias,
     prd_references: _prdReferencesAlias,
     context_guidance: _contextGuidanceAlias,

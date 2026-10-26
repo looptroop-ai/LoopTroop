@@ -1,12 +1,14 @@
+import { clearAllPendingSessionContinuationsForTests } from '../../opencode/sessionContinuation'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import * as jsYaml from 'js-yaml'
-import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
 import { getLatestPhaseArtifact, getTicketByRef, insertPhaseArtifact } from '../../storage/tickets'
 import { TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { phaseIntermediate } from '../phases/state'
+import { readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
+import { continueCoverageSession, expectCleanCoverageAttempts } from './coverageTestHelpers'
 
 const { refineDraftMock, runOpenCodePromptMock } = vi.hoisted(() => ({
   refineDraftMock: vi.fn(),
@@ -330,6 +332,7 @@ function readPersistedBeads(beadsPath: string) {
 describe('handleBeadsRefine', () => {
   beforeEach(() => {
     resetTestDb()
+    clearAllPendingSessionContinuationsForTests()
     phaseIntermediate.clear()
     refineDraftMock.mockReset()
     runOpenCodePromptMock.mockReset()
@@ -545,6 +548,58 @@ describe('handleBeadsRefine', () => {
     expect(sendEvent).not.toHaveBeenCalled()
   })
 
+  it('continues a failed beads revision using its saved audit without running another audit first', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const winnerId = TEST.councilMembers[0]
+    const coverageGap = 'Missing a bead that surfaces unresolved coverage warnings during approval.'
+    savePhaseRetryNote(ticket.id, 'VERIFYING_BEADS_COVERAGE', 'Keep guidance after a failed revision.', 'revision')
+    writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_BEADS', artifactType: 'beads_winner', content: JSON.stringify({ winnerId }),
+    })
+    insertPhaseArtifact(ticket.id, {
+      phase: 'REFINING_BEADS', artifactType: 'beads_refined', content: JSON.stringify({ winnerId, refinedContent: buildBeadSubsetContent({ includeSecondBead: true }) }),
+    })
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-audit', projectPath: paths.worktreePath },
+      response: `status: gaps\ngaps: ["${coverageGap}"]\nfollow_up_questions: []`, messages: [],
+    }).mockRejectedValueOnce(new Error('Timeout'))
+    await expect(handleCoverageVerification(ticket.id, context, vi.fn(), 'beads', new AbortController().signal)).rejects.toThrow('Timeout')
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_BEADS_COVERAGE', undefined, 'revision'))
+      .toBe('Keep guidance after a failed revision.')
+
+    continueCoverageSession({
+      ticketId: ticket.id,
+      domain: 'beads',
+      sessionId: 'coverage-revision',
+      memberId: winnerId,
+      step: 'revision',
+    })
+    savePhaseRetryNote(ticket.id, 'VERIFYING_BEADS_COVERAGE', 'Finish this revision.', 'revision')
+    savePhaseRetryNote(ticket.id, 'VERIFYING_BEADS_COVERAGE', 'Keep the audit note.', 'audit')
+    runOpenCodePromptMock.mockResolvedValueOnce({
+      session: { id: 'coverage-revision', projectPath: paths.worktreePath },
+      response: buildValidBeadsCoverageRevisionOutput(coverageGap), messages: [],
+    }).mockResolvedValueOnce({
+      session: { id: 'coverage-audit-next', projectPath: paths.worktreePath },
+      response: 'status: clean\ngaps: []\nfollow_up_questions: []', messages: [],
+    })
+    const sendEvent = vi.fn()
+    await handleCoverageVerification(ticket.id, context, sendEvent, 'beads', new AbortController().signal)
+
+    expect(runOpenCodePromptMock.mock.calls.map(([options]) => options.sessionOwnership.step)).toEqual(['audit', 'revision', 'revision', 'audit'])
+    expect(runOpenCodePromptMock.mock.calls[2]?.[0].parts[0].content).toContain(coverageGap)
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_BEADS_COVERAGE', undefined, 'revision')).toBeUndefined()
+    expect(readPhaseRetryNote(ticket.id, 'VERIFYING_BEADS_COVERAGE', undefined, 'audit')).toBeUndefined()
+    expectCleanCoverageAttempts({
+      ticketId: ticket.id,
+      domain: 'beads',
+      finalCandidateVersion: 2,
+      gap: coverageGap,
+    })
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'COVERAGE_CLEAN' })
+  })
+
   it('runs terminal bead expansion only after beads coverage becomes clean', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Revise beads during coverage',
@@ -623,48 +678,12 @@ describe('handleBeadsRefine', () => {
       refinedContent: expect.stringContaining('Render coverage warning state'),
     })
 
-    const coverageArtifact = getLatestPhaseArtifact(ticket.id, 'beads_coverage', 'VERIFYING_BEADS_COVERAGE')
-    expect(coverageArtifact).toBeDefined()
-    expect(JSON.parse(coverageArtifact!.content)).toMatchObject({
-      status: 'clean',
+    expectCleanCoverageAttempts({
+      ticketId: ticket.id,
+      domain: 'beads',
       finalCandidateVersion: 2,
-      hasRemainingGaps: false,
-      remainingGaps: [],
-    })
-
-    const coverageCompanion = getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:beads_coverage', 'VERIFYING_BEADS_COVERAGE')
-    const parsedCoverageCompanion = parseUiArtifactCompanionArtifact(coverageCompanion!.content)?.payload as {
-      attempts?: Array<{ candidateVersion?: number; status?: string; gaps?: string[] }>
-      transitions?: Array<{ fromVersion?: number; toVersion?: number; gaps?: string[]; fromContent?: string; toContent?: string }>
-      finalCandidateVersion?: number
-      hasRemainingGaps?: boolean
-      remainingGaps?: string[]
-    } | undefined
-    expect(parsedCoverageCompanion).toMatchObject({
-      finalCandidateVersion: 2,
-      hasRemainingGaps: false,
-      remainingGaps: [],
-      attempts: [
-        expect.objectContaining({
-          candidateVersion: 1,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 2,
-          status: 'clean',
-          gaps: [],
-        }),
-      ],
-      transitions: [
-        expect.objectContaining({
-          fromVersion: 1,
-          toVersion: 2,
-          gaps: [coverageGap],
-          fromContent: expect.stringContaining('Surface retry metadata'),
-          toContent: expect.stringContaining('Render coverage warning state'),
-        }),
-      ],
+      gap: coverageGap,
+      transitionContent: ['Surface retry metadata', 'Render coverage warning state'],
     })
 
     const coverageRevision = getLatestPhaseArtifact(ticket.id, 'beads_coverage_revision', 'VERIFYING_BEADS_COVERAGE')
@@ -843,76 +862,15 @@ describe('handleBeadsRefine', () => {
     const coverageArtifact = getLatestPhaseArtifact(ticket.id, 'beads_coverage', 'VERIFYING_BEADS_COVERAGE')
     expect(coverageArtifact).toBeDefined()
     expect(JSON.parse(coverageArtifact!.content)).toMatchObject({
-      status: 'clean',
       coverageRunNumber: 5,
       maxCoveragePasses: 5,
-      finalCandidateVersion: 5,
-      hasRemainingGaps: false,
-      remainingGaps: [],
       terminationReason: 'clean',
     })
-
-    const coverageCompanion = getLatestPhaseArtifact(ticket.id, 'ui_artifact_companion:beads_coverage', 'VERIFYING_BEADS_COVERAGE')
-    const parsedCoverageCompanion = parseUiArtifactCompanionArtifact(coverageCompanion!.content)?.payload as {
-      attempts?: Array<{ candidateVersion?: number; status?: string; gaps?: string[] }>
-      transitions?: Array<{ fromVersion?: number; toVersion?: number; gaps?: string[] }>
-      finalCandidateVersion?: number
-      hasRemainingGaps?: boolean
-      remainingGaps?: string[]
-    } | undefined
-    expect(parsedCoverageCompanion).toMatchObject({
+    expectCleanCoverageAttempts({
+      ticketId: ticket.id,
+      domain: 'beads',
       finalCandidateVersion: 5,
-      hasRemainingGaps: false,
-      remainingGaps: [],
-      attempts: [
-        expect.objectContaining({
-          candidateVersion: 1,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 2,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 3,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 4,
-          status: 'gaps',
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          candidateVersion: 5,
-          status: 'clean',
-          gaps: [],
-        }),
-      ],
-      transitions: [
-        expect.objectContaining({
-          fromVersion: 1,
-          toVersion: 2,
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          fromVersion: 2,
-          toVersion: 3,
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          fromVersion: 3,
-          toVersion: 4,
-          gaps: [coverageGap],
-        }),
-        expect.objectContaining({
-          fromVersion: 4,
-          toVersion: 5,
-          gaps: [coverageGap],
-        }),
-      ],
+      gap: coverageGap,
     })
 
     const coverageRevision = getLatestPhaseArtifact(ticket.id, 'beads_coverage_revision', 'VERIFYING_BEADS_COVERAGE')

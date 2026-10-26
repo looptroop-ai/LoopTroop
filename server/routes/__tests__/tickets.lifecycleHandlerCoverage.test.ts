@@ -7,7 +7,15 @@ import { opencodeSessions } from '../../db/schema'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { attachProject } from '../../storage/projects'
-import { createTicket, getTicketContext, getTicketByRef, ensureActivePhaseAttempt, patchTicket } from '../../storage/tickets'
+import {
+  createTicket,
+  ensureActivePhaseAttempt,
+  getTicketByRef,
+  getTicketContext,
+  listPhaseArtifacts,
+  listPhaseAttempts,
+  patchTicket,
+} from '../../storage/tickets'
 import { readTicketMeta } from '../../ticket/metadata'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -16,6 +24,8 @@ import { clearAllPendingSessionContinuationsForTests, getPendingSessionContinuat
 import { clearTicketWindows } from '../../workflow/questionWindows'
 import { schedulePendingCancellationCleanupRetry } from '../../workflow/runner'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
+import { readPhaseRetryNote, savePhaseRetryNote } from '../../workflow/retryNotes'
+import { broadcaster } from '../../sse/broadcaster'
 
 const {
   abortTicketSessionsMock,
@@ -347,7 +357,7 @@ describe('ticket lifecycle recovery guards', () => {
     expect(abortTicketSessions).not.toHaveBeenCalled()
   })
 
-  it('reports when a workspace retry session cannot be verified before queuing its note', async () => {
+  it('restarts workspace setup with a note without depending on the previous session being readable', async () => {
     const { app, ticket } = setupRetryApp()
     ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
     insertSetupSession(ticket.id)
@@ -360,16 +370,14 @@ describe('ticket lifecycle recovery guards', () => {
       body: JSON.stringify({ note: 'Inspect the retained workspace.' }),
     })
 
-    expect(response.status).toBe(500)
-    expect(await response.json()).toMatchObject({
-      error: 'Retry with extra note is not available because the workspace setup session could not be verified',
-      details: 'OpenCode unavailable',
-    })
+    expect(response.status).toBe(200)
+    expect(getSessionMock).not.toHaveBeenCalled()
+    expect(readPhaseRetryNote(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe('Inspect the retained workspace.')
     expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBeNull()
-    expect(sendTicketEvent).not.toHaveBeenCalled()
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
   })
 
-  it('refuses a workspace setup retry note when no saved setup session can be recovered', async () => {
+  it('allows a workspace setup retry note without a saved setup session', async () => {
     const { app, ticket } = setupRetryApp()
     ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
     blockTicket(ticket.id, 'PREPARING_EXECUTION_ENV')
@@ -380,11 +388,9 @@ describe('ticket lifecycle recovery guards', () => {
       body: JSON.stringify({ note: 'Inspect the saved workspace first.' }),
     })
 
-    expect(response.status).toBe(409)
-    expect(await response.json()).toMatchObject({
-      error: 'Retry with extra note is not available because the workspace setup session could not be recovered',
-    })
-    expect(sendTicketEvent).not.toHaveBeenCalled()
+    expect(response.status).toBe(200)
+    expect(readPhaseRetryNote(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe('Inspect the saved workspace first.')
+    expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
     expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBeNull()
   })
 
@@ -403,26 +409,47 @@ describe('ticket lifecycle recovery guards', () => {
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
   })
 
-  it('clears the queued workspace retry note if RETRY dispatch fails', async () => {
+  it('keeps rejected workspace retry guidance visible without applying or replacing it', async () => {
     const { app, ticket } = setupRetryApp()
     ensureActivePhaseAttempt(ticket.id, 'PREPARING_EXECUTION_ENV')
+    savePhaseRetryNote(ticket.id, 'PREPARING_EXECUTION_ENV', 'Earlier accepted guidance.')
     insertSetupSession(ticket.id)
     blockTicket(ticket.id, 'PREPARING_EXECUTION_ENV')
     const dispatchError = new Error('actor stopped before retry')
     vi.mocked(sendTicketEvent).mockImplementationOnce(() => { throw dispatchError })
+    const broadcastSpy = vi.spyOn(broadcaster, 'broadcast')
+    const rejectedNote = 'Inspect the retained workspace.'
 
     const response = await app.request(`/api/tickets/${ticket.id}/retry`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: 'Inspect the retained workspace.' }),
+      body: JSON.stringify({ note: rejectedNote }),
     })
 
     expect(response.status).toBe(500)
     expect(await response.json()).toMatchObject({
-      error: 'Failed to retry workspace setup with the extra note',
+      error: 'Failed to retry ticket',
       details: dispatchError.message,
     })
     expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBeNull()
+    expect(readPhaseRetryNote(ticket.id, 'PREPARING_EXECUTION_ENV')).toBe('Earlier accepted guidance.')
+    expect(listPhaseAttempts(ticket.id, 'PREPARING_EXECUTION_ENV')).toEqual([
+      expect.objectContaining({ attemptNumber: 1, state: 'active' }),
+    ])
+    const rejectedArtifact = listPhaseArtifacts(ticket.id, {
+      phase: 'PREPARING_EXECUTION_ENV',
+      phaseAttempt: 2,
+    }).find(artifact => artifact.artifactType === 'user_retry_note')
+    expect(JSON.parse(rejectedArtifact?.content ?? 'null'))
+      .toMatchObject({ note: 'Inspect the retained workspace.', active: false })
+    expect(broadcastSpy).toHaveBeenCalledWith(ticket.id, 'log', expect.objectContaining({
+      phase: 'PREPARING_EXECUTION_ENV',
+      content: expect.stringContaining(rejectedNote),
+      data: expect.objectContaining({
+        phaseAttempt: 1,
+        userRetryNote: rejectedNote,
+      }),
+    }))
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
   })
 
@@ -441,5 +468,36 @@ describe('ticket lifecycle recovery guards', () => {
       details: dispatchError.message,
     })
     expect(getTicketByRef(ticket.id)?.status).toBe('BLOCKED_ERROR')
+    expect(listPhaseAttempts(ticket.id, 'REFINING_PRD')).toEqual([
+      expect.objectContaining({ attemptNumber: 1, state: 'active' }),
+    ])
+  })
+
+  it('keeps a new attempt when failed RETRY dispatch has already created its session', async () => {
+    const { app, ticket } = setupRetryApp()
+    ensureActivePhaseAttempt(ticket.id, 'REFINING_PRD')
+    blockTicket(ticket.id, 'REFINING_PRD')
+    const dispatchError = new Error('actor failed after creating the session')
+    const context = getTicketContext(ticket.id)!
+    sendTicketEventMock.mockImplementationOnce(() => {
+      context.projectDb.insert(opencodeSessions).values({
+        sessionId: 'session-new-attempt',
+        ticketId: context.localTicketId,
+        phase: 'REFINING_PRD',
+        phaseAttempt: 2,
+        state: 'active',
+      }).run()
+      throw dispatchError
+    })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
+
+    expect(response.status).toBe(500)
+    expect(listPhaseAttempts(ticket.id, 'REFINING_PRD')).toEqual([
+      expect.objectContaining({ attemptNumber: 2, state: 'active' }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived' }),
+    ])
+    expect(context.projectDb.select().from(opencodeSessions).all())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ phaseAttempt: 2, state: 'active' })]))
   })
 })

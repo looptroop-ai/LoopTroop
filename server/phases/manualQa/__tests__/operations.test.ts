@@ -1,3 +1,5 @@
+import { readPhaseRetryNote, savePhaseRetryNote } from '../../../workflow/retryNotes'
+import * as fixBeadGeneration from '../fixBeads'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -13,6 +15,9 @@ import {
   insertPhaseArtifact,
   listTickets,
   listPhaseAttempts,
+  archiveActivePhaseAttempts,
+  createFreshPhaseAttempts,
+  resolvePhaseAttempt,
   patchTicket,
   getTicketContext,
   DISPLAY_ONLY_MOCK_BRANCH_NAME,
@@ -23,7 +28,7 @@ import {
   captureFinalTestDirtyFiles,
 } from '../../finalTest/fileEffectsAudit'
 import { prepareManualQaCheckpoint } from '../checkpoint'
-import { detectManualQaWorkspaceDrift, reserveManualQaSubmissionOperation, skipManualQa, submitManualQa } from '../operations'
+import { detectManualQaWorkspaceDrift, requestManualQaSubmissionRecovery, reserveManualQaSubmissionOperation, resumeFailedManualQaSubmission, skipManualQa, submitManualQa } from '../operations'
 import {
   getManualQaChecklistHash,
   getManualQaStoragePaths,
@@ -127,6 +132,18 @@ function prepareFixture(items = [checklistItem('item-one')]) {
   const paths = getTicketPaths(ticket.id)
   if (!paths) throw new Error('Expected ticket paths for the display-only fixture')
   return finishFixture({ ticket, paths }, items)
+}
+
+async function expectFailedFixGeneration(setup: ReturnType<typeof prepareFixture>, message: string) {
+  setup.draft.results[0] = { ...setup.draft.results[0]!, outcome: 'fail', observation: 'The submitted failure.' }
+  await expect(submitManualQa({
+    ticketId: setup.ticket.id,
+    version: 1,
+    draft: setup.draft,
+    guard: setup.guard,
+    sendEvent: vi.fn(),
+    generateFixBeads: async () => { throw new Error(message) },
+  })).rejects.toThrow(message)
 }
 
 async function prepareWorkspaceFixture(items = [checklistItem('item-one')]) {
@@ -774,6 +791,189 @@ describe('Manual QA submission recovery and integrity', () => {
     expect(readManualQaResults(setup.paths.ticketDir, 1)?.submittedAt).toBe('2026-07-13T12:00:00.000Z')
   })
 
+  it('waits for human input when no failed Manual QA submission exists', async () => {
+    const setup = await prepareFixture()
+    const generate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates')
+    try {
+      const sendEvent = vi.fn()
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).not.toHaveBeenCalled()
+      expect(sendEvent).not.toHaveBeenCalled()
+    } finally {
+      generate.mockRestore()
+    }
+  })
+
+  it('keeps an explicit recovery request pending when its phase is already cancelled', async () => {
+    const setup = await prepareFixture()
+    await expectFailedFixGeneration(setup, 'Model timed out')
+    const originalResults = readManualQaResults(setup.paths.ticketDir, 1)
+    requestManualQaSubmissionRecovery(setup.ticket.id)
+    const controller = new AbortController()
+    controller.abort()
+    const sendEvent = vi.fn()
+
+    await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent, controller.signal)
+
+    expect(getLatestPhaseArtifact(setup.ticket.id, 'manual_qa_recovery_requested', 'WAITING_MANUAL_QA')?.content)
+      .toBe(JSON.stringify({ requested: true }))
+    expect(readManualQaResults(setup.paths.ticketDir, 1)).toEqual(originalResults)
+    expect(sendEvent).not.toHaveBeenCalled()
+  })
+
+  it('leaves a recovery request untouched after the ticket has left Manual QA', async () => {
+    const setup = await prepareFixture()
+    await expectFailedFixGeneration(setup, 'Model timed out')
+    const originalResults = readManualQaResults(setup.paths.ticketDir, 1)
+    requestManualQaSubmissionRecovery(setup.ticket.id)
+    patchTicket(setup.ticket.id, { status: 'CODING' })
+    const sendEvent = vi.fn()
+
+    await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+
+    expect(getLatestPhaseArtifact(setup.ticket.id, 'manual_qa_recovery_requested', 'WAITING_MANUAL_QA')?.content)
+      .toBe(JSON.stringify({ requested: true }))
+    expect(readManualQaResults(setup.paths.ticketDir, 1)).toEqual(originalResults)
+    expect(sendEvent).not.toHaveBeenCalled()
+  })
+
+  it('recovers the completed latest round on its current attempt after an earlier round failed', async () => {
+    const setup = await prepareFixture()
+    await expectFailedFixGeneration(setup, 'Model timed out')
+    archiveActivePhaseAttempts(setup.ticket.id, ['WAITING_MANUAL_QA'], 'manual_qa_next_round')
+    createFreshPhaseAttempts(setup.ticket.id, ['WAITING_MANUAL_QA'])
+    const phaseAttempt = resolvePhaseAttempt(setup.ticket.id, 'WAITING_MANUAL_QA')
+    const secondVersion = 2
+    const secondActionId = 'submit-second-round'
+    const secondSummary = { ...terminalSummary(setup, 'passed'), version: secondVersion }
+    const secondOperationPath = getManualQaStoragePaths(setup.paths.ticketDir, secondVersion).operationPath
+    const secondJournal = reserveManualQaSubmissionOperation({
+      ticketDir: setup.paths.ticketDir,
+      path: secondOperationPath,
+      actionId: secondActionId,
+      operationType: 'submit',
+      ticketId: setup.ticket.id,
+      version: secondVersion,
+      checklistHash: setup.guard.expectedChecklistHash,
+      draftRevision: setup.guard.expectedDraftRevision,
+    })
+    writeFileSync(secondOperationPath, JSON.stringify({
+      ...secondJournal,
+      state: 'complete',
+      sourcePhaseAttempts: { WAITING_MANUAL_QA: phaseAttempt },
+    }, null, 2))
+    persistManualQaSummary(setup.paths.ticketDir, secondSummary)
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'WAITING_MANUAL_QA',
+      phaseAttempt,
+      artifactType: 'manual_qa_summary',
+      content: JSON.stringify({ version: secondVersion, outcome: 'passed' }),
+    })
+    const sendEvent = vi.fn()
+
+    await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_COMPLETE' })
+    expect(JSON.parse(getLatestPhaseArtifact(
+      setup.ticket.id,
+      'manual_qa_summary',
+      'WAITING_MANUAL_QA',
+      phaseAttempt,
+    )!.content)).toMatchObject({ version: secondVersion, outcome: 'passed' })
+  })
+
+  it('does not recover an old completed round on a fresh Manual QA attempt', async () => {
+    const setup = await prepareFixture()
+    createFreshPhaseAttempts(setup.ticket.id, ['WAITING_MANUAL_QA'])
+    const oldAttempt = resolvePhaseAttempt(setup.ticket.id, 'WAITING_MANUAL_QA')
+    persistManualQaSummary(setup.paths.ticketDir, terminalSummary(setup, 'passed'))
+    const oldOperationPath = getManualQaStoragePaths(setup.paths.ticketDir, 1).operationPath
+    const oldJournal = reserveManualQaSubmissionOperation({
+      ticketDir: setup.paths.ticketDir,
+      path: oldOperationPath,
+      actionId: setup.guard.actionId,
+      operationType: 'submit',
+      ticketId: setup.ticket.id,
+      version: 1,
+      checklistHash: setup.guard.expectedChecklistHash,
+      draftRevision: setup.guard.expectedDraftRevision,
+    })
+    writeFileSync(oldOperationPath, JSON.stringify({
+      ...oldJournal,
+      state: 'complete',
+      sourcePhaseAttempts: { WAITING_MANUAL_QA: oldAttempt },
+    }, null, 2))
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'WAITING_MANUAL_QA',
+      phaseAttempt: oldAttempt,
+      artifactType: 'manual_qa_summary',
+      content: JSON.stringify({ version: 1, outcome: 'passed' }),
+    })
+    archiveActivePhaseAttempts(setup.ticket.id, ['WAITING_MANUAL_QA'], 'manual_qa_new_attempt')
+    createFreshPhaseAttempts(setup.ticket.id, ['WAITING_MANUAL_QA'])
+    const sendEvent = vi.fn()
+
+    await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+
+    expect(sendEvent).not.toHaveBeenCalled()
+  })
+
+  it('retries failed Manual QA generation from the submitted results despite a newer autosave', async () => {
+    const setup = await prepareFixture()
+    await expectFailedFixGeneration(setup, 'Model timed out')
+    const originalResults = readManualQaResults(setup.paths.ticketDir, 1)
+    const idleGenerate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates')
+    await resumeFailedManualQaSubmission(setup.ticket.id, vi.fn())
+    expect(idleGenerate).not.toHaveBeenCalled()
+    idleGenerate.mockRestore()
+    requestManualQaSubmissionRecovery(setup.ticket.id)
+    savePhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA', 'Keep this guidance scoped to these failed checks.')
+    insertPhaseArtifact(setup.ticket.id, {
+      phase: 'UI_STATE', artifactType: 'ui_state:manual_qa_draft:v1',
+      content: JSON.stringify({ revision: 2, data: { ...setup.draft, results: [] } }),
+    })
+    const generate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates').mockResolvedValue([{
+      groupId: 'item:item-one', title: 'Repair item one', description: 'Correct the failed behavior.', prdRefs: [],
+      contextGuidance: { patterns: ['Follow existing boundaries.'], anti_patterns: ['Do not hide the failure.'] },
+      acceptanceCriteria: ['Item one works.'], tests: ['Check the failed behavior.'], testCommands: [],
+      testCommandReason: 'Manual verification applies.', labels: ['manual-qa'], blockedByGroupIds: [], targetFiles: [],
+    }])
+    try {
+      const sendEvent = vi.fn()
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).toHaveBeenCalledWith(expect.objectContaining({
+        draft: expect.objectContaining({ results: [expect.objectContaining({ observation: 'The submitted failure.' })] }),
+      }))
+      expect(readManualQaResults(setup.paths.ticketDir, 1)).toEqual(originalResults)
+      expect(readPhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA')).toBeUndefined()
+      expect(sendEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_FIXES_CREATED' })
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).toHaveBeenCalledTimes(1)
+    } finally {
+      generate.mockRestore()
+    }
+  })
+
+  it('retains guidance after a failed explicit replay without automatically replaying it again', async () => {
+    const setup = await prepareFixture()
+    await expectFailedFixGeneration(setup, 'Initial timeout')
+    savePhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA', 'Keep the submitted failure in scope.')
+    requestManualQaSubmissionRecovery(setup.ticket.id)
+    const generate = vi.spyOn(fixBeadGeneration, 'generateManualQaFixBeadCandidates').mockRejectedValue(new Error('Retry timeout'))
+    try {
+      const sendEvent = vi.fn()
+      await expect(resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)).rejects.toMatchObject({
+        message: 'Retry timeout', code: 'MANUAL_QA_FIX_BEADS_FAILED', manualQaErrorReported: true,
+      })
+      expect(sendEvent).toHaveBeenCalledTimes(1)
+      expect(readPhaseRetryNote(setup.ticket.id, 'WAITING_MANUAL_QA')).toBe('Keep the submitted failure in scope.')
+      await resumeFailedManualQaSubmission(setup.ticket.id, sendEvent)
+      expect(generate).toHaveBeenCalledTimes(1)
+    } finally {
+      generate.mockRestore()
+    }
+  })
+
   it('keeps the submitted snapshot when a newer autosave exists', async () => {
     const setup = await prepareFixture()
     insertPhaseArtifact(setup.ticket.id, {
@@ -1161,6 +1361,15 @@ describe('Manual QA submission recovery and integrity', () => {
       priority: 4,
       manualQaEnabled: false,
     }]
+    const generationError = Object.assign(new Error('invalid candidate'), {
+      blockedErrorDiagnostics: {
+        kind: 'timeout' as const,
+        source: 'opencode' as const,
+        summary: 'OpenCode request timed out.',
+        sessionId: 'manual-qa-fix-session',
+      },
+      blockedErrorCodes: ['OPENCODE_TIMEOUT'],
+    })
     const sendEvent = vi.fn()
 
     await expect(submitManualQa({
@@ -1169,12 +1378,13 @@ describe('Manual QA submission recovery and integrity', () => {
       draft: setup.draft,
       guard: setup.guard,
       sendEvent,
-      generateFixBeads: async () => { throw new Error('invalid candidate') },
+      generateFixBeads: async () => { throw generationError },
     })).rejects.toThrow('invalid candidate')
 
     expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: 'ERROR',
-      codes: ['MANUAL_QA_FIX_BEADS_FAILED'],
+      codes: ['MANUAL_QA_FIX_BEADS_FAILED', 'OPENCODE_TIMEOUT'],
+      diagnostics: expect.objectContaining({ sessionId: 'manual-qa-fix-session' }),
     }))
     expect(readJsonl<Bead>(setup.paths.beadsPath).filter((bead) => bead.qaOrigin)).toEqual([])
     expect(listTickets(setup.ticket.projectId).filter((entry) => entry.manualQaOrigin)).toEqual([])

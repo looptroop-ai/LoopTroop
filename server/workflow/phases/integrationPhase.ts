@@ -181,7 +181,7 @@ export async function handleIntegration(
     finalTestFilesToStage,
   )
 
-  if (squash.success) {
+  if (squash.success && !squash.noChanges) {
     emitPhaseLog(ticketId, context.externalId, 'INTEGRATING_CHANGES', 'info',
       `Squashed ${squash.commitCount ?? '?'} commit(s) into candidate ${squash.commitHash}`,
       { source: 'system', audience: 'all' })
@@ -201,13 +201,16 @@ export async function handleIntegration(
     mergeBase: squash.mergeBase ?? null,
     commitCount: squash.commitCount ?? null,
     pushed: false,
-    pushDeferred: squash.success,
+    pushDeferred: squash.success && !squash.noChanges,
+    noRepositoryChanges: squash.noChanges === true,
     pushError: null,
     ...(earlyMergeCorrectionBranch ? { earlyMergeCorrectionBranch } : {}),
     manualQa: readManualQaDeliverySummary(ticketId),
     gitHookValidation: hookValidation,
     hookEvidenceDrift,
-    message: squash.success
+    message: squash.noChanges
+      ? 'Integration completed without repository changes. No pull request is needed.'
+      : squash.success
       ? 'Integration phase completed. Draft pull request creation is next.'
       : squash.message,
   }
@@ -221,6 +224,14 @@ export async function handleIntegration(
     emitPhaseLog(ticketId, context.externalId, 'INTEGRATING_CHANGES', 'error',
       `Integration failed: ${squash.message}`, { source: 'system', audience: 'all' })
     throw new Error(squash.message)
+  }
+
+  if (signal?.aborted) throw new CancelledError(ticketId)
+  if (squash.noChanges) {
+    emitPhaseLog(ticketId, context.externalId, 'INTEGRATING_CHANGES', 'info', report.message,
+      { source: 'system', audience: 'all' })
+    sendEvent({ type: 'INTEGRATION_NO_CHANGES' })
+    return
   }
 
   emitPhaseLog(ticketId, context.externalId, 'INTEGRATING_CHANGES', 'info',

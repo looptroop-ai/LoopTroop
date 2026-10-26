@@ -224,6 +224,38 @@ items:
     expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
   })
 
+  it('marks external targets on the affected bead in the approval artifact', () => {
+    render(<BeadsDraftView content={JSON.stringify([
+      { id: 'external', title: 'Check external configuration', targetFiles: ['/home/user/config.json'] },
+      { id: 'internal', title: 'Update project', targetFiles: ['src/app.txt'] },
+    ])} />)
+    expect(within(screen.getByRole('button', { name: /Check external configuration/ })).getByText('External files')).toBeInTheDocument()
+    expect(within(screen.getByRole('button', { name: /Update project/ })).queryByText('External files')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Check external configuration/ }))
+    expect(screen.getByText('/home/user/config.json')).toBeInTheDocument()
+  })
+
+  it('uses server-resolved external target metadata only for matching targets', () => {
+    render(<BeadsDraftView content={JSON.stringify([
+      {
+        id: 'linked', title: 'Check linked configuration', targetFiles: ['linked/config.json'],
+        externalTargetFiles: ['linked/config.json'],
+      },
+      {
+        id: 'local', title: 'Update local project', targetFiles: ['src/app.ts'],
+        externalTargetFiles: ['linked/config.json'],
+      },
+      {
+        id: 'malformed', title: 'Keep malformed metadata harmless', targetFiles: ['src/other.ts'],
+        externalTargetFiles: { stale: true },
+      },
+    ])} />)
+
+    expect(within(screen.getByRole('button', { name: /Check linked configuration/ })).getByText('External files')).toBeInTheDocument()
+    expect(within(screen.getByRole('button', { name: /Update local project/ })).queryByText('External files')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('button', { name: /Keep malformed metadata harmless/ })).queryByText('External files')).not.toBeInTheDocument()
+  })
+
   it('shows Manual QA provenance in bead artifacts while keeping retry notes separate', () => {
     render(<BeadsDraftView content={JSON.stringify({ beads: [{
       id: 'QA-v2-1', title: 'Fix checkout', priority: 1, status: 'pending', notes: 'Retry note',
@@ -1695,11 +1727,11 @@ items:
 
   it('pairs equal-length expansion rows by position when execution ids are renamed', () => {
     const semanticPlanContent = JSON.stringify([
-      { id: 'plan-first', title: 'First expansion' },
-      { id: 'plan-second', title: 'Second expansion' },
+      { id: 'plan-first', title: 'First expansion', targetFiles: ['../shared/config.json'] },
+      { id: 'plan-second', title: 'Second expansion', targetFiles: ['src/second.ts'] },
     ])
     const expandedContent = JSON.stringify([
-      { id: 'run-first', title: 'First expansion', issueType: 'task', labels: ['first'], targetFiles: ['src/first.ts'], priority: 1, status: 'pending' },
+      { id: 'run-first', title: 'First expansion', issueType: 'task', labels: ['first'], targetFiles: ['../shared/config.json'], priority: 1, status: 'pending' },
       { id: 'run-second', title: 'Second expansion', issueType: 'task', labels: ['second'], targetFiles: ['src/second.ts'], priority: 2, status: 'pending' },
     ])
 
@@ -1716,6 +1748,7 @@ items:
     expect(screen.getByText('plan-first -> run-first')).toBeInTheDocument()
     expect(screen.getByText('plan-second -> run-second')).toBeInTheDocument()
     expect(screen.getByText(/Expansion added 12 execution fields across 2 beads\./)).toBeInTheDocument()
+    expect(screen.getByRole('note', { name: 'External files: ../shared/config.json' })).toBeInTheDocument()
   })
 
   it('pairs unequal-length expansion rows by matching plan ids', () => {

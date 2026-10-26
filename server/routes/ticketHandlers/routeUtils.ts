@@ -22,6 +22,13 @@ import {
   renewInterviewBatchClaim,
 } from '../../workflow/runner'
 import {
+  claimInterviewBatchAfterConfirmedStop,
+  claimInterviewBatchStopRecovery,
+  getPendingInterviewBatchStop,
+  releaseInterviewBatchStopRecovery,
+  type InterviewBatchStopKind,
+} from '../../workflow/phases/interviewPhase'
+import {
   archiveActivePhaseAttempts,
   createFreshPhaseAttempts,
   ensureActivePhaseAttempt,
@@ -37,6 +44,7 @@ import {
   type PublicTicketPhaseAttemptRow,
 } from '../../storage/tickets'
 import { clearExecutionSetupRuntimeArtifacts } from '../../phases/executionSetup/storage'
+import { expirePhaseRetryNote } from '../../workflow/retryNotes'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export { buildExecutionBandConflictMessage } from '../../workflow/executionBand'
@@ -185,6 +193,41 @@ export function releasePlanningEdit(ticketId: string, token: string): void {
   releaseInterviewBatch(ticketId, token)
 }
 
+export interface LifecycleRecoveryClaim {
+  token: string
+  pendingInterviewStop: InterviewBatchStopKind | null
+}
+
+/** Takes an exact pending-stop reservation before lifecycle recovery waits on OpenCode. */
+export function claimLifecycleRecovery(ticketId: string): LifecycleRecoveryClaim | null {
+  const claim = claimPlanningEdit(ticketId)
+  if (claim) return { token: claim, pendingInterviewStop: null }
+
+  const pendingInterviewStop = getPendingInterviewBatchStop(ticketId)
+  if (!pendingInterviewStop) return null
+  const token = claimInterviewBatchStopRecovery(ticketId, pendingInterviewStop)
+  return token ? { token, pendingInterviewStop } : null
+}
+
+/** Promotes a pending-stop reservation only after the caller confirmed the remote stop. */
+export function confirmLifecycleRecoveryStop(ticketId: string, claim: LifecycleRecoveryClaim): boolean {
+  if (!claim.pendingInterviewStop) return true
+  const token = claimInterviewBatchAfterConfirmedStop(ticketId, claim.pendingInterviewStop, claim.token)
+  if (!token) return false
+  claim.token = token
+  claim.pendingInterviewStop = null
+  return true
+}
+
+/** Keeps an unconfirmed stop pending, while releasing only this recovery's reservation. */
+export function releaseLifecycleRecovery(ticketId: string, claim: LifecycleRecoveryClaim): void {
+  if (claim.pendingInterviewStop) {
+    releaseInterviewBatchStopRecovery(ticketId, claim.token)
+    return
+  }
+  releasePlanningEdit(ticketId, claim.token)
+}
+
 export class PlanningEditClaimLostError extends Error {
   constructor() {
     super('Planning edit ownership was lost before restart side effects could be applied')
@@ -258,6 +301,7 @@ export async function prepareExecutionSetupPlanRestart(ticketId: string): Promis
   clearContextCache(ticketId)
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
+  expirePhaseRetryNote(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES, restartReason)
   const createdAttempts = createFreshPhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES)
   ensureActorForTicket(ticketId)
@@ -283,6 +327,8 @@ export async function prepareExecutionSetupRuntimeRewind(
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
   ensureActivePhaseAttempt(ticketId, 'PREPARING_EXECUTION_ENV')
+  expirePhaseRetryNote(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
+  expirePhaseRetryNote(ticketId, 'PREPARING_EXECUTION_ENV')
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, EXECUTION_SETUP_RUNTIME_REWIND_PHASES, restartReason)
   const createdAttempts = createFreshPhaseAttempts(ticketId, ['WAITING_EXECUTION_SETUP_APPROVAL'])
   const removedFiles = clearExecutionSetupRuntimeArtifacts(ticketId, { preserveToolCache: true })
@@ -323,6 +369,8 @@ export async function prepareExecutionSetupRuntimeRegeneration(
   ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
   ensureActivePhaseAttempt(ticketId, 'PREPARING_EXECUTION_ENV')
+  expirePhaseRetryNote(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
+  expirePhaseRetryNote(ticketId, 'PREPARING_EXECUTION_ENV')
   const archivedAttempts = archiveActivePhaseAttempts(
     ticketId,
     EXECUTION_SETUP_RUNTIME_REWIND_PHASES,

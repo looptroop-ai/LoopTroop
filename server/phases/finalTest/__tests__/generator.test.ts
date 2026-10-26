@@ -1,40 +1,20 @@
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
 import { resolveOpenCodePermissions } from '../../../opencode/toolPolicy'
+import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+import { listOpenCodeSessionsForTicket } from '../../../opencode/sessionManager'
 import { patchTicket } from '../../../storage/tickets'
+import { archiveActivePhaseAttempts, createFreshPhaseAttempts, ensureActivePhaseAttempt } from '../../../storage/ticketPhaseAttempts'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
+import { recordTimeoutAndExpectContinuation } from '../../../test/openCodeContinuation'
+import { SequencedMockOpenCodeAdapter, StructuredRetryTimeoutAdapter } from '../../../test/openCodeAdapters'
 import { generateFinalTests } from '../generator'
 import type { OpenCodePromptDispatchEvent } from '../../../workflow/runOpenCodePrompt'
 import { detectHostContext } from '../../../lib/hostContext'
 import { normalizeCommandSpec } from '@shared/commandSpec'
 
 const LEGACY_TEST_COMMAND = normalizeCommandSpec('npm run test:server', detectHostContext())
-
-class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
-  private promptCounts = new Map<string, number>()
-
-  override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>) {
-    const sessionId = args[0]
-    const nextCount = (this.promptCounts.get(sessionId) ?? 0) + 1
-    this.promptCounts.set(sessionId, nextCount)
-
-    const queuedResponse = this.mockResponses.get(`${sessionId}#${nextCount}`)
-    if (queuedResponse !== undefined) {
-      this.mockResponses.set(sessionId, queuedResponse)
-    }
-    const queuedStreamEvents = this.mockStreamEvents.get(`${sessionId}#${nextCount}`)
-    if (queuedStreamEvents !== undefined) {
-      this.mockStreamEvents.set(sessionId, queuedStreamEvents)
-    }
-    const queuedAssistantInfo = this.mockAssistantInfos.get(`${sessionId}#${nextCount}`)
-    if (queuedAssistantInfo !== undefined) {
-      this.mockAssistantInfos.set(sessionId, queuedAssistantInfo)
-    }
-
-    return await super.promptSession(...args)
-  }
-}
 
 class HangingPromptAdapter extends MockOpenCodeAdapter {
   override async promptSession(...args: Parameters<MockOpenCodeAdapter['promptSession']>): Promise<string> {
@@ -55,6 +35,8 @@ class HangingPromptAdapter extends MockOpenCodeAdapter {
 const repoManager = createTestRepoManager('final-test-generator-')
 
 describe('generateFinalTests', () => {
+  beforeEach(() => resetTestDb())
+
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
@@ -129,6 +111,50 @@ describe('generateFinalTests', () => {
       expect(call.options?.permissionGuard).toBe(true)
     }
   })
+
+  it.each([['initial prompt', 1], ['structured retry', 2]] as const)(
+    'keeps a timed-out %s session available to Continue', async (_stage, timeoutOnPrompt) => {
+      resetTestDb()
+      const { ticket, paths } = await createInitializedTestTicket(repoManager, {
+        title: 'Continue final-test retry timeout',
+      })
+      patchTicket(ticket.id, { status: 'RUNNING_FINAL_TEST' })
+      ensureActivePhaseAttempt(ticket.id, 'RUNNING_FINAL_TEST')
+      for (let attempt = 1; attempt < 3; attempt += 1) {
+        archiveActivePhaseAttempts(ticket.id, ['RUNNING_FINAL_TEST'], 'retry')
+        createFreshPhaseAttempts(ticket.id, ['RUNNING_FINAL_TEST'])
+      }
+      const adapter = new StructuredRetryTimeoutAdapter('invalid final-test response', timeoutOnPrompt)
+      let failure: unknown
+
+      try {
+        await generateFinalTests(
+          adapter,
+          [{ type: 'text', content: 'Ticket context' }],
+          paths.worktreePath,
+          undefined,
+          { ticketId: ticket.id, model: 'model-a', iteration: 2 },
+        )
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toMatchObject({
+        message: 'Timeout',
+        blockedErrorDiagnostics: expect.objectContaining({ kind: 'timeout', sessionId: 'mock-session-1' }),
+      })
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toMatchObject([
+        { sessionId: 'mock-session-1', phaseAttempt: 3, iteration: 2 },
+      ])
+      const diagnostics = (failure as Error & { blockedErrorDiagnostics?: BlockedErrorDiagnostics }).blockedErrorDiagnostics
+      recordTimeoutAndExpectContinuation({
+        ticketId: ticket.id,
+        previousStatus: 'RUNNING_FINAL_TEST',
+        sessionId: 'mock-session-1',
+        diagnostics,
+      })
+    },
+  )
 
   it('restarts final test generation in a fresh session after an empty response', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()

@@ -150,6 +150,18 @@ describe('Pre-Flight Doctor', () => {
       .toHaveBeenCalledWith('mock-session-1')
   })
 
+  it('includes the unchanged retry note when repeating the AI capability check', async () => {
+    const note = 'Use the configured provider.\nKeep this exact wording.'
+    deps.getLatestPhaseArtifact = vi.fn((_ticketId, artifactType) => artifactType === 'user_retry_note' ? {
+      ...approvalReceipt, phase: 'PRE_FLIGHT_CHECK',
+      artifactType: 'user_retry_note', content: JSON.stringify({ note }),
+    } : approvalReceipt)
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [makeBead()], defaultContext, undefined, deps)
+    expect(report.checks.find(check => check.name === 'OpenCode Execution Capability')?.result).toBe('pass')
+    expect(adapter.promptCalls[0]?.parts).toContainEqual({ type: 'text', content: `## User Retry Note\n${note}` })
+    expect(deps.getLatestPhaseArtifact).toHaveBeenCalledWith(TEST.ticketId, 'user_retry_note', 'PRE_FLIGHT_CHECK')
+  })
+
   it('retries the execution capability probe session before prompting', async () => {
     vi.useFakeTimers()
     try {

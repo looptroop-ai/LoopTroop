@@ -51,6 +51,29 @@ function buildExpandedBeads(subsets: BeadSubset[] = buildSubsetBeads()): Bead[] 
 }
 
 describe.concurrent('validateBeadExpansion', () => {
+  it.each([
+    [],
+    ['C:/Users/User/.config/tool/settings.json'],
+    ['/home/user/.config/tool/settings.json'],
+    ['../shared/settings.json'],
+    ['src/settings.json', '/outside/settings.json'],
+  ].map((targetFiles) => ({ targetFiles })))('accepts explicit target list %j while preserving planned verification', ({ targetFiles }) => {
+    const subsets = buildSubsetBeads()
+    const expanded = buildExpandedBeads(subsets)
+    expanded[0] = { ...expanded[0]!, targetFiles }
+
+    expect(validateBeadExpansion(subsets, expanded)).toEqual([])
+    expect(expanded[0]?.description).toBe(subsets[0]?.description)
+    expect(expanded[0]?.targetFiles).toEqual(targetFiles)
+  })
+
+  it.each([undefined, null, 'src/settings.json', [''], [null], ['file\0name']].map((targetFiles) => ({ targetFiles })))('rejects malformed target list %j', ({ targetFiles }) => {
+    const subsets = buildSubsetBeads()
+    const expanded = buildExpandedBeads(subsets)
+    expanded[0] = { ...expanded[0]!, targetFiles: targetFiles as string[] }
+    expect(() => validateBeadExpansion(subsets, expanded)).toThrow(/targetFiles list|invalid target file path/)
+  })
+
   it('accepts punctuation and whitespace-only drift in narrative preserved fields', () => {
     const subsets = buildSubsetBeads()
     const expanded = buildExpandedBeads(subsets)

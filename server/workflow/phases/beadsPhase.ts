@@ -657,6 +657,7 @@ export async function handleBeadsRefine(
   let refineStructuredMeta = buildStructuredMetadata({ autoRetryCount: 0, repairApplied: false, repairWarnings: [] })
   let validatedChanges: import('@shared/refinementChanges').RefinementChange[] = []
   let refinementResult = null as ValidatedBeadsRefinement | null
+  let steeredByOperator = false
   let refinedContent: string
   let refinementRawAttempts: Awaited<ReturnType<typeof refineDraft>>['rawAttempts'] = []
 
@@ -757,6 +758,7 @@ export async function handleBeadsRefine(
       PROM22.toolPolicy,
       resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
     )
+    steeredByOperator = refinementRun.steeredByOperator === true
     refinedContent = refinementRun.content
     refinementRawAttempts = refinementRun.rawAttempts
   } catch (error) {
@@ -813,12 +815,14 @@ export async function handleBeadsRefine(
     artifactType: 'beads_refined',
     content: JSON.stringify({
       ...beadsRefinedArtifact,
+      ...(steeredByOperator ? { steeredByOperator: true } : {}),
       ...(refinementRawAttempts.length > 0 ? { rawAttempts: refinementRawAttempts } : {}),
     }),
   })
   persistUiArtifactCompanionArtifact(ticketId, 'REFINING_BEADS', 'beads_refined', {
     winnerDraftContent: winnerDraft.content,
     structuredOutput: refineStructuredMeta,
+    ...(steeredByOperator ? { steeredByOperator: true } : {}),
     draftMetrics,
     ...(refinementRawAttempts.length > 0 ? { rawAttempts: refinementRawAttempts } : {}),
   })
@@ -864,6 +868,7 @@ export async function recoverCodingBeadWithReset(
     requireReset?: boolean
     preservePaths?: string[]
     userRetryNote?: string
+    assertCurrent?: () => void
     consumeInterruptedIteration?: {
       failureNote: string
     }
@@ -910,9 +915,11 @@ export async function recoverCodingBeadWithReset(
   } else {
     await resetToBeadStart(options.worktreePath, failedBead.beadStartCommit, {
       preservePaths: options.preservePaths ?? [...WORKTREE_RESET_PRESERVE_PATHS],
+      beforeMutation: options.assertCurrent,
     })
   }
 
+  options.assertCurrent?.()
   return recoverCodingBead(
     ticketId,
     beads,

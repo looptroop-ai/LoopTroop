@@ -304,6 +304,22 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     return mapV2Session(dataOf(body));
   }
 
+  async deleteSession(
+    sessionId: string,
+    _directory?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.request(`/api/session/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        signal,
+        expectedStatus: 204,
+      });
+    } catch (error) {
+      if (!isSessionNotFound(error)) throw error;
+    }
+  }
+
   async updateSession(
     sessionId: string,
     _directory: string | undefined,

@@ -2,6 +2,9 @@ import type { Dispatch, SetStateAction } from 'react'
 import { Plus, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { Separator } from '@/components/ui/separator'
+import { AdvancedSettingRow } from '@/components/settings/AdvancedSettings'
+import { TriStateSetting } from '@/components/settings/TriStateSetting'
 import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
 import { ConfigurationDocsLink } from './ConfigurationDocsLink'
 import { EffortPicker } from './EffortPicker'
@@ -54,6 +57,11 @@ const isRouterModel = (modelId: string, models: OpenCodeModel[] | undefined): bo
   const found = models?.find(model => model.fullId === clean)
   return Boolean(found && found.name.toLowerCase().includes('router'))
 }
+
+const CHAT_SESSION_OPTIONS = [
+  { value: true, label: 'Enabled', tooltip: 'Keep closed conversations in chat history so you can return to them. Applies to new conversations.' },
+  { value: false, label: 'Disabled', tooltip: 'Do not save new conversations in chat history.' },
+]
 
 type ModelsHeaderProps = Pick<ProfileModelsSectionProps, 'modelsFetching' | 'isRefreshingModels' | 'handleReloadModels'>
 
@@ -315,10 +323,67 @@ const CouncilMembersSection = (props: CouncilSectionProps) => {
   )
 }
 
+const ChatModelSection = ({ formData, updateField, modelVariantMap, models, isRefreshingModels }: ProfileModelsSectionProps) => (
+  <div>
+    <Separator className="my-4" />
+    <label className="text-sm font-medium block mb-1" htmlFor="chat-model">Assistant Model</label>
+    <div className="mb-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+      <p className="min-w-0 flex-1">Model used for assistant help and ticket questions. It can also be the main implementer or a council member.</p>
+      <ConfigurationDocsLink
+        docsPath="/configuration#assistant-chat"
+        label="Assistant model"
+        description="Choose the model used for assistant help and ticket questions. Open the assistant chat documentation."
+      />
+    </div>
+    <div className="flex items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <ModelPicker
+          isRefreshing={isRefreshingModels}
+          id="chat-model"
+          label="Assistant Model"
+          value={formData.chatModel ?? ''}
+          onChange={value => {
+            updateField('chatModel', value)
+            updateField('chatModelVariant', null)
+          }}
+        />
+        <ModelOptions
+          modelId={formData.chatModel ?? ''}
+          variant={formData.chatModelVariant ?? undefined}
+          onVariantChange={variant => updateField('chatModelVariant', variant ?? null)}
+          onRoutingChange={modelId => updateField('chatModel', modelId)}
+          modelVariantMap={modelVariantMap}
+          models={models}
+          className="mt-1.5 space-y-1.5"
+        />
+        <AdvancedSettingRow label="Save chat sessions" className="mt-4 border-t border-border pt-4" description="Keep closed conversations in chat history so you can return to them. Applies to new conversations." help={
+          <ConfigurationDocsLink docsPath="/configuration#assistant-chat" label="Save chat sessions" description="Choose whether new assistant conversations are saved to chat history. Open the assistant chat documentation." />
+        }>
+          <TriStateSetting idPrefix="profile-chat-sessions" groupLabel="Save chat sessions" options={CHAT_SESSION_OPTIONS} value={formData.saveChatSessions} onChange={value => updateField('saveChatSessions', value === true)} compact />
+        </AdvancedSettingRow>
+      </div>
+      {formData.chatModel && (
+        <button
+          type="button"
+          aria-label="Clear assistant model"
+          onClick={() => {
+            updateField('chatModel', null)
+            updateField('chatModelVariant', null)
+          }}
+          className="mt-1 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      )}
+    </div>
+  </div>
+)
+
 export const ProfileModelsSection = (props: ProfileModelsSectionProps) => (
   <>
     <ModelsHeader {...props} />
     <MainImplementerSection {...props} />
     <CouncilMembersSection {...props} />
+    <ChatModelSection {...props} />
   </>
 )

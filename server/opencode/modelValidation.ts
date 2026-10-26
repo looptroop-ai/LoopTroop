@@ -15,6 +15,21 @@ function cleanModelId(modelId: string): string {
   return modelId
 }
 
+/** Validate a standalone profile model without applying council membership rules. */
+export async function validateConfiguredModel(modelIdRaw: string | null | undefined): Promise<string | null> {
+  const modelId = typeof modelIdRaw === 'string' ? modelIdRaw.trim() : ''
+  if (!modelId) return null
+
+  const connectedModelIds = new Set(await fetchConnectedModelIds())
+  if (connectedModelIds.size === 0) {
+    throw new Error('No configured OpenCode models are available.')
+  }
+  if (!connectedModelIds.has(cleanModelId(modelId))) {
+    throw new Error(`Selected model is not configured in OpenCode: ${modelId}`)
+  }
+  return modelId
+}
+
 export async function validateModelSelection(
   mainImplementerRaw: string | null | undefined,
   councilMembersRaw: string | null | undefined,

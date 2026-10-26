@@ -9,6 +9,9 @@ interface Profile {
   id: number
   mainImplementer: string | null
   mainImplementerVariant: string | null
+  chatModel: string | null
+  chatModelVariant: string | null
+  saveChatSessions: boolean
   councilMembers: string | null
   councilMemberVariants: string | null
   minCouncilQuorum: number
@@ -41,6 +44,9 @@ interface Profile {
 interface CreateProfileInput {
   mainImplementer?: string
   mainImplementerVariant?: string
+  chatModel?: string | null
+  chatModelVariant?: string | null
+  saveChatSessions?: boolean
   councilMembers?: string
   councilMemberVariants?: string
   minCouncilQuorum?: number

@@ -6,6 +6,9 @@ export const profiles = sqliteTable('profiles', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   mainImplementer: text('main_implementer'),
   mainImplementerVariant: text('main_implementer_variant'),
+  chatModel: text('chat_model'),
+  chatModelVariant: text('chat_model_variant'),
+  saveChatSessions: integer('save_chat_sessions', { mode: 'boolean' }).notNull().default(PROFILE_DEFAULTS.saveChatSessions),
   councilMembers: text('council_members'), // JSON array of model IDs
   councilMemberVariants: text('council_member_variants'), // JSON map: { "provider/model": "variant" }
   manualQaEnabled: integer('manual_qa_enabled', { mode: 'boolean' }).notNull().default(PROFILE_DEFAULTS.manualQaEnabled),

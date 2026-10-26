@@ -79,6 +79,20 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     return this.mapSession(res.data as Record<string, unknown>)
   }
 
+  async deleteSession(sessionId: string, directory?: string, signal?: AbortSignal): Promise<void> {
+    try {
+      const res = this.rejectHttpError(await this.client.session.delete({
+        sessionID: sessionId,
+        ...(directory ? { directory } : {}),
+      }, this.requestOptions(this.withSdkOperationTimeout(signal))))
+      if (res.data !== true && !this.isConfirmedSessionNotFoundResponse(res))
+        throw new Error(`OpenCode did not confirm deletion of session ${sessionId}`)
+    } catch (error) {
+      if (this.isConfirmedSessionNotFoundError(error)) return
+      throw error
+    }
+  }
+
   async updateSession(
     sessionId: string,
     directory: string | undefined,

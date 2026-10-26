@@ -266,6 +266,31 @@ function promptRequest(
 }
 
 describe("OpenCode v2 fetch transport", () => {
+  it("deletes sessions through the v2 API and treats a confirmed missing session as deleted", async () => {
+    let calls = 0;
+    const { transport, requests } = createTransport((request, init) => {
+      calls += 1;
+      assert(init.signal);
+      if (calls === 1) return emptyResponse();
+      if (calls === 2)
+        return jsonResponse({ _tag: "SessionNotFoundError" }, 404);
+      return jsonResponse({ message: "forbidden" }, 401);
+    });
+
+    await expect(transport.deleteSession("session/1", "/workspace")).resolves.toBeUndefined();
+    await expect(transport.deleteSession("session/1", "/workspace")).resolves.toBeUndefined();
+    await expect(transport.deleteSession("session/1", "/workspace")).rejects.toMatchObject({
+      name: "V2OpenCodeHttpError",
+      status: 401,
+    });
+
+    expect(requests.map(({ method, url, body }) => ({ method, path: url.pathname, body }))).toEqual([
+      { method: "DELETE", path: "/api/session/session%2F1", body: undefined },
+      { method: "DELETE", path: "/api/session/session%2F1", body: undefined },
+      { method: "DELETE", path: "/api/session/session%2F1", body: undefined },
+    ]);
+  });
+
   it("reads a session and skips an update when no permission change was requested", async () => {
     const { transport, requests } = createTransport((request) => {
       if (request.url.pathname === "/api/session/session%2F1") {

@@ -17,6 +17,7 @@ import { filesRouter } from './routes/files'
 import { beadsRouter } from './routes/beads'
 import { promptsRouter } from './routes/prompts'
 import { workflowRouter } from './routes/workflow'
+import { chatRouter } from './routes/chat'
 import { validateJson } from './middleware/validation'
 import { createApiRateLimitMiddleware } from './middleware/rateLimit'
 import { createApiAuthMiddleware, API_TOKEN_HEADER } from './middleware/apiAuth'
@@ -303,6 +304,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route('/api', beadsRouter)
   app.route('/api', promptsRouter)
   app.route('/api', workflowRouter)
+  app.route('/api', chatRouter)
 
   // Mounted after the API so a frontend route can never shadow an endpoint.
   //

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { db } from '../db/index'
 import { profiles } from '../db/schema'
 import { eq } from 'drizzle-orm'
-import { validateModelSelection } from '../opencode/modelValidation'
+import { validateConfiguredModel, validateModelSelection } from '../opencode/modelValidation'
 import { parseCouncilMembers } from '../council/members'
 import {
   needsOpenRouterRoutingConfig,
@@ -27,6 +27,9 @@ const profileSchema = z.object({
   aiQuestionWindow: aiQuestionWindowSchema.optional(),
   mainImplementer: z.string().optional(),
   mainImplementerVariant: z.string().optional(),
+  chatModel: z.string().trim().min(1).nullable().optional(),
+  chatModelVariant: z.string().trim().min(1).nullable().optional(),
+  saveChatSessions: z.boolean().optional(),
   councilMembers: z.string().optional(),
   councilMemberVariants: z.string().optional(),
   minCouncilQuorum: z.number().int().min(1).max(6).optional(),
@@ -99,8 +102,10 @@ profileRouter.post('/profile', async (c) => {
     return c.json({ error: 'Invalid input', details: parsed.error.flatten() }, 400)
   }
   let validatedModels
+  let chatModel: string | null = null
   try {
     validatedModels = await validateModelSelection(parsed.data.mainImplementer, parsed.data.councilMembers)
+    if (parsed.data.chatModel !== undefined) chatModel = await validateConfiguredModel(parsed.data.chatModel)
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : 'Invalid model configuration' }, 400)
   }
@@ -109,7 +114,10 @@ profileRouter.post('/profile', async (c) => {
     return c.json({ error: 'Profile already exists. Use PATCH to update.' }, 409)
   }
   try {
-    await registerSelectedRoutingModels(validatedModels.councilMembers)
+    await registerSelectedRoutingModels([
+      ...validatedModels.councilMembers,
+      ...(chatModel ? [chatModel] : []),
+    ])
   } catch (err) {
     return c.json(
       { error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' },
@@ -118,6 +126,7 @@ profileRouter.post('/profile', async (c) => {
   }
   const result = db.insert(profiles).values({
     ...parsed.data,
+    chatModel,
     mainImplementer: validatedModels.mainImplementer,
     councilMembers: JSON.stringify(validatedModels.councilMembers),
   }).returning().get()
@@ -134,6 +143,16 @@ profileRouter.patch('/profile', async (c) => {
   if (!existing) {
     return c.json({ error: 'No profile found' }, 404)
   }
+
+  let chatModelPatch: { chatModel: string | null } | undefined
+  if (parsed.data.chatModel !== undefined) {
+    try {
+      chatModelPatch = { chatModel: await validateConfiguredModel(parsed.data.chatModel) }
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Invalid chat model' }, 400)
+    }
+  }
+  const chatModelChanged = chatModelPatch?.chatModel !== undefined && chatModelPatch.chatModel !== existing.chatModel
 
   const requestedMainImplementer = parsed.data.mainImplementer ?? existing.mainImplementer
   const requestedCouncilMembers = parsed.data.councilMembers ?? existing.councilMembers
@@ -167,9 +186,15 @@ profileRouter.patch('/profile', async (c) => {
       councilMembers: JSON.stringify(normalizedRequested.councilMembers),
     }
   }
+  const chatModelToRegister = chatModelPatch ? chatModelPatch.chatModel : existing.chatModel
 
   try {
-    if (modelSelectionChanged) await registerSelectedRoutingModels(councilMembersToRegister)
+    if (modelSelectionChanged || chatModelChanged) {
+      await registerSelectedRoutingModels([
+        ...councilMembersToRegister,
+        ...(chatModelToRegister ? [chatModelToRegister] : []),
+      ])
+    }
   } catch (err) {
     return c.json(
       { error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' },
@@ -180,6 +205,7 @@ profileRouter.patch('/profile', async (c) => {
   const result = db.update(profiles)
     .set({
       ...parsed.data,
+      ...chatModelPatch,
       ...modelPatch,
       updatedAt: new Date().toISOString(),
     })

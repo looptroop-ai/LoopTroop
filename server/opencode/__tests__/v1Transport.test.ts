@@ -109,6 +109,26 @@ describe('OpenCode v1 transport direct behavior', () => {
     expect(messages).toHaveBeenCalledWith({ sessionID: 'session-1', directory: '/workspace', limit: expect.any(Number) }, expect.any(Object))
   })
 
+  it('deletes sessions through the SDK and requires confirmation', async () => {
+    const remove = vi.fn()
+      .mockResolvedValueOnce({ data: true })
+      .mockResolvedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({ data: false })
+      .mockResolvedValueOnce({ response: { status: 401 } })
+    const sdk = transport({ session: { delete: remove } })
+
+    await expect(sdk.deleteSession('session-1', '/workspace')).resolves.toBeUndefined()
+    await expect(sdk.deleteSession('missing')).resolves.toBeUndefined()
+    await expect(sdk.deleteSession('unconfirmed')).rejects.toThrow('did not confirm deletion')
+    await expect(sdk.deleteSession('unauthorized')).rejects.toThrow('HTTP 401')
+
+    expect(remove).toHaveBeenNthCalledWith(1, {
+      sessionID: 'session-1',
+      directory: '/workspace',
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(remove).toHaveBeenNthCalledWith(2, { sessionID: 'missing' }, expect.anything())
+  })
+
   it('partitions prompts, forwards request options, and rejects unconfirmed SDK responses', async () => {
     const prompt = vi.fn()
       .mockResolvedValueOnce({ data: { info: { id: 'assistant-1', role: 'assistant' }, parts: [{ type: 'text', text: 'answer' }] } })

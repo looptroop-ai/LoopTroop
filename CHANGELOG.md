@@ -11,11 +11,18 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
+- Ask LoopTroop for help or discuss ticket history and project code in a read-only assistant, with a separate model and optional saved conversations.
 - Beads support external file targets with visible warnings and explicit empty targets; tickets with no repository changes finish without an empty commit or PR.
 - Retry starts failed AI work in a fresh session, with optional user guidance across supported AI steps; Continue preserves the existing conversation.
 - Model-generated YAML values beginning with `,`, `]`, or `}` now parse without changing their text.
 - AI workflow prompts receive shared delivery guidance, while the request guard refuses direct GitHub and remote Git writes.
 - LoopTroop verifies early-merged ticket PRs and safely returns remaining work through review.
+
+### Added
+
+- Add a shared assistant window on the dashboard and inside tickets. Help uses official documentation and LoopTroop source; ticket questions cover every project from the dashboard or the selected ticket's records, saved logs, planning documents, and project code. Answers can cite their evidence and report missing or omitted sources.
+- Configure the assistant model separately below the council settings, with the existing model, effort, and routing controls. Save chat sessions is enabled by default and applies to new conversations. Closing a conversation archives it when saving is enabled or deletes its OpenCode session otherwise; hiding the window preserves open conversations. Search saved history across scopes and open the matching ticket before resuming another ticket's chat.
+- Keep assistant conversations separate from workflow sessions and deny editing, shell commands, workflow actions, and reads outside prepared evidence. Repository snapshots skip private paths, generated files, and symbolic links; saved log evidence is redacted and paged through the full available history. Archived conversations remain available while OpenCode retains their sessions.
 
 ### Fixed
 - Keep retry-note history when ordinary Retry retires guidance or Manual QA recovery succeeds. Preserve council guidance notices through Continue and refinement, discard saved Full Answers when a model is stopped or Part 1 is restarted, and keep phase retry notes on the failed PRD part, including workflow timeouts. Recheck coding recovery ownership before reset, cleanup, and bead updates. Recover aged interview stop reservations without bypassing remote-stop confirmation, and block owned unexpected interview request failures while preserving submitted answers. Hold interview ownership through terminal route handling so stale failures cannot block identical successor submissions.

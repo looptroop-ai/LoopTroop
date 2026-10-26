@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchConnectedModelIds } from '../providerCatalog'
-import { MAX_COUNCIL_MEMBERS, validateModelSelection } from '../modelValidation'
+import { MAX_COUNCIL_MEMBERS, validateConfiguredModel, validateModelSelection } from '../modelValidation'
 
 vi.mock('../providerCatalog', () => ({
   fetchConnectedModelIds: vi.fn(),
@@ -67,5 +67,31 @@ describe('validateModelSelection', () => {
         'provider/reviewer',
       ],
     })
+  })
+})
+
+describe('validateConfiguredModel', () => {
+  beforeEach(() => {
+    vi.mocked(fetchConnectedModelIds).mockResolvedValue(models)
+  })
+
+  it('accepts any configured model without applying council uniqueness rules', async () => {
+    await expect(validateConfiguredModel(models[0])).resolves.toBe(models[0])
+  })
+
+  it('validates OpenRouter routing suffixes against the configured base model', async () => {
+    vi.mocked(fetchConnectedModelIds).mockResolvedValue(['openrouter/deepseek/deepseek-v4-flash'])
+
+    await expect(validateConfiguredModel(' openrouter/deepseek/deepseek-v4-flash:floor '))
+      .resolves.toBe('openrouter/deepseek/deepseek-v4-flash:floor')
+  })
+
+  it('rejects a model missing from the connected catalog and skips lookup when unset', async () => {
+    await expect(validateConfiguredModel('provider/unknown'))
+      .rejects.toThrow('Selected model is not configured in OpenCode: provider/unknown')
+
+    vi.mocked(fetchConnectedModelIds).mockClear()
+    await expect(validateConfiguredModel(null)).resolves.toBeNull()
+    expect(fetchConnectedModelIds).not.toHaveBeenCalled()
   })
 })

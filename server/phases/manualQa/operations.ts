@@ -85,7 +85,7 @@ import {
   mergeErrorCodes,
 } from '../../opencode/blockedErrorDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
-import { readPhaseRetryNote, savePhaseRetryNote } from '../../workflow/retryNotes'
+import { readPhaseRetryNote, expirePhaseRetryNote } from '../../workflow/retryNotes'
 import { isCancellationError } from '../../lib/abort'
 
 export interface ManualQaMutationGuard {
@@ -1100,7 +1100,7 @@ export async function resumeFailedManualQaSubmission(
       summary,
       sendEvent,
     })
-    savePhaseRetryNote(ticketId, 'WAITING_MANUAL_QA', undefined)
+    expirePhaseRetryNote(ticketId, 'WAITING_MANUAL_QA')
     return
   }
   if (!requested || summary?.outcome !== 'failed') return
@@ -1124,7 +1124,7 @@ export async function resumeFailedManualQaSubmission(
     }
     throw error
   }
-  savePhaseRetryNote(ticketId, 'WAITING_MANUAL_QA', undefined)
+  expirePhaseRetryNote(ticketId, 'WAITING_MANUAL_QA')
 }
 
 export async function submitManualQa(input: {

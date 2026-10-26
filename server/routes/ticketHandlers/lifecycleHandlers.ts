@@ -1006,7 +1006,7 @@ export async function handleRetryTicket(c: Context) {
     }
 
     let retryStep: string | undefined
-    if (['CREATING_PULL_REQUEST', 'VERIFYING_PRD_COVERAGE', 'VERIFYING_BEADS_COVERAGE'].includes(currentTicket.previousStatus)) {
+    if (['DRAFTING_PRD', 'CREATING_PULL_REQUEST', 'VERIFYING_PRD_COVERAGE', 'VERIFYING_BEADS_COVERAGE'].includes(currentTicket.previousStatus)) {
       const failedSessionId = currentTicket.errorOccurrences.find(error => error.id === currentTicket.activeErrorOccurrenceId)?.diagnostics?.sessionId
       if (typeof failedSessionId === 'string' && failedSessionId.trim()) {
         const attempt = getActivePhaseAttempt(ticketId, currentTicket.previousStatus) ?? 1
@@ -1062,6 +1062,10 @@ export async function handleRetryTicket(c: Context) {
           worktreePath: paths.worktreePath,
           requireReset: true,
           userRetryNote,
+          assertCurrent: () => {
+            assertPlanningEditClaim(ticketId, recoveryClaim.token)
+            if (!failureStillCurrent()) throw new Error('The blocked error changed before recovery could be applied')
+          },
         })
         if (!recoveredBead) {
           return c.json({ error: 'Retry is not available because no failed bead could be restored' }, 409)

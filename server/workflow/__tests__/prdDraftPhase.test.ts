@@ -9,7 +9,7 @@ import { isContinuableBlockedError } from '../../opencode/sessionContinuation'
 import { MockOpenCodeAdapter } from '../../opencode/mockAdapter'
 import type { PromptPart, PromptSessionOptions } from '../../opencode/types'
 import { clearProjectDatabaseCache } from '../../db/project'
-import { getLatestPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketByRef, patchTicket, recordTicketErrorOccurrence } from '../../storage/tickets'
 import { TEST, makeInterviewYaml, makePrdYaml } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { phaseIntermediate } from '../phases/state'
@@ -256,9 +256,10 @@ describe('handlePrdDraft', () => {
     expect(phaseIntermediate.get(`${ticket.id}:prd`)).toBeUndefined()
   })
 
-  it('carries a real preserved provider failure through PRD quorum handling for Continue', async () => {
+  it.each(['transport', 'invalid-output'])('retains the exact failed PRD step after a real %s failure', async (failure) => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     writeFileSync(`${paths.ticketDir}/interview.yaml`, makeInterviewYaml({ ticket_id: ticket.externalId }), 'utf-8')
+    context.lockedStructuredRetryCount = 0
     const adapter = new class extends MockOpenCodeAdapter {
       override async promptSession(
         sessionId: string,
@@ -266,6 +267,7 @@ describe('handlePrdDraft', () => {
         _signal?: AbortSignal,
         _options?: PromptSessionOptions,
       ): Promise<string> {
+        if (failure === 'invalid-output') return 'This is not a valid PRD.'
         const error = new Error('socket hang up') as Error & {
           blockedErrorDiagnostics: BlockedErrorDiagnostics
           blockedErrorCodes: string[]
@@ -296,16 +298,18 @@ describe('handlePrdDraft', () => {
 
     expect(thrown).toBeInstanceOf(Error)
     const blockedError = thrown as Error & { blockedErrorDiagnostics?: BlockedErrorDiagnostics; blockedErrorCodes?: string[] }
-    expect(blockedError.blockedErrorDiagnostics).toMatchObject({
-      kind: 'transport',
-      summary: 'socket hang up',
-      isRetryable: true,
-    })
+    if (failure === 'transport') expect(blockedError.blockedErrorDiagnostics).toMatchObject({ kind: 'transport', summary: 'socket hang up', isRetryable: true })
     expect(adapter.sessions.map((session) => session.id)).toContain(blockedError.blockedErrorDiagnostics?.sessionId)
     expect(isContinuableBlockedError({
       diagnostics: blockedError.blockedErrorDiagnostics,
       errorCodes: blockedError.blockedErrorCodes,
-    })).toBe(true)
+    })).toBe(failure === 'transport')
+    if (failure === 'invalid-output') {
+      recordTicketErrorOccurrence(ticket.id, { blockedFromStatus: 'DRAFTING_PRD', errorMessage: blockedError.message, diagnostics: blockedError.blockedErrorDiagnostics })
+      patchTicket(ticket.id, { status: 'BLOCKED_ERROR', errorMessage: blockedError.message, xstateSnapshot: JSON.stringify({ context: { previousStatus: 'DRAFTING_PRD' } }) })
+      expect(getTicketByRef(ticket.id)?.availableActions).toContain('retry_with_note')
+      expect(getTicketByRef(ticket.id)?.availableActions).not.toContain('continue')
+    }
     expect(adapter.sessions.length).toBeGreaterThan(0)
   })
 

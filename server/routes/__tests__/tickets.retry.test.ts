@@ -147,6 +147,21 @@ function insertCouncilSession(ticketRef: string) {
   }).run()
 }
 
+function recordFailedRetryStep(ticketId: string, phase: string, sessionId: string, step: string) {
+  const context = getTicketContext(ticketId)
+  if (!context) throw new Error('Missing ticket storage')
+  context.projectDb.insert(opencodeSessions).values({
+    ticketId: context.localTicketId, sessionId, phase, phaseAttempt: 1, step, state: 'abandoned',
+  }).run()
+  recordTicketErrorOccurrence(ticketId, {
+    blockedFromStatus: phase, errorMessage: 'AI step failed',
+    diagnostics: {
+      kind: 'opencode_provider', source: 'provider', summary: 'AI step failed',
+      sessionId, statusCode: 429, isRetryable: true,
+    },
+  })
+}
+
 function councilSessionState(ticketRef: string) {
   const context = getTicketContext(ticketRef)
   return context?.projectDb.select().from(opencodeSessions).all()
@@ -760,26 +775,14 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     ])
   })
 
-  it.each(['VERIFYING_PRD_COVERAGE', 'VERIFYING_BEADS_COVERAGE'] as const)('keeps %s retry guidance on the failed revision rather than its preceding audit', async phase => {
+  it.each([
+    ['VERIFYING_PRD_COVERAGE', 'revision', 'audit'],
+    ['VERIFYING_BEADS_COVERAGE', 'revision', 'audit'],
+    ['DRAFTING_PRD', 'full_answers', 'prd_draft'],
+    ['DRAFTING_PRD', 'prd_draft', 'full_answers'],
+  ] as const)('keeps %s retry guidance only on its failed %s step', async (phase, failedStep, otherStep) => {
     const { app, ticket } = setupRetryTicketApp()
-    const context = getTicketContext(ticket.id)
-    if (!context) throw new Error('Missing ticket storage')
-    context.projectDb.insert(opencodeSessions).values({
-      ticketId: context.localTicketId, sessionId: 'failed-coverage-revision', phase,
-      phaseAttempt: 1, step: 'revision', state: 'abandoned',
-    }).run()
-    recordTicketErrorOccurrence(ticket.id, {
-      blockedFromStatus: phase,
-      errorMessage: 'Revision failed',
-      diagnostics: {
-        kind: 'opencode_provider',
-        source: 'provider',
-        summary: 'Revision failed',
-        sessionId: 'failed-coverage-revision',
-        statusCode: 429,
-        isRetryable: true,
-      },
-    })
+    recordFailedRetryStep(ticket.id, phase, 'failed-coverage-revision', failedStep)
     patchTicket(ticket.id, {
       status: 'BLOCKED_ERROR', errorMessage: 'Revision failed',
       xstateSnapshot: JSON.stringify({ context: { previousStatus: phase } }),
@@ -789,8 +792,8 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
       body: JSON.stringify({ note: 'Address the reported gaps.' }),
     })
     expect(response.status).toBe(200)
-    expect(readPhaseRetryNote(ticket.id, phase, undefined, 'audit')).toBeUndefined()
-    expect(readPhaseRetryNote(ticket.id, phase, undefined, 'revision')).toBe('Address the reported gaps.')
+    expect(readPhaseRetryNote(ticket.id, phase, undefined, otherStep)).toBeUndefined()
+    expect(readPhaseRetryNote(ticket.id, phase, undefined, failedStep)).toBe('Address the reported gaps.')
   })
 
   it('does not attach a multi-step retry note to the newest session when the failed session is unknown', async () => {
@@ -959,28 +962,7 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     ensureActivePhaseAttempt(ticket.id, phase)
     upsertLatestPhaseArtifact(ticket.id, 'saved_input', phase, 'Original saved input')
     if (phase === 'VERIFYING_PRD_COVERAGE' || phase === 'VERIFYING_BEADS_COVERAGE') {
-      const context = getTicketContext(ticket.id)!
-      const sessionId = `failed-${phase}`
-      context.projectDb.insert(opencodeSessions).values({
-        ticketId: context.localTicketId,
-        sessionId,
-        phase,
-        phaseAttempt: 1,
-        step: 'revision',
-        state: 'abandoned',
-      }).run()
-      recordTicketErrorOccurrence(ticket.id, {
-        blockedFromStatus: phase,
-        errorMessage: 'AI step failed',
-        diagnostics: {
-          kind: 'opencode_provider',
-          source: 'provider',
-          summary: 'AI step failed',
-          sessionId,
-          statusCode: 429,
-          isRetryable: true,
-        },
-      })
+      recordFailedRetryStep(ticket.id, phase, `failed-${phase}`, 'revision')
     }
     patchTicket(ticket.id, {
       status: 'BLOCKED_ERROR',

@@ -868,6 +868,7 @@ export async function recoverCodingBeadWithReset(
     requireReset?: boolean
     preservePaths?: string[]
     userRetryNote?: string
+    assertCurrent?: () => void
     consumeInterruptedIteration?: {
       failureNote: string
     }
@@ -914,9 +915,11 @@ export async function recoverCodingBeadWithReset(
   } else {
     await resetToBeadStart(options.worktreePath, failedBead.beadStartCommit, {
       preservePaths: options.preservePaths ?? [...WORKTREE_RESET_PRESERVE_PATHS],
+      beforeMutation: options.assertCurrent,
     })
   }
 
+  options.assertCurrent?.()
   return recoverCodingBead(
     ticketId,
     beads,

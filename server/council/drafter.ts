@@ -29,7 +29,7 @@ import { COUNCIL_MEMBER_STOPPED_ERROR } from '@shared/councilMembers'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { SessionManager } from '../opencode/sessionManager'
 import { buildContinuationDiagnostics, shouldPreserveSessionForContinuation } from '../opencode/sessionContinuation'
-import { readPhaseRetryNote } from '../workflow/retryNotes'
+import { hasSessionRetryGuidance } from '../workflow/retryNotes'
 import { stopCutShortCouncilSession } from './sessionStop'
 import { CouncilMemberInterruptedError, openCouncilRound, type CouncilMemberAttempt } from './memberControl'
 
@@ -199,9 +199,6 @@ export async function generateDrafts(
     let lastFailureClass: DraftStructuredOutputMeta['failureClass']
     let rawResponse: string | undefined
     let normalizedResponse: string | undefined
-    const phaseRetryNote = ownershipScope
-      ? readPhaseRetryNote(ownershipScope.ticketId, ownershipScope.phase)
-      : undefined
     const rawAttempts: RawAttempt[] = []
     const retryDiagnostics: NonNullable<DraftStructuredOutputMeta['retryDiagnostics']> = []
 
@@ -292,9 +289,7 @@ export async function generateDrafts(
           },
           onPromptDispatched: (event) => {
             if (closed) return
-            if (phaseRetryNote !== undefined && event.parts.some((part) => (
-              part.type === 'text' && part.content === `## User Retry Note\n${phaseRetryNote}`
-            ))) phaseRetryNoteApplied = true
+            if (ownershipScope && hasSessionRetryGuidance(ownershipScope.ticketId, ownershipScope.phase, event.session.id, ownershipScope.phaseAttempt)) phaseRetryNoteApplied = true
             runtimeOptions?.onPromptDispatched?.({
               stage: 'draft',
               memberId: member.modelId,

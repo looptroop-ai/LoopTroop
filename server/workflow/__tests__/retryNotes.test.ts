@@ -10,7 +10,7 @@ const { artifacts, context, lookup, upsert } = vi.hoisted(() => ({
 vi.mock('../../storage/ticketArtifacts', () => ({ getLatestPhaseArtifact: lookup, upsertLatestPhaseArtifact: upsert }))
 vi.mock('../../storage/ticketQueries', () => ({ getTicketByRef: context }))
 
-import { appendPhaseRetryNote, canRetryWithExtraNote, expirePhaseRetryNote, PHASE_RETRY_NOTE_ARTIFACT, readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
+import { appendPhaseRetryNote, recordSessionRetryGuidance, hasSessionRetryGuidance, canRetryWithExtraNote, expirePhaseRetryNote, PHASE_RETRY_NOTE_ARTIFACT, readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
 
 describe('phase retry notes', () => {
   beforeEach(() => {
@@ -38,6 +38,19 @@ describe('phase retry notes', () => {
     savePhaseRetryNote('1:TEST-1', 'REFINING_PRD', 'Rejected dispatch')
     savePhaseRetryNote('1:TEST-1', 'REFINING_PRD', undefined)
     expect(readPhaseRetryNote('1:TEST-1', 'REFINING_PRD')).toBeUndefined()
+    expect(JSON.parse(artifacts.get(`1:TEST-1:REFINING_PRD:${PHASE_RETRY_NOTE_ARTIFACT}`)!.content))
+      .toEqual({ note: 'Rejected dispatch', active: false })
+  })
+
+  it('retains session guidance evidence after the note expires without attributing it to other sessions', () => {
+    savePhaseRetryNote('1:TEST-1', 'DRAFTING_BEADS', 'Keep this guidance')
+    recordSessionRetryGuidance('1:TEST-1', 'DRAFTING_BEADS', 'guided-session', [{ type: 'text', content: '## User Retry Note\nKeep this guidance' }])
+    expirePhaseRetryNote('1:TEST-1', 'DRAFTING_BEADS')
+    expect(readPhaseRetryNote('1:TEST-1', 'DRAFTING_BEADS')).toBeUndefined()
+    expect(hasSessionRetryGuidance('1:TEST-1', 'DRAFTING_BEADS', 'guided-session')).toBe(true)
+    expect(hasSessionRetryGuidance('1:TEST-1', 'DRAFTING_BEADS', 'fresh-session')).toBe(false)
+    recordSessionRetryGuidance('1:TEST-1', 'DRAFTING_BEADS', 'fresh-session', [{ type: 'text', content: 'continue please' }])
+    expect(hasSessionRetryGuidance('1:TEST-1', 'DRAFTING_BEADS', 'fresh-session')).toBe(false)
   })
 
   it('leaves coding notes to the existing per-bead history', () => {

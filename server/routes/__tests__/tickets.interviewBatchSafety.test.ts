@@ -185,6 +185,23 @@ describe('answer-batch stop confirmation and retry', () => {
       vi.useRealTimers()
     }
   })
+  it('blocks an owned terminal request failure even without model or session diagnostics', async () => {
+    const ticket = await seedInterviewBatch()
+    let rejectModel: ((error: Error) => void) | undefined
+    submitBatchToSessionMock.mockImplementation(() => new Promise<BatchResponse>((_, reject) => { rejectModel = reject }))
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+    const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchNumber: 1, answers: { Q01: 'Keep this answer.' } }),
+    })
+    expect(response.status).toBe(202)
+    await vi.waitFor(() => expect(submitBatchToSessionMock).toHaveBeenCalledOnce())
+    rejectModel?.(new Error('Unexpected request failure'))
+    await vi.waitFor(() => expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, expect.objectContaining({ type: 'ERROR', message: 'Unexpected request failure' })))
+    expect(readInterviewRetrySnapshot(ticket.id)?.answers.Q01?.answer).toBe('Keep this answer.')
+  })
+
   it('reports an AI failure without blocking or overwriting a newer answer edit', async () => {
     const ticket = await seedInterviewBatch()
     let rejectModel: ((error: Error) => void) | undefined

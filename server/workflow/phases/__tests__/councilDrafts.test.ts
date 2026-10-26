@@ -1,3 +1,4 @@
+import { isContinuableBlockedError } from '../../../opencode/sessionContinuation'
 import { describe, expect, it } from 'vitest'
 import {
   applyDraftProgress,
@@ -174,7 +175,9 @@ describe('buildCouncilQuorumErrorWithDiagnostics', () => {
       },
     ])
 
-    expect(error).not.toHaveProperty('blockedErrorDiagnostics')
+    const diagnostics = (error as Error & Pick<DraftResult, 'blockedErrorDiagnostics'>).blockedErrorDiagnostics
+    expect(diagnostics?.sessionId).toBe('session-not-resumable')
+    expect(isContinuableBlockedError({ diagnostics })).toBe(false)
   })
 })
 

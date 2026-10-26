@@ -41,6 +41,13 @@ function runRefine(
 }
 
 describe('refineDraft treats an empty response as a validation failure', () => {
+  it('retains guidance attribution from its winning draft without a new refinement note', async () => {
+    const adapter = new MockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1', 'refined output')
+    const result = await refineDraft(adapter, { ...winnerDraft, steeredByOperator: true }, [], [], '/tmp/test')
+    expect(result.steeredByOperator).toBe(true)
+  })
+
   it('retries instead of substituting the winner draft', async () => {
     const adapter = new MockOpenCodeAdapter()
     adapter.mockResponses.set('mock-session-1', '')

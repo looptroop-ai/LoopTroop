@@ -148,6 +148,28 @@ describe('interview batch claim ownership across daemon boots', () => {
     }
   })
 
+  it.each(['alive', 'permission-denied'])('reclaims an aged reservation with %s liveness while retaining the stop fence', (liveness) => {
+    const ticket = makeTicket()
+    const context = getTicketContext(ticket)!
+    context.projectDb.insert(interviewBatchClaims).values({
+      ticketId: context.localTicketId,
+      token: 'interview-stop-pending:answer:recovery:424242:recycled-boot:old-claim',
+      claimedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      expiresAt: '9999-12-31T23:59:59.999Z',
+    }).run()
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      if (liveness === 'permission-denied') throw Object.assign(new Error('not permitted'), { code: 'EPERM' })
+      return true
+    })
+    try {
+      const recovered = claimInterviewBatchStopRecovery(ticket, 'answer')
+      expect(recovered).toContain(':recovery:')
+      expect(claimInterviewBatch(ticket)).toBeNull()
+      expect(claimInterviewBatchStopRecovery(ticket, 'answer')).toBeNull()
+      expect(getPendingInterviewBatchStop(ticket)).toBe('answer')
+    } finally { kill.mockRestore() }
+  })
+
   it('promotes the lifecycle stop reservation only after confirmed stop and keeps the resulting claim releasable', () => {
     const ticket = makeTicket()
     const batchClaim = claimInterviewBatch(ticket)

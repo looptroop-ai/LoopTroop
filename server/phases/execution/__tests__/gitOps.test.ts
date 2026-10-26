@@ -91,6 +91,18 @@ describe('resetToBeadStart', () => {
     for (const marker of externalMarkers) rmSync(marker, { force: true })
   })
 
+  it.each([1, 2])('stops later reset mutations when recovery ownership is lost at stage %s', async (lostStage) => {
+    const [dir, sha] = makeFreshRepo()
+    writeFileSync(join(dir, 'hello.ts'), 'changed tracked work')
+    writeFileSync(join(dir, 'untracked.ts'), 'new local work')
+    let stage = 0
+    await expect(resetToBeadStart(dir, sha, { beforeMutation: () => {
+      if (++stage === lostStage) throw new Error('Recovery ownership changed')
+    } })).rejects.toThrow('Recovery ownership changed')
+    expect(readFileSync(join(dir, 'untracked.ts'), 'utf8')).toBe('new local work')
+    expect(readFileSync(join(dir, 'hello.ts'), 'utf8')).toBe(lostStage === 1 ? 'changed tracked work' : 'const x = 1\n')
+  })
+
   it('reverts uncommitted file changes to tracked files', async () => {
     const [dir, sha] = makeFreshRepo()
     writeFileSync(join(dir, 'hello.ts'), 'const x = CHANGED\n')

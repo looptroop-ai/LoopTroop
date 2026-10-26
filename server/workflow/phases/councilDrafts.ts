@@ -98,13 +98,19 @@ export function buildCouncilQuorumErrorWithDiagnostics(
       || source.rawAttempts?.some((attempt) => attempt.failureClass === 'output_truncated')
     ),
   )
-  if (!truncatedSource) return new Error(message)
+  if (!truncatedSource) {
+    const failedSource = sources.find(source => source.outcome !== 'completed' && source.outcome !== 'stopped' && source.blockedErrorDiagnostics)
+    return failedSource?.blockedErrorDiagnostics
+      ? attachOpenCodeBlockedErrorDiagnostics(new Error(message), { diagnostics: failedSource.blockedErrorDiagnostics, errorCodes: failedSource.blockedErrorCodes ?? [] })
+      : new Error(message)
+  }
   const modelId = truncatedSource.memberId ?? truncatedSource.voterId
 
   return attachOpenCodeBlockedErrorDiagnostics(
     new Error(message),
     buildOutputTruncatedBlockedErrorDiagnostics({
       ...(modelId ? { modelId } : {}),
+      sessionId: truncatedSource.blockedErrorDiagnostics?.sessionId,
     }),
   )
 }

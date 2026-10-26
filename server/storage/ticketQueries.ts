@@ -1114,7 +1114,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
   const activeError = errorOccurrences.find(occurrence => occurrence.id === activeErrorOccurrenceId)
   let retryNoteAvailable = supportsRetryNote(previousStatus, activeError?.errorCodes, activeError?.diagnostics)
   if (!isMockTicket && ticket.status === 'BLOCKED_ERROR'
-    && (previousStatus === 'CREATING_PULL_REQUEST'
+    && (previousStatus === 'DRAFTING_PRD' || previousStatus === 'CREATING_PULL_REQUEST'
       || previousStatus === 'VERIFYING_PRD_COVERAGE'
       || previousStatus === 'VERIFYING_BEADS_COVERAGE')
     && retryNoteAvailable) {

@@ -585,8 +585,8 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
  * steals a successor's claim.
  *
  * Unreserved pending-stop markers remain non-expiring. A lifecycle recovery
- * reservation also stays pending until confirmation; this check only verifies
- * that exact owner token is still present.
+ * reservation also stays pending until confirmation; renewing it refreshes only
+ * its ownership age, while retaining the non-expiring uncertain-stop fence.
  */
 export function renewInterviewBatchClaim(
   ticketId: string,
@@ -597,8 +597,8 @@ export function renewInterviewBatchClaim(
   if (!context) return false
   if (parsePendingStopKind(claimToken)) {
     if (!isPendingStopRecoveryReservation(claimToken)) return false
-    return Boolean(context.projectDb.select({ token: interviewBatchClaims.token }).from(interviewBatchClaims)
-      .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, claimToken))).get())
+    return context.projectDb.update(interviewBatchClaims).set({ claimedAt: new Date().toISOString() })
+      .where(and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, claimToken))).run().changes > 0
   }
   const now = Date.now()
   const updated = context.projectDb
@@ -661,12 +661,13 @@ export function claimInterviewBatchStopRecovery(
   const nowIso = new Date().toISOString()
 
   return context.projectDb.transaction((tx): string | null => {
-    const existing = tx.select({ token: interviewBatchClaims.token })
+    const existing = tx.select({ token: interviewBatchClaims.token, claimedAt: interviewBatchClaims.claimedAt })
       .from(interviewBatchClaims)
       .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
       .get()
     if (!existing || parsePendingStopKind(existing.token) !== kind) return null
-    if (isPendingStopRecoveryReservation(existing.token) && !isClaimOwnerProvablyDead(existing.token)) return null
+    if (isPendingStopRecoveryReservation(existing.token) && !isClaimOwnerProvablyDead(existing.token)
+      && Date.parse(existing.claimedAt) > Date.now() - DEFAULT_BATCH_CLAIM_TTL_MS) return null
 
     const updated = tx.update(interviewBatchClaims)
       .set({ token, claimedAt: nowIso, expiresAt: INTERVIEW_STOP_PENDING_EXPIRY })

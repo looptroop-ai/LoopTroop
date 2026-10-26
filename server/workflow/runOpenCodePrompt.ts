@@ -42,7 +42,7 @@ import { getTicketPaths } from '../storage/ticketQueries'
 import { createWorkBudget, type WorkBudget } from './workBudget'
 import { phaseMayAskQuestions } from '@shared/aiQuestions'
 import { ticketAllowsAiQuestions } from './aiQuestionSettings'
-import { appendPhaseRetryNote } from './retryNotes'
+import { appendPhaseRetryNote, recordSessionRetryGuidance } from './retryNotes'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 
 export interface OpenCodeRunCallbacks {
@@ -839,6 +839,7 @@ export async function runOpenCodeSessionPrompt({
     sessionPromptDispatchCounts.set(resolvedSession.id, promptNumber)
     const dispatchTimeoutKind = resolvePromptTimeoutKind(timeoutKind, deadlineScope, permissionOwnership)
     const dispatchDeadlineAt = formatTimeoutDeadline(resolvedTimeoutDeadline)
+    if (sessionOwnership) recordSessionRetryGuidance(sessionOwnership.ticketId, sessionOwnership.phase, resolvedSession.id, dispatchedParts, sessionOwnership.phaseAttempt)
     onPromptDispatched?.({
       session: resolvedSession,
       parts: dispatchedParts,

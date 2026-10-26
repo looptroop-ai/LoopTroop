@@ -12,11 +12,10 @@ export function canRetryWithExtraNote(ticketId: string, phase: string): boolean 
 
 export function savePhaseRetryNote(ticketId: string, phase: WorkflowPhaseId, note: string | undefined, step?: string): void {
   if (note === undefined) {
-    const artifact = getLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase)
-    if (!artifact) return
-    try { if (JSON.parse(artifact.content)?.active === false) return } catch { /* Replace malformed optional guidance. */ }
+    expirePhaseRetryNote(ticketId, phase)
+    return
   }
-  upsertLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase, JSON.stringify({ note: note ?? null, ...(step ? { step } : {}) }))
+  upsertLatestPhaseArtifact(ticketId, PHASE_RETRY_NOTE_ARTIFACT, phase, JSON.stringify({ note, ...(step ? { step } : {}) }))
 }
 
 export function expirePhaseRetryNote(ticketId: string, phase: WorkflowPhaseId, step?: string): void {
@@ -51,4 +50,14 @@ export function appendPhaseRetryNote(parts: PromptPart[], ticketId: string, phas
   if (parts.some(part => part.type === 'text' && part.content === `## User Retry Note\n${note}`)) return parts
   const index = memberNoteIndex < 0 ? parts.length : memberNoteIndex
   return [...parts.slice(0, index), { type: 'text', content: `## User Retry Note\n${note}` }, ...parts.slice(index)]
+}
+
+/** Remember actual prompt guidance by session, so Continue retains its attribution. */
+export function recordSessionRetryGuidance(ticketId: string, phase: WorkflowPhaseId, sessionId: string, parts: PromptPart[], phaseAttempt?: number): void {
+  if (!parts.some(part => part.type === 'text' && part.content.startsWith('## User Retry Note\n'))) return
+  upsertLatestPhaseArtifact(ticketId, `session_retry_guidance:${sessionId}`, phase, 'true', phaseAttempt)
+}
+
+export function hasSessionRetryGuidance(ticketId: string, phase: WorkflowPhaseId, sessionId: string, phaseAttempt?: number): boolean {
+  return getLatestPhaseArtifact(ticketId, `session_retry_guidance:${sessionId}`, phase, phaseAttempt)?.content === 'true'
 }

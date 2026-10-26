@@ -13,6 +13,7 @@ import {
 } from '../../git/worktreeChanges'
 
 interface ResetWorktreeOptions {
+  beforeMutation?: () => void
   preservePaths?: string[]
 }
 
@@ -277,11 +278,13 @@ export function captureBeadDiff(
 }
 
 export async function resetWorktreeToCommit(worktreePath: string, commit: string, options?: ResetWorktreeOptions): Promise<void> {
+  options?.beforeMutation?.()
   await runGitMutationOrThrow(worktreePath, ['reset', '--hard', commit])
   const cleanArgs = ['clean', '-fd']
   for (const path of options?.preservePaths ?? []) {
     cleanArgs.push('-e', path)
   }
+  options?.beforeMutation?.()
   await runGitMutationOrThrow(worktreePath, cleanArgs)
 }
 

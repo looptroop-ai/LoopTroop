@@ -680,7 +680,7 @@ export async function handleAnswerBatch(c: Context) {
             || (isCancellationError(err) && !timeoutTriggered)
             || getTicketByRef(ticketId)?.status !== 'WAITING_INTERVIEW_ANSWERS'
             || resolvePhaseAttempt(ticketId, 'WAITING_INTERVIEW_ANSWERS') !== phaseAttempt) return
-          if (ownsFailedSnapshot && (timeoutTriggered || diagnosticResult.diagnostics?.modelId || diagnosticResult.diagnostics?.sessionId)) {
+          if (ownsFailedSnapshot) {
             try {
               ensureActorForTicket(ticketId)
               sendTicketEvent(ticketId, {

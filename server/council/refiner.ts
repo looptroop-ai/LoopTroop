@@ -9,7 +9,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { classifyStructuredFailureFromError, getStructuredRetryDecision } from '../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
-import { readPhaseRetryNote } from '../workflow/retryNotes'
+import { hasSessionRetryGuidance } from '../workflow/retryNotes'
 import {
   attachOpenCodeBlockedErrorDiagnostics,
   buildOutputTruncatedBlockedErrorDiagnostics,
@@ -119,9 +119,6 @@ export async function refineDraft(
   let attemptCount = 0
   const normalizedMaxStructuredRetries = normalizeStructuredRetryCount(maxStructuredRetries)
   const rawAttempts: RawAttempt[] = []
-  const phaseRetryNote = sessionOwnership
-    ? readPhaseRetryNote(sessionOwnership.ticketId, sessionOwnership.phase)
-    : undefined
   let phaseRetryNoteApplied = false
 
   while (true) {
@@ -158,9 +155,7 @@ export async function refineDraft(
           })
         },
         onPromptDispatched: (event) => {
-          if (phaseRetryNote !== undefined && event.parts.some((part) => (
-            part.type === 'text' && part.content === `## User Retry Note\n${phaseRetryNote}`
-          ))) phaseRetryNoteApplied = true
+          if (sessionOwnership && hasSessionRetryGuidance(sessionOwnership.ticketId, sessionOwnership.phase, event.session.id, sessionOwnership.phaseAttempt)) phaseRetryNoteApplied = true
           onOpenCodePromptDispatched?.({
             stage: 'refine',
             memberId: winnerDraft.memberId,
@@ -212,7 +207,7 @@ export async function refineDraft(
       return {
         content: validation.content,
         rawAttempts,
-        ...(phaseRetryNoteApplied ? { steeredByOperator: true } : {}),
+        ...(phaseRetryNoteApplied || winnerDraft.steeredByOperator === true ? { steeredByOperator: true } : {}),
       }
     }
 

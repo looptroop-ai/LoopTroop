@@ -42,7 +42,7 @@ import { WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
 import { createWorkBudget } from '../workBudget'
 import { removeTempDir } from '../../test/tempDir'
 import { V2OpenCodeHttpError } from '../../opencode/v2Transport'
-import { savePhaseRetryNote } from '../retryNotes'
+import { savePhaseRetryNote, hasSessionRetryGuidance } from '../retryNotes'
 import { archiveActivePhaseAttempts, createFreshPhaseAttempts, ensureActivePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 
 type OpenCodeSDKClient = NonNullable<ConstructorParameters<typeof OpenCodeSDKAdapter>[1]>
@@ -332,6 +332,7 @@ describe('runOpenCodePrompt', () => {
       sessionOwnership: { ticketId: ticket.id, phase: 'REFINING_PRD' },
     })
     expect(adapter.promptCalls[1]?.sessionId).toBe(initial.session.id)
+    expect(hasSessionRetryGuidance(ticket.id, 'REFINING_PRD', initial.session.id)).toBe(true)
     expect(adapter.promptCalls[1]?.parts).toEqual([
       { type: 'text', content: 'continue please' },
       { type: 'system', content: 'Leave GitHub writes and remote Git changes to LoopTroop; continue local work after refused actions.' },

@@ -24,9 +24,10 @@ import {
   resolveStructuredRetryCountForTicket,
 } from '../../workflow/phases/helpers'
 
-const { submitBatchToSessionMock, abortTicketSessionsMock } = vi.hoisted(() => ({
+const { submitBatchToSessionMock, abortTicketSessionsMock, sendTicketEventMock } = vi.hoisted(() => ({
   submitBatchToSessionMock: vi.fn(),
   abortTicketSessionsMock: vi.fn(),
+  sendTicketEventMock: vi.fn(),
 }))
 
 vi.mock('../../phases/interview/qa', async (importOriginal) => ({
@@ -39,7 +40,10 @@ vi.mock('../../opencode/sessionManager', async (importOriginal) => ({
   abortTicketSessions: abortTicketSessionsMock,
 }))
 
-vi.mock('../../machines/persistence', async () => (await import('../../test/routeMocks')).machinesPersistenceMock())
+vi.mock('../../machines/persistence', async () => ({
+  ...(await import('../../test/routeMocks')).machinesPersistenceMock(),
+  sendTicketEvent: sendTicketEventMock,
+}))
 
 import type { BatchResponse } from '../../phases/interview/qa'
 import { ticketRouter } from '../tickets'
@@ -205,8 +209,8 @@ describe('answer-batch stop confirmation and retry', () => {
       expect(successorClaim).not.toBeNull()
     }
     let claimDuringError: string | null | undefined
-    vi.mocked(sendTicketEvent).mockImplementation((id, event) => {
-      if (event.type === 'ERROR') claimDuringError = claimInterviewBatch(id)
+    sendTicketEventMock.mockImplementation((_id: string | number, event: Parameters<typeof sendTicketEvent>[1]) => {
+      if (event.type === 'ERROR') claimDuringError = claimInterviewBatch(ticket.id)
     })
     rejectModel?.(new Error('Unexpected request failure'))
     if (ownership === 'replaced') {

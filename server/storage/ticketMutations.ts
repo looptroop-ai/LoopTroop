@@ -861,6 +861,7 @@ export async function cleanupCanceledTicketData(
       rmSync(logPath, { force: true })
     }
   }
+  if (opts.deleteContent || opts.deleteLog) queueAssistantSessionCleanup({ ticketId: ticketRef })
 
   return true
 }

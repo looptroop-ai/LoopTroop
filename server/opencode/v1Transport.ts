@@ -53,6 +53,22 @@ function normalizeSafeHttpUrl(value: string): string | undefined {
   }
 }
 
+function confirmsPermissionRules(
+  actual: unknown,
+  requested: ReadonlyArray<OpenCodePermissionRule>,
+  appended = false,
+): boolean {
+  if (requested.length === 0) return true
+  if (!Array.isArray(actual)) return false
+  const applied = appended ? actual.slice(-requested.length) : actual
+  return applied.length === requested.length && requested.every((rule, index) => {
+    const candidate = applied[index]
+    if (!candidate || typeof candidate !== 'object') return false
+    const record = candidate as Record<string, unknown>
+    return record.permission === rule.permission && record.pattern === rule.pattern && record.action === rule.action
+  })
+}
+
 export type OpenCodeV1Client = ReturnType<typeof createOpencodeClient>
 
 export class OpenCodeV1Transport implements OpenCodeTransport {
@@ -76,7 +92,11 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
       ...(options?.permission ? { permission: options.permission.map(rule => ({ ...rule })) } : {}),
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
     if (!res.data) throw new Error('OpenCode returned no session payload')
-    return this.mapSession(res.data as Record<string, unknown>)
+    const session = res.data as Record<string, unknown>
+    if (options?.permission && !confirmsPermissionRules(session.permission, options.permission)) {
+      throw new Error('OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.')
+    }
+    return this.mapSession(session)
   }
 
   async deleteSession(sessionId: string, directory?: string, signal?: AbortSignal): Promise<void> {
@@ -106,11 +126,7 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
     if (!res.data) throw new Error('OpenCode returned no updated session payload')
     if (options.permission) {
-      const applied = res.data.permission
-      if (!Array.isArray(applied) || applied.length !== options.permission.length || options.permission.some((rule, index) => {
-        const actual = applied[index]
-        return !actual || actual.permission !== rule.permission || actual.pattern !== rule.pattern || actual.action !== rule.action
-      })) {
+      if (!confirmsPermissionRules(res.data.permission, options.permission, true)) {
         throw new Error('OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.')
       }
     }

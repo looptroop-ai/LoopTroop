@@ -190,7 +190,8 @@ describe('assistant session persistence', () => {
     configureProfile()
     const scope = makeTicketScope()
     const session = await sessions.createAssistantSession(scope)
-    const record = storedRecord(session.id)!
+    const record = storedRecord(session.id)
+    if (!record) throw new Error('Test conversation metadata was not stored')
     expect(record.projectId).toBe(Number(scope.ticketId?.split(':')[0]))
     db.update(appMeta).set({ value: JSON.stringify({ ...record, projectId: Number(record.projectId) + 1 }) })
       .where(eq(appMeta.key, `assistant.session.${session.id}`)).run()
@@ -287,6 +288,8 @@ describe('assistant session persistence', () => {
     expect(storedRecord(session.id)).toMatchObject({ saved: true, archived: true })
     expect(adapter.sessions.some(entry => entry.id === remoteId)).toBe(true)
     expect(removeRemote).not.toHaveBeenCalled()
+    expect(existsSync(directory)).toBe(false)
+    await sessions.getAssistantSession(session.id, { mode: 'help' })
     expect(existsSync(directory)).toBe(false)
   })
 
@@ -387,6 +390,29 @@ describe('assistant prompts', () => {
     expect(mockPrepareAssistantEvidence).toHaveBeenCalledWith(
       { mode: 'help' }, expect.any(String), expect.any(AbortSignal), expect.stringContaining(path),
     )
+    const questionContext = mockPrepareAssistantEvidence.mock.lastCall?.[3] ?? ''
+    expect(questionContext).not.toContain('Current question:')
+    expect(questionContext).not.toContain('Earlier reply:')
+  })
+
+  it('returns the streamed answer when OpenCode loses the conversation after finishing', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({ mode: 'help' })
+    adapter.promptSession = async (remoteId, _parts, _signal, options) => {
+      options?.onEvent?.({ type: 'text', sessionId: remoteId, messageId: 'answer', partId: 'body', text: 'Completed answer', delta: 'Completed answer', streaming: false, complete: true })
+      adapter.sessions = adapter.sessions.filter(item => item.id !== remoteId)
+      return 'Completed answer'
+    }
+    const deltas: string[] = []
+
+    const result = await sessions.promptAssistant(session.id, { mode: 'help' }, 'Question', new AbortController().signal, delta => deltas.push(delta))
+
+    expect(deltas).toEqual(['Completed answer'])
+    expect(result).toMatchObject({ canResume: false, messages: [
+      { role: 'user', content: 'Question' },
+      { role: 'assistant', content: 'Completed answer' },
+    ] })
+    expect(storedRecord(session.id)).toBeUndefined()
   })
 
   it('uses the configured model and variant with read-only permissions and no auto-approval', async () => {
@@ -409,7 +435,7 @@ describe('assistant prompts', () => {
     })
     expect(options?.system).toContain('never approve plans, edit files, run shell commands, or control tickets')
     expect(mockPrepareAssistantEvidence).toHaveBeenCalledWith(
-      { mode: 'help' }, expect.stringContaining(session.id), expect.any(AbortSignal), expect.stringContaining('Current question:\nExplain the configuration'),
+      { mode: 'help' }, expect.stringContaining(session.id), expect.any(AbortSignal), expect.stringContaining('Explain the configuration'),
     )
   })
 
@@ -426,7 +452,7 @@ describe('assistant prompts', () => {
     mockPrepareAssistantEvidence.mockImplementation(async (_scope, _directory, _signal, question) => {
       preparationStarted.resolve()
       await preparationRelease.promise
-      expect(question).toContain('Current question:\nFind the login flow')
+      expect(question).toContain('Find the login flow')
       return { prompt: 'test evidence', permission: [{ permission: '*', pattern: '*', action: 'deny' }] }
     })
     const prompt = sessions.promptAssistant(session.id, { mode: 'help' }, 'Find the login flow', new AbortController().signal, () => undefined)
@@ -587,6 +613,23 @@ describe('assistant prompts', () => {
     expect(storedRecord(session.id)).toMatchObject({ archived: false, saved: true })
     stop.mockResolvedValue(true)
     await sessions.closeAssistantSession(session.id, { mode: 'help' })
+    expect(storedRecord(session.id)).toMatchObject({ archived: true })
+  })
+
+  it('confirms an older runtime has stopped before archiving its saved conversation', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({ mode: 'help' })
+    const row = db.select().from(appMeta).all().find(entry => entry.key === `assistant.session.${session.id}`)
+    if (!row) throw new Error('Test conversation metadata was not stored')
+    db.update(appMeta).set({ value: JSON.stringify({ ...JSON.parse(row.value), owner: 'previous-runtime' }) })
+      .where(eq(appMeta.key, row.key)).run()
+    const stop = vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+
+    await expect(sessions.closeAssistantSession(session.id, { mode: 'help' })).rejects.toMatchObject({ status: 503 })
+    expect(storedRecord(session.id)).toMatchObject({ archived: false })
+    stop.mockResolvedValue(true)
+    await sessions.closeAssistantSession(session.id, { mode: 'help' })
+    expect(stop).toHaveBeenCalledWith(remoteSessionId(session.id))
     expect(storedRecord(session.id)).toMatchObject({ archived: true })
   })
 })

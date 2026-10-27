@@ -54,7 +54,7 @@ describe('shared blocked error diagnostics', () => {
     expect(clean).toContain("const password = form.get('password')")
     expect(clean).toContain('const password = readPasswordFromEnvironment()')
     expect(clean).toContain('const token = client.token')
-    expect(clean).toContain("fetch('https://api.example.com/items?token=ordinary-query-value#results')")
+    expect(clean).toContain("fetch('https://api.example.com/items?token=[redacted]#results')")
     expect(clean).toContain("const apiKey = '[redacted]'")
     expect(clean).toContain('Authorization: Bearer [redacted]')
     expect(clean).toContain("https://[redacted]@example.com/api?x=1#section")
@@ -64,6 +64,80 @@ describe('shared blocked error diagnostics', () => {
     expect(sanitizeEvidenceValue({ apiKey: 'literal-secret', source: 'https://example.com/a?x=1#top' })).toEqual({
       apiKey: '[redacted]',
       source: 'https://example.com/a?x=1#top',
+    })
+  })
+
+  it('redacts unquoted and prefixed credential assignments without changing code references or empty values', () => {
+    const source = [
+      'password: supersecret123',
+      'api_key: opaque-secret-token',
+      'client_secret = opaque_value',
+      'API_KEY=opaque_value',
+      'api_key: API_KEY_HERE',
+      'AWS_SECRET_ACCESS_KEY=opaque_aws_value',
+      'serviceApiKey=opaque_service_value',
+      'token: ExtremelyLongSecurityTokenType',
+      'token: client.token',
+      'password: readPasswordFromEnvironment()',
+      'token: ""',
+      'token=',
+    ].join('\n')
+
+    const clean = sanitizeEvidenceText(source)
+
+    expect(clean).toContain('password: [redacted]')
+    expect(clean).toContain('api_key: [redacted]')
+    expect(clean).toContain('client_secret = [redacted]')
+    expect(clean).toContain('API_KEY=[redacted]')
+    expect(clean).toContain('api_key: API_KEY_HERE')
+    expect(clean).toContain('AWS_SECRET_ACCESS_KEY=[redacted]')
+    expect(clean).toContain('serviceApiKey=[redacted]')
+    expect(clean).toContain('token: ExtremelyLongSecurityTokenType')
+    expect(clean).toContain('token: client.token')
+    expect(clean).toContain('password: readPasswordFromEnvironment()')
+    expect(clean).toContain('token: ""')
+    expect(clean).toContain('token=')
+    expect(clean).not.toContain('opaque-')
+    expect(clean).not.toContain('opaque_value')
+  })
+
+  it('redacts URL userinfo and credential query values while preserving ordinary parameters and prose', () => {
+    const source = [
+      'https://opaqueKey123@example.com/path?apiKey=opaqueApiKey123&limit=10#access_token=opaqueAccessToken',
+      'const endpoint = "https://api.example.com/items?api%5Fkey=opaqueKey123&limit=10"',
+      'https://api.example.com/items?page=2#results',
+      '## Basic usage',
+      'Send a bearer token instead of the cookie',
+      'The basic\nflow',
+      'const opts = { token: "" }',
+    ].join('\n')
+
+    expect(sanitizeEvidenceText(source)).toBe([
+      'https://[redacted]@example.com/path?apiKey=[redacted]&limit=10#access_token=[redacted]',
+      'const endpoint = "https://api.example.com/items?api%5Fkey=[redacted]&limit=10"',
+      'https://api.example.com/items?page=2#results',
+      '## Basic usage',
+      'Send a bearer token instead of the cookie',
+      'The basic\nflow',
+      'const opts = { token: "" }',
+    ].join('\n'))
+  })
+
+  it('redacts complete structured credentials, including objects and arrays under prefixed keys', () => {
+    expect(sanitizeEvidenceValue({
+      apiKey: { current: 'opaque-api-key', previous: 'opaque-old-key' },
+      aws_secret_access_key: ['opaque-aws-key'],
+      credentials: { password: 'opaque-password' },
+      nextPageToken: 'opaque-page-cursor',
+      inputToken: 14,
+      outputToken: '15',
+    })).toEqual({
+      apiKey: '[redacted]',
+      aws_secret_access_key: '[redacted]',
+      credentials: '[redacted]',
+      nextPageToken: 'opaque-page-cursor',
+      inputToken: 14,
+      outputToken: '15',
     })
   })
 

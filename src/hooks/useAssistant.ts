@@ -58,9 +58,12 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
   const [pendingReplies, setPendingReplies] = useState<Record<string, { sessionId: string; message: string; reply: string }>>({})
   const [sendingIds, setSendingIds] = useState<string[]>([])
   const [scopedRefresh, setScopedRefresh] = useState(0)
+  const [detailRefresh, setDetailRefresh] = useState(0)
   const controllers = useRef(new Set<AbortController>())
   const detailRequests = useRef(new Map<string, AbortController>())
   const activeStreams = useRef(new Map<string, AbortController>())
+  const closingSessions = useRef(new Set<string>())
+  const draftsAfterCloseFailure = useRef(new Map<string, string>())
   const current = scopes[scopeKey] ?? EMPTY_SCOPE_STATE
   const activeId = current.activeId
   const activeDetail = activeId ? details[activeId] ?? null : null
@@ -234,13 +237,14 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
         openingId: state.openingId === activeId ? null : state.openingId,
       }))
     }
-  }, [activeDetail, activeId, beginRequest, enabled, endRequest, scopeKey, stableScope, updateScope])
+  }, [activeDetail, activeId, beginRequest, detailRefresh, enabled, endRequest, scopeKey, stableScope, updateScope])
 
   const setError = useCallback((error: string | null) => {
     updateScope(scopeKey, state => ({ ...state, error }))
   }, [scopeKey, updateScope])
 
   const selectSession = useCallback((id: string, summary?: AssistantSessionSummary) => {
+    if (!details[id] && !detailRequests.current.has(id)) setDetailRefresh(value => value + 1)
     updateScope(scopeKey, state => {
       const alreadyOpen = state.openIds.includes(id)
       const openGeneration = alreadyOpen ? state.openGeneration : state.openGeneration + 1
@@ -254,7 +258,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
         activeId: id,
       }
     })
-  }, [scopeKey, updateScope])
+  }, [details, scopeKey, updateScope])
 
   const setDraft = useCallback((id: string, value: string) => {
     updateScope(scopeKey, state => {
@@ -294,6 +298,9 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
   }, [beginRequest, endRequest, scopeKey, stableScope, updateScope])
 
   const closeSession = useCallback(async (id: string): Promise<boolean> => {
+    closingSessions.current.add(id)
+    detailRequests.current.get(id)?.abort()
+    detailRequests.current.delete(id)
     const controller = beginRequest()
     updateScope(scopeKey, state => ({
       ...state,
@@ -301,8 +308,28 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       error: null,
     }))
     try {
-      await closeAssistantSession(id, stableScope, controller.signal)
+      try {
+        await closeAssistantSession(id, stableScope, controller.signal)
+      } catch (caught) {
+        if (!(caught instanceof Error && /\(HTTP 404(?:[:)])/.test(caught.message))) {
+          if (!controller.signal.aborted) {
+            const pendingDraft = draftsAfterCloseFailure.current.get(id)
+            draftsAfterCloseFailure.current.delete(id)
+            updateScope(scopeKey, state => ({
+              ...state,
+              error: describeQueryError(caught) ?? 'Could not close assistant conversation.',
+            }))
+            if (pendingDraft) updateScope(scopeKey, state => {
+              if (!state.openIds.includes(id) || state.drafts[id]) return state
+              return { ...state, drafts: { ...state.drafts, [id]: pendingDraft } }
+            })
+            setDetailRefresh(value => value + 1)
+          }
+          return false
+        }
+      }
       if (controller.signal.aborted) return false
+      draftsAfterCloseFailure.current.delete(id)
       activeStreams.current.get(id)?.abort()
       activeStreams.current.delete(id)
       setSendingIds(previous => previous.filter(sessionId => sessionId !== id))
@@ -324,6 +351,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
           openedAt,
           drafts,
           activeId: state.activeId === id ? openIds[0] ?? null : state.activeId,
+          openingId: state.openingId === id ? null : state.openingId,
           error: null,
         }
       })
@@ -334,13 +362,8 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       })
       setScopedRefresh(value => value + 1)
       return true
-    } catch (caught) {
-      if (!controller.signal.aborted) updateScope(scopeKey, state => ({
-        ...state,
-        error: describeQueryError(caught) ?? 'Could not close assistant conversation.',
-      }))
-      return false
     } finally {
+      closingSessions.current.delete(id)
       endRequest(controller)
       if (!controller.signal.aborted) updateScope(scopeKey, state => ({
         ...state,
@@ -351,17 +374,25 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
 
   const sendMessage = useCallback(async (message: string): Promise<boolean> => {
     const session = activeId ? details[activeId] : null
-    if (!session?.canResume || !message.trim() || activeStreams.current.has(session.id)) return false
+    if (!session?.canResume || !message.trim() || closingSessions.current.has(session.id) || current.closingIds.includes(session.id) || activeStreams.current.has(session.id)) return false
     const controller = beginRequest()
     activeStreams.current.set(session.id, controller)
+    updateScope(scopeKey, state => {
+      if (!state.openIds.includes(session.id)) return state
+      const drafts = { ...state.drafts }
+      delete drafts[session.id]
+      return { ...state, drafts }
+    })
     setSendingIds(previous => previous.includes(session.id) ? previous : [...previous, session.id])
     setPendingReplies(previous => ({
       ...previous,
       [session.id]: { sessionId: session.id, message: message.trim(), reply: '' },
     }))
     setError(null)
+    let accepted = false
     try {
       const response = await sendAssistantMessage(session.id, message.trim(), stableScope, controller.signal)
+      accepted = true
       let finished = false
       for await (const event of readAssistantEvents(response, controller.signal)) {
         if (controller.signal.aborted) return false
@@ -397,6 +428,24 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
           return next
         })
         setError(describeQueryError(caught) ?? 'Could not send the assistant message.')
+        if (closingSessions.current.has(session.id)) draftsAfterCloseFailure.current.set(session.id, message.trim())
+        else updateScope(scopeKey, state => {
+          if (!state.openIds.includes(session.id) || state.drafts[session.id]) return state
+          return { ...state, drafts: { ...state.drafts, [session.id]: message.trim() } }
+        })
+        if (accepted) {
+          try {
+            const refreshed = await fetchAssistantSession(session.id, stableScope, controller.signal)
+            if (!controller.signal.aborted && (scopesRef.current[scopeKey] ?? EMPTY_SCOPE_STATE).openIds.includes(session.id)) {
+              setDetails(previous => ({ ...previous, [session.id]: refreshed }))
+              updateScope(scopeKey, state => state.openIds.includes(session.id)
+                ? { ...state, sessions: [summaryOf(refreshed), ...state.sessions.filter(item => item.id !== session.id)] }
+                : state)
+            }
+          } catch {
+            // Keep the previous transcript when the post-send refresh is unavailable.
+          }
+        }
       }
       return false
     } finally {
@@ -404,7 +453,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       if (activeStreams.current.get(session.id) === controller) activeStreams.current.delete(session.id)
       setSendingIds(previous => previous.filter(id => id !== session.id))
     }
-  }, [activeId, beginRequest, details, endRequest, scopeKey, setError, stableScope, updateScope])
+  }, [activeId, beginRequest, current.closingIds, details, endRequest, scopeKey, setError, stableScope, updateScope])
 
   return {
     sessions: current.sessions,

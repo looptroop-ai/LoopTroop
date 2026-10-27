@@ -270,6 +270,19 @@ function mapDescendantPermission(
   return { event: enriched.event };
 }
 
+function confirmsV2Permissions(
+  actual: unknown,
+  requested: ReturnType<typeof mapV2PermissionRules>,
+): boolean {
+  if (!Array.isArray(actual) || actual.length !== requested.length) return false;
+  return requested.every((rule, index) => {
+    const applied = asRecord(actual[index]);
+    return applied?.action === rule.action &&
+      applied.resource === rule.resource &&
+      applied.effect === rule.effect;
+  });
+}
+
 export class V2OpenCodeTransport implements OpenCodeTransport {
   readonly protocol = "v2" as const;
   private readonly baseUrl: URL;
@@ -327,12 +340,17 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     signal?: AbortSignal,
   ): Promise<void> {
     if (options.permission === undefined) return;
-    await this.request(`/api/session/${encodeURIComponent(sessionId)}`, {
+    const path = `/api/session/${encodeURIComponent(sessionId)}`;
+    const permissions = mapV2PermissionRules(options.permission);
+    await this.request(path, {
       method: "PATCH",
       signal,
       expectedStatus: 204,
-      body: { permissions: mapV2PermissionRules(options.permission) },
+      body: { permissions },
     });
+    const session = asRecord(dataOf(await this.request(path, { signal })));
+    if (!confirmsV2Permissions(session?.permissions, permissions))
+      throw new Error("OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.");
   }
 
   async getSession(

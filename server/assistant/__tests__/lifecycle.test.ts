@@ -11,7 +11,7 @@ const previousConfigDir = process.env.LOOPTROOP_CONFIG_DIR
 const configDir = makeTempDir('looptroop-assistant-lifecycle-')
 process.env.LOOPTROOP_CONFIG_DIR = configDir
 
-const [{ db, closeDatabase, APP_CONFIG_DIR }, { appMeta, profiles }, { MockOpenCodeAdapter }, integration, sessions, ticketStorage, projectStorage, { getProjectDatabase }] = await Promise.all([
+const [{ db, sqlite, closeDatabase, APP_CONFIG_DIR }, { appMeta, profiles }, { MockOpenCodeAdapter }, integration, sessions, ticketStorage, projectStorage, { getProjectDatabase }] = await Promise.all([
   import('../../db/index'),
   import('../../db/schema'),
   import('../../opencode/mockAdapter'),
@@ -27,7 +27,8 @@ let adapter: InstanceType<typeof MockOpenCodeAdapter>
 
 function remoteId(id: string): string {
   const row = db.select().from(appMeta).all().find(entry => entry.key === `assistant.session.${id}`)
-  return (JSON.parse(row!.value) as { openCodeSessionId: string }).openCodeSessionId
+  if (!row) throw new Error(`Missing assistant session record: ${id}`)
+  return (JSON.parse(row.value) as { openCodeSessionId: string }).openCodeSessionId
 }
 
 beforeEach(async () => {
@@ -77,15 +78,71 @@ describe('assistant ticket and project lifecycle', () => {
     const openCodeId = remoteId(session.id)
     const help = await sessions.createAssistantSession({ mode: 'help' })
     const dashboard = await sessions.createAssistantSession({ mode: 'tickets' })
+    const dashboardOpenCodeId = remoteId(dashboard.id)
     await sessions.closeAssistantSession(session.id, scope)
 
     expect(await ticketStorage.deleteTicket(ticket.id)).toBe(true)
     expect((await sessions.listAssistantSessions()).map(entry => entry.id).sort())
-      .toEqual([help.id, dashboard.id].sort())
+      .toEqual([help.id])
     await vi.waitFor(async () => {
       expect(await adapter.getSession(openCodeId)).toBeNull()
       expect(existsSync(join(APP_CONFIG_DIR, 'assistant', session.id))).toBe(false)
+      expect(await adapter.getSession(dashboardOpenCodeId)).toBeNull()
     })
+  })
+
+  it.each([{ deleteContent: true }, { deleteLog: true }])('deletes ticket and dashboard conversations when canceled ticket data is removed (%j)', async (options) => {
+    const { ticket } = integration.createUninitializedTestTicket(repoManager)
+    const session = await sessions.createAssistantSession({ mode: 'tickets', ticketId: ticket.id })
+    const ticketOpenCodeId = remoteId(session.id)
+    const dashboard = await sessions.createAssistantSession({ mode: 'tickets' })
+    const dashboardOpenCodeId = remoteId(dashboard.id)
+    const help = await sessions.createAssistantSession({ mode: 'help' })
+
+    expect(await ticketStorage.cleanupCanceledTicketData(ticket.id, options)).toBe(true)
+    expect((await sessions.listAssistantSessions()).map(entry => entry.id)).toEqual([help.id])
+    expect(ticketStorage.getTicketByRef(ticket.id)).toBeDefined()
+    await vi.waitFor(async () => {
+      expect(await adapter.getSession(ticketOpenCodeId)).toBeNull()
+      expect(await adapter.getSession(dashboardOpenCodeId)).toBeNull()
+    })
+  })
+
+  it('continues ticket and project cleanup when assistant cleanup receipt inserts fail', async () => {
+    const { ticket, project, repoDir } = integration.createUninitializedTestTicket(repoManager)
+    await sessions.createAssistantSession({ mode: 'tickets', ticketId: ticket.id })
+    const worktreePath = join(repoDir, '.looptroop', 'worktrees', ticket.externalId)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    sqlite.exec(`
+      CREATE TRIGGER block_assistant_cleanup_receipts
+      BEFORE INSERT ON app_meta
+      WHEN NEW.key LIKE 'assistant.cleanup.%'
+      BEGIN SELECT RAISE(ABORT, 'cleanup queue blocked'); END
+    `)
+
+    try {
+      expect(existsSync(worktreePath)).toBe(true)
+      expect(await ticketStorage.deleteTicket(ticket.id)).toBe(true)
+      expect(existsSync(worktreePath)).toBe(false)
+
+      const nextTicket = ticketStorage.createTicket({ projectId: project.id, title: 'Reset after cleanup queue failure' })
+      await sessions.createAssistantSession({ mode: 'tickets', ticketId: nextTicket.id })
+      const reset = await projectStorage.clearExistingProjectTickets({
+        folderPath: repoDir,
+        name: project.name,
+        shortname: project.shortname,
+      })
+
+      expect(reset.id).toBe(project.id)
+      expect(projectStorage.getProjectContextById(reset.id)).toBeDefined()
+      expect(projectStorage.listProjectTickets(reset.id)).toHaveLength(0)
+      expect(projectStorage.deleteProject(reset.id)).toBe(true)
+      expect(projectStorage.getProjectRootById(reset.id)).toBeUndefined()
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      sqlite.exec('DROP TRIGGER IF EXISTS block_assistant_cleanup_receipts')
+      warn.mockRestore()
+    }
   })
 
   it('keeps conversations when the ticket deletion transaction fails', async () => {
@@ -104,10 +161,15 @@ describe('assistant ticket and project lifecycle', () => {
     const { ticket, project } = integration.createUninitializedTestTicket(repoManager)
     const session = await sessions.createAssistantSession({ mode: 'tickets', ticketId: ticket.id })
     const openCodeId = remoteId(session.id)
+    const dashboard = await sessions.createAssistantSession({ mode: 'tickets' })
+    const dashboardOpenCodeId = remoteId(dashboard.id)
 
     expect(projectStorage.deleteProject(project.id)).toBe(true)
     expect(await sessions.listAssistantSessions()).toEqual([])
-    await vi.waitFor(async () => expect(await adapter.getSession(openCodeId)).toBeNull())
+    await vi.waitFor(async () => {
+      expect(await adapter.getSession(openCodeId)).toBeNull()
+      expect(await adapter.getSession(dashboardOpenCodeId)).toBeNull()
+    })
   })
 
   it.each([
@@ -118,6 +180,8 @@ describe('assistant ticket and project lifecycle', () => {
     const scope = { mode: 'tickets' as const, ticketId: ticket.id }
     const session = await sessions.createAssistantSession(scope)
     const openCodeId = remoteId(session.id)
+    const dashboard = await sessions.createAssistantSession({ mode: 'tickets' })
+    const dashboardOpenCodeId = remoteId(dashboard.id)
 
     const reset = await resetProject({ folderPath: repoDir, name: project.name, shortname: project.shortname })
     const replacement = ticketStorage.createTicket({ projectId: reset.id, title: 'New ticket with reused reference' })
@@ -125,6 +189,9 @@ describe('assistant ticket and project lifecycle', () => {
     expect(replacement.id).toBe(ticket.id)
     expect(await sessions.listAssistantSessions()).toEqual([])
     await expect(sessions.getAssistantSession(session.id, scope)).rejects.toMatchObject({ status: 404 })
-    await vi.waitFor(async () => expect(await adapter.getSession(openCodeId)).toBeNull())
+    await vi.waitFor(async () => {
+      expect(await adapter.getSession(openCodeId)).toBeNull()
+      expect(await adapter.getSession(dashboardOpenCodeId)).toBeNull()
+    })
   })
 })

@@ -1,4 +1,5 @@
 import { eq, like } from 'drizzle-orm'
+import { sanitizeDiagnosticText } from '@shared/errorDiagnostics'
 import { db } from '../db'
 import { appMeta } from '../db/schema'
 import {
@@ -20,28 +21,42 @@ export function setAssistantSessionCleanupScheduler(
 }
 
 export function queueAssistantSessionCleanup(filter: AssistantSessionCleanupFilter): void {
-  const receipts = db.transaction(tx => {
-    const rows = tx.select().from(appMeta).where(like(appMeta.key, `${ASSISTANT_SESSION_PREFIX}%`)).all()
-    const queued: AssistantCleanupReceipt[] = []
+  let receipts: AssistantCleanupReceipt[]
+  try {
+    receipts = db.transaction(tx => {
+      const rows = tx.select().from(appMeta).where(like(appMeta.key, `${ASSISTANT_SESSION_PREFIX}%`)).all()
+      const queued: AssistantCleanupReceipt[] = []
 
-    for (const row of rows) {
-      const record = readSessionRecord(row.key, row.value)
-      if (!record || record.mode !== 'tickets') continue
-      if ('ticketId' in filter ? record.ticketId !== filter.ticketId : record.projectId !== filter.projectId) continue
+      for (const row of rows) {
+        const record = readSessionRecord(row.key, row.value)
+        if (!record || record.mode !== 'tickets') continue
+        const matchesFilter = 'ticketId' in filter
+          ? record.ticketId === filter.ticketId
+          : record.projectId === filter.projectId
+        if (!matchesFilter && record.ticketId !== null) continue
 
-      const receipt: AssistantCleanupReceipt = { id: record.id, openCodeSessionId: record.openCodeSessionId }
-      tx.insert(appMeta).values({
-        key: ASSISTANT_CLEANUP_PREFIX + receipt.id,
-        value: JSON.stringify(receipt),
-      }).onConflictDoNothing().run()
-      tx.delete(appMeta).where(eq(appMeta.key, row.key)).run()
-      queued.push(receipt)
+        const receipt: AssistantCleanupReceipt = { id: record.id, openCodeSessionId: record.openCodeSessionId }
+        tx.insert(appMeta).values({
+          key: ASSISTANT_CLEANUP_PREFIX + receipt.id,
+          value: JSON.stringify(receipt),
+        }).onConflictDoNothing().run()
+        tx.delete(appMeta).where(eq(appMeta.key, row.key)).run()
+        queued.push(receipt)
+      }
+
+      return queued
+    })
+  } catch (error) {
+    console.warn('[assistant] Conversation cleanup could not be queued:', sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)))
+    return
+  }
+
+  if (receipts.length) {
+    try { scheduleCleanup?.(receipts) }
+    catch (error) {
+      console.warn('[assistant] Queued conversation cleanup could not be scheduled:', sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)))
     }
-
-    return queued
-  })
-
-  if (receipts.length) scheduleCleanup?.(receipts)
+  }
 }
 
 export function queueAssistantSessionCleanupReceipt(receipt: AssistantCleanupReceipt): void {

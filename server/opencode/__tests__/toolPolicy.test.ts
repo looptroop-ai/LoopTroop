@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolve } from 'node:path'
+import { parse, relative, resolve } from 'node:path'
 import type { OpenCodePermissionRule } from '../types'
 import {
   OPENCODE_DISABLED_PERMISSIONS,
@@ -24,12 +24,19 @@ describe('resolveOpenCodePermissions', () => {
   it('confines assistant reads while denying writes, other tools, and external directories', () => {
     const directory = resolve('assistant-policy-test')
     const rules = assistantPermissions(directory)
-    for (const tool of ['read', 'list', 'glob']) {
+    const rootRelativeEvidence = relative(parse(directory).root, resolve(directory, 'evidence')).replaceAll('\\', '/')
+    const rootRelativeFile = `${rootRelativeEvidence}/manifest.json`
+    for (const tool of ['read', 'list']) {
       expect(isPermissionDeniedByRules(rules, tool, ['evidence/tickets/ticket.json'])).toBe(false)
       expect(isPermissionDeniedByRules(rules, tool, [`${directory.replaceAll('\\', '/')}/evidence/manifest.json`])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, tool, [rootRelativeFile])).toBe(false)
       expect(isPermissionDeniedByRules(rules, tool, [resolve('outside/private.txt')])).toBe(true)
     }
-    expect(isPermissionDeniedByRules(rules, 'grep', ['frontend'])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'glob', ['evidence/**/*.md'])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'glob', ['**/*.md'])).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'glob', [`${rootRelativeEvidence}/**/*.md`])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'grep', ['frontend'])).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'external_directory', [resolve('outside')])).toBe(true)
     for (const tool of ['external_directory', 'bash', 'edit', 'task', 'question', 'webfetch']) {
       expect(isPermissionDeniedByRules(rules, tool, ['*'])).toBe(true)
     }

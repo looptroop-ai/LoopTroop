@@ -5,8 +5,9 @@ import type { AssistantSession, AssistantSessionSummary } from '@shared/assistan
 import { UIContext, type UIState } from '@/context/uiContextDef'
 import { AssistantWidget } from '../AssistantWidget'
 
+const mockProfile = vi.hoisted(() => ({ data: { chatModel: 'provider/model' as string | null }, isLoading: false }))
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: { chatModel: 'provider/model' }, isLoading: false }),
+  useProfile: () => mockProfile,
 }))
 vi.mock('@/hooks/useTickets', () => ({
   useTickets: () => ({ data: [{ id: 'project/17:LT-6', externalId: 'LT-6' }] }),
@@ -71,8 +72,26 @@ function widget(state = baseUiState, open = true, onDismiss = vi.fn(), dispatch 
 }
 
 afterEach(() => {
+  mockProfile.data.chatModel = 'provider/model'
+  mockProfile.isLoading = false
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+})
+
+it('disables new conversations while the assistant model is missing or loading', async () => {
+  mockProfile.data.chatModel = null
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])))
+  vi.stubGlobal('fetch', fetchMock)
+  const view = render(widget())
+
+  const newChat = await screen.findByRole('button', { name: 'New chat' })
+  expect(newChat).toBeDisabled()
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/chat/sessions', expect.objectContaining({ method: 'POST' }))
+
+  mockProfile.data.chatModel = 'provider/model'
+  mockProfile.isLoading = true
+  view.rerender(widget())
+  expect(newChat).toBeDisabled()
 })
 
 it('uses every ticket on the dashboard, then scopes the ticket mode to the selected ticket only', async () => {
@@ -141,6 +160,7 @@ it('opens help history from a ticket view without navigating away from the ticke
   expect(await screen.findByRole('textbox', { name: 'Search conversation history' })).toHaveFocus()
   fireEvent.click(await screen.findByRole('button', { name: /Open How do I configure this\? — Help · All views/ }))
   expect(await screen.findByRole('button', { name: 'How do I configure this?', pressed: true })).toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('log').parentElement).toHaveFocus())
   expect(dispatch).not.toHaveBeenCalled()
   expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions/help-session?mode=help', expect.any(Object))
 })
@@ -217,6 +237,144 @@ it('evicts an open chat when a refreshed session list no longer contains it', as
   expect(await screen.findByText('Ask LoopTroop')).toBeInTheDocument()
 })
 
+it('retries loading a conversation when its active tab is selected again', async () => {
+  const chat = summary({ id: 'retry-detail-session', title: 'Retry detail chat' })
+  let detailCalls = 0
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) {
+      detailCalls += 1
+      return detailCalls === 1
+        ? jsonResponse({ error: 'Temporary failure' }, 503)
+        : jsonResponse(detail({ ...chat, messages: [{ id: 'reloaded', role: 'assistant', content: 'Loaded on retry.', createdAt }] }))
+    }
+    return url.searchParams.get('mode') === 'help' ? jsonResponse([chat]) : jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  const tab = await screen.findByRole('button', { name: 'Retry detail chat', pressed: true })
+  expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503: Temporary failure')
+  fireEvent.click(tab)
+
+  expect(await screen.findByText('Loaded on retry.')).toBeInTheDocument()
+  expect(detailCalls).toBe(2)
+})
+
+it('treats a close 404 as already closed and ignores an in-flight detail response', async () => {
+  const chat = summary({ id: 'late-detail-session', title: 'Late detail chat' })
+  const pendingDetail: { resolve: ((response: Response) => void) | null; signal: AbortSignal | null } = { resolve: null, signal: null }
+  let closed = false
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) {
+      pendingDetail.signal = init?.signal ?? null
+      return new Promise<Response>(resolve => { pendingDetail.resolve = resolve })
+    }
+    if (url.pathname.endsWith('/close')) {
+      closed = true
+      return jsonResponse({ error: 'Conversation not found' }, 404)
+    }
+    return url.searchParams.get('mode') === 'help' ? jsonResponse(closed ? [] : [chat]) : jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  expect(await screen.findByRole('button', { name: 'Close Late detail chat conversation' })).toBeInTheDocument()
+  await waitFor(() => expect(pendingDetail.resolve).toBeTypeOf('function'))
+  fireEvent.click(screen.getByRole('button', { name: 'Close Late detail chat conversation' }))
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Late detail chat' })).not.toBeInTheDocument())
+  expect(pendingDetail.signal?.aborted).toBe(true)
+
+  const resolveDetail = pendingDetail.resolve
+  if (!resolveDetail) throw new Error('Expected the pending detail response')
+  resolveDetail(jsonResponse(detail({ ...chat, messages: [{ id: 'late', role: 'assistant', content: 'Must stay closed.', createdAt }] })))
+  await waitFor(() => expect(screen.queryByText('Must stay closed.')).not.toBeInTheDocument())
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('keeps the jump control visible when a reply finishes after the user scrolls up', async () => {
+  const activeStream: { controller: ReadableStreamDefaultController<Uint8Array> | null } = { controller: null }
+  let created = false
+  const chat = detail({ id: 'scroll-session', title: 'Scroll chat' })
+  const finished = detail({
+    ...chat,
+    messages: [
+      { id: 'saved-question', role: 'user', content: 'Question while reading', createdAt },
+      { id: 'saved-answer', role: 'assistant', content: 'The saved reply.', createdAt },
+    ],
+  })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') {
+      created = true
+      return jsonResponse(chat)
+    }
+    if (url.pathname.endsWith('/messages')) {
+      const encoder = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          activeStream.controller = controller
+          controller.enqueue(encoder.encode('data: {"type":"delta","text":"partial reply"}\n\n'))
+        },
+      }), { headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    return created && url.searchParams.get('mode') === 'help' ? jsonResponse([chat]) : jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  fireEvent.change(composer, { target: { value: 'Question while reading' } })
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  expect(await screen.findByText('partial reply')).toBeInTheDocument()
+  const pendingQuestion = screen.getByText('Question while reading').closest('article')
+  expect(pendingQuestion).toHaveClass('ml-6', 'bg-muted')
+
+  const viewport = screen.getByRole('log')
+  let scrollTop = 500
+  Object.defineProperties(viewport, {
+    scrollHeight: { configurable: true, get: () => 1000 },
+    clientHeight: { configurable: true, get: () => 500 },
+    scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value } },
+  })
+  scrollTop = 100
+  fireEvent.scroll(viewport)
+  const jumpButton = screen.getByRole('button', { name: 'Back to bottom' })
+  expect(jumpButton.parentElement).toBe(viewport.parentElement)
+
+  const encoder = new TextEncoder()
+  if (!activeStream.controller) throw new Error('Expected the assistant response stream')
+  activeStream.controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', session: finished })}\n\n`))
+  activeStream.controller.close()
+  expect(await screen.findByText('The saved reply.')).toBeInTheDocument()
+  expect(jumpButton).toBeInTheDocument()
+})
+
+it('does not send Enter while an IME composition is active', async () => {
+  const chat = detail({ id: 'ime-session', title: 'IME chat' })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(chat)
+    if (url.pathname.endsWith('/messages')) return jsonResponse({ error: 'Model unavailable' }, 503)
+    return jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  fireEvent.change(composer, { target: { value: 'Composed text' } })
+  fireEvent.keyDown(composer, { key: 'Enter', isComposing: true })
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/messages'))).toHaveLength(0)
+  expect(composer).toHaveValue('Composed text')
+
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503: Model unavailable')
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/messages'))).toHaveLength(1)
+})
+
 it('switches between open conversation tabs without creating or closing a session', async () => {
   const first = summary({ id: 'first-session', title: 'First chat' })
   const second = detail({ id: 'second-session', title: 'Second chat' })
@@ -229,9 +387,11 @@ it('switches between open conversation tabs without creating or closing a sessio
   vi.stubGlobal('fetch', fetchMock)
   render(widget())
 
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
   expect(await screen.findByRole('button', { name: 'First chat', pressed: true })).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
   expect(await screen.findByRole('button', { name: 'Second chat', pressed: true })).toBeInTheDocument()
+  await waitFor(() => expect(composer).toHaveFocus())
   fireEvent.click(screen.getByRole('button', { name: 'First chat', pressed: false }))
   expect(screen.getByRole('button', { name: 'First chat', pressed: true })).toBeInTheDocument()
 })
@@ -262,7 +422,7 @@ it('keeps a separate composer draft for each open conversation', async () => {
 })
 
 it('restores a failed send to its conversation after switching tabs', async () => {
-  const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = []
+  const streams: { controllers: ReadableStreamDefaultController<Uint8Array>[] } = { controllers: [] }
   const first = detail({ id: 'first-session', title: 'First chat' })
   const second = detail({ id: 'second-session', title: 'Second chat' })
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -271,7 +431,7 @@ it('restores a failed send to its conversation after switching tabs', async () =
       const encoder = new TextEncoder()
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          streamControllers.push(controller)
+          streams.controllers.push(controller)
           controller.enqueue(encoder.encode('data: {"type":"delta","text":"working"}\n\n'))
         },
       })
@@ -295,8 +455,10 @@ it('restores a failed send to its conversation after switching tabs', async () =
   await waitFor(() => expect(screen.getByRole('button', { name: 'Second chat', pressed: true })).toBeInTheDocument())
   fireEvent.change(composer, { target: { value: 'Draft for the second chat.' } })
   const encoder = new TextEncoder()
-  streamControllers.at(0)?.enqueue(encoder.encode('data: {"type":"error","error":"Provider rejected the message"}\n\n'))
-  streamControllers.at(0)?.close()
+  const streamController = streams.controllers[0]
+  if (!streamController) throw new Error('Expected the first assistant stream')
+  streamController.enqueue(encoder.encode('data: {"type":"error","error":"Provider rejected the message"}\n\n'))
+  streamController.close()
   expect(await screen.findByRole('alert')).toHaveTextContent('Provider rejected the message')
 
   fireEvent.click(screen.getByRole('button', { name: 'First chat', pressed: false }))
@@ -305,8 +467,98 @@ it('restores a failed send to its conversation after switching tabs', async () =
   expect(composer).toHaveValue('Draft for the second chat.')
 })
 
+it('restores failed drafts to their original scope without replacing the current scope draft', async () => {
+  const helpStream: { fail: (() => void) | null } = { fail: null }
+  const helpChat = detail({ id: 'help-scope-session', title: 'Help scope chat' })
+  const ticketChat = detail({ id: 'ticket-scope-session', mode: 'tickets', title: 'Ticket scope chat' })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') {
+      return jsonResponse(JSON.parse(String(init.body)).mode === 'help' ? helpChat : ticketChat)
+    }
+    if (url.pathname.endsWith('/messages')) {
+      const encoder = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"delta","text":"working"}\n\n'))
+          helpStream.fail = () => {
+            controller.enqueue(encoder.encode('data: {"type":"error","error":"Provider rejected the message"}\n\n'))
+            controller.close()
+          }
+        },
+      }), { headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    if (url.pathname === `/api/chat/sessions/${helpChat.id}`) return jsonResponse(helpChat)
+    return jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  const helpMessage = 'Keep the Help draft.'
+  fireEvent.change(composer, { target: { value: helpMessage } })
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  expect(await screen.findByText('working')).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Ticket scope chat', pressed: true })).toBeInTheDocument())
+  const ticketDraft = 'Keep the Tickets draft.'
+  fireEvent.change(composer, { target: { value: ticketDraft } })
+  const fail = helpStream.fail
+  if (!fail) throw new Error('Expected the Help response stream')
+  fail()
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/chat/sessions/${helpChat.id}?mode=help`, expect.any(Object)))
+
+  fireEvent.click(screen.getByRole('button', { name: 'Help' }))
+  expect(composer).toHaveValue(helpMessage)
+  fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
+  expect(composer).toHaveValue(ticketDraft)
+})
+
+it('refreshes the saved transcript after an accepted stream fails and keeps the draft', async () => {
+  const chat = detail({ id: 'partially-saved-session', title: 'Recovery chat' })
+  const refreshed = detail({
+    ...chat,
+    messages: [
+      { id: 'persisted-user', role: 'user', content: 'Question that was saved', createdAt },
+      { id: 'persisted-answer', role: 'assistant', content: 'Saved before the connection dropped.', createdAt },
+    ],
+  })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(chat)
+    if (url.pathname.endsWith('/messages')) {
+      const encoder = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"delta","text":"partial"}\n\n'))
+          controller.enqueue(encoder.encode('data: {"type":"error","error":"Connection dropped"}\n\n'))
+          controller.close()
+        },
+      }), { headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(refreshed)
+    return jsonResponse([chat])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  const message = 'Keep this message for retry.'
+  fireEvent.change(composer, { target: { value: message } })
+  fireEvent.keyDown(composer, { key: 'Enter' })
+
+  expect(await screen.findByText('Saved before the connection dropped.')).toBeInTheDocument()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Connection dropped')
+  expect(composer).toHaveValue(message)
+  expect(fetchMock).toHaveBeenCalledWith(`/api/chat/sessions/${chat.id}?mode=help`, expect.any(Object))
+})
+
 it('closes history on outside click and Escape, and reports conversations for deleted tickets', async () => {
-  const missingTicketChat = summary({ id: 'missing-ticket-session', mode: 'tickets', ticketId: 'missing-ticket', title: 'Deleted ticket chat', archived: true })
+  const missingTicketChat = summary({ id: 'missing-ticket-session', mode: 'tickets', ticketId: 'project/19:LT-9', title: 'Deleted ticket chat', archived: true })
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/chat/sessions' && !url.search) return jsonResponse([missingTicketChat])
@@ -318,8 +570,11 @@ it('closes history on outside click and Escape, and reports conversations for de
 
   const historyButton = await screen.findByRole('button', { name: 'Conversation history' })
   fireEvent.click(historyButton)
-  fireEvent.click(await screen.findByRole('button', { name: /Open Deleted ticket chat/ }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('is no longer available')
+  const deletedTicket = await screen.findByRole('button', { name: /Open Deleted ticket chat/ })
+  expect(deletedTicket).toHaveAccessibleName(/Tickets · Ticket LT-9/)
+  fireEvent.click(deletedTicket)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Ticket LT-9 is no longer available')
+  expect(screen.getByRole('dialog', { name: 'Conversation history' })).toBeInTheDocument()
   expect(dispatch).not.toHaveBeenCalled()
 
   fireEvent.pointerDown(document.body)
@@ -409,6 +664,7 @@ it('reopens archived conversations from searchable history and lets the server d
   expect(await screen.findByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
 
   view.rerender(widget(baseUiState, false))
+  expect(document.querySelector('.assistant-markdown')).not.toBeInTheDocument()
   view.rerender(widget())
   expect(await screen.findByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
   await waitFor(() => expect(screen.queryByText('Opening conversation…')).not.toBeInTheDocument())
@@ -426,7 +682,7 @@ it('reopens archived conversations from searchable history and lets the server d
 
 it('finishes a reply in the background when the assistant scope changes', async () => {
   const sentSignals: AbortSignal[] = []
-  const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = []
+  const streams: { controllers: ReadableStreamDefaultController<Uint8Array>[] } = { controllers: [] }
   let sessionCreated = false
   const newSession = detail({ id: 'new-session', title: 'New conversation' })
   const finishedSession = detail({
@@ -447,7 +703,7 @@ it('finishes a reply in the background when the assistant scope changes', async 
       const encoder = new TextEncoder()
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          streamControllers.push(controller)
+          streams.controllers.push(controller)
           controller.enqueue(encoder.encode('data: {"type":"delta","text":"streaming reply"}\n\n'))
           sentSignals.at(0)?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
         },
@@ -475,34 +731,34 @@ it('finishes a reply in the background when the assistant scope changes', async 
   expect(screen.queryByText('streaming reply')).not.toBeInTheDocument()
 
   const encoder = new TextEncoder()
-  streamControllers.at(0)?.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', session: finishedSession })}\n\n`))
-  streamControllers.at(0)?.close()
+  const streamController = streams.controllers[0]
+  if (!streamController) throw new Error('Expected the background assistant stream')
+  streamController.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', session: finishedSession })}\n\n`))
+  streamController.close()
   fireEvent.click(screen.getByRole('button', { name: 'Help' }))
   expect(await screen.findByText('Finished in the background.')).toBeInTheDocument()
   expect(await screen.findByRole('status')).toHaveTextContent('Assistant response complete.')
 })
 
 it('lets closing the active tab stop and archive a running reply', async () => {
-  let sentSignal: AbortSignal | null = null
-  let closeCalled = false
+  const requests: { sentSignal: AbortSignal | null; resolveClose: ((response: Response) => void) | null } = { sentSignal: null, resolveClose: null }
   const chat = detail({ id: 'running-session', title: 'Running chat' })
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(chat)
     if (url.pathname.endsWith('/messages')) {
-      sentSignal = init?.signal ?? null
+      requests.sentSignal = init?.signal ?? null
       const encoder = new TextEncoder()
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(encoder.encode('data: {"type":"delta","text":"working"}\n\n'))
-          sentSignal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
+          requests.sentSignal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
         },
       })
       return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
     }
     if (url.pathname.endsWith('/close')) {
-      closeCalled = true
-      return new Response(null, { status: 204 })
+      return new Promise<Response>(resolve => { requests.resolveClose = resolve })
     }
     return jsonResponse([])
   })
@@ -516,8 +772,14 @@ it('lets closing the active tab stop and archive a running reply', async () => {
   expect(await screen.findByText('working')).toBeInTheDocument()
 
   fireEvent.click(screen.getByRole('button', { name: 'Close Running chat conversation' }))
-  await waitFor(() => expect(closeCalled).toBe(true))
-  await waitFor(() => expect(sentSignal?.aborted).toBe(true))
+  await waitFor(() => expect(requests.resolveClose).toBeTypeOf('function'))
+  expect(composer).toBeDisabled()
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/messages'))).toHaveLength(1)
+  const resolveClose = requests.resolveClose
+  if (!resolveClose) throw new Error('Expected the pending close request')
+  resolveClose(new Response(null, { status: 204 }))
+  await waitFor(() => expect(requests.sentSignal?.aborted).toBe(true))
   expect(screen.queryByText('working')).not.toBeInTheDocument()
   expect(composer).toHaveValue('')
 })
@@ -620,7 +882,7 @@ it('opens web citations separately and renders local evidence paths as text', as
   expect(documentationLink).toHaveAttribute('rel', 'noopener noreferrer')
   expect(screen.queryByRole('link', { name: 'source' })).not.toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'unsafe' })).not.toBeInTheDocument()
-  expect(screen.getByText('source').closest('code')).toBeInTheDocument()
+  expect(screen.getByText('projects/1/source/src/App.tsx').closest('code')).toBeInTheDocument()
   expect(screen.getByText('unsafe').closest('code')).toBeInTheDocument()
 })
 
@@ -650,6 +912,7 @@ it('keeps a fixed accessible size across modes and Escape dismisses the window b
   const panel = screen.getByRole('dialog', { name: 'LoopTroop assistant' })
   expect(panel).toHaveClass('h-[min(620px,calc(100dvh-10rem))]', 'w-[min(420px,calc(100vw-2rem))]')
   expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toHaveClass('h-8', 'w-8')
+  await waitFor(() => expect(screen.getByRole('log').parentElement).toHaveFocus())
   fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
   expect(screen.getByRole('dialog', { name: 'LoopTroop assistant' })).toHaveClass('h-[min(620px,calc(100dvh-10rem))]', 'w-[min(420px,calc(100vw-2rem))]')
 

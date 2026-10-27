@@ -137,8 +137,94 @@ describe('profileRouter numeric validation', () => {
       chatModelVariant: 'high',
       saveChatSessions: false,
     })
-    expect(validateConfiguredModel).toHaveBeenCalledWith('openai/gpt-5.4')
+    expect(validateConfiguredModel).toHaveBeenCalledWith('openai/gpt-5.4', 'high')
     expect(validateModelSelection).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['clearing', null],
+    ['changing', 'provider/next-assistant'],
+  ] as const)('clears the saved assistant variant when %s the model without a new variant', async (_change, nextModel) => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModel: 'provider/assistant',
+      chatModelVariant: 'high',
+    }).run()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModel: nextModel }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      chatModel: nextModel,
+      chatModelVariant: null,
+    })
+    expect(db.select().from(profiles).get()).toMatchObject({
+      chatModel: nextModel,
+      chatModelVariant: null,
+    })
+  })
+
+  it('validates a changed variant against the unchanged assistant model', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModel: 'provider/assistant',
+      chatModelVariant: 'balanced',
+    }).run()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModelVariant: 'high' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(validateConfiguredModel).toHaveBeenCalledWith('provider/assistant', 'high')
+    expect(db.select().from(profiles).get()).toMatchObject({ chatModelVariant: 'high' })
+  })
+
+  it('clears an assistant variant when the profile has no model', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModelVariant: 'high',
+    }).run()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModelVariant: 'high' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(db.select().from(profiles).get()).toMatchObject({ chatModel: null, chatModelVariant: null })
+    expect(validateConfiguredModel).not.toHaveBeenCalled()
+  })
+
+  it('does not save a submitted assistant variant when creating a profile without a model', async () => {
+    vi.mocked(validateModelSelection).mockResolvedValue({
+      mainImplementer: 'provider/implementer',
+      councilMembers: ['provider/implementer', 'provider/reviewer'],
+    })
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mainImplementer: 'provider/implementer',
+        councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+        chatModelVariant: 'high',
+      }),
+    })
+
+    expect(response.status).toBe(201)
+    await expect(response.json()).resolves.toMatchObject({ chatModel: null, chatModelVariant: null })
+    expect(validateConfiguredModel).not.toHaveBeenCalled()
   })
 
   it('saves unrelated settings without revalidating an unchanged assistant model', async () => {
@@ -146,6 +232,7 @@ describe('profileRouter numeric validation', () => {
       mainImplementer: 'provider/implementer',
       councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
       chatModel: 'provider/assistant',
+      chatModelVariant: 'high',
     }).run()
     vi.mocked(validateConfiguredModel).mockClear()
     vi.mocked(validateConfiguredModel).mockRejectedValue(new Error('OpenCode is offline'))
@@ -153,7 +240,7 @@ describe('profileRouter numeric validation', () => {
     const response = await createProfileApp().request('/api/profile', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatModel: 'provider/assistant', saveChatSessions: false }),
+      body: JSON.stringify({ chatModel: 'provider/assistant', chatModelVariant: 'high', saveChatSessions: false }),
     })
 
     expect(response.status).toBe(200)

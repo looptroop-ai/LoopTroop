@@ -105,7 +105,11 @@ profileRouter.post('/profile', async (c) => {
   let chatModel: string | null = null
   try {
     validatedModels = await validateModelSelection(parsed.data.mainImplementer, parsed.data.councilMembers)
-    if (parsed.data.chatModel !== undefined) chatModel = await validateConfiguredModel(parsed.data.chatModel)
+    if (parsed.data.chatModel !== undefined) {
+      chatModel = parsed.data.chatModel && parsed.data.chatModelVariant
+        ? await validateConfiguredModel(parsed.data.chatModel, parsed.data.chatModelVariant)
+        : await validateConfiguredModel(parsed.data.chatModel)
+    }
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : 'Invalid model configuration' }, 400)
   }
@@ -127,6 +131,7 @@ profileRouter.post('/profile', async (c) => {
   const result = db.insert(profiles).values({
     ...parsed.data,
     chatModel,
+    chatModelVariant: chatModel ? parsed.data.chatModelVariant ?? null : null,
     mainImplementer: validatedModels.mainImplementer,
     councilMembers: JSON.stringify(validatedModels.councilMembers),
   }).returning().get()
@@ -147,16 +152,37 @@ profileRouter.patch('/profile', async (c) => {
   let chatModelPatch: { chatModel: string | null } | undefined
   if (parsed.data.chatModel !== undefined) {
     try {
+      const changingModel = parsed.data.chatModel !== existing.chatModel
       chatModelPatch = {
-        chatModel: parsed.data.chatModel === existing.chatModel
+        chatModel: !changingModel
           ? existing.chatModel
-          : await validateConfiguredModel(parsed.data.chatModel),
+          : parsed.data.chatModel && parsed.data.chatModelVariant
+            ? await validateConfiguredModel(parsed.data.chatModel, parsed.data.chatModelVariant)
+            : await validateConfiguredModel(parsed.data.chatModel),
       }
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Invalid chat model' }, 400)
     }
   }
   const chatModelChanged = chatModelPatch?.chatModel !== undefined && chatModelPatch.chatModel !== existing.chatModel
+  const nextChatModel = chatModelPatch ? chatModelPatch.chatModel : existing.chatModel
+  let chatModelVariantPatch: { chatModelVariant: string | null } | undefined
+  if (!nextChatModel || (chatModelChanged && parsed.data.chatModelVariant === undefined)) {
+    chatModelVariantPatch = { chatModelVariant: null }
+  } else if (parsed.data.chatModelVariant !== undefined) {
+    try {
+      if (
+        parsed.data.chatModelVariant
+        && !chatModelChanged
+        && parsed.data.chatModelVariant !== existing.chatModelVariant
+      ) {
+        await validateConfiguredModel(nextChatModel, parsed.data.chatModelVariant)
+      }
+      chatModelVariantPatch = { chatModelVariant: parsed.data.chatModelVariant }
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Invalid chat model variant' }, 400)
+    }
+  }
 
   const requestedMainImplementer = parsed.data.mainImplementer ?? existing.mainImplementer
   const requestedCouncilMembers = parsed.data.councilMembers ?? existing.councilMembers
@@ -210,6 +236,7 @@ profileRouter.patch('/profile', async (c) => {
     .set({
       ...parsed.data,
       ...chatModelPatch,
+      ...chatModelVariantPatch,
       ...modelPatch,
       updatedAt: new Date().toISOString(),
     })

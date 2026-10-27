@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchConnectedModelIds } from '../providerCatalog'
+import { fetchConnectedModelIds, fetchProviderCatalog, flattenCatalogModels } from '../providerCatalog'
 import { MAX_COUNCIL_MEMBERS, validateConfiguredModel, validateModelSelection } from '../modelValidation'
+import type { OpenCodeCatalogResponse } from '../../../shared/opencodeCatalog'
 
 vi.mock('../providerCatalog', () => ({
   fetchConnectedModelIds: vi.fn(),
+  fetchProviderCatalog: vi.fn(),
+  flattenCatalogModels: vi.fn(),
 }))
 
 const models = Array.from({ length: 11 }, (_, index) => `provider/model-${index + 1}`)
@@ -112,6 +115,36 @@ describe('validateConfiguredModel', () => {
 
     vi.mocked(fetchConnectedModelIds).mockResolvedValue([model])
     await expect(validateConfiguredModel(model)).resolves.toBe(model)
+  })
+
+  it('validates an explicit variant against the connected model catalog', async () => {
+    const model = 'openrouter/deepseek/deepseek-v4-flash:floor'
+    vi.mocked(fetchProviderCatalog).mockResolvedValue({} as unknown as OpenCodeCatalogResponse)
+    vi.mocked(flattenCatalogModels).mockReturnValue([
+      {
+        fullId: 'openrouter/deepseek/deepseek-v4-flash',
+        id: 'deepseek/deepseek-v4-flash',
+        name: 'DeepSeek V4 Flash',
+        providerID: 'openrouter',
+        providerName: 'OpenRouter',
+        family: '',
+        costInput: null,
+        costOutput: null,
+        contextWindow: 0,
+        canReason: null,
+        canUseTools: null,
+        canSeeImages: null,
+        status: 'active',
+        variants: { high: {} },
+      },
+    ])
+
+    await expect(validateConfiguredModel(model, 'high')).resolves.toBe(model)
+    await expect(validateConfiguredModel(model, 'unsupported'))
+      .rejects.toThrow('Selected variant is not configured for OpenCode model openrouter/deepseek/deepseek-v4-flash:floor: unsupported')
+    expect(fetchProviderCatalog).toHaveBeenCalledTimes(2)
+    expect(flattenCatalogModels).toHaveBeenCalledWith({}, 'connected')
+    expect(fetchConnectedModelIds).not.toHaveBeenCalled()
   })
 
   it('accepts an exact catalog routing model even when its unsuffixed base is unavailable', async () => {

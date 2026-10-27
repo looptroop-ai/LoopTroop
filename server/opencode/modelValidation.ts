@@ -1,4 +1,4 @@
-import { fetchConnectedModelIds } from './providerCatalog'
+import { fetchConnectedModelIds, fetchProviderCatalog, flattenCatalogModels } from './providerCatalog'
 import { parseCouncilMembers } from '../council/members'
 import { isOpenRouterRoutingModel } from '../../shared/openRouterRouting'
 
@@ -17,9 +17,25 @@ function cleanModelId(modelId: string): string {
 }
 
 /** Validate a standalone profile model without applying council membership rules. */
-export async function validateConfiguredModel(modelIdRaw: string | null | undefined): Promise<string | null> {
+export async function validateConfiguredModel(
+  modelIdRaw: string | null | undefined,
+  variantRaw?: string | null,
+): Promise<string | null> {
   const modelId = typeof modelIdRaw === 'string' ? modelIdRaw.trim() : ''
   if (!modelId) return null
+
+  const variant = typeof variantRaw === 'string' ? variantRaw.trim() : ''
+  if (variant) {
+    const model = flattenCatalogModels(await fetchProviderCatalog(), 'connected')
+      .find(({ fullId }) => fullId === modelId || fullId === cleanModelId(modelId))
+    if (!model) {
+      throw new Error(`Selected model is not configured in OpenCode: ${modelId}`)
+    }
+    if (!Object.prototype.hasOwnProperty.call(model.variants ?? {}, variant)) {
+      throw new Error(`Selected variant is not configured for OpenCode model ${modelId}: ${variant}`)
+    }
+    return modelId
+  }
 
   const connectedModelIds = new Set(await fetchConnectedModelIds())
   if (connectedModelIds.size === 0) {

@@ -1,4 +1,4 @@
-import { isAbsolute, join, relative, resolve } from 'path'
+import { isAbsolute, join, parse, relative, resolve } from 'path'
 import type { OpenCodePermissionRule, PromptSessionOptions } from './types'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from './permissions'
 
@@ -6,13 +6,16 @@ export type OpenCodeToolPolicy = 'default' | 'disabled' | 'read_only' | 'executi
 
 export function assistantPermissions(directory: string): ReadonlyArray<OpenCodePermissionRule> {
   const evidenceRoot = join(resolve(directory), 'evidence').replaceAll('\\', '/')
-  const paths = ['evidence', 'evidence/**', evidenceRoot, `${evidenceRoot}/**`]
+  const rootRelativeEvidence = relative(parse(evidenceRoot).root, evidenceRoot).replaceAll('\\', '/')
+  const paths = [
+    'evidence', 'evidence/**', evidenceRoot, `${evidenceRoot}/**`,
+    ...(rootRelativeEvidence ? [rootRelativeEvidence, `${rootRelativeEvidence}/**`] : []),
+  ]
   const scopedPaths = [...new Set(paths.flatMap(path => [path, path.replaceAll('/', '\\')]))]
   return Object.freeze([
     { permission: '*', pattern: '*', action: 'deny' },
     ...(['read', 'list', 'glob'] as const).flatMap(permission => scopedPaths.map(pattern => ({ permission, pattern, action: 'allow' as const }))),
-    // grep checks the search expression; external_directory checks its destination.
-    { permission: 'grep', pattern: '*', action: 'allow' },
+    // grep checks its expression rather than its path, so the wildcard deny keeps it unavailable.
     { permission: 'external_directory', pattern: '*', action: 'deny' },
   ])
 }

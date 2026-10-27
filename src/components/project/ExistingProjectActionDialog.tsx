@@ -56,7 +56,7 @@ export function ExistingProjectActionDialog({
               )}
             </p>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-              <li>Ticket workflow data, attempts, logs, artifacts, and managed worktrees will be removed.</li>
+              <li>Ticket workflow data, attempts, logs, artifacts, managed worktrees, and dedicated assistant conversations will be removed.</li>
               <li>
                 The ticket counter resets to 0; the next ticket will be{' '}
                 <span className="font-mono">{nextShortname}-1</span>.

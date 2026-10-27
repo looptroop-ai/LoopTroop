@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   listPhaseAttempts: vi.fn(),
   queryLogPage: vi.fn(),
   opendir: vi.fn(),
+  listOpenCodeNativeLogFiles: vi.fn(),
+  runGit: vi.fn(),
 }))
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -38,6 +40,8 @@ vi.mock('../../log/projection', () => ({
     !!error && typeof error === 'object' && (error as { code?: unknown }).code === 'LOG_CURSOR_EXPIRED'
   ),
 }))
+vi.mock('../../opencode/logDiagnostics', () => ({ listOpenCodeNativeLogFiles: mocks.listOpenCodeNativeLogFiles }))
+vi.mock('../../git/runCommand', () => ({ runGit: mocks.runGit }))
 
 type EvidenceFunction = typeof import('../evidence').prepareAssistantEvidence
 type FixtureTicket = Record<string, unknown> & { id: string; projectId: number }
@@ -144,17 +148,20 @@ beforeEach(async () => {
   mocks.listPhaseArtifacts.mockReturnValue([])
   mocks.listPhaseAttempts.mockReturnValue([])
   mocks.queryLogPage.mockImplementation(async () => ({ entries: [], hasOlder: false, olderCursor: null }))
+  mocks.listOpenCodeNativeLogFiles.mockReturnValue([])
+  mocks.runGit.mockReset()
   installOfflineFetch()
   prepareAssistantEvidence = (await import('../evidence')).prepareAssistantEvidence
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   for (const root of temporaryRoots.splice(0)) removeTempDir(root)
 })
 
 describe('assistant evidence workspace', () => {
-  it('writes one validated ticket, all paged log views, archived planning, sanitized source, and a safe worktree copy', async () => {
+  it('writes one validated ticket, every paged log and workflow artifact, sanitized source, and a safe worktree copy', async () => {
     const { cwd, projectRoot } = await fixture()
     await mkdir(join(projectRoot, 'src'), { recursive: true })
     await writeFile(join(projectRoot, 'src', 'root-only.zig'), 'attached checkout')
@@ -164,7 +171,7 @@ describe('assistant evidence workspace', () => {
 
     const worktreePath = join(projectRoot, '.looptroop', 'worktrees', 'T-1')
     await mkdir(join(worktreePath, 'src'), { recursive: true })
-    await writeFile(join(worktreePath, '.git'), 'gitdir: private')
+    await writeFile(join(worktreePath, '.git'), 'worktree metadata')
     await writeFile(join(worktreePath, '.env.local'), 'password=worktree-secret')
     await writeFile(join(worktreePath, 'src', 'main.zig'), 'Authorization: Bearer abcdefghijklmnop')
     await writeFile(join(worktreePath, 'src', 'invalid-utf8.zig'), new Uint8Array([0xff, 0xfe]))
@@ -180,18 +187,38 @@ describe('assistant evidence workspace', () => {
 
     const ticket = makeTicket('7:T-1', 7, {
       description: 'Authorization: Bearer abcdefghijklmnop',
+      externalId: 'T-1',
+      visitedStatuses: ['DRAFT', 'CODING'],
+      previousStatus: 'TESTING',
+      reviewCutoffStatus: 'CODING',
+      pendingQuestions: { requestCount: 1, questionCount: 2, requestIds: ['q-1'], deadlineAt: null, stoppedAt: null },
+      implementationTiming: { startedAt: null, finishedAt: null, elapsedMs: 10, activeMs: 8, questionWaitingMs: 2 },
+      completionDisposition: 'merged',
+      manualQa: { activeVersion: 2, completedRoundCount: 1, latestOutcome: 'passed', artifactAvailability: { checklist: true, results: true, coverage: false, summary: true } },
+      manualQaOrigin: { kind: 'project' },
+      cleanup: { status: 'warning', errorCount: 1, latestReportArtifactId: 8, errors: ['kept for review'] },
     })
     attachTicket(ticket, projectRoot, worktreePath)
+    const implementationPhase = WORKFLOW_PHASES.find(phase => phase.groupId === 'implementation')!.id
+    const postImplementationPhase = WORKFLOW_PHASES.find(phase => phase.groupId === 'post_implementation')!.id
     mocks.listPhaseAttempts.mockImplementation((_id: string, phase: string) => phase === 'DRAFTING_PRD'
       ? [
           { phase, attemptNumber: 1, state: 'archived', archivedReason: 'retry' },
           { phase, attemptNumber: 2, state: 'active', archivedReason: null },
         ]
-      : [])
+      : phase === implementationPhase
+        ? [{ phase, attemptNumber: 1, state: 'skipped', archivedReason: 'not required' }]
+        : phase === postImplementationPhase
+          ? [{ phase, attemptNumber: 1, state: 'active', archivedReason: null }]
+          : [])
     mocks.listPhaseArtifacts.mockImplementation((_id: string, options: { phase: string; phaseAttempt: number }) => (
       options.phase === 'DRAFTING_PRD'
         ? [{ phase: options.phase, phaseAttempt: options.phaseAttempt, content: `plan-${options.phaseAttempt}` }]
-        : []
+        : options.phase === implementationPhase
+          ? [{ phase: options.phase, phaseAttempt: options.phaseAttempt, artifactType: 'skip_receipt', content: 'phase intentionally skipped' }]
+          : options.phase === postImplementationPhase
+            ? [{ phase: options.phase, phaseAttempt: options.phaseAttempt, content: 'post implementation report' }]
+            : []
     ))
     mocks.queryLogPage.mockImplementation(async (_id: string, query: { view: string; before?: string }) => {
       if (query.view === 'system') return query.before
@@ -215,8 +242,9 @@ describe('assistant evidence workspace', () => {
     const files = await readdir(join(sourceDir, 'src'))
 
     expect(manifest.scope).toEqual({ kind: 'ticket', ticketId: ticket.id })
-    expect(manifest.officialDocs.unavailable).toHaveLength(25)
-    expect(manifest.installedSource.status).toBe('unavailable')
+    expect(manifest.officialDocs.status).toBe('not_in_scope')
+    expect(manifest.installedSource.status).toBe('not_in_scope')
+    expect(fetchMock).not.toHaveBeenCalled()
     expect(manifest.tickets).toHaveLength(1)
     expect(manifest.projects).toMatchObject([{ id: 7, sourceKind: 'ticket worktree' }])
     expect(existsSync(join(sourceDir, 'src', 'root-only.zig'))).toBe(false)
@@ -230,14 +258,26 @@ describe('assistant evidence workspace', () => {
     expect(existsSync(join(sourceDir, '.env.local'))).toBe(false)
     expect(ticketFile.description).not.toContain('abcdefghijklmnop')
     expect(ticketFile.errors[0].errorMessage).not.toContain('abcdef0123456789')
-    expect(ticketFile.planningAttempts).toEqual(expect.arrayContaining([
+    expect(ticketFile.externalId).toBe('T-1')
+    expect(ticketFile.visitedStatuses).toEqual(['DRAFT', 'CODING'])
+    expect(ticketFile.pendingQuestions).toMatchObject({ requestCount: 1, questionCount: 2 })
+    expect(ticketFile.implementationTiming).toMatchObject({ elapsedMs: 10, activeMs: 8 })
+    expect(ticketFile.completionDisposition).toBe('merged')
+    expect(ticketFile.manualQa).toMatchObject({ activeVersion: 2, latestOutcome: 'passed' })
+    expect(ticketFile.cleanup).toMatchObject({ status: 'warning', errorCount: 1 })
+    expect(ticketFile.workflowAttempts).toEqual(expect.arrayContaining([
       expect.objectContaining({ phase: 'DRAFTING_PRD', attemptNumber: 1, state: 'archived' }),
       expect.objectContaining({ phase: 'DRAFTING_PRD', attemptNumber: 2, state: 'active' }),
+      expect.objectContaining({ phase: implementationPhase, attemptNumber: 1, state: 'skipped' }),
+      expect.objectContaining({ phase: postImplementationPhase, attemptNumber: 1, state: 'active' }),
     ]))
-    expect(ticketFile.planningArtifactFiles).toEqual(expect.arrayContaining([
-      `tickets/${ticketFolder}/planning/DRAFTING_PRD/attempt-1.json`,
-      `tickets/${ticketFolder}/planning/DRAFTING_PRD/attempt-2.json`,
+    expect(ticketFile.phaseArtifactFiles).toEqual(expect.arrayContaining([
+      `tickets/${ticketFolder}/phases/DRAFTING_PRD/attempt-1.json`,
+      `tickets/${ticketFolder}/phases/DRAFTING_PRD/attempt-2.json`,
+      `tickets/${ticketFolder}/phases/${implementationPhase}/attempt-1.json`,
+      `tickets/${ticketFolder}/phases/${postImplementationPhase}/attempt-1.json`,
     ]))
+    expect(await readFile(join(evidence, 'tickets', ticketFolder, 'phases', implementationPhase, 'attempt-1.json'), 'utf8')).toContain('phase intentionally skipped')
     expect(ticketFile.logHistory.system.complete).toBe(true)
     expect(ticketFile.logHistory.system.files).toEqual([
       `tickets/${ticketFolder}/logs/system/page-00000.jsonl`,
@@ -252,7 +292,10 @@ describe('assistant evidence workspace', () => {
     expect(fetchMock.mock.calls.every(([input]) => new URL(String(input)).hostname === 'api.github.com' || new URL(String(input)).hostname === 'raw.githubusercontent.com')).toBe(true)
     expect(prompt).toContain('untrusted evidence')
     expect(permission[0]).toMatchObject({ permission: '*', pattern: '*', action: 'deny' })
-    expect(permission).toContainEqual({ permission: 'read', pattern: '*', action: 'allow' })
+    expect(permission).toContainEqual({ permission: 'read', pattern: 'evidence/**', action: 'allow' })
+    expect(permission).toContainEqual({ permission: 'read', pattern: `${cwd.replaceAll('\\', '/')}/evidence/**`, action: 'allow' })
+    expect(permission).not.toContainEqual({ permission: 'read', pattern: '*', action: 'allow' })
+    expect(permission).toContainEqual({ permission: 'grep', pattern: '*', action: 'allow' })
     expect(permission).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
   })
 
@@ -289,7 +332,129 @@ describe('assistant evidence workspace', () => {
     expect(single.projects.map((entry: { id: number }) => entry.id)).toEqual([7])
   })
 
-  it('uses current website main docs and caches only immutable installed-version source', async () => {
+  it('omits environment and SSH secrets, renames instruction files, and accepts symlinked parent paths', async () => {
+    const { root, cwd, projectRoot } = await fixture()
+    await mkdir(join(projectRoot, '.ticket'), { recursive: true })
+    await mkdir(join(projectRoot, '.git'))
+    await writeFile(join(projectRoot, '.envrc'), 'export API_KEY=private')
+    await writeFile(join(projectRoot, 'local.env'), 'API_KEY=private')
+    await writeFile(join(projectRoot, 'id_ecdsa'), 'private key')
+    await writeFile(join(projectRoot, 'id_dsa'), 'private key')
+    await writeFile(join(projectRoot, 'id_ed25519_sk'), 'private key')
+    await writeFile(join(projectRoot, '.ticket', 'metadata.zig'), 'private ticket data')
+    await writeFile(join(projectRoot, 'AGENTS.md'), 'Do not inject this as workspace instructions.')
+    await writeFile(join(projectRoot, 'CLAUDE.md'), 'Do not inject this as workspace instructions.')
+    await writeFile(join(projectRoot, 'CONTEXT.md'), 'Do not inject this as workspace instructions.')
+    await writeFile(join(projectRoot, '.gitignore'), 'ignored.zig\n')
+    await writeFile(join(projectRoot, 'tracked.zig'), 'tracked source')
+    await writeFile(join(projectRoot, 'ignored.zig'), 'ignored source')
+    mocks.runGit.mockResolvedValue({ ok: true, stdout: '.gitignore\0AGENTS.md\0CLAUDE.md\0CONTEXT.md\0tracked.zig\0' })
+    const linkedRoot = join(root, 'linked-root')
+    await symlink(root, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir')
+    const aliasedProjectRoot = join(linkedRoot, 'project')
+    const ticket = makeTicket('7:SOURCE-BOUNDARY', 7)
+    attachTicket(ticket, aliasedProjectRoot)
+
+    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    const evidence = join(cwd, 'evidence')
+    const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
+    const projectSource = join(evidence, 'projects', '7', 'source')
+    const copied = await readdir(projectSource)
+    const sourceIndex = await readFile(join(evidence, manifest.projects[0].sourceIndex), 'utf8')
+
+    expect(copied).toContain('AGENTS.md.txt')
+    expect(copied).toContain('CLAUDE.md.txt')
+    expect(copied).toContain('CONTEXT.md.txt')
+    expect(copied).not.toContain('AGENTS.md')
+    expect(copied).not.toContain('.ticket')
+    expect(copied).not.toContain('.envrc')
+    expect(copied).not.toContain('local.env')
+    expect(copied).not.toContain('id_ecdsa')
+    expect(copied).not.toContain('id_dsa')
+    expect(copied).not.toContain('id_ed25519_sk')
+    expect(copied).not.toContain('ignored.zig')
+    expect(await readFile(join(projectSource, 'tracked.zig'), 'utf8')).toBe('tracked source')
+    expect(await readFile(join(projectSource, 'AGENTS.md.txt'), 'utf8')).toContain('Do not inject')
+    expect(sourceIndex).toContain('AGENTS.md → projects/7/source/AGENTS.md.txt')
+    expect(manifest.projects[0].omissions.secret_path).toBeGreaterThanOrEqual(5)
+    expect(manifest.projects[0].omissions.excluded_directory).toBeGreaterThan(0)
+    expect(manifest.projects[0].omissions.gitignored).toBeGreaterThan(0)
+  })
+
+  it('reuses unchanged ticket evidence and refreshes changed source and logs', async () => {
+    const { cwd, projectRoot, root } = await fixture()
+    const ticket = makeTicket('7:CACHE', 7)
+    attachTicket(ticket, projectRoot)
+    const paths = {
+      executionLogPath: join(root, 'normal.jsonl'), debugLogPath: join(root, 'debug.jsonl'),
+      aiLogPath: join(root, 'ai.jsonl'), beadsPath: join(root, 'beads.jsonl'),
+    }
+    mocks.getTicketPaths.mockReturnValue(paths)
+    await Promise.all(Object.values(paths).map(path => writeFile(path, '')))
+    await writeFile(join(projectRoot, 'source.ts'), 'original source')
+    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+
+    await prepareAssistantEvidence(scope, cwd)
+    const pages = mocks.queryLogPage.mock.calls.length
+    expect(pages).toBe(5)
+    await prepareAssistantEvidence(scope, cwd)
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await writeFile(join(projectRoot, 'source.ts'), 'updated source content')
+    await prepareAssistantEvidence(scope, cwd)
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages * 2)
+    expect(await readFile(join(cwd, 'evidence/projects/7/source/source.ts'), 'utf8')).toBe('updated source content')
+
+    await writeFile(paths.debugLogPath, 'new log evidence')
+    await prepareAssistantEvidence(scope, cwd)
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages * 3)
+    await rm(join(cwd, 'evidence'), { recursive: true })
+    await prepareAssistantEvidence(scope, cwd)
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages * 4)
+  })
+
+  it('invalidates cached evidence when native history or workflow artifacts change', async () => {
+    const { cwd, projectRoot, root } = await fixture()
+    const ticket = makeTicket('7:CACHE-NATIVE', 7)
+    attachTicket(ticket, projectRoot)
+    mocks.getTicketPaths.mockReturnValue({
+      executionLogPath: join(root, 'normal.jsonl'), debugLogPath: join(root, 'debug.jsonl'),
+      aiLogPath: join(root, 'ai.jsonl'), beadsPath: join(root, 'beads.jsonl'),
+    })
+    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+    await prepareAssistantEvidence(scope, cwd)
+    const pages = mocks.queryLogPage.mock.calls.length
+    mocks.listOpenCodeNativeLogFiles.mockReturnValue([{ path: 'native.log', size: 10, mtimeMs: 1 }])
+    await prepareAssistantEvidence(scope, cwd)
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages * 2)
+    mocks.listPhaseAttempts.mockImplementation((_id: string, phase: string) => phase === WORKFLOW_PHASES[0]?.id ? [{ attemptNumber: 1 }] : [])
+    mocks.listPhaseArtifacts.mockReturnValue([{ content: 'new verification evidence' }])
+    await prepareAssistantEvidence(scope, cwd)
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages * 3)
+  })
+
+  it('reports a repeated history cursor and retries incomplete evidence on the next question', async () => {
+    const { cwd, projectRoot, root } = await fixture()
+    const ticket = makeTicket('7:CURSOR', 7)
+    attachTicket(ticket, projectRoot)
+    mocks.getTicketPaths.mockReturnValue({
+      executionLogPath: join(root, 'normal.jsonl'), debugLogPath: join(root, 'debug.jsonl'),
+      aiLogPath: join(root, 'ai.jsonl'), beadsPath: join(root, 'beads.jsonl'),
+    })
+    mocks.queryLogPage.mockImplementation(async (_id: string, query: { view: string }) => ({
+      entries: [], hasOlder: query.view === 'system', olderCursor: query.view === 'system' ? 'repeated' : null,
+    }))
+    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+    await prepareAssistantEvidence(scope, cwd)
+    const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
+    expect(manifest.tickets[0].logs.system).toMatchObject({ complete: false, pageCount: 2, error: expect.stringContaining('repeated') })
+    const pages = mocks.queryLogPage.mock.calls.length
+    await prepareAssistantEvidence(scope, cwd)
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages * 2)
+  })
+
+  it('uses current website main docs, caches immutable release source, and refreshes docs after their TTL', async () => {
     const { cwd } = await fixture()
     const entries = [
       { path: 'README.md', type: 'blob', size: 20 },
@@ -307,6 +472,9 @@ describe('assistant evidence workspace', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
+    const clock = vi.spyOn(Date, 'now')
+    let now = Date.now()
+    clock.mockImplementation(() => now)
     await prepareAssistantEvidence({ mode: 'help' }, cwd, undefined, 'ticket history behavior')
     const firstCount = fetchMock.mock.calls.length
     const firstManifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
@@ -318,11 +486,13 @@ describe('assistant evidence workspace', () => {
     expect(mocks.listProjects).not.toHaveBeenCalled()
     expect(mocks.listTickets).not.toHaveBeenCalled()
 
+    now += 6 * 60_000
     await prepareAssistantEvidence({ mode: 'help' }, cwd, undefined, 'ticket history behavior')
     const urls = fetchMock.mock.calls.slice(firstCount).map(([input]) => new URL(String(input)))
     expect(urls).toHaveLength(Object.keys(firstManifest.officialDocs.links).length)
     expect(urls.every(url => url.pathname.includes('/LoopTroop-Website/main/docs/'))).toBe(true)
     expect(urls.some(url => url.pathname.includes(`/LoopTroop/v${APP_VERSION}/`))).toBe(false)
+    clock.mockRestore()
   })
 
   it('filters unsafe remote source paths and records per-file, total, and selection omissions', async () => {
@@ -337,6 +507,12 @@ describe('assistant evidence workspace', () => {
       })),
       { path: '../escape.ts', type: 'blob', size: 10 },
       { path: 'private/.env', type: 'blob', size: 10 },
+      { path: 'private/.envrc', type: 'blob', size: 10 },
+      { path: 'private/local.env', type: 'blob', size: 10 },
+      { path: 'private/id_ecdsa', type: 'blob', size: 10 },
+      { path: 'private/id_dsa', type: 'blob', size: 10 },
+      { path: 'private/id_ed25519_sk', type: 'blob', size: 10 },
+      { path: '.ticket/metadata.json', type: 'blob', size: 10 },
       { path: 'server/.looptroop/local.ts', type: 'blob', size: 10 },
       { path: 'src/credentials.json', type: 'blob', size: 10 },
       { path: 'src/package-lock.json', type: 'blob', size: 10 },
@@ -572,7 +748,26 @@ describe('assistant evidence workspace', () => {
     expect(existsSync(join(sourceRoot, 'secret.zig'))).toBe(false)
   })
 
-  it('keeps planning and log coverage gaps when storage fails and retries an expired history cursor', async () => {
+  it('does not follow a worktree link into another ticket in the same project', async () => {
+    const { cwd, projectRoot } = await fixture()
+    const otherWorktree = join(projectRoot, '.looptroop', 'worktrees', 'other')
+    const linkedWorktree = join(projectRoot, '.looptroop', 'worktrees', 'linked')
+    await mkdir(otherWorktree, { recursive: true })
+    await writeFile(join(otherWorktree, 'other-ticket.zig'), 'other ticket source')
+    await writeFile(join(projectRoot, 'attached.zig'), 'attached source')
+    await symlink(otherWorktree, linkedWorktree, process.platform === 'win32' ? 'junction' : 'dir')
+    const ticket = makeTicket('7:LINKED-WORKTREE', 7)
+    attachTicket(ticket, projectRoot, linkedWorktree)
+
+    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+
+    const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
+    expect(manifest.projects[0].sourceKind).toBe('attached project')
+    expect(await readFile(join(cwd, 'evidence/projects/7/source/attached.zig'), 'utf8')).toBe('attached source')
+    expect(existsSync(join(cwd, 'evidence/projects/7/source/other-ticket.zig'))).toBe(false)
+  })
+
+  it('keeps workflow artifact and log coverage gaps when storage fails and retries an expired history cursor', async () => {
     const { cwd, projectRoot } = await fixture()
     const ticket = makeTicket('7:STORAGE-ERRORS', 7)
     attachTicket(ticket, projectRoot)
@@ -605,8 +800,8 @@ describe('assistant evidence workspace', () => {
 
     expect(commandCalls).toBe(2)
     expect(gaps).toEqual(expect.arrayContaining([
-      expect.objectContaining({ area: `planning artifacts: ${ticket.id}`, detail: `${failedAttemptsPhase} attempts unavailable: attempt query failed` }),
-      expect.objectContaining({ area: `planning artifacts: ${ticket.id}`, detail: `${failedArtifactsPhase} attempt 1 unavailable: artifact query failed` }),
+      expect.objectContaining({ area: `workflow artifacts: ${ticket.id}`, detail: `${failedAttemptsPhase} attempts unavailable: attempt query failed` }),
+      expect.objectContaining({ area: `workflow artifacts: ${ticket.id}`, detail: `${failedArtifactsPhase} attempt 1 unavailable: artifact query failed` }),
       expect.objectContaining({ area: `logs: ${ticket.id}/system`, detail: 'history projection failed' }),
       expect.objectContaining({ area: `logs: ${ticket.id}/error`, detail: 'history page reported older entries without a cursor' }),
     ]))

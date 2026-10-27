@@ -14,6 +14,7 @@ import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
 import { assertManagedWorktreesRoot, removeWorktree } from '../git/worktreeRemoval'
 import { getErrorMessage } from '@shared/typeGuards'
+import { queueAssistantSessionCleanup } from '../assistant/sessionCleanup'
 import {
   ensureProjectStorageDirs,
   getProjectLoopTroopDir,
@@ -449,6 +450,7 @@ export function deleteProject(id: number): boolean {
   closeProjectDatabase(attached.folderPath)
   rmSync(getProjectLoopTroopDir(attached.folderPath), { recursive: true, force: true })
   appDb.delete(attachedProjects).where(eq(attachedProjects.id, id)).run()
+  queueAssistantSessionCleanup({ projectId: id })
   return true
 }
 
@@ -733,6 +735,8 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
     )
   })()
 
+  const attached = getAttachedByPath(projectRoot)
+  if (attached) queueAssistantSessionCleanup({ projectId: attached.id })
   applyIgnoreMode(projectRoot, ignoreMode)
   ensureProjectStorageDirs(projectRoot)
   return attachExistingProject(projectRoot)
@@ -747,5 +751,7 @@ export async function replaceExistingProjectState(input: ProjectAttachmentInput)
   await deleteAllProjectWorktrees(projectRoot)
   closeProjectDatabase(projectRoot)
   rmSync(getProjectLoopTroopDir(projectRoot), { recursive: true, force: true })
+  const attached = getAttachedByPath(projectRoot)
+  if (attached) queueAssistantSessionCleanup({ projectId: attached.id })
   return attachProject({ ...input, folderPath: projectRoot })
 }

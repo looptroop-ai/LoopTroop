@@ -10,7 +10,7 @@ import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 const { mockGetOpenCodeAdapter, mockPrepareAssistantEvidence } = vi.hoisted(() => ({
   mockGetOpenCodeAdapter: vi.fn(),
-  mockPrepareAssistantEvidence: vi.fn(async () => ({
+  mockPrepareAssistantEvidence: vi.fn<typeof import('../evidence').prepareAssistantEvidence>(async () => ({
     prompt: 'test evidence',
     permission: [{ permission: '*', pattern: '*', action: 'deny' as const }],
   })),
@@ -23,7 +23,7 @@ const previousConfigDir = process.env.LOOPTROOP_CONFIG_DIR
 const configDir = makeTempDir('looptroop-assistant-sessions-')
 process.env.LOOPTROOP_CONFIG_DIR = configDir
 
-const [{ APP_CONFIG_DIR, closeDatabase, db }, { appMeta, profiles }, { MockOpenCodeAdapter }, integration, sessions] = await Promise.all([
+const [{ APP_CONFIG_DIR, closeDatabase, db, sqlite }, { appMeta, profiles }, { MockOpenCodeAdapter }, integration, sessions] = await Promise.all([
   import('../../db/index'),
   import('../../db/schema'),
   import('../../opencode/mockAdapter'),
@@ -121,6 +121,26 @@ describe('assistant session persistence', () => {
     expect(await readdir(join(APP_CONFIG_DIR, 'assistant'))).toEqual([])
   })
 
+  it.each([true, false])('removes a failed creation workspace and reports whether remote cleanup was queued (%s)', async (canQueue) => {
+    configureProfile()
+    sqlite.exec(`CREATE TEMP TRIGGER fail_assistant_save BEFORE INSERT ON app_meta
+      WHEN NEW.key LIKE 'assistant.session.%' ${canQueue ? '' : "OR NEW.key LIKE 'assistant.cleanup.%'"}
+      BEGIN SELECT RAISE(FAIL, 'Local save failed'); END`)
+    vi.spyOn(adapter, 'deleteSession').mockRejectedValue(new Error('OpenCode offline'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    try {
+      await expect(sessions.createAssistantSession({ mode: 'help' })).rejects.toThrow(canQueue
+        ? 'cleanup has been queued for retry'
+        : 'cleanup could not be queued')
+      expect(await readdir(join(APP_CONFIG_DIR, 'assistant'))).toEqual([])
+      await vi.waitFor(() => expect(db.select().from(appMeta).all().filter(row => row.key.startsWith('assistant.cleanup.'))).toHaveLength(canQueue ? 1 : 0))
+      if (canQueue) await vi.waitFor(() => expect(warning).toHaveBeenCalled())
+    } finally {
+      sqlite.exec('DROP TRIGGER fail_assistant_save')
+    }
+  })
+
   it('keeps Help unscoped and rejects invalid or stale ticket scopes', async () => {
     expect(() => sessions.assertAssistantScope({ mode: 'help' })).not.toThrow()
     expect(() => sessions.assertAssistantScope({ mode: 'help', ticketId: randomUUID() })).toThrow(/do not have a ticket scope/)
@@ -152,6 +172,31 @@ describe('assistant session persistence', () => {
     await expect(sessions.getAssistantSession(`${session.id}-invalid`, firstScope)).rejects.toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(randomUUID(), firstScope)).rejects.toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(session.id, firstScope)).resolves.toMatchObject({ id: session.id })
+  })
+
+  it('isolates malformed session metadata instead of breaking other history', async () => {
+    configureProfile()
+    const valid = await sessions.createAssistantSession({ mode: 'help' })
+    const corruptId = randomUUID()
+    const corruptKey = `assistant.session.${corruptId}`
+    db.insert(appMeta).values({ key: corruptKey, value: '{' }).run()
+
+    await expect(sessions.listAssistantSessions({ mode: 'help' })).resolves.toMatchObject([{ id: valid.id }])
+    await expect(sessions.getAssistantSession(corruptId, { mode: 'help' })).rejects.toMatchObject({ status: 404 })
+    expect(db.select().from(appMeta).all().some(row => row.key === corruptKey)).toBe(true)
+  })
+
+  it('binds a ticket conversation to the project that owned its ticket reference', async () => {
+    configureProfile()
+    const scope = makeTicketScope()
+    const session = await sessions.createAssistantSession(scope)
+    const record = storedRecord(session.id)!
+    expect(record.projectId).toBe(Number(scope.ticketId?.split(':')[0]))
+    db.update(appMeta).set({ value: JSON.stringify({ ...record, projectId: Number(record.projectId) + 1 }) })
+      .where(eq(appMeta.key, `assistant.session.${session.id}`)).run()
+
+    await expect(sessions.getAssistantSession(session.id, scope)).rejects.toMatchObject({ status: 404 })
+    await expect(sessions.listAssistantSessions(scope)).resolves.toEqual([])
   })
 
   it('cleans stale temporary sessions without listing or persisting their transcript', async () => {
@@ -245,6 +290,16 @@ describe('assistant session persistence', () => {
     expect(existsSync(directory)).toBe(false)
   })
 
+  it('archives an idle saved conversation while OpenCode is unavailable', async () => {
+    configureProfile({ saveChatSessions: true })
+    const session = await sessions.createAssistantSession({ mode: 'help' })
+    const abort = vi.spyOn(adapter, 'abortSession').mockRejectedValue(new Error('OpenCode is offline'))
+
+    await expect(sessions.closeAssistantSession(session.id, { mode: 'help' })).resolves.toBeUndefined()
+    expect(abort).not.toHaveBeenCalled()
+    expect(storedRecord(session.id)).toMatchObject({ saved: true, archived: true })
+  })
+
   it('retains temporary metadata after a remote delete failure so close can be retried', async () => {
     configureProfile({ saveChatSessions: false })
     const session = await sessions.createAssistantSession({ mode: 'help' })
@@ -263,7 +318,7 @@ describe('assistant session persistence', () => {
     expect(existsSync(directory)).toBe(false)
   })
 
-  it('reports a missing OpenCode session as non-resumable without reading messages', async () => {
+  it('retires a confirmed missing OpenCode session without reading messages', async () => {
     configureProfile()
     const session = await sessions.createAssistantSession({ mode: 'help' })
     const getMessages = vi.spyOn(adapter, 'getSessionMessages')
@@ -273,6 +328,17 @@ describe('assistant session persistence', () => {
       id: session.id, canResume: false, messages: [],
     })
     expect(getMessages).not.toHaveBeenCalled()
+    expect(storedRecord(session.id)).toBeUndefined()
+    expect(await sessions.listAssistantSessions({ mode: 'help' })).toEqual([])
+  })
+
+  it('keeps saved metadata when OpenCode session lookup fails without a confirmed 404', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({ mode: 'help' })
+    vi.spyOn(adapter, 'getSession').mockRejectedValue(new Error('OpenCode is offline'))
+
+    await expect(sessions.getAssistantSession(session.id, { mode: 'help' })).rejects.toThrow('OpenCode is offline')
+    expect(storedRecord(session.id)).toBeDefined()
   })
 
   it('extracts only visible user and assistant text from OpenCode messages', () => {
@@ -296,23 +362,43 @@ describe('assistant session persistence', () => {
       },
       { id: 'system-message', role: 'system', content: 'not visible' },
       { id: 'empty-message', role: 'assistant', parts: [{ id: 'empty', sessionID: 'session', messageID: 'empty-message', type: 'text', text: '  ' }] },
+      { id: 'raw-message', role: 'assistant', content: '[config](https://example.test/docs?page=2#assistant) Authorization: Bearer abc.def' },
     ]
 
     expect(sessions.assistantMessages(messages)).toEqual([
       { id: 'user-message', role: 'user', content: 'question', createdAt: new Date(1_000).toISOString() },
       { id: 'assistant-message', role: 'assistant', content: 'answer\ndetails', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'raw-message', role: 'assistant', content: '[config](https://example.test/docs?page=2#assistant) Authorization: Bearer abc.def', createdAt: '' },
     ])
   })
 })
 
 describe('assistant prompts', () => {
+  it('keeps source citations from the previous answer available to follow-up selection', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({ mode: 'help' })
+    const path = 'server/workflow/questionWindows.ts'
+    adapter.messages.set(remoteSessionId(session.id), [{
+      id: 'previous-answer', role: 'assistant', content: `See https://github.com/looptroop-ai/LoopTroop/blob/main/${path}#L20`,
+    }])
+
+    await sessions.promptAssistant(session.id, { mode: 'help' }, 'Explain that line', new AbortController().signal, () => undefined)
+
+    expect(mockPrepareAssistantEvidence).toHaveBeenCalledWith(
+      { mode: 'help' }, expect.any(String), expect.any(AbortSignal), expect.stringContaining(path),
+    )
+  })
+
   it('uses the configured model and variant with read-only permissions and no auto-approval', async () => {
     configureProfile({ chatModelVariant: 'balanced', saveChatSessions: true })
     const session = await sessions.createAssistantSession({ mode: 'help' })
     const createPermissions = adapter.sessionCreateCalls[0]?.options?.permission ?? []
+    const expectedPrefix = `${adapter.sessionCreateCalls[0]?.projectPath?.replaceAll('\\', '/')}/evidence/`
     expect(createPermissions[0]).toEqual({ permission: '*', pattern: '*', action: 'deny' })
-    expect(createPermissions.slice(1).map(rule => rule.permission)).toEqual(['read', 'list', 'glob', 'grep'])
-    expect(createPermissions.slice(1).every(rule => rule.pattern.startsWith(`${adapter.sessionCreateCalls[0]?.projectPath}/`))).toBe(true)
+    expect(createPermissions).toContainEqual({ permission: 'read', pattern: `${expectedPrefix}**`, action: 'allow' })
+    expect(createPermissions).toContainEqual({ permission: 'read', pattern: 'evidence/**', action: 'allow' })
+    expect(createPermissions).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
+    expect(createPermissions).not.toContainEqual({ permission: 'read', pattern: '*', action: 'allow' })
 
     const answer = await sessions.promptAssistant(session.id, { mode: 'help' }, 'Explain the configuration', new AbortController().signal, () => undefined)
     const options = adapter.promptCalls[0]?.options
@@ -323,8 +409,34 @@ describe('assistant prompts', () => {
     })
     expect(options?.system).toContain('never approve plans, edit files, run shell commands, or control tickets')
     expect(mockPrepareAssistantEvidence).toHaveBeenCalledWith(
-      { mode: 'help' }, expect.stringContaining(session.id), expect.any(AbortSignal), 'Explain the configuration',
+      { mode: 'help' }, expect.stringContaining(session.id), expect.any(AbortSignal), expect.stringContaining('Current question:\nExplain the configuration'),
     )
+  })
+
+  it('gives evidence preparation and the answer separate deadlines', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({ mode: 'help' })
+    const preparationStarted = deferred<void>()
+    const preparationRelease = deferred<void>()
+    const prepDeadline = new AbortController()
+    const answerDeadline = new AbortController()
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+      .mockReturnValueOnce(prepDeadline.signal)
+      .mockReturnValueOnce(answerDeadline.signal)
+    mockPrepareAssistantEvidence.mockImplementation(async (_scope, _directory, _signal, question) => {
+      preparationStarted.resolve()
+      await preparationRelease.promise
+      expect(question).toContain('Current question:\nFind the login flow')
+      return { prompt: 'test evidence', permission: [{ permission: '*', pattern: '*', action: 'deny' }] }
+    })
+    const prompt = sessions.promptAssistant(session.id, { mode: 'help' }, 'Find the login flow', new AbortController().signal, () => undefined)
+    await preparationStarted.promise
+
+    expect(timeout).toHaveBeenCalledTimes(1)
+    preparationRelease.resolve()
+    await expect(prompt).resolves.toMatchObject({ id: session.id })
+    expect(timeout).toHaveBeenNthCalledWith(1, 180_000)
+    expect(timeout).toHaveBeenNthCalledWith(2, 180_000)
   })
 
   it('rejects a missing remote session and releases the session lock', async () => {
@@ -367,14 +479,15 @@ describe('assistant prompts', () => {
       event({ text: 'Hello' }),
       event({ text: 'Hello world' }),
       event({ text: 'Hello world!', delta: '!' }),
+      event({ partId: 'answer-2', text: 'Found it.', delta: 'Found it.' }),
     ])
     adapter.mockResponses.set(remoteId, '')
     const emitted: string[] = []
 
     await sessions.promptAssistant(session.id, { mode: 'help' }, 'Question', new AbortController().signal, text => emitted.push(text))
 
-    expect(emitted).toEqual(['Hello', ' world', '!'])
-    expect(emitted.join('')).toBe('Hello world!')
+    expect(emitted).toEqual(['Hello', ' world', '!', '\n', 'Found it.'])
+    expect(emitted.join('')).toBe('Hello world!\nFound it.')
   })
 
   it('rejects a second prompt for a conversation while the first answer is running', async () => {
@@ -424,8 +537,9 @@ describe('assistant prompts', () => {
     configureProfile()
     const session = await sessions.createAssistantSession({ mode: 'help' })
     const remoteId = remoteSessionId(session.id)
-    const timeout = new AbortController()
-    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout.signal)
+    const prepTimeout = new AbortController()
+    const answerTimeout = new AbortController()
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(prepTimeout.signal).mockReturnValueOnce(answerTimeout.signal)
     const abortSession = vi.spyOn(adapter, 'abortSession')
     const started = deferred<void>()
     adapter.promptSession = async (_id, _parts, signal) => {
@@ -438,10 +552,11 @@ describe('assistant prompts', () => {
     const prompt = sessions.promptAssistant(session.id, { mode: 'help' }, 'Wait', new AbortController().signal, () => undefined)
       .then(() => undefined, error => error)
     await started.promise
-    timeout.abort(new DOMException('Prompt timed out', 'TimeoutError'))
+    answerTimeout.abort(new DOMException('Prompt timed out', 'TimeoutError'))
 
     expect(await prompt).toMatchObject({ name: 'TimeoutError' })
-    expect(timeoutSpy).toHaveBeenCalledWith(180_000)
+    expect(timeoutSpy).toHaveBeenNthCalledWith(1, 180_000)
+    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 180_000)
     expect(abortSession).toHaveBeenCalledWith(remoteId)
     timeoutSpy.mockRestore()
     adapter.promptSession = async () => 'retry response'

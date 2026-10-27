@@ -79,6 +79,57 @@ const AUTHORIZATION_TOKEN_PATTERN = /\b((?:Bearer|Basic)\s+)([A-Za-z0-9._~+/-]+=
 const CREDENTIAL_PROSE_PATTERN = /^(?:headers?|banner|required|missing|invalid|expired|denied|rejected|failed|unavailable|available|not|is|are|was|has|been|stale|rotated|valid|limit)\b/i
 const PREFIXED_CREDENTIAL_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|xox[abprs]-[A-Za-z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,})\b/g
 const CREDENTIAL_HINT_PATTERN = /authorization|api[-_\s]?key|token|password|secret|cookie|private[-_\s]?key|access[-_\s]?key|credentials?|ssh[-_\s]?key|signing[-_\s]?key|passphrase|jwt|bearer|basic/i
+const EVIDENCE_CREDENTIAL_KEY = '(?:authorization|x[-_\\s]?api[-_\\s]?key|api[-_\\s]?key|access[-_\\s]?token|refresh[-_\\s]?token|password|secret|token|client[-_\\s]?secret|private[-_\\s]?key|access[-_\\s]?key|secret[-_\\s]?key|ssh[-_\\s]?key|signing[-_\\s]?key|passphrase|jwt|cookie|credentials?)'
+const EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN = new RegExp(
+  `((?<![a-z0-9_-])(?:["']?${EVIDENCE_CREDENTIAL_KEY}["']?)\\s*(?::|=)\\s*)("(?:\\\\.|[^"\\\\\\r\\n])*"|'(?:\\\\.|[^'\\\\\\r\\n])*'|(?:Bearer|Basic)\\s+[A-Za-z0-9._~+/-]{8,}=*)`,
+  'gi',
+)
+const EVIDENCE_URL_USERINFO_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)[^/?#\s"'<>@]*:[^/?#\s"'<>@]*@/gi
+const EVIDENCE_PLACEHOLDER = /^(?:string|number|boolean|object|unknown|any|never|void|undefined|null|none|your(?:[-_ ]|$)|example(?:[-_ ]|$)|sample(?:[-_ ]|$)|test(?:[-_ ]|$)|dummy(?:[-_ ]|$)|placeholder(?:[-_ ]|$)|replace(?:[-_ ]|$)|redacted(?:[-_ ]|$)|change[-_ ]?me(?:[-_ ]|$)|[A-Z0-9_]+_(?:HERE|VALUE|TOKEN|KEY))$/i
+
+function isEvidenceCredentialKey(key: string): boolean {
+  return new RegExp(`^(?:${EVIDENCE_CREDENTIAL_KEY})$`, 'i').test(key)
+}
+
+function isEvidencePlaceholder(value: string): boolean {
+  return EVIDENCE_PLACEHOLDER.test(value.trim().replace(/^['"]|['"]$/g, ''))
+}
+
+function isInsideUrl(value: string, offset: number): boolean {
+  const scheme = value.slice(0, offset).toLowerCase().lastIndexOf('://')
+  return scheme >= 0 && !/[\s"'<>]/.test(value.slice(scheme, offset))
+}
+
+/** Redact credential literals in evidence without rewriting URLs or source identifiers. */
+export function sanitizeEvidenceText(value: string): string {
+  const assigned = value.replace(EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN, (match, prefix: string, literal: string, offset: number, input: string) => {
+    const rawValue = literal.startsWith('"') || literal.startsWith("'") ? literal.slice(1, -1) : literal
+    if (isEvidencePlaceholder(rawValue)) return match
+    if (isInsideUrl(input, offset)) return match
+    if (literal.startsWith('"') || literal.startsWith("'")) {
+      const quote = literal[0]
+      return `${prefix}${quote}${REDACTED}${quote}`
+    }
+    return `${prefix}${/^(Bearer|Basic)\s+/i.test(literal) ? literal.slice(0, literal.search(/\s/)) + ' ' : ''}${REDACTED}`
+  })
+  return assigned
+    .replace(EVIDENCE_URL_USERINFO_PATTERN, '$1[redacted]@')
+    .replace(PREFIXED_CREDENTIAL_PATTERN, REDACTED)
+    .replace(AUTHORIZATION_TOKEN_PATTERN, `$1${REDACTED}`)
+}
+
+/** Preserve links and identifiers while redacting credential-valued object fields. */
+export function sanitizeEvidenceValue(value: unknown, key?: string, depth = 0): unknown {
+  if (typeof value === 'string') {
+    return key && isEvidenceCredentialKey(key) && !isEvidencePlaceholder(value) ? REDACTED : sanitizeEvidenceText(value)
+  }
+  if (value === null || typeof value !== 'object') return value
+  if (depth >= 100) return '[details omitted: nesting limit]'
+  if (Array.isArray(value)) return value.map(item => sanitizeEvidenceValue(item, undefined, depth + 1))
+  return Object.fromEntries(Object.entries(value).map(([property, item]) => [
+    stripTerminalFormatting(property), sanitizeEvidenceValue(item, property, depth + 1),
+  ]))
+}
 
 function isDiagnosticMetadata(key: string, value: unknown): boolean {
   const normalized = key.replace(/[-_\s]/g, '').toLowerCase()

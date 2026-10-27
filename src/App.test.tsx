@@ -1210,11 +1210,13 @@ describe('App startup notices', () => {
     renderApp()
 
     expect(screen.getByText('Welcome to LoopTroop')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
     expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /got it, let's go!/i }))
 
     expect(await screen.findByText('Existing Local Data Found')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
   })
 
   it('shows the WSL app-path warning in the welcome disclaimer when applicable', () => {
@@ -1313,20 +1315,31 @@ describe('App startup notices', () => {
 
   it('closes the restore popup after a successful dismissal', async () => {
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
-    mockState.startupStatus = makeStartupStatus()
+    const startupStatus = makeStartupStatus()
+    mockState.startupStatus = startupStatus
     mockState.dismissMutation.mutate.mockImplementation((_: undefined, options?: {
       onSuccess?: () => void
     }) => {
       options?.onSuccess?.()
     })
 
-    renderApp()
+    const view = renderAppWithProbe()
 
+    expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     await waitFor(() => {
       expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
     })
+    mockState.startupStatus = {
+      ...startupStatus,
+      ui: {
+        ...startupStatus.ui,
+        restoreNotice: { shouldShow: false, dismissedAt: '2026-10-26T12:00:00.000Z' },
+      },
+    }
+    view.rerenderApp()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toBeInTheDocument())
   })
 
   it('keeps the popup open and shows a toast when dismissal fails', async () => {

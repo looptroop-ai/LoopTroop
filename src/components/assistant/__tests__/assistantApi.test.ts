@@ -40,13 +40,27 @@ it('parses SSE events split across arbitrary network chunks', async () => {
   expect(events).toEqual([{ type: 'delta', text: 'Hi' }, { type: 'error', error: 'stop' }])
 })
 
-it('rejects malformed assistant events instead of silently dropping them', async () => {
+it('joins multiple SSE data lines into one event payload', async () => {
   const stream = new ReadableStream<Uint8Array>({
     start(reader) {
-      reader.enqueue(new TextEncoder().encode('data: {"type":"delta","text":4}\n\n'))
+      reader.enqueue(new TextEncoder().encode('data: {"type":"delta",\ndata: "text":"joined"}\n\n'))
       reader.close()
     },
   })
+  const events = []
+  for await (const event of readAssistantEvents(new Response(stream), new AbortController().signal)) events.push(event)
+  expect(events).toEqual([{ type: 'delta', text: 'joined' }])
+})
+
+it('rejects malformed assistant events instead of silently dropping them', async () => {
+  let cancelled = false
+  const stream = new ReadableStream<Uint8Array>({
+    start(reader) {
+      reader.enqueue(new TextEncoder().encode('data: {"type":"delta","text":4}\n\n'))
+    },
+    cancel() { cancelled = true },
+  })
   const events = readAssistantEvents(new Response(stream), new AbortController().signal)
   await expect(events.next()).rejects.toThrow('Invalid assistant response event')
+  expect(cancelled).toBe(true)
 })

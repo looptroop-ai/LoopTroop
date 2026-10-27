@@ -62,7 +62,9 @@ function isEffectivelyInert(element: Element): boolean {
 }
 
 function isEscapeActiveOverlay(element: Element, target: Element | null): boolean {
+  if (element.hasAttribute('hidden') || element.closest('[hidden]')) return false
   if (isEffectivelyInert(element)) return false
+  if (element.matches('[role="dialog"][aria-modal="false"]') && (!target || !element.contains(target))) return false
   // Radix also uses popper wrappers for informational tooltips. Their mere
   // presence elsewhere must not prevent the active dialog from closing.
   if (element.matches('[data-radix-popper-content-wrapper]') && element.querySelector('[role="tooltip"]')) return false

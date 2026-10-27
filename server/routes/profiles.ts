@@ -147,7 +147,11 @@ profileRouter.patch('/profile', async (c) => {
   let chatModelPatch: { chatModel: string | null } | undefined
   if (parsed.data.chatModel !== undefined) {
     try {
-      chatModelPatch = { chatModel: await validateConfiguredModel(parsed.data.chatModel) }
+      chatModelPatch = {
+        chatModel: parsed.data.chatModel === existing.chatModel
+          ? existing.chatModel
+          : await validateConfiguredModel(parsed.data.chatModel),
+      }
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Invalid chat model' }, 400)
     }

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { History, LoaderCircle, MessageCircle, Plus, Search, Send, Settings, X } from 'lucide-react'
+import { ArrowDownToLine, History, LoaderCircle, MessageCircle, Plus, Search, Send, Settings, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { AssistantMode, AssistantScope, AssistantSessionSummary } from '@shared/assistant'
 import { useAssistant } from '@/hooks/useAssistant'
+import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { useProfile } from '@/hooks/useProfile'
 import { useUI } from '@/context/useUI'
 import { useTickets } from '@/hooks/useTickets'
@@ -34,7 +35,6 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
     ? state.selectedTicketId
     : undefined
   const scope: AssistantScope = { mode, ...(ticketModeScope ? { ticketId: ticketModeScope } : {}) }
-  const scopeKey = `${mode}:${ticketModeScope ?? ''}`
   const scopeLabel = mode === 'help'
     ? 'Help'
     : ticketModeScope
@@ -132,7 +132,6 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
         </header>
 
         <AssistantConversation
-          key={scopeKey}
           scope={scope}
           open={open}
           historySessions={historySessions}
@@ -194,20 +193,28 @@ function AssistantConversation({
 }) {
   const assistant = useAssistant(scope, open)
   const { selectSession } = assistant
-  const [draft, setDraft] = useState('')
-  const draftRef = useRef(draft)
-  const activeSessionIdRef = useRef(assistant.activeId)
+  const draftsRef = useRef(assistant.drafts)
   const closingSessionIdsRef = useRef(new Set<string>())
   const closedSessionIdsRef = useRef(new Set<string>())
-  const draftRestoreAfterCloseRef = useRef<{ sessionId: string; message: string } | null>(null)
-  draftRef.current = draft
-  activeSessionIdRef.current = assistant.activeId
+  const sendingSessionIdsRef = useRef(new Set<string>())
+  const draftRestoreAfterCloseRef = useRef(new Map<string, string>())
+  const [completedSessionId, setCompletedSessionId] = useState<string | null>(null)
+  const historySearchRef = useRef<HTMLInputElement>(null)
   const [historySearch, setHistorySearch] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const historyRef = useRef<HTMLDivElement>(null)
   const historyButtonRef = useRef<HTMLButtonElement>(null)
   const listId = useId()
   const activeSession = assistant.activeSession
+  const draft = assistant.activeId ? assistant.drafts[assistant.activeId] ?? '' : ''
+  draftsRef.current = assistant.drafts
+  const {
+    setViewportRef,
+    setContentRef,
+    isAutoScroll,
+    scheduleScrollToBottom,
+    enableAutoScroll,
+  } = useLogScrollAnchor()
   const history = historySessions.map(session => ({ session, scope: historyScopeLabel(session, tickets) }))
     .filter(({ session, scope: label }) => `${session.title} ${label}`.toLowerCase().includes(historySearch.trim().toLowerCase()))
 
@@ -230,23 +237,37 @@ function AssistantConversation({
   }, [historyOpen, onHistoryOpenChange])
 
   useEffect(() => {
+    if (historyOpen) historySearchRef.current?.focus()
+  }, [historyOpen])
+
+  useEffect(() => {
     if (open) requestAnimationFrame(() => textareaRef.current?.focus())
   }, [open])
+
+  useEffect(() => {
+    if (!assistant.activeId) return
+    enableAutoScroll()
+    scheduleScrollToBottom('auto')
+  }, [activeSession?.messages.length, assistant.activeId, enableAutoScroll, scheduleScrollToBottom])
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault()
     if (!draft.trim() || !activeSession?.canResume || assistant.sending || !chatModelConfigured) return
     const message = draft
     const sessionId = assistant.activeId
-    draftRef.current = ''
-    setDraft('')
+    if (!sessionId) return
+    assistant.setDraft(sessionId, '')
+    sendingSessionIdsRef.current.add(sessionId)
+    setCompletedSessionId(null)
     void assistant.sendMessage(message).then(sent => {
-      if (sent || !sessionId || !textareaRef.current || activeSessionIdRef.current !== sessionId || draftRef.current || closedSessionIdsRef.current.has(sessionId)) return
-      if (closingSessionIdsRef.current.has(sessionId)) draftRestoreAfterCloseRef.current = { sessionId, message }
-      else {
-        draftRef.current = message
-        setDraft(message)
+      sendingSessionIdsRef.current.delete(sessionId)
+      if (closedSessionIdsRef.current.delete(sessionId)) return
+      if (sent) {
+        setCompletedSessionId(sessionId)
+        return
       }
+      if (closingSessionIdsRef.current.has(sessionId)) draftRestoreAfterCloseRef.current.set(sessionId, message)
+      else if (!draftsRef.current[sessionId]) assistant.setDraft(sessionId, message)
     })
   }
 
@@ -261,14 +282,15 @@ function AssistantConversation({
     closingSessionIdsRef.current.add(id)
     void assistant.closeSession(id).then(closed => {
       closingSessionIdsRef.current.delete(id)
-      if (closed) closedSessionIdsRef.current.add(id)
-      const pending = draftRestoreAfterCloseRef.current
-      if (pending?.sessionId !== id) return
-      draftRestoreAfterCloseRef.current = null
-      if (!closed && textareaRef.current && activeSessionIdRef.current === id && !draftRef.current) {
-        draftRef.current = pending.message
-        setDraft(pending.message)
+      if (closed) {
+        if (sendingSessionIdsRef.current.has(id)) closedSessionIdsRef.current.add(id)
+        assistant.setDraft(id, '')
+        setCompletedSessionId(current => current === id ? null : current)
       }
+      const pending = draftRestoreAfterCloseRef.current.get(id)
+      if (!pending) return
+      draftRestoreAfterCloseRef.current.delete(id)
+      if (!closed) assistant.setDraft(id, pending)
     })
   }
 
@@ -300,11 +322,11 @@ function AssistantConversation({
                   type="button"
                   aria-label={`Close ${title} conversation`}
                   title={`Close ${title}`}
-                  disabled={assistant.closingId === id}
+                  disabled={assistant.closingIds.includes(id)}
                   onClick={() => closeConversation(id)}
                   className="rounded-r-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {assistant.closingId === id ? <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" /> : <X className="h-3 w-3" aria-hidden="true" />}
+                  {assistant.closingIds.includes(id) ? <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" /> : <X className="h-3 w-3" aria-hidden="true" />}
                 </button>
               </div>
             )
@@ -333,7 +355,7 @@ function AssistantConversation({
             >
               <label className="flex items-center gap-2 rounded-md border border-input px-2">
                 <Search className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-                <input autoFocus value={historySearch} onChange={event => setHistorySearch(event.target.value)} placeholder="Search history" aria-label="Search conversation history" className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" />
+                <input ref={historySearchRef} value={historySearch} onChange={event => setHistorySearch(event.target.value)} placeholder="Search history" aria-label="Search conversation history" className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" />
               </label>
               {historyError && <p role="alert" className="mt-2 rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">{historyError}</p>}
               <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto">
@@ -357,8 +379,9 @@ function AssistantConversation({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3" role="log" aria-label="Conversation messages" aria-live="off">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div ref={setViewportRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-3" role="log" aria-label="Conversation messages" aria-live="off">
+          <div ref={setContentRef}>
           {assistant.loading && assistant.openIds.length === 0 && <p className="text-sm text-muted-foreground">Loading conversations…</p>}
           {assistant.opening && <p className="text-sm text-muted-foreground">Opening conversation…</p>}
           {!assistant.opening && !activeSession && assistant.openIds.length === 0 && !assistant.loading && (
@@ -387,7 +410,25 @@ function AssistantConversation({
               <LoaderCircle className="mt-2 h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden="true" />
             </article>
           )}
+          </div>
         </div>
+        {!isAutoScroll && (
+          <button
+            type="button"
+            aria-label="Back to bottom"
+            title="Back to bottom"
+            onClick={() => {
+              enableAutoScroll()
+              scheduleScrollToBottom('auto')
+              requestAnimationFrame(() => scheduleScrollToBottom('auto'))
+            }}
+            className="absolute bottom-4 right-5 rounded-full border border-border bg-background/90 p-2 text-muted-foreground shadow-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ArrowDownToLine className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+
+        <p className="sr-only" role="status">{completedSessionId && completedSessionId === assistant.activeId ? 'Assistant response complete.' : ''}</p>
 
         {assistant.error && (
           <div role="alert" className="mx-3 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive">
@@ -415,7 +456,10 @@ function AssistantConversation({
               ref={textareaRef}
               id="assistant-message"
               value={draft}
-              onChange={event => { draftRef.current = event.target.value; setDraft(event.target.value); assistant.setError(null) }}
+              onChange={event => {
+                if (assistant.activeId) assistant.setDraft(assistant.activeId, event.target.value)
+                assistant.setError(null)
+              }}
               onKeyDown={handleComposerKeyDown}
               placeholder={activeSession?.canResume ? 'Ask a question…' : 'Start a new chat to send a message'}
               disabled={!activeSession?.canResume || !chatModelConfigured || profileLoading || assistant.sending}
@@ -443,7 +487,12 @@ function AssistantMarkdown({ children }: { children: string }) {
   return (
     <div className="assistant-markdown break-words text-sm leading-relaxed [&_a]:text-brand-600 [&_a]:underline dark:[&_a]:text-brand-400 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5">
       <ReactMarkdown components={{
-        img: ({ src, alt }) => src ? <a href={src} aria-label={alt || 'Open image link'}>{alt || 'View image'}</a> : <span>{alt || 'Image'}</span>,
+        a: ({ href, children }) => href && /^https?:\/\//i.test(href)
+          ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+          : <code>{children}</code>,
+        img: ({ src, alt }) => src && /^https?:\/\//i.test(src)
+          ? <a href={src} target="_blank" rel="noopener noreferrer" aria-label={alt || 'Open image link'}>{alt || 'View image'}</a>
+          : <span>{alt || 'Image'}</span>,
       }}>{children}</ReactMarkdown>
     </div>
   )

@@ -371,7 +371,9 @@ describe('runOpenCodePrompt', () => {
     return {
       session: {
         create: overrides.create ?? (async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } })),
-        update: overrides.update ?? (async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } })),
+        update: overrides.update ?? (async (input: { permission?: unknown }) => ({
+          data: { id: 'ses-1', directory: '/tmp/project', permission: input.permission },
+        })),
         list: overrides.list ?? (async () => ({ data: [] })),
         prompt: overrides.prompt ?? (async () => ({ data: { parts: [] } })),
         messages: overrides.messages ?? (async () => ({ data: [] })),
@@ -434,7 +436,7 @@ describe('runOpenCodePrompt', () => {
     const fakeClient = createFakeSdkClient({
       update: async (...args: unknown[]) => {
         updateCalls.push(args)
-        return { data: { id: 'ses-1', directory: '/tmp/project' } }
+        return { data: { id: 'ses-1', directory: '/tmp/project', permission: (args[0] as { permission?: unknown }).permission } }
       },
       prompt: async (...args: unknown[]) => {
         promptCalls.push(args)
@@ -2433,7 +2435,7 @@ describe('runOpenCodePrompt', () => {
     const fakeClient = {
       session: {
         create: async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } }),
-        update: async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } }),
+        update: async (input: { permission?: unknown }) => ({ data: { id: 'ses-1', directory: '/tmp/project', permission: input.permission } }),
         prompt: async () => ({
           data: {
             info: { id: 'msg-echo' },

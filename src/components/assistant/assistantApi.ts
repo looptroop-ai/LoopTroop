@@ -89,6 +89,7 @@ export async function* readAssistantEvents(response: Response, signal: AbortSign
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let completed = false
 
   try {
     while (true) {
@@ -102,13 +103,14 @@ export async function* readAssistantEvents(response: Response, signal: AbortSign
       }
       if (done) {
         const event = parseFrame(buffer)
+        completed = true
         if (event) yield event
         return
       }
       if (signal.aborted) return
     }
   } finally {
-    if (signal.aborted) void reader.cancel().catch(() => undefined)
+    if (!completed) await reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
 }

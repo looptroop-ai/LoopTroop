@@ -9,6 +9,11 @@ const scopeSchema = z.object({ mode: z.enum(['help', 'tickets']), ticketId: z.st
 const messageSchema = scopeSchema.extend({ message: z.string().trim().min(1).max(20_000) })
 export const chatRouter = new Hono()
 
+chatRouter.use('*', async (c, next) => {
+  c.header('Cache-Control', 'private, no-store')
+  await next()
+})
+
 chatRouter.onError((error, c) => c.json({ error: sanitizeDiagnosticText(error.message) }, error instanceof AssistantError ? error.status : 503))
 
 function parseScope(value: unknown): AssistantScope {
@@ -46,7 +51,7 @@ chatRouter.post('/chat/sessions/:id/messages', async c => {
   const { message, ...scope } = result.data
   // Validate scope before opening the stream so a stale ticket cannot receive another ticket's answer.
   assertAssistantSessionScope(c.req.param('id'), scope)
-  return streamSSE(c, async stream => {
+  const response = streamSSE(c, async stream => {
     const controller = new AbortController()
     stream.onAbort(() => controller.abort(new DOMException('Chat disconnected', 'AbortError')))
     const signal = AbortSignal.any([c.req.raw.signal, controller.signal])
@@ -69,4 +74,6 @@ chatRouter.post('/chat/sessions/:id/messages', async c => {
       await writes
     }
   })
+  response.headers.set('Cache-Control', 'private, no-store')
+  return response
 })

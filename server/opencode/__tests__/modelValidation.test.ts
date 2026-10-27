@@ -68,6 +68,16 @@ describe('validateModelSelection', () => {
       ],
     })
   })
+
+  it('rejects unknown routing suffixes for workflow models', async () => {
+    const configured = 'provider/implementer'
+    vi.mocked(fetchConnectedModelIds).mockResolvedValue(['openrouter/provider/model', configured])
+
+    await expect(validateModelSelection('openrouter/provider/model:invalid', JSON.stringify([configured])))
+      .rejects.toThrow('Main implementer model is not configured in OpenCode')
+    await expect(validateModelSelection(configured, JSON.stringify(['openrouter/provider/model:invalid'])))
+      .rejects.toThrow('Council member models are not configured in OpenCode')
+  })
 })
 
 describe('validateConfiguredModel', () => {
@@ -93,5 +103,25 @@ describe('validateConfiguredModel', () => {
     vi.mocked(fetchConnectedModelIds).mockClear()
     await expect(validateConfiguredModel(null)).resolves.toBeNull()
     expect(fetchConnectedModelIds).not.toHaveBeenCalled()
+  })
+
+  it('accepts a suffix only when it is supported routing or explicitly in the catalog', async () => {
+    const model = 'openrouter/provider/model:custom'
+    vi.mocked(fetchConnectedModelIds).mockResolvedValue(['openrouter/provider/model'])
+    await expect(validateConfiguredModel(model)).rejects.toThrow('not configured in OpenCode')
+
+    vi.mocked(fetchConnectedModelIds).mockResolvedValue([model])
+    await expect(validateConfiguredModel(model)).resolves.toBe(model)
+  })
+
+  it('accepts an exact catalog routing model even when its unsuffixed base is unavailable', async () => {
+    const model = 'openrouter/provider/model:free'
+    const reviewer = 'provider/reviewer'
+    vi.mocked(fetchConnectedModelIds).mockResolvedValue([model, reviewer])
+
+    await expect(validateConfiguredModel(model)).resolves.toBe(model)
+    await expect(validateModelSelection(model, JSON.stringify([reviewer]))).resolves.toMatchObject({
+      mainImplementer: model, councilMembers: [model, reviewer],
+    })
   })
 })

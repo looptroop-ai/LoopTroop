@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AssistantStreamEvent } from '@shared/assistant'
@@ -115,9 +116,17 @@ describe('chat session routes', () => {
     })
 
     expect(response.status).toBe(201)
+    expect(response.headers.get('cache-control')).toBe('private, no-store')
     await expect(response.json()).resolves.toMatchObject({
       mode: 'help', ticketId: null, saved: true, canResume: true, messages: [], archived: false,
     })
+  })
+
+  it('does not cache chat history responses', async () => {
+    const response = await app.request('/api/chat/sessions')
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('private, no-store')
   })
 
   it('validates message bodies and stale ticket scope before opening an SSE response', async () => {
@@ -160,6 +169,7 @@ describe('chat session routes', () => {
     const events = eventsFromSse(body)
 
     expect(response.headers.get('content-type')).toContain('text/event-stream')
+    expect(response.headers.get('cache-control')).toBe('private, no-store')
     expect(events[0]).toMatchObject({ type: 'delta' })
     expect(events.at(-1)).toMatchObject({ type: 'done', session: { id: session.id } })
     expect(events.some(event => event.type === 'error')).toBe(false)
@@ -207,6 +217,25 @@ describe('chat session routes', () => {
     await body
 
     expect(abortSession).toHaveBeenCalledWith(remoteId)
+    expect(adapter.promptCalls).toHaveLength(0)
+  })
+
+  it('rejects stale temporary sessions before opening an SSE response', async () => {
+    configureProfile()
+    db.update(profiles).set({ saveChatSessions: false }).run()
+    const session = await createAssistantSession({ mode: 'help' })
+    const row = db.select().from(appMeta).all().find(entry => entry.key === `assistant.session.${session.id}`)!
+    db.update(appMeta).set({ value: JSON.stringify({ ...JSON.parse(row.value), owner: 'previous-runtime' }) })
+      .where(eq(appMeta.key, row.key)).run()
+
+    const response = await app.request(`/api/chat/sessions/${session.id}/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'help', message: 'Question from an old runtime' }),
+    })
+
+    expect(response.status).toBe(404)
+    expect(response.headers.get('content-type')).not.toContain('text/event-stream')
+    expect(response.headers.get('cache-control')).toBe('private, no-store')
     expect(adapter.promptCalls).toHaveLength(0)
   })
 })

@@ -138,6 +138,7 @@ it('opens help history from a ticket view without navigating away from the ticke
   render(widget(ticketState, true, vi.fn(), dispatch))
 
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation history' }))
+  expect(await screen.findByRole('textbox', { name: 'Search conversation history' })).toHaveFocus()
   fireEvent.click(await screen.findByRole('button', { name: /Open How do I configure this\? — Help · All views/ }))
   expect(await screen.findByRole('button', { name: 'How do I configure this?', pressed: true })).toBeInTheDocument()
   expect(dispatch).not.toHaveBeenCalled()
@@ -185,6 +186,37 @@ it('restores same-runtime temporary tabs when switching away from and back to th
   expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/close$/), expect.anything())
 })
 
+it('evicts an open chat when a refreshed session list no longer contains it', async () => {
+  const chat = detail({
+    id: 'deleted-ticket-chat',
+    mode: 'tickets',
+    ticketId: 'project/17:LT-6',
+    title: 'Deleted ticket chat',
+    messages: [{ id: 'old-answer', role: 'assistant', content: 'Old ticket context.', createdAt }],
+  })
+  let listedSessions: AssistantSessionSummary[] = [chat]
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(chat)
+    return url.searchParams.get('mode') === 'tickets' ? jsonResponse(listedSessions) : jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const ticketUi = { ...baseUiState, activeView: 'ticket' as const, selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }
+  const view = render(widget(ticketUi))
+
+  fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
+  expect(await screen.findByRole('button', { name: 'Deleted ticket chat', pressed: true })).toBeInTheDocument()
+  expect(await screen.findByText('Old ticket context.')).toBeInTheDocument()
+
+  view.rerender(widget(ticketUi, false))
+  listedSessions = []
+  view.rerender(widget(ticketUi, true))
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Deleted ticket chat' })).not.toBeInTheDocument())
+  await waitFor(() => expect(screen.queryByText('Old ticket context.')).not.toBeInTheDocument())
+  expect(await screen.findByText('Ask LoopTroop')).toBeInTheDocument()
+})
+
 it('switches between open conversation tabs without creating or closing a session', async () => {
   const first = summary({ id: 'first-session', title: 'First chat' })
   const second = detail({ id: 'second-session', title: 'Second chat' })
@@ -202,6 +234,75 @@ it('switches between open conversation tabs without creating or closing a sessio
   expect(await screen.findByRole('button', { name: 'Second chat', pressed: true })).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'First chat', pressed: false }))
   expect(screen.getByRole('button', { name: 'First chat', pressed: true })).toBeInTheDocument()
+})
+
+it('keeps a separate composer draft for each open conversation', async () => {
+  const first = summary({ id: 'first-session', title: 'First chat' })
+  const second = detail({ id: 'second-session', title: 'Second chat' })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(second)
+    if (url.pathname === `/api/chat/sessions/${first.id}`) return jsonResponse(detail(first))
+    return jsonResponse([first])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  fireEvent.change(composer, { target: { value: 'Draft for first chat' } })
+  fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Second chat', pressed: true })).toBeInTheDocument())
+  expect(composer).toHaveValue('')
+  fireEvent.change(composer, { target: { value: 'Draft for second chat' } })
+
+  fireEvent.click(screen.getByRole('button', { name: 'First chat', pressed: false }))
+  expect(composer).toHaveValue('Draft for first chat')
+  fireEvent.click(screen.getByRole('button', { name: 'Second chat', pressed: false }))
+  expect(composer).toHaveValue('Draft for second chat')
+})
+
+it('restores a failed send to its conversation after switching tabs', async () => {
+  const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = []
+  const first = detail({ id: 'first-session', title: 'First chat' })
+  const second = detail({ id: 'second-session', title: 'Second chat' })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname.endsWith('/messages')) {
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamControllers.push(controller)
+          controller.enqueue(encoder.encode('data: {"type":"delta","text":"working"}\n\n'))
+        },
+      })
+      return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    if (url.pathname === `/api/chat/sessions/${first.id}`) return jsonResponse(first)
+    if (url.pathname === `/api/chat/sessions/${second.id}`) return jsonResponse(second)
+    return jsonResponse([first, second])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
+  const firstMessage = 'Keep this with the first chat.'
+  fireEvent.change(composer, { target: { value: firstMessage } })
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  expect(await screen.findByText('working')).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Second chat', pressed: false }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Second chat', pressed: true })).toBeInTheDocument())
+  fireEvent.change(composer, { target: { value: 'Draft for the second chat.' } })
+  const encoder = new TextEncoder()
+  streamControllers.at(0)?.enqueue(encoder.encode('data: {"type":"error","error":"Provider rejected the message"}\n\n'))
+  streamControllers.at(0)?.close()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Provider rejected the message')
+
+  fireEvent.click(screen.getByRole('button', { name: 'First chat', pressed: false }))
+  expect(composer).toHaveValue(firstMessage)
+  fireEvent.click(screen.getByRole('button', { name: 'Second chat', pressed: false }))
+  expect(composer).toHaveValue('Draft for the second chat.')
 })
 
 it('closes history on outside click and Escape, and reports conversations for deleted tickets', async () => {
@@ -245,7 +346,11 @@ it('shows a useful error when global history cannot be loaded', async () => {
 })
 
 it('restores the composer draft when the send request fails before the assistant accepts it', async () => {
-  const chat = detail({ id: 'failed-send-session', title: 'Retry chat' })
+  const chat = detail({
+    id: 'failed-send-session',
+    title: 'Retry chat',
+    messages: [{ id: 'previous-answer', role: 'assistant', content: 'Previous answer stays visible.', createdAt }],
+  })
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(chat)
@@ -263,6 +368,8 @@ it('restores the composer draft when the send request fails before the assistant
   fireEvent.keyDown(composer, { key: 'Enter' })
 
   expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503: Model unavailable')
+  expect(screen.getByText('Previous answer stays visible.')).toBeInTheDocument()
+  expect(fetchMock).not.toHaveBeenCalledWith(`/api/chat/sessions/${chat.id}?mode=help`, expect.any(Object))
   await waitFor(() => expect(composer).toHaveValue(message))
 })
 
@@ -279,7 +386,11 @@ it('reopens archived conversations from searchable history and lets the server d
       closeRequests.push({ url: url.pathname, init })
       return new Response(null, { status: 204 })
     }
-    if (url.pathname === '/api/chat/sessions') return jsonResponse(url.search ? [open] : [open, archived])
+    if (url.pathname === '/api/chat/sessions') {
+      if (url.searchParams.get('mode') === 'tickets') return jsonResponse([])
+      if (url.searchParams.get('mode') === 'help') return jsonResponse([open, archived])
+      return jsonResponse([open, archived])
+    }
     throw new Error(`Unexpected assistant request: ${url.pathname}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -289,6 +400,12 @@ it('reopens archived conversations from searchable history and lets the server d
   fireEvent.click(historyButton)
   fireEvent.change(screen.getByRole('textbox', { name: 'Search conversation history' }), { target: { value: 'planning' } })
   fireEvent.click(await screen.findByRole('button', { name: /Open Old planning chat/ }))
+  expect(await screen.findByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?mode=tickets', expect.any(Object)))
+  expect(screen.queryByRole('button', { name: 'Old planning chat', pressed: true })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Help' }))
   expect(await screen.findByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
 
   view.rerender(widget(baseUiState, false))
@@ -307,24 +424,39 @@ it('reopens archived conversations from searchable history and lets the server d
   expect(await screen.findByRole('button', { name: /Open Old planning chat/ })).toBeInTheDocument()
 })
 
-it('aborts an in-flight reply when the assistant scope changes', async () => {
-  let sentSignal: AbortSignal | null = null
+it('finishes a reply in the background when the assistant scope changes', async () => {
+  const sentSignals: AbortSignal[] = []
+  const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = []
+  let sessionCreated = false
   const newSession = detail({ id: 'new-session', title: 'New conversation' })
+  const finishedSession = detail({
+    ...newSession,
+    messages: [
+      { id: 'user-message', role: 'user', content: 'Question before switching modes', createdAt },
+      { id: 'assistant-message', role: 'assistant', content: 'Finished in the background.', createdAt },
+    ],
+  })
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
-    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(newSession)
+    if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') {
+      sessionCreated = true
+      return jsonResponse(newSession)
+    }
     if (url.pathname.endsWith('/messages')) {
-      sentSignal = init?.signal ?? null
+      if (init?.signal) sentSignals.push(init.signal)
       const encoder = new TextEncoder()
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(encoder.encode('data: {"type":"delta","text":"stale reply"}\n\n'))
-          sentSignal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
+          streamControllers.push(controller)
+          controller.enqueue(encoder.encode('data: {"type":"delta","text":"streaming reply"}\n\n'))
+          sentSignals.at(0)?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
         },
       })
       return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
     }
-    if (url.pathname === '/api/chat/sessions') return jsonResponse([])
+    if (url.pathname === '/api/chat/sessions') {
+      return jsonResponse(sessionCreated && url.searchParams.get('mode') === 'help' ? [newSession] : [])
+    }
     throw new Error(`Unexpected assistant request: ${url.pathname}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -334,12 +466,20 @@ it('aborts an in-flight reply when the assistant scope changes', async () => {
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
   fireEvent.change(composer, { target: { value: 'Question before switching modes' } })
   fireEvent.keyDown(composer, { key: 'Enter' })
-  expect(await screen.findByText('stale reply')).toBeInTheDocument()
+  expect(await screen.findByText('streaming reply')).toBeInTheDocument()
 
   fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
-  await waitFor(() => expect(sentSignal?.aborted).toBe(true))
-  expect(screen.queryByText('stale reply')).not.toBeInTheDocument()
-  expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toHaveValue('')
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?mode=tickets', expect.any(Object)))
+  expect(sentSignals).toHaveLength(1)
+  expect(sentSignals.at(0)?.aborted).toBe(false)
+  expect(screen.queryByText('streaming reply')).not.toBeInTheDocument()
+
+  const encoder = new TextEncoder()
+  streamControllers.at(0)?.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', session: finishedSession })}\n\n`))
+  streamControllers.at(0)?.close()
+  fireEvent.click(screen.getByRole('button', { name: 'Help' }))
+  expect(await screen.findByText('Finished in the background.')).toBeInTheDocument()
+  expect(await screen.findByRole('status')).toHaveTextContent('Assistant response complete.')
 })
 
 it('lets closing the active tab stop and archive a running reply', async () => {
@@ -433,7 +573,10 @@ it('restores a failed message after closing its tab fails', async () => {
 it('renders model image markdown as a user-activated link without loading the image', async () => {
   const chat = detail({
     id: 'image-session',
-    messages: [{ id: 'assistant-message', role: 'assistant', content: '![A flow diagram](https://example.com/diagram.png)', createdAt }],
+    messages: [
+      { id: 'assistant-message', role: 'assistant', content: '![A flow diagram](https://example.com/diagram.png)', createdAt },
+      { id: 'unsafe-image', role: 'assistant', content: '![Unsafe image](javascript:alert(1))', createdAt },
+    ],
   })
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost')
@@ -446,7 +589,39 @@ it('renders model image markdown as a user-activated link without loading the im
 
   const imageLink = await screen.findByRole('link', { name: 'A flow diagram' })
   expect(imageLink).toHaveAttribute('href', 'https://example.com/diagram.png')
+  expect(imageLink).toHaveAttribute('target', '_blank')
+  expect(imageLink).toHaveAttribute('rel', 'noopener noreferrer')
+  expect(screen.getByText('Unsafe image')).toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: 'Unsafe image' })).not.toBeInTheDocument()
   expect(screen.queryByRole('img')).not.toBeInTheDocument()
+})
+
+it('opens web citations separately and renders local evidence paths as text', async () => {
+  const chat = detail({
+    id: 'links-session',
+    messages: [{
+      id: 'assistant-message',
+      role: 'assistant',
+      content: '[Documentation](https://docs.example.com/guide) · [source](projects/1/source/src/App.tsx) · [unsafe](javascript:alert(1))',
+      createdAt,
+    }],
+  })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    return url.pathname === `/api/chat/sessions/${chat.id}`
+      ? jsonResponse(chat)
+      : jsonResponse([summary({ id: chat.id, title: chat.title })])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  const documentationLink = await screen.findByRole('link', { name: 'Documentation' })
+  expect(documentationLink).toHaveAttribute('target', '_blank')
+  expect(documentationLink).toHaveAttribute('rel', 'noopener noreferrer')
+  expect(screen.queryByRole('link', { name: 'source' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: 'unsafe' })).not.toBeInTheDocument()
+  expect(screen.getByText('source').closest('code')).toBeInTheDocument()
+  expect(screen.getByText('unsafe').closest('code')).toBeInTheDocument()
 })
 
 it('keeps a fixed accessible size across modes and Escape dismisses the window back to its launcher', async () => {

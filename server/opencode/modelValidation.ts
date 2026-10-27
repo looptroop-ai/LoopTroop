@@ -1,5 +1,6 @@
 import { fetchConnectedModelIds } from './providerCatalog'
 import { parseCouncilMembers } from '../council/members'
+import { isOpenRouterRoutingModel } from '../../shared/openRouterRouting'
 
 export const MAX_COUNCIL_MEMBERS = 10
 
@@ -9,7 +10,7 @@ export interface ValidatedModelSelection {
 }
 
 function cleanModelId(modelId: string): string {
-  if (modelId.startsWith('openrouter/')) {
+  if (isOpenRouterRoutingModel(modelId)) {
     return modelId.split(':')[0]!
   }
   return modelId
@@ -24,7 +25,7 @@ export async function validateConfiguredModel(modelIdRaw: string | null | undefi
   if (connectedModelIds.size === 0) {
     throw new Error('No configured OpenCode models are available.')
   }
-  if (!connectedModelIds.has(cleanModelId(modelId))) {
+  if (!connectedModelIds.has(modelId) && !connectedModelIds.has(cleanModelId(modelId))) {
     throw new Error(`Selected model is not configured in OpenCode: ${modelId}`)
   }
   return modelId
@@ -45,7 +46,7 @@ export async function validateModelSelection(
   }
 
   const cleanMain = cleanModelId(mainImplementer)
-  if (!connectedModelIds.has(cleanMain)) {
+  if (!connectedModelIds.has(mainImplementer) && !connectedModelIds.has(cleanMain)) {
     throw new Error(`Main implementer model is not configured in OpenCode: ${mainImplementer}`)
   }
 
@@ -67,7 +68,7 @@ export async function validateModelSelection(
   }
 
   const invalidCouncilMembers = normalizedCouncilMembers.filter((memberId) => {
-    return !connectedModelIds.has(cleanModelId(memberId))
+    return !connectedModelIds.has(memberId) && !connectedModelIds.has(cleanModelId(memberId))
   })
   if (invalidCouncilMembers.length > 0) {
     throw new Error(`Council member models are not configured in OpenCode: ${invalidCouncilMembers.join(', ')}`)

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { resolve } from 'node:path'
 import type { OpenCodePermissionRule } from '../types'
 import {
   OPENCODE_DISABLED_PERMISSIONS,
@@ -9,6 +10,7 @@ import {
   isPermissionDeniedByRules,
   resolveOpenCodePermissions,
   toolPolicyMayAskQuestions,
+  assistantPermissions,
   type OpenCodeToolPolicy,
 } from '../toolPolicy'
 
@@ -19,6 +21,20 @@ function questionRules(rules: readonly OpenCodePermissionRule[] | undefined): Op
 }
 
 describe('resolveOpenCodePermissions', () => {
+  it('confines assistant reads while denying writes, other tools, and external directories', () => {
+    const directory = resolve('assistant-policy-test')
+    const rules = assistantPermissions(directory)
+    for (const tool of ['read', 'list', 'glob']) {
+      expect(isPermissionDeniedByRules(rules, tool, ['evidence/tickets/ticket.json'])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, tool, [`${directory.replaceAll('\\', '/')}/evidence/manifest.json`])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, tool, [resolve('outside/private.txt')])).toBe(true)
+    }
+    expect(isPermissionDeniedByRules(rules, 'grep', ['frontend'])).toBe(false)
+    for (const tool of ['external_directory', 'bash', 'edit', 'task', 'question', 'webfetch']) {
+      expect(isPermissionDeniedByRules(rules, tool, ['*'])).toBe(true)
+    }
+  })
+
   it('states the question rule exactly once, whatever the policy said', () => {
     for (const policy of ALL_POLICIES) {
       for (const questionsAllowed of [true, false]) {

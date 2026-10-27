@@ -61,7 +61,7 @@ describe('OpenCode v1 transport direct behavior', () => {
       })
       .mockResolvedValueOnce({})
     const update = vi.fn()
-      .mockResolvedValueOnce({ data: { id: 'session-1' } })
+      .mockResolvedValueOnce({ data: { id: 'session-1', permission: [{ permission: 'write', pattern: 'src/**', action: 'deny' }] } })
       .mockResolvedValueOnce({})
     const get = vi.fn()
       .mockResolvedValueOnce({ data: { id: 'session-1', directory: '/workspace' } })
@@ -127,6 +127,17 @@ describe('OpenCode v1 transport direct behavior', () => {
       directory: '/workspace',
     }, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(remove).toHaveBeenNthCalledWith(2, { sessionID: 'missing' }, expect.anything())
+  })
+
+  it('refuses prompts whose requested permissions were ignored or changed by the server', async () => {
+    const requested = [{ permission: '*', pattern: '*', action: 'deny' as const }]
+    const update = vi.fn()
+      .mockResolvedValueOnce({ data: { id: 'session-1' } })
+      .mockResolvedValueOnce({ data: { id: 'session-1', permission: [{ ...requested[0], action: 'allow' }] } })
+    const sdk = transport({ session: { update } })
+
+    await expect(sdk.updateSession('session-1', '/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+    await expect(sdk.updateSession('session-1', '/workspace', { permission: requested })).rejects.toThrow('did not confirm')
   })
 
   it('partitions prompts, forwards request options, and rejects unconfirmed SDK responses', async () => {

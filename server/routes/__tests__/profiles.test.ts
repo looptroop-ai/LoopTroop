@@ -141,6 +141,27 @@ describe('profileRouter numeric validation', () => {
     expect(validateModelSelection).not.toHaveBeenCalled()
   })
 
+  it('saves unrelated settings without revalidating an unchanged assistant model', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModel: 'provider/assistant',
+    }).run()
+    vi.mocked(validateConfiguredModel).mockClear()
+    vi.mocked(validateConfiguredModel).mockRejectedValue(new Error('OpenCode is offline'))
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModel: 'provider/assistant', saveChatSessions: false }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ chatModel: 'provider/assistant', saveChatSessions: false })
+    expect(validateConfiguredModel).not.toHaveBeenCalled()
+    expect(mockGetOpenCodeConnection).not.toHaveBeenCalled()
+  })
+
   it('rejects an assistant model that is not in the connected catalog without changing the profile', async () => {
     db.insert(profiles).values({
       mainImplementer: 'openai/gpt-5.4',

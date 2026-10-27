@@ -105,6 +105,15 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
       ...(options.permission ? { permission: options.permission.map(rule => ({ ...rule })) } : {}),
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
     if (!res.data) throw new Error('OpenCode returned no updated session payload')
+    if (options.permission) {
+      const applied = res.data.permission
+      if (!Array.isArray(applied) || applied.length !== options.permission.length || options.permission.some((rule, index) => {
+        const actual = applied[index]
+        return !actual || actual.permission !== rule.permission || actual.pattern !== rule.pattern || actual.action !== rule.action
+      })) {
+        throw new Error('OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.')
+      }
+    }
   }
 
   async dispatchPrompt(request: OpenCodePromptRequest, signal?: AbortSignal) {

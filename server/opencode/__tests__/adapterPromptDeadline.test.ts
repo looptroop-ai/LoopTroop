@@ -24,9 +24,9 @@ function createClient(
         if (overrides.messageReadError) throw overrides.messageReadError
         return { data: [] }
       }),
-      update: vi.fn(async () => {
+      update: vi.fn(async (input: { permission?: unknown }) => {
         if (overrides.sessionUpdateError) throw overrides.sessionUpdateError
-        return { data: { id: 'session-1' } }
+        return { data: { id: 'session-1', permission: input.permission } }
       }),
       prompt: vi.fn(async (_request, options) => await new Promise((resolve, reject) => {
         const signal = options?.signal

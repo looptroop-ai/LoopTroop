@@ -17,15 +17,14 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function createStreamRouteTicket() {
-  const repoDir = repoManager.createRepo()
-  const project = attachProject({
-    folderPath: repoDir,
+function createStreamRouteTicket(existingProjectId?: number) {
+  const projectId = existingProjectId ?? attachProject({
+    folderPath: repoManager.createRepo(),
     name: 'Stream Route',
     shortname: 'SSE',
-  })
+  }).id
   return createTicket({
-    projectId: project.id,
+    projectId,
     title: 'Stream ticket',
     description: 'Regression coverage for stream validation.',
   })
@@ -160,7 +159,10 @@ describe('streamRouter', () => {
   })
 
   it('enforces the global cap for 120 concurrent HTTP streams', async () => {
-    const tickets = Array.from({ length: 20 }, () => createStreamRouteTicket())
+    const tickets = [createStreamRouteTicket(), createStreamRouteTicket()].flatMap(first => [
+      first,
+      ...Array.from({ length: 9 }, () => createStreamRouteTicket(first.projectId)),
+    ])
     const responses = await Promise.all(tickets.flatMap(ticket =>
       Array.from({ length: MAX_SSE_CONNECTIONS_PER_TICKET }, () =>
         app.request(`/api/stream?ticketId=${encodeURIComponent(ticket.id)}`),

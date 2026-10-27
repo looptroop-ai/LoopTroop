@@ -77,7 +77,7 @@ export function TerminalTicketDelete({
                 externalId={ticket.externalId}
                 isDisplayOnlyMock={ticket.isDisplayOnlyMock}
               />. This removes the {statusLabel} ticket from all stored
-              state, including logs, artifacts, cached UI state, and its worktree data.
+              state, including logs, artifacts, cached UI state, its worktree data, and dedicated assistant conversations.
             </DialogDescription>
           </DialogHeader>
 

@@ -2126,7 +2126,7 @@ describe('OpenCode adapter transport orchestration', () => {
     const client = {
       session: {
         get: vi.fn(async () => ({ data: { id: 'session-1', directory: '/worktree' } })),
-        update: vi.fn(async () => ({ data: { id: 'session-1' } })),
+        update: vi.fn(async (input: { permission?: unknown }) => ({ data: { id: 'session-1', permission: input.permission } })),
         messages: vi.fn(async () => ({ data: [v1Message('old-assistant', 'stale answer')] })),
         prompt: vi.fn(async () => {
           await permissionSettled

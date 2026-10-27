@@ -268,11 +268,16 @@ function App() {
   const isRestorePopupOpen = !isWelcomeOpen
     && startupStatus?.storage.kind === 'restored'
     && startupStatus.ui.restoreNotice.shouldShow === true
+  const startupOverlayOpen = Boolean(isWelcomeOpen || isRestorePopupOpen)
   const isModalOpen = activeModal !== null || isAboutOpen || isWelcomeOpen || isRestorePopupOpen
 
   useEffect(() => {
     if (activeModal !== 'ticket') setTicketModalEditing(false)
   }, [activeModal])
+
+  useEffect(() => {
+    if (startupOverlayOpen) setIsAssistantOpen(false)
+  }, [startupOverlayOpen])
 
   useEffect(() => {
     if (openedWithModalRef.current === 'profile') {
@@ -671,8 +676,8 @@ function App() {
 
         <KeyboardShortcuts />
         <AssistantWidget
-          open={isAssistantOpen}
-          launcherVisible
+          open={isAssistantOpen && !startupOverlayOpen}
+          launcherVisible={!startupOverlayOpen}
           onOpen={() => setIsAssistantOpen(true)}
           onDismiss={() => setIsAssistantOpen(false)}
           onOpenConfiguration={() => openModal('profile')}

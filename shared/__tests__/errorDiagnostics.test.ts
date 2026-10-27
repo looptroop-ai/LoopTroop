@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText, sanitizeDiagnosticValue } from '../errorDiagnostics'
+import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText, sanitizeDiagnosticValue, sanitizeEvidenceText, sanitizeEvidenceValue } from '../errorDiagnostics'
 
 describe('shared blocked error diagnostics', () => {
   it('preserves full structured log evidence and repeated lines while redacting nested credentials', () => {
@@ -28,6 +28,43 @@ describe('shared blocked error diagnostics', () => {
     })
     expect(sanitizeDiagnosticValue(clean)).toEqual(clean)
     expect(value.data.headers['x-api-key']).toEqual(['opaque-key'])
+  })
+
+  it('preserves source links and identifiers while redacting credential literals', () => {
+    const source = [
+      '[config](https://www.example.com/docs/configuration#assistant-chat)',
+      "fetch('https://api.example.com/items?limit=10&page=2#results')",
+      'interface Opts { token: string; password?: string }',
+      'interface CredentialOptions { token: ExtremelyLongSecurityTokenType }',
+      "const password = form.get('password')",
+      'const password = readPasswordFromEnvironment()',
+      'const token = client.token',
+      "fetch('https://api.example.com/items?token=ordinary-query-value#results')",
+      "const apiKey = 'sk-test-secret-value-123456';",
+      'Authorization: Bearer opaque-credential-token',
+      "const url = 'https://user:pass@example.com/api?x=1#section'",
+    ].join('\n')
+
+    const clean = sanitizeEvidenceText(source)
+
+    expect(clean).toContain('[config](https://www.example.com/docs/configuration#assistant-chat)')
+    expect(clean).toContain("fetch('https://api.example.com/items?limit=10&page=2#results')")
+    expect(clean).toContain('interface Opts { token: string; password?: string }')
+    expect(clean).toContain('interface CredentialOptions { token: ExtremelyLongSecurityTokenType }')
+    expect(clean).toContain("const password = form.get('password')")
+    expect(clean).toContain('const password = readPasswordFromEnvironment()')
+    expect(clean).toContain('const token = client.token')
+    expect(clean).toContain("fetch('https://api.example.com/items?token=ordinary-query-value#results')")
+    expect(clean).toContain("const apiKey = '[redacted]'")
+    expect(clean).toContain('Authorization: Bearer [redacted]')
+    expect(clean).toContain("https://[redacted]@example.com/api?x=1#section")
+    expect(clean).not.toContain('sk-test-secret-value-123456')
+    expect(clean).not.toContain('opaque-credential-token')
+
+    expect(sanitizeEvidenceValue({ apiKey: 'literal-secret', source: 'https://example.com/a?x=1#top' })).toEqual({
+      apiKey: '[redacted]',
+      source: 'https://example.com/a?x=1#top',
+    })
   })
 
   it('stops cyclic or excessive nesting with an explicit evidence marker', () => {

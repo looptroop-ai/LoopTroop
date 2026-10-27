@@ -103,7 +103,7 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
             <span className="text-sm leading-snug text-muted-foreground group-hover:text-foreground transition-colors">
               <span className="font-medium text-foreground">Delete the ticket completely</span>
               <br />
-              Permanently deletes the ticket record from the database and removes all related files on disk. The ticket will be completely erased and will no longer appear in the UI.
+              Permanently deletes the ticket record, related files, and its dedicated assistant conversations. The ticket will no longer appear in the UI.
             </span>
           </label>
         </div>

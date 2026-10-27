@@ -121,6 +121,20 @@ describe('assistant session persistence', () => {
     expect(await readdir(join(APP_CONFIG_DIR, 'assistant'))).toEqual([])
   })
 
+  it('queues cleanup when a rejected remote session could not be deleted', async () => {
+    configureProfile()
+    const rejected = Object.assign(new Error('Permission confirmation failed'), { openCodeSessionId: 'ses-rejected' })
+    adapter.mockSessionCreateFailures.push(new Error('OpenCode creation failed', { cause: rejected }))
+    vi.spyOn(adapter, 'deleteSession').mockRejectedValue(new Error('OpenCode unavailable'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    await expect(sessions.createAssistantSession({ mode: 'help' })).rejects.toThrow('cleanup has been queued for retry')
+    await vi.waitFor(() => expect(db.select().from(appMeta).all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: expect.stringMatching(/^assistant\.cleanup\./), value: expect.stringContaining('ses-rejected') }),
+    ])))
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled())
+  })
+
   it.each([true, false])('removes a failed creation workspace and reports whether remote cleanup was queued (%s)', async (canQueue) => {
     configureProfile()
     sqlite.exec(`CREATE TEMP TRIGGER fail_assistant_save BEFORE INSERT ON app_meta
@@ -371,7 +385,7 @@ describe('assistant session persistence', () => {
     expect(sessions.assistantMessages(messages)).toEqual([
       { id: 'user-message', role: 'user', content: 'question', createdAt: new Date(1_000).toISOString() },
       { id: 'assistant-message', role: 'assistant', content: 'answer\ndetails', createdAt: '2026-01-01T00:00:00.000Z' },
-      { id: 'raw-message', role: 'assistant', content: '[config](https://example.test/docs?page=2#assistant) Authorization: Bearer abc.def', createdAt: '' },
+      { id: 'raw-message', role: 'assistant', content: '[config](https://example.test/docs?page=2#assistant) Authorization: Bearer [redacted]', createdAt: '' },
     ])
   })
 })

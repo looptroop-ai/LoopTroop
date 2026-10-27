@@ -9,7 +9,7 @@ import { APP_VERSION } from '../lib/appVersion'
 import { openFileNoFollowSync } from '../io/readFile'
 import { ContainedPathError, resolveContainedPath } from '../lib/containedPath'
 import { getTicketByRef, getTicketContext, getTicketPaths, listTickets, type PublicTicket } from '../storage/ticketQueries'
-import { listProjects } from '../storage/projects'
+import { listAttachedProjectRoots, listProjects } from '../storage/projects'
 import { listPhaseArtifacts } from '../storage/ticketArtifacts'
 import { listPhaseAttempts } from '../storage/ticketPhaseAttempts'
 import { isHistoricalLogCursorExpiredError, queryLogPage } from '../log/projection'
@@ -79,7 +79,7 @@ const EXCLUDED_DIRECTORIES = new Set([
   '.docker', '.gnupg', '.kube', 'build', 'coverage', 'dist', 'node_modules', 'out', 'pods', 'target', 'vendor',
 ])
 const SECRET_PATH_PART = /^(?:\.env(?:\..*)?|\.envrc(?:\..*)?|\.aws|\.azure|\.ssh|secrets?|credentials?)$/i
-const SECRET_FILE = /(?:^|[._-])(?:credentials?|passwords?|secrets?)(?:[._-]|$)|(?:private|signing)[._-]?key|(?:^|[._-])id_(?:rsa|ed25519|ecdsa|dsa)(?:_sk)?$|\.env(?:\..*)?$|\.envrc(?:\..*)?$|\.(?:pem|p12|pfx|key)$/i
+const SECRET_FILE = /(?:^|[._-])(?:credentials?|passwords?|secrets?)(?:[._-]|$)|(?:^|[._-])(?:auth|oauth)(?:[._-](?:tokens?|credentials?|secrets?))?\.json$|(?:private|signing)[._-]?key|(?:^|[._-])id_(?:rsa|ed25519|ecdsa|dsa)(?:_sk)?$|\.env(?:\..*)?$|\.envrc(?:\..*)?$|\.(?:pem|p12|pfx|key)$/i
 const SENSITIVE_BASENAMES = new Set(['.netrc', '.npmrc', '.pypirc', '.htpasswd', 'authorized_keys'])
 const INSTRUCTION_BASENAMES = new Set(['agents.md', 'claude.md', 'context.md'])
 const TEST_SOURCE_DIRECTORIES = new Set(['test', 'tests', '__tests__', 'fixture', 'fixtures', '__fixtures__'])
@@ -109,7 +109,7 @@ interface LocalSourceResult {
   entriesWalked: number
   omissions: Record<string, number>
   omissionExamples: Record<string, string[]>
-  files: string[]
+  files: Array<{ sourcePath: string; snapshotPath: string }>
   limit: string
 }
 
@@ -417,7 +417,7 @@ function incrementOmission(result: LocalSourceResult, reason: string, path: stri
   result.omissions[reason] = (result.omissions[reason] ?? 0) + 1
   if (reason !== 'secret_path') {
     const examples = result.omissionExamples[reason] ??= []
-    if (examples.length < 5) examples.push(path)
+    if (examples.length < 5) examples.push(path.split(sep).join('/'))
   }
 }
 
@@ -493,16 +493,104 @@ async function gitSourceSelection(sourceRoot: string, signal?: AbortSignal): Pro
   return { files, directories }
 }
 
-function sourceSnapshotPath(path: string): string {
+type SnapshotPathKind = 'directory' | 'file'
+
+interface SnapshotPathRegistry {
+  paths: Map<string, SnapshotPathKind>
+  segments: Map<string, string>
+  segmentOwners: Map<string, string>
+  nextSegmentId: number
+}
+
+function createSnapshotPathRegistry(): SnapshotPathRegistry {
+  return { paths: new Map(), segments: new Map(), segmentOwners: new Map(), nextSegmentId: 0 }
+}
+
+function snapshotPathKey(path: string): string {
+  return path.normalize('NFC').toLowerCase()
+}
+
+function reserveSnapshotPath(path: string, reserved: Map<string, SnapshotPathKind>): boolean {
   const segments = path.split('/').filter(Boolean)
-  const basename = segments.at(-1)
-  const encoded = segments.map(encodeURIComponent)
-  if (basename && INSTRUCTION_BASENAMES.has(basename.toLowerCase())) {
-    encoded[encoded.length - 1] = encodeURIComponent(`${basename}.txt`)
-  } else if (basename && INSTRUCTION_BASENAMES.has(basename.slice(0, -4).toLowerCase()) && basename.toLowerCase().endsWith('.txt')) {
-    encoded[encoded.length - 1] = encodeURIComponent(basename).replace(/\.md(?=\.txt$)/i, '%2Emd')
+  let current = ''
+  for (let index = 0; index < segments.length; index += 1) {
+    current = current ? `${current}/${segments[index]}` : segments[index] ?? ''
+    const kind = index === segments.length - 1 ? 'file' : 'directory'
+    const existing = reserved.get(snapshotPathKey(current))
+    if (existing === 'file' || (kind === 'file' && existing === 'directory')) return false
   }
-  return encoded.join('/')
+  current = ''
+  for (let index = 0; index < segments.length; index += 1) {
+    current = current ? `${current}/${segments[index]}` : segments[index] ?? ''
+    reserved.set(snapshotPathKey(current), index === segments.length - 1 ? 'file' : 'directory')
+  }
+  return true
+}
+
+function isWindowsDeviceName(segment: string): boolean {
+  const basename = segment.split('.')[0]?.replace(/[ .]+$/g, '') ?? ''
+  return /^(?:con|prn|aux|nul|conin\$|conout\$|clock\$|com[1-9¹²³]|lpt[1-9¹²³])$/i.test(basename)
+}
+
+function isWindowsInvalidCharacter(character: string): boolean {
+  return /[<>:"\\|?*]/u.test(character) || character.charCodeAt(0) < 0x20
+}
+
+function isPortableWindowsSegment(segment: string): boolean {
+  return segment.length <= 255
+    && ![...segment].some(isWindowsInvalidCharacter)
+    && !/[. ]$/u.test(segment)
+    && !isWindowsDeviceName(segment)
+}
+
+function encodeWindowsSegment(segment: string): string {
+  const characters = [...segment]
+  const deviceName = isWindowsDeviceName(segment)
+  return characters.map((character, index) => {
+    const invalid = isWindowsInvalidCharacter(character)
+      || (index === characters.length - 1 && /[. ]/u.test(character))
+      || (deviceName && index === 0)
+    return invalid
+      ? [...Buffer.from(character, 'utf8')].map(byte => `%${byte.toString(16).padStart(2, '0')}`).join('')
+      : character
+  }).join('')
+}
+
+function sourceSnapshotPath(path: string, registry: SnapshotPathRegistry): string {
+  const segments = path.split('/').filter(Boolean)
+  const mapped: string[] = []
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index] ?? ''
+    const instruction = index === segments.length - 1 && INSTRUCTION_BASENAMES.has(segment.toLowerCase())
+    const desired = instruction ? `${segment}.txt` : segment
+    const parent = mapped.join('/')
+    const identity = `${parent}\0${instruction ? 'instruction' : 'native'}\0${segment}`
+    let output = registry.segments.get(identity)
+    if (!output) {
+      output = isPortableWindowsSegment(desired) ? desired : encodeWindowsSegment(desired)
+      const outputKey = snapshotPathKey(parent ? `${parent}/${output}` : output)
+      if (!isPortableWindowsSegment(output) || (registry.segmentOwners.has(outputKey) && registry.segmentOwners.get(outputKey) !== identity)) {
+        do {
+          registry.nextSegmentId += 1
+          output = `__looptroop-source-segment-${registry.nextSegmentId}__`
+        } while (registry.segmentOwners.has(snapshotPathKey(parent ? `${parent}/${output}` : output)))
+      }
+      registry.segments.set(identity, output)
+      registry.segmentOwners.set(snapshotPathKey(parent ? `${parent}/${output}` : output), identity)
+    }
+    mapped.push(output)
+  }
+  const candidate = mapped.join('/')
+  if (reserveSnapshotPath(candidate, registry.paths)) return candidate
+
+  for (let namespace = 0; ; namespace += 1) {
+    const root = `__looptroop-source-collisions__${namespace ? `-${namespace}` : ''}`
+    for (let index = 1; ; index += 1) {
+      const fallback = `${root}/${index}/${mapped.at(-1) ?? 'source'}`
+      if (reserveSnapshotPath(fallback, registry.paths)) return fallback
+      if (registry.paths.get(snapshotPathKey(root)) === 'file') break
+    }
+  }
 }
 
 function sameFileIdentity(left: BigIntStats, right: BigIntStats): boolean {
@@ -785,6 +873,7 @@ async function snapshotLocalProject(
   }
 
   const destination = join(evidenceDirectory, 'projects', String(project.id), 'source')
+  const reservedSnapshotPaths = createSnapshotPathRegistry()
   const pending = ['']
   let hitWalkLimit = false
   while (pending.length > 0 && !hitWalkLimit) {
@@ -914,8 +1003,8 @@ async function snapshotLocalProject(
           incrementOmission(result, 'scope_file_or_byte_limit', relativePath)
           continue
         }
-        const encoded = sourceSnapshotPath(pathKey)
-        const target = join(destination, ...encoded.split('/'))
+        const snapshotPath = sourceSnapshotPath(pathKey, reservedSnapshotPaths)
+        const target = join(destination, ...snapshotPath.split('/'))
         await writeSourceText(target, text)
         budget.files += 1
         budget.bytes += size
@@ -923,7 +1012,7 @@ async function snapshotLocalProject(
         scopeBudget.bytes += size
         result.fileCount += 1
         result.bytes += size
-        result.files.push(relativePath)
+        result.files.push({ sourcePath: relativePath, snapshotPath })
       }
       pending.push(...pendingDirectories)
       pending.sort((left, right) => sourcePathPriority(right) - sourcePathPriority(left)
@@ -949,7 +1038,7 @@ async function snapshotLocalProject(
     '',
     `Copied files: ${result.fileCount}; bytes: ${result.bytes}; directory entries walked: ${budget.entries}.`,
     '',
-    'Copied file paths are listed in the native evidence tree under `projects/' + project.id + '/source/` using URL-encoded path segments.',
+    'Copied file paths are listed in the native evidence tree under `projects/' + project.id + '/source/`; ordinary source path segments keep their original names.',
     '',
     'Omissions and bounds:',
     ...Object.entries(result.omissions).map(([reason, count]) => {
@@ -958,7 +1047,7 @@ async function snapshotLocalProject(
     }),
     '',
     'Copied files:',
-    ...result.files.map(path => `- ${path} → projects/${project.id}/source/${sourceSnapshotPath(path.split(sep).join('/'))}`),
+    ...result.files.map(file => `- ${file.sourcePath} → projects/${project.id}/source/${file.snapshotPath}`),
     `- ${result.limit}`,
     '',
   ]
@@ -1030,11 +1119,10 @@ async function writeOfficialDocs(evidenceDirectory: string, gaps: EvidenceGap[],
   }
 }
 
-function sourceIndexLine(path: string, tag: string, state: string): string {
+function sourceIndexLine(path: string, tag: string, state: string, snapshotPath?: string): string {
   const encoded = path.split('/').map(encodeURIComponent).join('/')
   const url = `https://github.com/looptroop-ai/LoopTroop/blob/${tag}/${encoded}`
-  const snapshot = `installed-source/${sourceSnapshotPath(path)}`
-  return `- ${path} — ${state} — ${url}${state === 'included' ? ` — evidence path: ${snapshot}` : ''}`
+  return `- ${path} — ${state} — ${url}${state === 'included' && snapshotPath ? ` — evidence path: installed-source/${snapshotPath}` : ''}`
 }
 
 function extractReleaseNotes(changelog: string, version: string): string | null {
@@ -1077,7 +1165,7 @@ async function writeInstalledSource(
     .map(entry => ({ path: entry.path, size: entry.size }))
   const candidates = paths.filter(file => isSourcePath(file.path))
   const { selected, terms } = selectRemoteSources(candidates, question)
-  const included = new Set<string>()
+  const included = new Map<string, string>()
   const failed: Array<{ path: string; reason: string }> = []
   let downloadedBytes = 0
   let reservedBytes = 0
@@ -1103,6 +1191,11 @@ async function writeInstalledSource(
     reservedBytes += file.size
     fetchable.push(file)
   }
+  const reservedSnapshotPaths = createSnapshotPathRegistry()
+  reserveSnapshotPath('source-index.md', reservedSnapshotPaths.paths)
+  reserveSnapshotPath('release-notes.md', reservedSnapshotPaths.paths)
+  const snapshotPaths = new Map<string, string>()
+  for (const file of fetchable) snapshotPaths.set(file.path, sourceSnapshotPath(file.path, reservedSnapshotPaths))
   for (let offset = 0; offset < fetchable.length; offset += 4) {
     abortIfNeeded(signal)
     let batchBytes = 0
@@ -1120,9 +1213,11 @@ async function writeInstalledSource(
         return
       }
       batchBytes += fetchedBytes
-      const destination = join(evidenceDirectory, 'installed-source', ...sourceSnapshotPath(file.path).split('/'))
+      const snapshotPath = snapshotPaths.get(file.path)
+      if (!snapshotPath) throw new Error('Installed source snapshot path was not reserved')
+      const destination = join(evidenceDirectory, 'installed-source', ...snapshotPath.split('/'))
       await writeSourceText(destination, text)
-      included.add(file.path)
+      included.set(file.path, snapshotPath)
     }))
     downloadedBytes += batchBytes
   }
@@ -1132,7 +1227,7 @@ async function writeInstalledSource(
       : included.has(file.path)
         ? 'included'
         : failed.find(entry => entry.path === file.path)?.reason ?? 'not selected for this question'
-    indexLines.push(sourceIndexLine(file.path, tag, state))
+    indexLines.push(sourceIndexLine(file.path, tag, state, included.get(file.path)))
   }
   if (parsed.truncated) {
     addGap(gaps, 'installed source tree', 'GitHub marked the recursive tree as truncated; the index covers only paths returned by the API.')
@@ -1156,7 +1251,7 @@ async function writeInstalledSource(
     status: 'available',
     index,
     selectedPaths: selected.map(file => file.path),
-    includedPaths: [...included].sort((left, right) => left < right ? -1 : left > right ? 1 : 0),
+    includedPaths: [...included.keys()].sort((left, right) => left < right ? -1 : left > right ? 1 : 0),
     omittedPaths: failed,
     treeFileCount: candidates.length,
     treeTruncated: parsed.truncated === true,
@@ -1506,7 +1601,7 @@ function buildPrompt(scope: AssistantScope): string {
     'Do not claim complete coverage when the manifest lists a gap, an unavailable history view, an omitted source file, or a size limit. Explain which evidence you used and what is missing when that affects the answer.',
     scope.mode === 'help'
       ? 'This is help scope: use the official current documentation and the installed LoopTroop release source recorded in the manifest.'
-      : 'This is ticket scope: use only the ticket metadata and project snapshots listed in this scope’s manifest. Dashboard scope includes all saved tickets and attached projects, with bounded source, workflow, and log evidence; ticket scope includes one validated ticket.',
+      : 'This is ticket scope: use only the ticket metadata and project snapshots listed in this scope’s manifest. Dashboard scope includes tickets and projects that attached-project storage could load; coverage gaps disclose projects that could not be loaded, and source, workflow, and log evidence is bounded. Ticket scope includes one validated ticket.',
   ].join('\n\n')
 }
 
@@ -1521,6 +1616,7 @@ export async function prepareAssistantEvidence(
 
   let tickets: PublicTicket[] = []
   let projects: AssistantProject[] = []
+  let omittedAttachedProjectCount = 0
   const worktreeNotes: string[] = []
   if (scope.mode === 'tickets') {
     if (scope.ticketId !== undefined) {
@@ -1540,8 +1636,13 @@ export async function prepareAssistantEvidence(
         sourceKind: worktree.path ? 'ticket worktree' : 'attached project',
       }]
     } else {
+      const attachedProjectRoots = listAttachedProjectRoots()
       tickets = listTickets()
-      projects = listProjects().map(project => ({
+      const listedProjects = listProjects()
+      omittedAttachedProjectCount = attachedProjectRoots.filter(root => (
+        !listedProjects.some(project => samePath(project.folderPath, root))
+      )).length
+      projects = listedProjects.map(project => ({
         id: project.id,
         name: project.name,
         shortname: project.shortname,
@@ -1567,7 +1668,9 @@ export async function prepareAssistantEvidence(
       abortIfNeeded(signal)
       throw error
     }
-    initialFingerprint = await ticketEvidenceFingerprint(scope, cacheDirectory, tickets, projects, worktreeNotes, signal)
+    initialFingerprint = omittedAttachedProjectCount === 0
+      ? await ticketEvidenceFingerprint(scope, cacheDirectory, tickets, projects, worktreeNotes, signal)
+      : null
     abortIfNeeded(signal)
     if (initialFingerprint) {
       const cached = evidenceSnapshotCache.get(cacheDirectory)
@@ -1584,6 +1687,9 @@ export async function prepareAssistantEvidence(
   abortIfNeeded(signal)
   const evidenceDirectory = await resetEvidenceDirectory(directory)
   const gaps: EvidenceGap[] = []
+  if (omittedAttachedProjectCount > 0) {
+    addGap(gaps, 'attached project metadata', `${omittedAttachedProjectCount} attached project(s) could not be loaded; saved tickets and source from those projects are omitted from dashboard evidence.`)
+  }
   const sourceScopeBudget: LocalSourceBudget = { entries: 0, files: 0, bytes: 0 }
   const collectionBudget: EvidenceCollectionBudget = {
     logPages: 0,
@@ -1676,7 +1782,7 @@ export async function prepareAssistantEvidence(
     tickets: ticketEvidence,
     coverage: {
       gaps,
-      note: 'All saved ticket metadata remains available in dashboard scope. Project source, workflow artifacts, and log pages have evidence-scope limits; omitted evidence is reported in gaps and per-ticket history details. Log pages are written incrementally, and the model does not receive one full-history context dump.',
+      note: 'Dashboard scope includes tickets from attached projects that storage could load; projects that could not be loaded are reported in gaps. Project source, workflow artifacts, and log pages have evidence-scope limits; omitted evidence is reported in gaps and per-ticket history details. Log pages are written incrementally, and the model does not receive one full-history context dump.',
       localSourceBudget: {
         perProject: {
           files: LOCAL_SOURCE_MAX_FILES,

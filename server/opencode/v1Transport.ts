@@ -94,7 +94,22 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     if (!res.data) throw new Error('OpenCode returned no session payload')
     const session = res.data as Record<string, unknown>
     if (options?.permission && !confirmsPermissionRules(session.permission, options.permission)) {
-      throw new Error('OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.')
+      const permissionError = new Error('OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.')
+      const sessionId = typeof session.id === 'string' && session.id ? session.id : undefined
+      if (sessionId) {
+        try {
+          await this.deleteSession(sessionId, projectPath, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS))
+        } catch (cleanupError) {
+          const error = new AggregateError(
+            [permissionError, cleanupError],
+            `${permissionError.message} Cleanup of rejected session ${sessionId} failed: ${getErrorMessage(cleanupError)}`,
+            { cause: permissionError },
+          )
+          Object.assign(error, { openCodeSessionId: sessionId })
+          throw error
+        }
+      }
+      throw permissionError
     }
     return this.mapSession(session)
   }

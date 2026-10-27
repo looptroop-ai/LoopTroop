@@ -33,7 +33,7 @@ export function queueAssistantSessionCleanup(filter: AssistantSessionCleanupFilt
         const matchesFilter = 'ticketId' in filter
           ? record.ticketId === filter.ticketId
           : record.projectId === filter.projectId
-        if (!matchesFilter && record.ticketId !== null) continue
+        if (!matchesFilter) continue
 
         const receipt: AssistantCleanupReceipt = { id: record.id, openCodeSessionId: record.openCodeSessionId }
         tx.insert(appMeta).values({

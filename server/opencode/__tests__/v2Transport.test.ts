@@ -2824,6 +2824,39 @@ describe("OpenCode v2 fetch transport", () => {
     expect(requests.map((request) => request.method)).toEqual(["PATCH", "GET"]);
   });
 
+  it("rejects extra trailing v2 rules that would override the requested last match", async () => {
+    const requested = [
+      { permission: "read", pattern: "*", action: "deny" as const },
+      { permission: "read", pattern: "evidence/**", action: "allow" as const },
+    ];
+    const { transport, requests } = createTransport((request) => {
+      if (request.url.pathname !== "/api/session/session-1")
+        throw new Error(`Unexpected ${request.method} ${request.url}`);
+      if (request.method === "PATCH") return emptyResponse();
+      return jsonResponse({
+        data: {
+          id: "session-1",
+          permissions: [
+            { action: "read", resource: "*", effect: "deny" },
+            { action: "read", resource: "evidence/**", effect: "allow" },
+            { action: "read", resource: "*", effect: "allow" },
+          ],
+        },
+      });
+    });
+
+    await expect(transport.updateSession("session-1", "/workspace", {
+      permission: requested,
+    })).rejects.toThrow("did not confirm the requested session permissions");
+    expect(requests.map((request) => request.method)).toEqual(["PATCH", "GET"]);
+    expect(requests[0]?.body).toEqual({
+      permissions: [
+        { action: "read", resource: "*", effect: "deny" },
+        { action: "read", resource: "evidence/**", effect: "allow" },
+      ],
+    });
+  });
+
   it("treats an already-missing session as successfully interrupted", async () => {
     const { transport, requests } = createTransport(() =>
       jsonResponse({ _tag: "SessionNotFoundError" }, 404),

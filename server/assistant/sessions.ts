@@ -108,6 +108,16 @@ function directory(id: string): string {
   return join(APP_CONFIG_DIR, 'assistant', id)
 }
 
+function rejectedRemoteSessionId(error: unknown): string | undefined {
+  let current = error
+  for (let depth = 0; depth < 5 && current && typeof current === 'object'; depth += 1) {
+    const candidate = current as { openCodeSessionId?: unknown; cause?: unknown }
+    if (typeof candidate.openCodeSessionId === 'string' && candidate.openCodeSessionId.length > 0) return candidate.openCodeSessionId
+    current = candidate.cause
+  }
+  return undefined
+}
+
 function save(record: SessionRecord): void {
   db.insert(appMeta).values({ key: KEY_PREFIX + record.id, value: JSON.stringify(record) })
     .onConflictDoUpdate({ target: appMeta.key, set: { value: JSON.stringify(record), updatedAt: record.updatedAt } }).run()
@@ -284,6 +294,7 @@ export async function createAssistantSession(scope: AssistantScope, signal?: Abo
   } catch (error) {
     const cleanupErrors: unknown[] = []
     let cleanupQueued = false
+    remoteId ??= rejectedRemoteSessionId(error)
     if (remoteId) {
       try {
         await adapter.deleteSession(remoteId, AbortSignal.timeout(15_000))

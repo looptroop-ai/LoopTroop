@@ -61,7 +61,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
   const [detailRefresh, setDetailRefresh] = useState(0)
   const controllers = useRef(new Set<AbortController>())
   const detailRequests = useRef(new Map<string, AbortController>())
-  const activeStreams = useRef(new Map<string, AbortController>())
+  const activeStreams = useRef(new Map<string, { controller: AbortController; message: string }>())
   const closingSessions = useRef(new Set<string>())
   const draftsAfterCloseFailure = useRef(new Map<string, string>())
   const current = scopes[scopeKey] ?? EMPTY_SCOPE_STATE
@@ -135,7 +135,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       ))
       for (const id of evictedIds) {
         detailRequests.current.get(id)?.abort()
-        activeStreams.current.get(id)?.abort()
+        activeStreams.current.get(id)?.controller.abort()
         activeStreams.current.delete(id)
       }
       if (evictedIds.length > 0) {
@@ -301,6 +301,16 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     closingSessions.current.add(id)
     detailRequests.current.get(id)?.abort()
     detailRequests.current.delete(id)
+    const activeStream = activeStreams.current.get(id)
+    if (activeStream) draftsAfterCloseFailure.current.set(id, activeStream.message)
+    activeStream?.controller.abort()
+    activeStreams.current.delete(id)
+    setSendingIds(previous => previous.filter(sessionId => sessionId !== id))
+    setPendingReplies(previous => {
+      const next = { ...previous }
+      delete next[id]
+      return next
+    })
     const controller = beginRequest()
     updateScope(scopeKey, state => ({
       ...state,
@@ -323,14 +333,28 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
               if (!state.openIds.includes(id) || state.drafts[id]) return state
               return { ...state, drafts: { ...state.drafts, [id]: pendingDraft } }
             })
-            setDetailRefresh(value => value + 1)
+            detailRequests.current.get(id)?.abort()
+            const refreshController = beginRequest()
+            detailRequests.current.set(id, refreshController)
+            void fetchAssistantSession(id, stableScope, refreshController.signal).then(session => {
+              if (refreshController.signal.aborted) return
+              setDetails(previous => ({ ...previous, [id]: session }))
+              updateScope(scopeKey, state => state.openIds.includes(id)
+                ? { ...state, sessions: [summaryOf(session), ...state.sessions.filter(item => item.id !== id)] }
+                : state)
+            }).catch(() => {
+              // Keep the previous transcript when the post-close refresh is unavailable.
+            }).finally(() => {
+              endRequest(refreshController)
+              if (detailRequests.current.get(id) === refreshController) detailRequests.current.delete(id)
+            })
           }
           return false
         }
       }
       if (controller.signal.aborted) return false
       draftsAfterCloseFailure.current.delete(id)
-      activeStreams.current.get(id)?.abort()
+      activeStreams.current.get(id)?.controller.abort()
       activeStreams.current.delete(id)
       setSendingIds(previous => previous.filter(sessionId => sessionId !== id))
       setPendingReplies(previous => {
@@ -374,9 +398,10 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
 
   const sendMessage = useCallback(async (message: string): Promise<boolean> => {
     const session = activeId ? details[activeId] : null
-    if (!session?.canResume || !message.trim() || closingSessions.current.has(session.id) || current.closingIds.includes(session.id) || activeStreams.current.has(session.id)) return false
+    const normalizedMessage = message.trim()
+    if (!session?.canResume || !normalizedMessage || closingSessions.current.has(session.id) || current.closingIds.includes(session.id) || activeStreams.current.has(session.id)) return false
     const controller = beginRequest()
-    activeStreams.current.set(session.id, controller)
+    activeStreams.current.set(session.id, { controller, message: normalizedMessage })
     updateScope(scopeKey, state => {
       if (!state.openIds.includes(session.id)) return state
       const drafts = { ...state.drafts }
@@ -386,12 +411,12 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     setSendingIds(previous => previous.includes(session.id) ? previous : [...previous, session.id])
     setPendingReplies(previous => ({
       ...previous,
-      [session.id]: { sessionId: session.id, message: message.trim(), reply: '' },
+      [session.id]: { sessionId: session.id, message: normalizedMessage, reply: '' },
     }))
     setError(null)
     let accepted = false
     try {
-      const response = await sendAssistantMessage(session.id, message.trim(), stableScope, controller.signal)
+      const response = await sendAssistantMessage(session.id, normalizedMessage, stableScope, controller.signal)
       accepted = true
       let finished = false
       for await (const event of readAssistantEvents(response, controller.signal)) {
@@ -428,10 +453,10 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
           return next
         })
         setError(describeQueryError(caught) ?? 'Could not send the assistant message.')
-        if (closingSessions.current.has(session.id)) draftsAfterCloseFailure.current.set(session.id, message.trim())
+        if (closingSessions.current.has(session.id)) draftsAfterCloseFailure.current.set(session.id, normalizedMessage)
         else updateScope(scopeKey, state => {
           if (!state.openIds.includes(session.id) || state.drafts[session.id]) return state
-          return { ...state, drafts: { ...state.drafts, [session.id]: message.trim() } }
+          return { ...state, drafts: { ...state.drafts, [session.id]: normalizedMessage } }
         })
         if (accepted) {
           try {
@@ -450,8 +475,10 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       return false
     } finally {
       endRequest(controller)
-      if (activeStreams.current.get(session.id) === controller) activeStreams.current.delete(session.id)
-      setSendingIds(previous => previous.filter(id => id !== session.id))
+      if (activeStreams.current.get(session.id)?.controller === controller) {
+        activeStreams.current.delete(session.id)
+        setSendingIds(previous => previous.filter(id => id !== session.id))
+      }
     }
   }, [activeId, beginRequest, current.closingIds, details, endRequest, scopeKey, setError, stableScope, updateScope])
 

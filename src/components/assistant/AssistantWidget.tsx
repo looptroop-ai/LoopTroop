@@ -200,6 +200,7 @@ function AssistantConversation({
   const conversationRef = useRef<HTMLDivElement>(null)
   const historyRef = useRef<HTMLDivElement>(null)
   const historyButtonRef = useRef<HTMLButtonElement>(null)
+  const panelWasOpen = useRef(false)
   const listId = useId()
   const activeSession = assistant.activeSession
   const draft = assistant.activeId ? assistant.drafts[assistant.activeId] ?? '' : ''
@@ -238,8 +239,19 @@ function AssistantConversation({
   }, [historyOpen])
 
   useEffect(() => {
-    if (!open || historyOpen) return
+    if (!open) {
+      panelWasOpen.current = false
+      return
+    }
+    if (historyOpen) return
+    const justOpened = !panelWasOpen.current
+    panelWasOpen.current = true
+    const panel = textareaRef.current?.closest('[role="dialog"]')
+    if (document.activeElement === historyButtonRef.current) return
+    if (!justOpened && document.activeElement !== document.body && !panel?.contains(document.activeElement)) return
+    const focusedElement = document.activeElement
     const frame = requestAnimationFrame(() => {
+      if (document.activeElement !== focusedElement) return
       if (textareaRef.current && !textareaRef.current.disabled) textareaRef.current.focus()
       else conversationRef.current?.focus()
     })

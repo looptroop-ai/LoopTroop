@@ -115,10 +115,35 @@ describe('OpenCode v1 transport direct behavior', () => {
     const create = vi.fn()
       .mockResolvedValueOnce({ data: { id: 'session-1', permission: [] } })
       .mockResolvedValueOnce({ data: { id: 'session-2', permission: [{ ...requested[0], action: 'deny' }] } })
-    const sdk = transport({ session: { create } })
+      .mockResolvedValueOnce({ data: { permission: [] } })
+    const remove = vi.fn().mockResolvedValue({ data: true })
+    const sdk = transport({ session: { create, delete: remove } })
 
     await expect(sdk.createSession('/workspace', { permission: requested })).rejects.toThrow('did not confirm')
     await expect(sdk.createSession('/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+    await expect(sdk.createSession('/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+    expect(remove).toHaveBeenNthCalledWith(1, { sessionID: 'session-1', directory: '/workspace' }, expect.anything())
+    expect(remove).toHaveBeenNthCalledWith(2, { sessionID: 'session-2', directory: '/workspace' }, expect.anything())
+    expect(remove).toHaveBeenCalledTimes(2)
+  })
+
+  it('exposes the rejected v1 session id when immediate cleanup fails', async () => {
+    const requested = [{ permission: 'read', pattern: 'evidence/**', action: 'allow' as const }]
+    const create = vi.fn().mockResolvedValue({ data: { id: 'orphaned-session', permission: [] } })
+    const remove = vi.fn().mockResolvedValue({ data: false })
+    const sdk = transport({ session: { create, delete: remove } })
+
+    let failure: unknown
+    try {
+      await sdk.createSession('/workspace', { permission: requested })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure).toMatchObject({ openCodeSessionId: 'orphaned-session' })
+    expect((failure as AggregateError).errors).toHaveLength(2)
+    expect(remove).toHaveBeenCalledWith({ sessionID: 'orphaned-session', directory: '/workspace' }, expect.anything())
   })
 
   it('deletes sessions through the SDK and requires confirmation', async () => {

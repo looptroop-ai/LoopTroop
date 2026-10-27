@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { AssistantSession, AssistantSessionSummary } from '@shared/assistant'
 import { UIContext, type UIState } from '@/context/uiContextDef'
@@ -187,6 +187,42 @@ it('returns to the dashboard before opening global ticket history', async () => 
   expect(screen.getByRole('button', { name: 'All tickets chat', pressed: true })).toBeInTheDocument()
 })
 
+it('keeps ticket-view focus when ticket mode reloads after navigating to another ticket', async () => {
+  const ticket6 = summary({ id: 'ticket-6-chat', mode: 'tickets', ticketId: 'project/17:LT-6', title: 'LT-6 chat' })
+  const ticket7 = summary({ id: 'ticket-7-chat', mode: 'tickets', ticketId: 'project/17:LT-7', title: 'LT-7 chat' })
+  const ticketState = (id: string, externalId: string) => ({
+    ...baseUiState,
+    activeView: 'ticket' as const,
+    selectedTicketId: id,
+    selectedTicketExternalId: externalId,
+  })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === `/api/chat/sessions/${ticket6.id}`) return jsonResponse(detail(ticket6))
+    if (url.pathname === `/api/chat/sessions/${ticket7.id}`) return jsonResponse(detail(ticket7))
+    if (url.pathname === '/api/chat/sessions' && url.searchParams.get('mode') === 'tickets') {
+      return jsonResponse(url.searchParams.get('ticketId') === ticket7.ticketId ? [ticket7] : [ticket6])
+    }
+    return jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const answerInput = <input aria-label="Ticket answer" />
+  const view = render(<>{answerInput}{widget(ticketState('project/17:LT-6', 'LT-6'))}</>)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
+  expect(await screen.findByRole('button', { name: 'LT-6 chat', pressed: true })).toBeInTheDocument()
+  const focusedInput = screen.getByRole('textbox', { name: 'Ticket answer' })
+  focusedInput.focus()
+
+  view.rerender(<>{answerInput}{widget(ticketState('project/17:LT-7', 'LT-7'))}</>)
+  expect(await screen.findByRole('button', { name: 'LT-7 chat', pressed: true })).toBeInTheDocument()
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    `/api/chat/sessions/${ticket7.id}?mode=tickets&ticketId=project%2F17%3ALT-7`,
+    expect.any(Object),
+  ))
+  expect(focusedInput).toHaveFocus()
+})
+
 it('restores same-runtime temporary tabs when switching away from and back to their scope', async () => {
   const temporary = summary({ id: 'temporary-session', title: 'Unsaved notes' })
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -326,6 +362,7 @@ it('keeps the jump control visible when a reply finishes after the user scrolls 
 
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
   fireEvent.change(composer, { target: { value: 'Question while reading' } })
   fireEvent.keyDown(composer, { key: 'Enter' })
   expect(await screen.findByText('partial reply')).toBeInTheDocument()
@@ -365,6 +402,7 @@ it('does not send Enter while an IME composition is active', async () => {
 
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
   fireEvent.change(composer, { target: { value: 'Composed text' } })
   fireEvent.keyDown(composer, { key: 'Enter', isComposing: true })
   expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/messages'))).toHaveLength(0)
@@ -469,12 +507,30 @@ it('restores a failed send to its conversation after switching tabs', async () =
 
 it('restores failed drafts to their original scope without replacing the current scope draft', async () => {
   const helpStream: { fail: (() => void) | null } = { fail: null }
+  let helpCreated = false
+  let ticketCreated = false
+  const listReads: Record<'help' | 'tickets', Promise<void>[]> = { help: [], tickets: [] }
   const helpChat = detail({ id: 'help-scope-session', title: 'Help scope chat' })
   const ticketChat = detail({ id: 'ticket-scope-session', mode: 'tickets', title: 'Ticket scope chat' })
+  const sessionsResponse = (mode: 'help' | 'tickets', sessions: AssistantSessionSummary[]) => {
+    const response = jsonResponse(sessions)
+    const readJson = response.json.bind(response)
+    let finishRead!: () => void
+    listReads[mode].push(new Promise(resolve => { finishRead = resolve }))
+    response.json = async () => {
+      const value = await readJson()
+      finishRead()
+      return value
+    }
+    return response
+  }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') {
-      return jsonResponse(JSON.parse(String(init.body)).mode === 'help' ? helpChat : ticketChat)
+      const session = JSON.parse(String(init.body)).mode === 'help' ? helpChat : ticketChat
+      if (session.mode === 'help') helpCreated = true
+      else ticketCreated = true
+      return jsonResponse(session)
     }
     if (url.pathname.endsWith('/messages')) {
       const encoder = new TextEncoder()
@@ -488,32 +544,54 @@ it('restores failed drafts to their original scope without replacing the current
         },
       }), { headers: { 'Content-Type': 'text/event-stream' } })
     }
+    if (url.pathname === '/api/chat/sessions' && url.searchParams.get('mode') === 'help') {
+      return sessionsResponse('help', helpCreated ? [helpChat] : [])
+    }
+    if (url.pathname === '/api/chat/sessions' && url.searchParams.get('mode') === 'tickets') {
+      return sessionsResponse('tickets', ticketCreated ? [ticketChat] : [])
+    }
     if (url.pathname === `/api/chat/sessions/${helpChat.id}`) return jsonResponse(helpChat)
     return jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
   render(widget())
 
+  const switchModeAndWait = async (label: 'Help' | 'Tickets') => {
+    const mode = label.toLowerCase() as 'help' | 'tickets'
+    const readIndex = listReads[mode].length
+    act(() => fireEvent.click(screen.getByRole('button', { name: label })))
+    await act(async () => {
+      const read = listReads[mode][readIndex]
+      if (!read) throw new Error(`Expected the ${label} session list request`)
+      await read
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+  }
+
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
   const helpMessage = 'Keep the Help draft.'
   fireEvent.change(composer, { target: { value: helpMessage } })
   fireEvent.keyDown(composer, { key: 'Enter' })
   expect(await screen.findByText('working')).toBeInTheDocument()
 
-  fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
+  await switchModeAndWait('Tickets')
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   await waitFor(() => expect(screen.getByRole('button', { name: 'Ticket scope chat', pressed: true })).toBeInTheDocument())
   const ticketDraft = 'Keep the Tickets draft.'
   fireEvent.change(composer, { target: { value: ticketDraft } })
   const fail = helpStream.fail
   if (!fail) throw new Error('Expected the Help response stream')
-  fail()
+  await act(async () => {
+    fail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/chat/sessions/${helpChat.id}?mode=help`, expect.any(Object)))
 
-  fireEvent.click(screen.getByRole('button', { name: 'Help' }))
+  await switchModeAndWait('Help')
   expect(composer).toHaveValue(helpMessage)
-  fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
+  await switchModeAndWait('Tickets')
   expect(composer).toHaveValue(ticketDraft)
 })
 
@@ -547,6 +625,7 @@ it('refreshes the saved transcript after an accepted stream fails and keeps the 
 
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
   const message = 'Keep this message for retry.'
   fireEvent.change(composer, { target: { value: message } })
   fireEvent.keyDown(composer, { key: 'Enter' })
@@ -618,6 +697,7 @@ it('restores the composer draft when the send request fails before the assistant
 
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
   const message = 'Please keep this draft if sending fails.'
   fireEvent.change(composer, { target: { value: message } })
   fireEvent.keyDown(composer, { key: 'Enter' })
@@ -720,6 +800,7 @@ it('finishes a reply in the background when the assistant scope changes', async 
 
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
   fireEvent.change(composer, { target: { value: 'Question before switching modes' } })
   fireEvent.keyDown(composer, { key: 'Enter' })
   expect(await screen.findByText('streaming reply')).toBeInTheDocument()
@@ -767,12 +848,15 @@ it('lets closing the active tab stop and archive a running reply', async () => {
 
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
   fireEvent.change(composer, { target: { value: 'Stop when I close this tab' } })
   fireEvent.keyDown(composer, { key: 'Enter' })
   expect(await screen.findByText('working')).toBeInTheDocument()
 
   fireEvent.click(screen.getByRole('button', { name: 'Close Running chat conversation' }))
   await waitFor(() => expect(requests.resolveClose).toBeTypeOf('function'))
+  await waitFor(() => expect(requests.sentSignal?.aborted).toBe(true))
+  expect(screen.getByRole('button', { name: 'Close Running chat conversation' })).toBeDisabled()
   expect(composer).toBeDisabled()
   fireEvent.keyDown(composer, { key: 'Enter' })
   expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/messages'))).toHaveLength(1)
@@ -785,27 +869,32 @@ it('lets closing the active tab stop and archive a running reply', async () => {
 })
 
 it('restores a failed message after closing its tab fails', async () => {
+  const message = 'Keep this draft if closing fails.'
   const chat = detail({ id: 'close-failure-session', title: 'Close failure chat' })
-  const closeResolvers: Array<(response: Response) => void> = []
-  const failStreams: Array<() => void> = []
+  const refreshedChat = detail({
+    ...chat,
+    messages: [
+      { id: 'saved-question', role: 'user', content: message, createdAt },
+      { id: 'saved-answer', role: 'assistant', content: 'Saved before the close failed.', createdAt },
+    ],
+  })
+  const requests: { sentSignal: AbortSignal | null; resolveClose: ((response: Response) => void) | null } = { sentSignal: null, resolveClose: null }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/chat/sessions' && init?.method === 'POST') return jsonResponse(chat)
     if (url.pathname.endsWith('/messages')) {
+      requests.sentSignal = init?.signal ?? null
       const encoder = new TextEncoder()
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(encoder.encode('data: {"type":"delta","text":"working"}\n\n'))
-          failStreams.push(() => {
-            controller.enqueue(encoder.encode('data: {"type":"error","error":"Provider rejected the message"}\n\n'))
-            controller.close()
-          })
+          requests.sentSignal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
         },
       })
       return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
     }
-    if (url.pathname.endsWith('/close')) return new Promise<Response>(resolve => closeResolvers.push(resolve))
-    if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(chat)
+    if (url.pathname.endsWith('/close')) return new Promise<Response>(resolve => { requests.resolveClose = resolve })
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(refreshedChat)
     return jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -813,23 +902,24 @@ it('restores a failed message after closing its tab fails', async () => {
 
   fireEvent.click(await screen.findByRole('button', { name: 'New chat' }))
   const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
-  const message = 'Keep this draft if closing fails.'
+  await waitFor(() => expect(composer).toBeEnabled())
   fireEvent.change(composer, { target: { value: message } })
-  fireEvent.keyDown(composer, { key: 'Enter' })
-  expect(await screen.findByText('working')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Close Close failure chat conversation' }))
-  await waitFor(() => expect(closeResolvers).toHaveLength(1))
-
-  const failStream = failStreams[0]
-  if (!failStream) throw new Error('Expected the pending assistant response')
-  failStream()
-  await screen.findByRole('alert')
+  const closeButton = screen.getByRole('button', { name: 'Close Close failure chat conversation' })
+  await act(async () => {
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    closeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await waitFor(() => expect(requests.resolveClose).toBeTypeOf('function'))
+  await waitFor(() => expect(requests.sentSignal?.aborted).toBe(true))
   expect(composer).toHaveValue('')
-  const resolveClose = closeResolvers[0]
+  expect(composer).toBeDisabled()
+  const resolveClose = requests.resolveClose
   if (!resolveClose) throw new Error('Expected pending assistant close request')
   resolveClose(jsonResponse({ error: 'Close unavailable' }, 503))
 
   await waitFor(() => expect(composer).toHaveValue(message))
+  expect(await screen.findByText('Saved before the close failed.')).toBeInTheDocument()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Close unavailable')
 })
 
 it('renders model image markdown as a user-activated link without loading the image', async () => {

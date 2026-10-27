@@ -1,4 +1,4 @@
-import { isAbsolute, join, parse, relative, resolve } from 'path'
+import { dirname, isAbsolute, join, parse, relative, resolve } from 'path'
 import type { OpenCodePermissionRule, PromptSessionOptions } from './types'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from './permissions'
 
@@ -6,10 +6,14 @@ export type OpenCodeToolPolicy = 'default' | 'disabled' | 'read_only' | 'executi
 
 export function assistantPermissions(directory: string): ReadonlyArray<OpenCodePermissionRule> {
   const evidenceRoot = join(resolve(directory), 'evidence').replaceAll('\\', '/')
-  const rootRelativeEvidence = relative(parse(evidenceRoot).root, evidenceRoot).replaceAll('\\', '/')
+  const ancestorRelativeEvidence: string[] = []
+  for (let ancestor = dirname(evidenceRoot); ; ancestor = dirname(ancestor)) {
+    ancestorRelativeEvidence.push(relative(ancestor, evidenceRoot).replaceAll('\\', '/'))
+    if (ancestor === parse(ancestor).root) break
+  }
   const paths = [
     'evidence', 'evidence/**', evidenceRoot, `${evidenceRoot}/**`,
-    ...(rootRelativeEvidence ? [rootRelativeEvidence, `${rootRelativeEvidence}/**`] : []),
+    ...ancestorRelativeEvidence.flatMap(path => [path, `${path}/**`]),
   ]
   const scopedPaths = [...new Set(paths.flatMap(path => [path, path.replaceAll('/', '\\')]))]
   return Object.freeze([

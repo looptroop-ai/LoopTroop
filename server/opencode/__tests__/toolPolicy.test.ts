@@ -42,6 +42,22 @@ describe('resolveOpenCodePermissions', () => {
     }
   })
 
+  it('allows evidence paths relative to any enclosing worktree', () => {
+    const worktree = resolve('nested-config-repo')
+    const directory = resolve(worktree, '.config/looptroop/assistant/session-1')
+    const rules = assistantPermissions(directory)
+    const evidenceFile = relative(worktree, resolve(directory, 'evidence/manifest.json')).replaceAll('\\', '/')
+    const evidenceGlob = relative(worktree, resolve(directory, 'evidence/**/*.json')).replaceAll('\\', '/')
+    const otherSessionFile = relative(worktree, resolve(worktree, '.config/looptroop/assistant/session-2/evidence/manifest.json')).replaceAll('\\', '/')
+
+    for (const permission of ['read', 'list']) {
+      expect(isPermissionDeniedByRules(rules, permission, [evidenceFile])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, permission, [otherSessionFile])).toBe(true)
+    }
+    expect(isPermissionDeniedByRules(rules, 'glob', [evidenceGlob])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'glob', [evidenceGlob.replace('session-1', 'session-2')])).toBe(true)
+  })
+
   it('states the question rule exactly once, whatever the policy said', () => {
     for (const policy of ALL_POLICIES) {
       for (const questionsAllowed of [true, false]) {

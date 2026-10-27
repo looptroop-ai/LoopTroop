@@ -101,6 +101,91 @@ describe('shared blocked error diagnostics', () => {
     expect(clean).not.toContain('opaque_value')
   })
 
+  it('redacts standalone auth schemes and capitalized secrets without rewriting prose or code', () => {
+    const source = [
+      'gateway replied: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2ln',
+      'gateway replied: Bearer abcdefghijklmnop',
+      'Basic dXNlcjpwYXNzd29yZA==',
+      'Basic authentication',
+      'Basic\nauthentication',
+      'Bearer authentication',
+      'Authorization: Bearer short',
+      'Authorization: Bearer abcdefghijklmnop',
+      'password: Summer2024',
+      'password: newSecret123',
+      'API_KEY=Xk9fQ2mPz7Lq',
+      'AWS_SECRET_ACCESS_KEY=Wj4lrXUtnFEMIK7MDENG',
+      'Send a bearer token instead of the cookie',
+      '## Basic usage',
+      'The basic\nflow',
+      'if (expectedStartToken === null) {',
+      'dbCredentials: {',
+      'persist-credentials: false',
+      'id-token: write',
+      'GH_TOKEN: ${{ github.token }}',
+      'type Token = { value: string }',
+      'token: process.env.TOKEN',
+      'token: getToken()',
+      'token: await getToken()',
+      'token: candidate || fallback',
+      'token: candidate & mask',
+      'token: candidate ? fallback : candidate',
+      'token: candidate === null',
+      'token: "opaque-secret" + suffix',
+    ].join('\n')
+
+    expect(sanitizeEvidenceText(source)).toBe([
+      'gateway replied: Bearer [redacted]',
+      'gateway replied: Bearer [redacted]',
+      'Basic [redacted]',
+      'Basic authentication',
+      'Basic\nauthentication',
+      'Bearer authentication',
+      'Authorization: Bearer [redacted]',
+      'Authorization: Bearer [redacted]',
+      'password: [redacted]',
+      'password: [redacted]',
+      'API_KEY=[redacted]',
+      'AWS_SECRET_ACCESS_KEY=[redacted]',
+      'Send a bearer token instead of the cookie',
+      '## Basic usage',
+      'The basic\nflow',
+      'if (expectedStartToken === null) {',
+      'dbCredentials: {',
+      'persist-credentials: false',
+      'id-token: write',
+      'GH_TOKEN: ${{ github.token }}',
+      'type Token = { value: string }',
+      'token: process.env.TOKEN',
+      'token: getToken()',
+      'token: await getToken()',
+      'token: candidate || fallback',
+      'token: candidate & mask',
+      'token: candidate ? fallback : candidate',
+      'token: candidate === null',
+      'token: "opaque-secret" + suffix',
+    ].join('\n'))
+  })
+
+  it('redacts auth, access, refresh, and bearer aliases in structured and text evidence', () => {
+    expect(sanitizeEvidenceValue({
+      auth: { access: 'opaque-access', refresh: 'opaque-refresh' },
+      access: 'opaque-access',
+      refresh: 'opaque-refresh',
+      bearer: 'opaque-bearer',
+    })).toEqual({
+      auth: '[redacted]',
+      access: '[redacted]',
+      refresh: '[redacted]',
+      bearer: '[redacted]',
+    })
+
+    expect(sanitizeEvidenceText('auth: { access: "opaque-access", refresh: "opaque-refresh" }\nbearer: opaque-bearer'))
+      .toBe('auth: { access: "[redacted]", refresh: "[redacted]" }\nbearer: [redacted]')
+    expect(sanitizeEvidenceValue({ hasAuth: false, isAccess: 'false' })).toEqual({ hasAuth: false, isAccess: 'false' })
+    expect(sanitizeEvidenceText('hasAuth=false isAccess=false')).toBe('hasAuth=false isAccess=false')
+  })
+
   it('redacts URL userinfo and credential query values while preserving ordinary parameters and prose', () => {
     const source = [
       'https://opaqueKey123@example.com/path?apiKey=opaqueApiKey123&limit=10#access_token=opaqueAccessToken',
@@ -121,6 +206,34 @@ describe('shared blocked error diagnostics', () => {
       'The basic\nflow',
       'const opts = { token: "" }',
     ].join('\n'))
+  })
+
+  it('redacts signed URL parameters while keeping ordinary query values', () => {
+    const url = 'https://s3.amazonaws.com/b/f.zip?X-Amz-Credential=opaque-credential&X-Amz-Signature=abc123&sig=opaque-sig&hmac=opaque-hmac&mac=opaque-mac&hash=opaque-hash&key=opaque-key&keyId=opaque-key-id&auth=opaque-auth&limit=10'
+
+    expect(sanitizeEvidenceText(url)).toBe('https://s3.amazonaws.com/b/f.zip?X-Amz-Credential=[redacted]&X-Amz-Signature=[redacted]&sig=[redacted]&hmac=[redacted]&mac=[redacted]&hash=[redacted]&key=[redacted]&keyId=[redacted]&auth=[redacted]&limit=10')
+  })
+
+  it('handles a 512 KiB punctuation-heavy hostname-like input promptly', () => {
+    const pathological = 'a.'.repeat(256 * 1024)
+    const started = performance.now()
+
+    expect(sanitizeEvidenceText(pathological) === pathological).toBe(true)
+    expect(performance.now() - started).toBeLessThan(1500)
+    expect(sanitizeEvidenceText('https://user:pw@x.io/')).toBe('https://[redacted]@x.io/')
+    expect(sanitizeEvidenceText('git+ssh://u@h/x')).toBe('git+ssh://[redacted]@h/x')
+  })
+
+  it('keeps expression-tail checks on the same line across repeated credential matches', () => {
+    const line = `password: opaque-secret${' '.repeat(24)}in: metadata\n`
+    const source = line.repeat(4096)
+    const started = performance.now()
+    const clean = sanitizeEvidenceText(source)
+
+    expect(clean.match(/\[redacted\]/g)).toHaveLength(4096)
+    expect(clean.startsWith(`password: [redacted]${' '.repeat(24)}in: metadata\n`)).toBe(true)
+    expect(sanitizeEvidenceText('password: newSecret123\nin: metadata')).toBe('password: [redacted]\nin: metadata')
+    expect(performance.now() - started).toBeLessThan(1500)
   })
 
   it('redacts complete structured credentials, including objects and arrays under prefixed keys', () => {

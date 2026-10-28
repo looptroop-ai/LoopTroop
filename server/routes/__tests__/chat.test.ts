@@ -123,6 +123,36 @@ describe('chat session routes', () => {
     expect(session).not.toHaveProperty('mode')
   })
 
+  it('renames a scoped conversation and rejects invalid title or scope fields', async () => {
+    configureProfile()
+    const session = await createAssistantSession({})
+    const invalidBodies = [
+      {},
+      { title: '   ' },
+      { title: 'x'.repeat(101) },
+      { title: 'Valid title', unexpected: true },
+    ]
+    for (const body of invalidBodies) {
+      const response = await app.request(`/api/chat/sessions/${session.id}/title`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })
+      expect(response.status).toBe(400)
+    }
+
+    const wrongScope = await app.request(`/api/chat/sessions/${session.id}/title`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Wrong scope', ticketId: randomUUID() }),
+    })
+    expect(wrongScope.status).toBe(404)
+
+    const response = await app.request(`/api/chat/sessions/${session.id}/title`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Renamed conversation' }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ id: session.id, title: 'Renamed conversation', archived: false })
+  })
+
   it('does not cache chat history responses', async () => {
     const response = await app.request('/api/chat/sessions')
 
@@ -162,6 +192,11 @@ describe('chat session routes', () => {
   it('streams text deltas followed by a done event', async () => {
     configureProfile()
     const session = await createAssistantSession({})
+    const remoteId = remoteSessionId(session.id)
+    adapter.mockStreamEvents.set(remoteId, [{
+      type: 'reasoning', sessionId: remoteId, messageId: 'assistant', partId: 'thought',
+      text: 'private thought', streaming: true, complete: false,
+    }])
     const getMessages = vi.spyOn(adapter, 'getSessionMessages')
     const response = await app.request(`/api/chat/sessions/${session.id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -172,7 +207,8 @@ describe('chat session routes', () => {
 
     expect(response.headers.get('content-type')).toContain('text/event-stream')
     expect(response.headers.get('cache-control')).toBe('private, no-store')
-    expect(events[0]).toMatchObject({ type: 'delta' })
+    expect(events[0]).toEqual({ type: 'reasoning', text: 'private thought', streaming: true, modelId: 'provider/model', variant: 'balanced' })
+    expect(events[1]).toMatchObject({ type: 'delta' })
     expect(events.at(-1)).toMatchObject({ type: 'done', session: { id: session.id } })
     expect(events.some(event => event.type === 'error')).toBe(false)
     expect(getMessages).toHaveBeenCalledTimes(2)

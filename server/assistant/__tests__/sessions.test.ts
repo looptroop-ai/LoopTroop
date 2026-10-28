@@ -193,6 +193,10 @@ describe('assistant session persistence', () => {
     const session = await sessions.createAssistantSession(firstScope)
 
     await expect(sessions.getAssistantSession(session.id, otherScope)).rejects.toMatchObject({ status: 404 })
+    let scopeError: unknown
+    try { sessions.renameAssistantSession(session.id, otherScope, 'Wrong ticket') }
+    catch (error) { scopeError = error }
+    expect(scopeError).toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(session.id, {})).rejects.toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(`${session.id}-invalid`, firstScope)).rejects.toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(randomUUID(), firstScope)).rejects.toMatchObject({ status: 404 })
@@ -280,13 +284,28 @@ describe('assistant session persistence', () => {
     configureProfile({ saveChatSessions: false })
     const session = await sessions.createAssistantSession({})
     const remoteId = remoteSessionId(session.id)
+    sessions.renameAssistantSession(session.id, {}, 'A private renamed title')
 
     await sessions.promptAssistant(session.id, {}, 'Private temporary title', new AbortController().signal, () => undefined)
 
-    expect(await sessions.listAssistantSessions({})).toMatchObject([{ id: session.id, title: 'Private temporary title' }])
+    expect(await sessions.listAssistantSessions({})).toMatchObject([{ id: session.id, title: 'A private renamed title' }])
     expect(storedRecord(session.id)).toMatchObject({ saved: false, title: 'New chat' })
+    expect(JSON.stringify(storedRecord(session.id))).not.toContain('A private renamed title')
     expect(JSON.stringify(storedRecord(session.id))).not.toContain('Private temporary title')
     expect(adapter.messages.get(remoteId)?.some(message => message.content === 'Private temporary title')).toBe(true)
+  })
+
+  it('renames archived saved history without unarchiving it or changing the remote session', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({})
+    const remoteId = remoteSessionId(session.id)
+    await sessions.closeAssistantSession(session.id, {})
+
+    expect(sessions.renameAssistantSession(session.id, {}, ' Review\nBearer verysecret ')).toMatchObject({
+      id: session.id, title: 'Review Bearer [redacted]', archived: true,
+    })
+    expect(storedRecord(session.id)).toMatchObject({ title: 'Review Bearer [redacted]', archived: true })
+    expect(adapter.sessions.some(entry => entry.id === remoteId)).toBe(true)
   })
 
   it('expires a stale temporary session when it is opened directly', async () => {
@@ -296,6 +315,10 @@ describe('assistant session persistence', () => {
     db.update(appMeta).set({ value: JSON.stringify({ ...record, owner: 'previous-runtime' }) })
       .where(eq(appMeta.key, `assistant.session.${session.id}`)).run()
 
+    let expiredError: unknown
+    try { sessions.renameAssistantSession(session.id, {}, 'Expired title') }
+    catch (error) { expiredError = error }
+    expect(expiredError).toMatchObject({ status: 404 })
     await expect(sessions.getAssistantSession(session.id, {})).rejects.toMatchObject({ status: 404 })
     expect(storedRecord(session.id)).toBeUndefined()
     expect(adapter.sessions.some(entry => entry.id === remoteSessionId(session.id))).toBe(false)
@@ -382,11 +405,17 @@ describe('assistant session persistence', () => {
       },
       {
         id: 'assistant-message', role: 'assistant', timestamp: '2026-01-01T00:00:00.000Z',
+        info: { id: 'assistant-message', sessionID: 'session', providerID: 'openai', modelID: 'gpt-6', variant: 'balanced' },
         parts: [
           { id: 'answer-1', sessionID: 'session', messageID: 'assistant-message', type: 'text', text: 'answer' },
           { id: 'answer-2', sessionID: 'session', messageID: 'assistant-message', type: 'text', text: 'details' },
-          { id: 'reasoning-2', sessionID: 'session', messageID: 'assistant-message', type: 'reasoning', text: 'hidden thoughts' },
+          { id: 'reasoning-2', sessionID: 'session', messageID: 'assistant-message', type: 'reasoning', text: 'password: opaque-secret' },
         ],
+      },
+      {
+        id: 'reasoning-only', role: 'assistant',
+        info: { id: 'reasoning-only', sessionID: 'session', modelID: 'reasoning-model', variant: 'fast' },
+        parts: [{ id: 'reasoning-only-part', sessionID: 'session', messageID: 'reasoning-only', type: 'reasoning', text: 'Reasoning without an answer' }],
       },
       { id: 'system-message', role: 'system', content: 'not visible' },
       { id: 'empty-message', role: 'assistant', parts: [{ id: 'empty', sessionID: 'session', messageID: 'empty-message', type: 'text', text: '  ' }] },
@@ -395,7 +424,14 @@ describe('assistant session persistence', () => {
 
     expect(sessions.assistantMessages(messages)).toEqual([
       { id: 'user-message', role: 'user', content: 'question', createdAt: new Date(1_000).toISOString() },
-      { id: 'assistant-message', role: 'assistant', content: 'answer\ndetails', createdAt: '2026-01-01T00:00:00.000Z' },
+      {
+        id: 'assistant-message', role: 'assistant', content: 'answer\ndetails', reasoning: 'password: [redacted]',
+        modelId: 'openai/gpt-6', variant: 'balanced', createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'reasoning-only', role: 'assistant', content: '', reasoning: 'Reasoning without an answer',
+        modelId: 'reasoning-model', variant: 'fast', createdAt: '',
+      },
       { id: 'raw-message', role: 'assistant', content: '[config](https://example.test/docs?page=2#assistant) Authorization: Bearer [redacted]', createdAt: '' },
     ])
   })
@@ -421,21 +457,38 @@ describe('assistant prompts', () => {
   })
 
   it('returns the streamed answer when OpenCode loses the conversation after finishing', async () => {
-    configureProfile()
+    configureProfile({ chatModelVariant: 'balanced' })
     const session = await sessions.createAssistantSession({})
     adapter.promptSession = async (remoteId, _parts, _signal, options) => {
+      options?.onEvent?.({
+        type: 'reasoning', sessionId: remoteId, messageId: 'answer', partId: 'thought',
+        text: 'password: ', delta: 'password: ', streaming: true, complete: false,
+      })
+      options?.onEvent?.({
+        type: 'reasoning', sessionId: remoteId, messageId: 'answer', partId: 'thought',
+        text: 'password: opaque-secret', delta: 'opaque-secret', streaming: true, complete: false,
+      })
       options?.onEvent?.({ type: 'text', sessionId: remoteId, messageId: 'answer', partId: 'body', text: 'Completed answer', delta: 'Completed answer', streaming: false, complete: true })
       adapter.sessions = adapter.sessions.filter(item => item.id !== remoteId)
       return 'Completed answer'
     }
     const deltas: string[] = []
+    const reasoningUpdates: Array<[string, string | undefined, string | undefined]> = []
 
-    const result = await sessions.promptAssistant(session.id, {}, 'Question', new AbortController().signal, delta => deltas.push(delta))
+    const result = await sessions.promptAssistant(
+      session.id, {}, 'Question', new AbortController().signal, delta => deltas.push(delta),
+      (text, modelId, variant) => reasoningUpdates.push([text, modelId, variant]),
+    )
 
     expect(deltas).toEqual(['Completed answer'])
+    expect(reasoningUpdates).toEqual([['password: ', 'provider/model', 'balanced'], ['password: [redacted]', 'provider/model', 'balanced']])
+    expect(JSON.stringify(reasoningUpdates)).not.toContain('opaque-secret')
     expect(result).toMatchObject({ canResume: false, messages: [
       { role: 'user', content: 'Question' },
-      { role: 'assistant', content: 'Completed answer' },
+      {
+        role: 'assistant', content: 'Completed answer', reasoning: 'password: [redacted]',
+        modelId: 'provider/model', variant: 'balanced',
+      },
     ] })
     expect(storedRecord(session.id)).toBeUndefined()
   })
@@ -560,6 +613,31 @@ describe('assistant prompts', () => {
       .rejects.toMatchObject({ status: 409 })
     await expect(sessions.closeAssistantSession(session.id, {})).resolves.toBeUndefined()
     expect(await first).toMatchObject({ name: 'AbortError' })
+  })
+
+  it('does not cancel an active answer when its temporary conversation is renamed', async () => {
+    configureProfile({ saveChatSessions: false })
+    const session = await sessions.createAssistantSession({})
+    const started = deferred<void>()
+    const answer = deferred<string>()
+    let promptSignal: AbortSignal | undefined
+    adapter.promptSession = async (_id, _parts, signal) => {
+      promptSignal = signal
+      started.resolve()
+      return await new Promise<string>((resolve, reject) => {
+        if (signal?.aborted) reject(signal.reason)
+        else signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        answer.promise.then(resolve, reject)
+      })
+    }
+    const pending = sessions.promptAssistant(session.id, {}, 'Question', new AbortController().signal, () => undefined)
+    await started.promise
+
+    sessions.renameAssistantSession(session.id, {}, 'Active conversation title')
+    expect(promptSignal?.aborted).toBe(false)
+    answer.resolve('Answer')
+
+    await expect(pending).resolves.toMatchObject({ id: session.id, title: 'Active conversation title' })
   })
 
   it('does not resurrect a temporary session or its directory when close aborts an active prompt', async () => {

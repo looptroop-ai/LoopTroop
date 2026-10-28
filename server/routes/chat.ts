@@ -3,10 +3,11 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import type { AssistantScope, AssistantStreamEvent } from '@shared/assistant'
 import { sanitizeDiagnosticText } from '@shared/errorDiagnostics'
-import { AssistantError, assertAssistantSessionScope, closeAssistantSession, createAssistantSession, getAssistantSession, listAssistantSessions, promptAssistant } from '../assistant/sessions'
+import { AssistantError, assertAssistantSessionScope, closeAssistantSession, createAssistantSession, getAssistantSession, listAssistantSessions, promptAssistant, renameAssistantSession } from '../assistant/sessions'
 
 const scopeSchema = z.object({ ticketId: z.string().min(1).max(200).optional() }).strict()
 const messageSchema = scopeSchema.extend({ message: z.string().trim().min(1).max(20_000) })
+const renameSchema = scopeSchema.extend({ title: z.string().trim().min(1).max(100) })
 export const chatRouter = new Hono()
 
 chatRouter.use('*', async (c, next) => {
@@ -44,6 +45,13 @@ chatRouter.get('/chat/sessions/:id', async c => {
   return c.json(await getAssistantSession(c.req.param('id'), parseScope(c.req.query()), c.req.raw.signal))
 })
 
+chatRouter.patch('/chat/sessions/:id/title', async c => {
+  const result = renameSchema.safeParse(await body(c))
+  if (!result.success) throw new AssistantError('Enter a conversation title of at most 100 characters and a valid chat scope.')
+  const { title, ...scope } = result.data
+  return c.json(renameAssistantSession(c.req.param('id'), scope, title))
+})
+
 chatRouter.post('/chat/sessions/:id/close', async c => {
   await closeAssistantSession(c.req.param('id'), parseScope(await body(c)))
   return c.json({ ok: true })
@@ -69,7 +77,11 @@ chatRouter.post('/chat/sessions/:id/messages', async c => {
         .catch(error => { controller.abort(error) })
     }, 10_000)
     try {
-      const session = await promptAssistant(c.req.param('id'), scope, message, signal, text => send({ type: 'delta', text }))
+      const session = await promptAssistant(
+        c.req.param('id'), scope, message, signal,
+        text => send({ type: 'delta', text }),
+        (text, modelId, variant) => send({ type: 'reasoning', text, streaming: true, modelId, variant }),
+      )
       send({ type: 'done', session })
     } catch (error) {
       if (!signal.aborted) send({ type: 'error', error: sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)) })

@@ -160,9 +160,28 @@ export function assistantMessages(messages: Message[]): AssistantMessage[] {
     if (role !== 'user' && role !== 'assistant') return []
     const content = message.parts?.filter(part => part.type === 'text' && !('synthetic' in part && part.synthetic) && !('ignored' in part && part.ignored))
       .map(part => 'text' in part && typeof part.text === 'string' ? part.text : '').join('\n') ?? message.content ?? ''
-    if (!content.trim()) return []
+    const reasoning = role === 'assistant'
+      ? message.parts?.filter(part => part.type === 'reasoning')
+        .map(part => 'text' in part && typeof part.text === 'string' ? part.text : '').join('\n') ?? ''
+      : ''
+    if (!content.trim() && !reasoning.trim()) return []
     const time = message.info?.time?.created
-    return [{ id: message.id, role, content: sanitizeEvidenceText(content), createdAt: message.timestamp ?? message.info?.timestamp ?? (time === undefined ? '' : new Date(time).toISOString()) }]
+    const providerID = role === 'assistant' && typeof message.info?.providerID === 'string' ? message.info.providerID : undefined
+    const modelID = role === 'assistant' && typeof message.info?.modelID === 'string' ? message.info.modelID : undefined
+    const rawModelId = providerID && modelID ? `${providerID}/${modelID}` : modelID
+    const modelId = rawModelId ? sanitizeEvidenceText(rawModelId) : undefined
+    const variant = role === 'assistant' && typeof message.info?.variant === 'string' && message.info.variant.trim()
+      ? sanitizeEvidenceText(message.info.variant)
+      : undefined
+    return [{
+      id: message.id,
+      role,
+      content: sanitizeEvidenceText(content),
+      ...(reasoning.trim() ? { reasoning: sanitizeEvidenceText(reasoning) } : {}),
+      ...(modelId ? { modelId } : {}),
+      ...(variant ? { variant } : {}),
+      createdAt: message.timestamp ?? message.info?.timestamp ?? (time === undefined ? '' : new Date(time).toISOString()),
+    }]
   })
 }
 
@@ -339,6 +358,20 @@ export function assertAssistantSessionScope(id: string, scope: AssistantScope): 
   if (!record.saved && record.owner !== runtimeId) throw new AssistantError('This temporary conversation has expired.', 404)
 }
 
+export function renameAssistantSession(id: string, scope: AssistantScope, title: string): AssistantSessionSummary {
+  const record = find(id, scope)
+  if (!record.saved && record.owner !== runtimeId) throw new AssistantError('This temporary conversation has expired.', 404)
+  const cleanTitle = sanitizeDiagnosticText(title).replace(/\s+/g, ' ').trim().slice(0, 100)
+  if (!cleanTitle) throw new AssistantError('Enter a conversation title of at most 100 characters.')
+  const updated = { ...record, updatedAt: new Date().toISOString() }
+  if (record.saved) save({ ...updated, title: cleanTitle })
+  else {
+    temporaryTitles.set(id, cleanTitle)
+    save(updated)
+  }
+  return summary(record.saved ? { ...updated, title: cleanTitle } : updated)
+}
+
 export async function closeAssistantSession(id: string, scope: AssistantScope): Promise<void> {
   find(id, scope)
   if (closing.has(id)) throw new AssistantError('This conversation is already closing.', 409)
@@ -369,6 +402,7 @@ export async function promptAssistant(
   message: string,
   signal: AbortSignal,
   onText: (text: string) => void,
+  onReasoning: (text: string, modelId?: string, variant?: string) => void = () => undefined,
 ): Promise<AssistantSession> {
   const record = find(id, scope)
   const profile = configuration()
@@ -421,9 +455,22 @@ export async function promptAssistant(
     requestSignal.throwIfAborted()
     find(id, scope)
     const partText = new Map<string, string>()
+    const partReasoning = new Map<string, string>()
     let lastPartKey: string | undefined
     const onEvent = (event: StreamEvent) => {
-      if (event.type !== 'text' || answerSignal?.aborted) return
+      if (answerSignal?.aborted) return
+      if (event.type === 'reasoning') {
+        const key = `${event.messageId ?? ''}:${event.partId ?? ''}`
+        const before = partReasoning.get(key) ?? ''
+        partReasoning.set(key, event.delta !== undefined ? before + event.delta : event.text)
+        onReasoning(
+          sanitizeEvidenceText([...partReasoning.values()].join('\n')),
+          profile.chatModel ? sanitizeEvidenceText(profile.chatModel) : undefined,
+          profile.chatModelVariant?.trim() ? sanitizeEvidenceText(profile.chatModelVariant) : undefined,
+        )
+        return
+      }
+      if (event.type !== 'text') return
       const key = `${event.messageId ?? ''}:${event.partId ?? ''}`
       const before = partText.get(key) ?? ''
       const after = event.delta !== undefined ? before + event.delta : event.text
@@ -460,13 +507,22 @@ export async function promptAssistant(
     const session = await detail(find(id, scope), requestSignal)
     if (session.canResume) return session
     const answer = [...partText.values()].join('\n')
+    const reasoning = [...partReasoning.values()].filter(value => value.trim()).join('\n')
     const createdAt = new Date().toISOString()
     return {
       ...session,
       messages: [
         ...previousMessages,
         { id: randomUUID(), role: 'user', content: sanitizeEvidenceText(message), createdAt },
-        ...(answer ? [{ id: randomUUID(), role: 'assistant' as const, content: sanitizeEvidenceText(answer), createdAt }] : []),
+        ...(answer || reasoning ? [{
+          id: randomUUID(),
+          role: 'assistant' as const,
+          content: sanitizeEvidenceText(answer),
+          ...(reasoning ? { reasoning: sanitizeEvidenceText(reasoning) } : {}),
+          ...(profile.chatModel ? { modelId: sanitizeEvidenceText(profile.chatModel) } : {}),
+          ...(profile.chatModelVariant?.trim() ? { variant: sanitizeEvidenceText(profile.chatModelVariant) } : {}),
+          createdAt,
+        }] : []),
       ],
     }
   } finally {

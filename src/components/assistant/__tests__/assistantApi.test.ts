@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { createAssistantSession, fetchAssistantHistory, fetchAssistantSessions, readAssistantEvents, sendAssistantMessage } from '../assistantApi'
+import { createAssistantSession, fetchAssistantHistory, fetchAssistantSessions, readAssistantEvents, renameAssistantSession, sendAssistantMessage } from '../assistantApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -42,20 +42,38 @@ it('sends only the selected ticket as assistant session context', async () => {
   expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ ticketId: 'project/T-4', message: 'Question' })
 })
 
+it('renames sessions using their original scope', async () => {
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await renameAssistantSession('session-id', 'Dashboard title', {}, new AbortController().signal)
+  await renameAssistantSession('ticket-session', 'Ticket title', { ticketId: 'project/T-4' }, new AbortController().signal)
+
+  expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method, JSON.parse(String(init?.body))])).toEqual([
+    ['/api/chat/sessions/session-id/title', 'PATCH', { title: 'Dashboard title' }],
+    ['/api/chat/sessions/ticket-session/title', 'PATCH', { ticketId: 'project/T-4', title: 'Ticket title' }],
+  ])
+})
+
 it('parses SSE events split across arbitrary network chunks', async () => {
   const controller = new AbortController()
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     start(reader) {
       reader.enqueue(encoder.encode('data: {"type":"del'))
-      reader.enqueue(encoder.encode('ta","text":"Hi"}\r\n\r\ndata: {"type":"error","error":"stop"}\n\n'))
+      reader.enqueue(encoder.encode('ta","text":"Hi"}\r\n\r\ndata: {"type":"reasoning","text":"","streaming":true,"modelId":"model"}\n\n'))
+      reader.enqueue(encoder.encode('data: {"type":"error","error":"stop"}\n\n'))
       reader.close()
     },
   })
 
   const events = []
   for await (const event of readAssistantEvents(new Response(stream), controller.signal)) events.push(event)
-  expect(events).toEqual([{ type: 'delta', text: 'Hi' }, { type: 'error', error: 'stop' }])
+  expect(events).toEqual([
+    { type: 'delta', text: 'Hi' },
+    { type: 'reasoning', text: '', streaming: true, modelId: 'model' },
+    { type: 'error', error: 'stop' },
+  ])
 })
 
 it('joins multiple SSE data lines into one event payload', async () => {

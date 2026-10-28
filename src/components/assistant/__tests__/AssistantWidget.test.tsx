@@ -1,16 +1,20 @@
 import { useEffect, useState } from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { AssistantSession, AssistantSessionSummary } from '@shared/assistant'
 import { UIContext, type UIState } from '@/context/uiContextDef'
 import { AssistantWidget } from '../AssistantWidget'
 
 const mockProfile = vi.hoisted(() => ({ data: { chatModel: 'provider/model' as string | null }, isLoading: false }))
+const mockProjects = vi.hoisted(() => ({ data: [{ id: 17, color: '#336699' }] }))
 vi.mock('@/hooks/useProfile', () => ({
   useProfile: () => mockProfile,
 }))
 vi.mock('@/hooks/useTickets', () => ({
-  useTickets: () => ({ data: [{ id: 'project/17:LT-6', externalId: 'LT-6' }] }),
+  useTickets: () => ({ data: [{ id: 'project/17:LT-6', externalId: 'LT-6', projectId: 17 }] }),
+}))
+vi.mock('@/hooks/useProjects', () => ({
+  useProjects: () => ({ data: mockProjects.data }),
 }))
 
 const createdAt = '2026-10-01T12:00:00.000Z'
@@ -75,6 +79,7 @@ afterEach(() => {
   mockProfile.isLoading = false
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  Reflect.deleteProperty(navigator, 'clipboard')
 })
 
 it('keeps the launcher in the same fixed position on the dashboard and in a ticket', () => {
@@ -103,11 +108,12 @@ it('disables the composer while the assistant model is missing or loading', asyn
   expect(composer).toBeDisabled()
 })
 
-it('uses dashboard context across all tickets and ticket context for one selected ticket', async () => {
+it('loads global conversations once and shows the selected app scope without changing it', async () => {
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])))
   vi.stubGlobal('fetch', fetchMock)
   const view = render(widget())
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?scope=dashboard', expect.any(Object)))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions', expect.any(Object)))
+  expect(screen.getByText('All tickets')).toBeInTheDocument()
 
   const ticketUi = {
     ...baseUiState,
@@ -116,11 +122,8 @@ it('uses dashboard context across all tickets and ticket context for one selecte
     selectedTicketExternalId: 'LT-6',
   }
   view.rerender(widget(ticketUi))
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?ticketId=project%2F17%3ALT-6', expect.any(Object)))
-  expect(fetchMock.mock.calls.map(call => String(call[0])).filter(url => url.includes('ticketId=') || url.includes('scope=dashboard'))).toEqual([
-    '/api/chat/sessions?scope=dashboard',
-    '/api/chat/sessions?ticketId=project%2F17%3ALT-6',
-  ])
+  expect(screen.getByText('Ticket LT-6')).toBeInTheDocument()
+  expect(fetchMock.mock.calls.map(call => String(call[0])).filter(url => new URL(url, 'http://localhost').pathname === '/api/chat/sessions')).toEqual(['/api/chat/sessions'])
 })
 
 it('starts the first chat on send and keeps New chat for opening another', async () => {
@@ -198,7 +201,7 @@ it('sends an initial message using the scope where creation began', async () => 
       })
       return Promise.resolve(new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } }))
     }
-    if (url.pathname === '/api/chat/sessions' && url.searchParams.get('scope') === 'dashboard') {
+    if (url.pathname === '/api/chat/sessions') {
       return Promise.resolve(jsonResponse(created ? [finished] : []))
     }
     return Promise.resolve(jsonResponse([]))
@@ -213,7 +216,7 @@ it('sends an initial message using the scope where creation began', async () => 
   await waitFor(() => expect(createRequest.resolve).toBeTypeOf('function'))
 
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?ticketId=project%2F17%3ALT-6', expect.any(Object)))
+  expect(screen.getByText('Ticket LT-6')).toBeInTheDocument()
   const finishCreation = createRequest.resolve
   if (!finishCreation) throw new Error('Expected the pending assistant session creation')
   created = true
@@ -228,7 +231,7 @@ it('sends an initial message using the scope where creation began', async () => 
   expect(await screen.findByText('Dashboard answer')).toBeInTheDocument()
 })
 
-it('navigates to the ticket named by global history before loading its chat', async () => {
+it('opens a ticket conversation from global history without changing the current screen', async () => {
   const ticketChat = summary({ id: 'ticket-session', ticketId: 'project/17:LT-6', title: 'Ticket questions', archived: true })
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost')
@@ -238,23 +241,17 @@ it('navigates to the ticket named by global history before loading its chat', as
   })
   vi.stubGlobal('fetch', fetchMock)
   const dispatch = vi.fn()
-  const view = render(widget(baseUiState, true, vi.fn(), dispatch))
+  render(widget(baseUiState, true, vi.fn(), dispatch))
 
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation history' }))
   fireEvent.click(await screen.findByRole('button', { name: /Open Ticket questions — Ticket LT-6/ }))
-  expect(dispatch).toHaveBeenCalledWith({ type: 'SELECT_TICKET', ticketId: 'project/17:LT-6', externalId: 'LT-6' })
-
-  view.rerender(widget({
-    ...baseUiState,
-    activeView: 'ticket',
-    selectedTicketId: 'project/17:LT-6',
-    selectedTicketExternalId: 'LT-6',
-  }, true, vi.fn(), dispatch))
+  expect(dispatch).not.toHaveBeenCalled()
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions/ticket-session?ticketId=project%2F17%3ALT-6', expect.any(Object)))
   expect(await screen.findByRole('button', { name: 'Ticket questions', pressed: true })).toBeInTheDocument()
+  expect(screen.getByText('Ticket LT-6')).toBeInTheDocument()
 })
 
-it('returns to the dashboard before opening a global conversation from ticket view', async () => {
+it('opens a dashboard conversation from ticket view without leaving the selected ticket', async () => {
   const helpChat = summary({ id: 'dashboard-session', title: 'How do I configure this?', archived: true })
   const ticketState = { ...baseUiState, activeView: 'ticket' as const, selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -265,20 +262,19 @@ it('returns to the dashboard before opening a global conversation from ticket vi
   })
   vi.stubGlobal('fetch', fetchMock)
   const dispatch = vi.fn()
-  const view = render(widget(ticketState, true, vi.fn(), dispatch))
+  render(widget(ticketState, true, vi.fn(), dispatch))
 
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation history' }))
   expect(await screen.findByRole('textbox', { name: 'Search conversation history' })).toHaveFocus()
   fireEvent.click(await screen.findByRole('button', { name: /Open How do I configure this\? — Dashboard · All tickets/ }))
-  expect(dispatch).toHaveBeenCalledWith({ type: 'CLOSE_TICKET' })
-  expect(fetchMock).not.toHaveBeenCalledWith('/api/chat/sessions/dashboard-session', expect.any(Object))
-
-  view.rerender(widget(baseUiState, true, vi.fn(), dispatch))
+  expect(dispatch).not.toHaveBeenCalled()
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions/dashboard-session', expect.any(Object)))
   expect(await screen.findByRole('button', { name: 'How do I configure this?', pressed: true })).toBeInTheDocument()
+  expect(screen.getByText('All tickets')).toBeInTheDocument()
+  expect(dispatch).not.toHaveBeenCalled()
 })
 
-it('keeps ticket-view focus when the selected ticket changes', async () => {
+it('switches ticket conversation tabs without changing the current screen or focus', async () => {
   const ticket6 = summary({ id: 'ticket-6-chat', ticketId: 'project/17:LT-6', title: 'LT-6 chat' })
   const ticket7 = summary({ id: 'ticket-7-chat', ticketId: 'project/17:LT-7', title: 'LT-7 chat' })
   const ticketState = (id: string, externalId: string) => ({
@@ -291,34 +287,35 @@ it('keeps ticket-view focus when the selected ticket changes', async () => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === `/api/chat/sessions/${ticket6.id}`) return jsonResponse(detail(ticket6))
     if (url.pathname === `/api/chat/sessions/${ticket7.id}`) return jsonResponse(detail(ticket7))
-    if (url.pathname === '/api/chat/sessions' && url.searchParams.has('ticketId')) {
-      return jsonResponse(url.searchParams.get('ticketId') === ticket7.ticketId ? [ticket7] : [ticket6])
-    }
+    if (url.pathname === '/api/chat/sessions') return jsonResponse([ticket6, ticket7])
     return jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
+  const dispatch = vi.fn()
   const answerInput = <input aria-label="Ticket answer" />
-  const view = render(<>{answerInput}{widget(ticketState('project/17:LT-6', 'LT-6'))}</>)
+  render(<>{answerInput}{widget(ticketState('project/17:LT-6', 'LT-6'), true, vi.fn(), dispatch)}</>)
 
   expect(await screen.findByRole('button', { name: 'LT-6 chat', pressed: true })).toBeInTheDocument()
   const focusedInput = screen.getByRole('textbox', { name: 'Ticket answer' })
   focusedInput.focus()
 
-  view.rerender(<>{answerInput}{widget(ticketState('project/17:LT-7', 'LT-7'))}</>)
+  fireEvent.click(screen.getByRole('button', { name: 'LT-7 chat', pressed: false }))
   expect(await screen.findByRole('button', { name: 'LT-7 chat', pressed: true })).toBeInTheDocument()
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
     `/api/chat/sessions/${ticket7.id}?ticketId=project%2F17%3ALT-7`,
     expect.any(Object),
   ))
   expect(focusedInput).toHaveFocus()
+  expect(screen.getByRole('textbox', { name: 'Ticket answer' })).toBeInTheDocument()
+  expect(dispatch).not.toHaveBeenCalled()
 })
 
-it('restores same-runtime temporary tabs when switching away from and back to their scope', async () => {
+it('keeps same-runtime temporary tabs open when app scope changes', async () => {
   const temporary = summary({ id: 'temporary-session', title: 'Unsaved notes' })
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === `/api/chat/sessions/${temporary.id}`) return jsonResponse(detail({ ...temporary, saved: false }))
-    if (url.searchParams.get('scope') === 'dashboard') return jsonResponse([temporary])
+    if (url.pathname === '/api/chat/sessions') return jsonResponse([temporary])
     return jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -326,9 +323,10 @@ it('restores same-runtime temporary tabs when switching away from and back to th
 
   expect(await screen.findByRole('button', { name: 'Unsaved notes', pressed: true })).toBeInTheDocument()
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?ticketId=project%2F17%3ALT-6', expect.any(Object)))
+  expect(screen.getByRole('button', { name: 'Unsaved notes', pressed: true })).toBeInTheDocument()
   view.rerender(widget())
   expect(await screen.findByRole('button', { name: 'Unsaved notes', pressed: true })).toBeInTheDocument()
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(1)
   expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/close$/), expect.anything())
 })
 
@@ -343,7 +341,7 @@ it('evicts an open chat when a refreshed session list no longer contains it', as
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(chat)
-    return url.searchParams.get('ticketId') === 'project/17:LT-6' ? jsonResponse(listedSessions) : jsonResponse([])
+    return url.pathname === '/api/chat/sessions' ? jsonResponse(listedSessions) : jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
   const ticketUi = { ...baseUiState, activeView: 'ticket' as const, selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }
@@ -372,7 +370,7 @@ it('retries loading a conversation when its active tab is selected again', async
         ? jsonResponse({ error: 'Temporary failure' }, 503)
         : jsonResponse(detail({ ...chat, messages: [{ id: 'reloaded', role: 'assistant', content: 'Loaded on retry.', createdAt }] }))
     }
-    return url.searchParams.get('scope') === 'dashboard' ? jsonResponse([chat]) : jsonResponse([])
+    return url.pathname === '/api/chat/sessions' ? jsonResponse([chat]) : jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
   render(widget())
@@ -399,7 +397,7 @@ it('treats a close 404 as already closed and ignores an in-flight detail respons
       closed = true
       return jsonResponse({ error: 'Conversation not found' }, 404)
     }
-    return url.searchParams.get('scope') === 'dashboard' ? jsonResponse(closed ? [] : [chat]) : jsonResponse([])
+    return url.pathname === '/api/chat/sessions' ? jsonResponse(closed ? [] : [chat]) : jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
   render(widget())
@@ -443,7 +441,7 @@ it('keeps the jump control visible when a reply finishes after the user scrolls 
         },
       }), { headers: { 'Content-Type': 'text/event-stream' } })
     }
-    return created && url.searchParams.get('scope') === 'dashboard' ? jsonResponse([chat]) : jsonResponse([])
+    return url.pathname === '/api/chat/sessions' ? jsonResponse(created ? [chat] : []) : jsonResponse([])
   })
   vi.stubGlobal('fetch', fetchMock)
   render(widget())
@@ -595,7 +593,7 @@ it('restores a failed send to its conversation after switching tabs', async () =
   expect(composer).toHaveValue('Draft for the second chat.')
 })
 
-it('restores failed drafts to their original scope without replacing the current scope draft', async () => {
+it('keeps a newer draft in the active conversation when its reply fails across app scopes', async () => {
   const stream: { fail: (() => void) | null } = { fail: null }
   let created = false
   const dashboardChat = detail({ id: 'dashboard-scope-session', title: 'Dashboard chat' })
@@ -617,8 +615,7 @@ it('restores failed drafts to their original scope without replacing the current
         },
       }), { headers: { 'Content-Type': 'text/event-stream' } })
     }
-    if (url.pathname === '/api/chat/sessions' && url.searchParams.get('scope') === 'dashboard') return jsonResponse(created ? [dashboardChat] : [])
-    if (url.pathname === '/api/chat/sessions' && url.searchParams.has('ticketId')) return jsonResponse([])
+    if (url.pathname === '/api/chat/sessions') return jsonResponse(created ? [dashboardChat] : [])
     if (url.pathname === `/api/chat/sessions/${dashboardChat.id}`) return jsonResponse(dashboardChat)
     return jsonResponse([])
   })
@@ -633,7 +630,7 @@ it('restores failed drafts to their original scope without replacing the current
   expect(await screen.findByText('working')).toBeInTheDocument()
 
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?ticketId=project%2F17%3ALT-6', expect.any(Object)))
+  expect(screen.getByText('All tickets')).toBeInTheDocument()
   await waitFor(() => expect(composer).toBeEnabled())
   const ticketDraft = 'Keep the ticket draft.'
   fireEvent.change(composer, { target: { value: ticketDraft } })
@@ -645,10 +642,7 @@ it('restores failed drafts to their original scope without replacing the current
   })
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/chat/sessions/${dashboardChat.id}`, expect.any(Object)))
 
-  view.rerender(widget())
-  await waitFor(() => expect(composer).toHaveValue(dashboardMessage))
-  view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
-  expect(composer).toHaveValue(ticketDraft)
+  await waitFor(() => expect(composer).toHaveValue(ticketDraft))
 })
 
 it('refreshes the saved transcript after an accepted stream fails and keeps the draft', async () => {
@@ -762,7 +756,7 @@ it('restores the composer draft when the send request fails before the assistant
   await waitFor(() => expect(composer).toHaveValue(message))
 })
 
-it('reopens archived conversations from searchable history and lets the server decide close behavior', async () => {
+it('keeps an archived conversation tab open across app scopes and lets the server close it', async () => {
   const open = summary({ id: 'session-open', title: 'Current chat' })
   const archived = summary({ id: 'session-archived', title: 'Old planning chat', archived: true })
   const closeRequests: Array<{ url: string; init?: RequestInit }> = []
@@ -776,7 +770,7 @@ it('reopens archived conversations from searchable history and lets the server d
       return new Response(null, { status: 204 })
     }
     if (url.pathname === '/api/chat/sessions') {
-      return url.searchParams.has('ticketId') ? jsonResponse([]) : jsonResponse([open, archived])
+      return jsonResponse([open, archived])
     }
     throw new Error(`Unexpected assistant request: ${url.pathname}`)
   })
@@ -790,10 +784,11 @@ it('reopens archived conversations from searchable history and lets the server d
   expect(await screen.findByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
 
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?ticketId=project%2F17%3ALT-6', expect.any(Object)))
-  expect(screen.queryByRole('button', { name: 'Old planning chat', pressed: true })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
+  expect(screen.getByText('All tickets')).toBeInTheDocument()
   view.rerender(widget())
   expect(await screen.findByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(2)
 
   view.rerender(widget(baseUiState, false))
   expect(document.querySelector('.assistant-markdown')).not.toBeInTheDocument()
@@ -812,7 +807,7 @@ it('reopens archived conversations from searchable history and lets the server d
   expect(await screen.findByRole('button', { name: /Open Old planning chat/ })).toBeInTheDocument()
 })
 
-it('finishes a reply in the background when the selected ticket changes the scope', async () => {
+it('keeps a reply running when app scope changes away from the active conversation', async () => {
   const sentSignals: AbortSignal[] = []
   const streams: { controllers: ReadableStreamDefaultController<Uint8Array>[] } = { controllers: [] }
   let sessionCreated = false
@@ -843,7 +838,7 @@ it('finishes a reply in the background when the selected ticket changes the scop
       return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
     }
     if (url.pathname === '/api/chat/sessions') {
-      return jsonResponse(sessionCreated && url.searchParams.get('scope') === 'dashboard' ? [newSession] : [])
+      return jsonResponse(sessionCreated ? [newSession] : [])
     }
     throw new Error(`Unexpected assistant request: ${url.pathname}`)
   })
@@ -857,10 +852,10 @@ it('finishes a reply in the background when the selected ticket changes the scop
   expect(await screen.findByText('streaming reply')).toBeInTheDocument()
 
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions?ticketId=project%2F17%3ALT-6', expect.any(Object)))
   expect(sentSignals).toHaveLength(1)
   expect(sentSignals.at(0)?.aborted).toBe(false)
-  expect(screen.queryByText('streaming reply')).not.toBeInTheDocument()
+  expect(screen.getByText('streaming reply')).toBeInTheDocument()
+  expect(screen.getByText('All tickets')).toBeInTheDocument()
 
   const encoder = new TextEncoder()
   const streamController = streams.controllers[0]
@@ -1122,12 +1117,14 @@ it('drags the assistant window, clamps it to the viewport, and restores its posi
     toJSON: () => ({}),
   } as DOMRect)
 
-  fireEvent.pointerDown(panel.querySelector('header')!, { button: 0, pointerId: 7, clientX: 110, clientY: 110 })
-  fireEvent.pointerMove(window, { pointerId: 7, clientX: 310, clientY: 310 })
+  act(() => fireEvent.pointerDown(panel.querySelector('header')!, { button: 0, pointerId: 7, clientX: 110, clientY: 110 }))
+  act(() => fireEvent.pointerMove(window, { pointerId: 7, clientX: 310, clientY: 310 }))
   expect(panel).toHaveStyle({ left: '300px', top: '300px' })
 
-  fireEvent.pointerMove(window, { pointerId: 7, clientX: -20, clientY: -20 })
-  fireEvent.pointerUp(window, { pointerId: 7 })
+  act(() => {
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: -20, clientY: -20 })
+    fireEvent.pointerUp(window, { pointerId: 7 })
+  })
   expect(panel).toHaveStyle({ left: '4px', top: '4px' })
   expect(JSON.parse(window.sessionStorage.getItem('looptroop.assistant.window-position')!)).toEqual({ left: 4, top: 4 })
   view.unmount()
@@ -1148,4 +1145,182 @@ it('drags the assistant window, clamps it to the viewport, and restores its posi
   const moveHandle = restoredPanel.querySelector('header')!
   fireEvent.keyDown(moveHandle, { key: 'ArrowRight' })
   expect(restoredPanel).toHaveStyle({ left: '20px', top: '4px' })
+})
+
+it('copies each message as plain text and reports clipboard failures', async () => {
+  const chat = detail({
+    id: 'copy-session',
+    title: 'Copy chat',
+    messages: [
+      { id: 'copy-question', role: 'user', content: 'Question with **literal markdown**', createdAt },
+      { id: 'copy-answer', role: 'assistant', content: '**Bold answer**', createdAt },
+    ],
+  })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    return url.pathname === `/api/chat/sessions/${chat.id}`
+      ? jsonResponse(chat)
+      : jsonResponse([summary({ id: chat.id, title: chat.title })])
+  })
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  const question = (await screen.findByText('Question with **literal markdown**')).closest('article')!
+  fireEvent.click(within(question).getByRole('button', { name: 'Copy your message' }))
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith('Question with **literal markdown**'))
+
+  const answer = (await screen.findByText('Bold answer')).closest('article')!
+  fireEvent.click(within(answer).getByRole('button', { name: 'Copy assistant message' }))
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith('**Bold answer**'))
+
+  writeText.mockRejectedValueOnce(new Error('Clipboard unavailable'))
+  fireEvent.click(within(answer).getByRole('button', { name: 'Copy assistant message' }))
+  expect(await within(answer).findByRole('alert')).toHaveTextContent('Copy failed')
+})
+
+it('validates, cancels, and retries conversation renames without losing the entered title', async () => {
+  const chat = summary({ id: 'rename-session', ticketId: 'project/17:LT-6', title: 'Ticket questions' })
+  const renamed = summary({ ...chat, title: 'Renamed ticket chat' })
+  const renameBodies: unknown[] = []
+  let renameAttempts = 0
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === `/api/chat/sessions/${chat.id}/title` && init?.method === 'PATCH') {
+      renameBodies.push(JSON.parse(String(init.body)))
+      return renameAttempts++ === 0
+        ? jsonResponse({ error: 'Rename unavailable' }, 503)
+        : jsonResponse(renamed)
+    }
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(detail(chat))
+    if (url.pathname === '/api/chat/sessions') return jsonResponse([chat])
+    return jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(widget())
+
+  const options = await screen.findByRole('button', { name: 'More options for Ticket questions conversation' })
+  fireEvent.pointerDown(options, { button: 0 })
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }))
+  const firstDialog = await screen.findByRole('dialog', { name: 'Rename conversation' })
+  expect(within(firstDialog).getByRole('textbox', { name: 'Conversation name' })).toHaveAttribute('maxLength', '100')
+  fireEvent.click(within(firstDialog).getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('dialog', { name: 'Rename conversation' })).not.toBeInTheDocument()
+  expect(fetchMock).not.toHaveBeenCalledWith(`/api/chat/sessions/${chat.id}/title`, expect.anything())
+
+  fireEvent.pointerDown(options, { button: 0 })
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }))
+  const renameDialog = await screen.findByRole('dialog', { name: 'Rename conversation' })
+  const input = within(renameDialog).getByRole('textbox', { name: 'Conversation name' })
+  fireEvent.change(input, { target: { value: '   ' } })
+  fireEvent.click(within(renameDialog).getByRole('button', { name: 'Save' }))
+  expect(within(renameDialog).getByRole('alert')).toHaveTextContent('Enter a conversation name.')
+  expect(renameBodies).toHaveLength(0)
+
+  fireEvent.change(input, { target: { value: 'Renamed ticket chat' } })
+  fireEvent.click(within(renameDialog).getByRole('button', { name: 'Save' }))
+  expect(await within(renameDialog).findByRole('alert')).toHaveTextContent('Could not rename this conversation.')
+  expect(input).toHaveValue('Renamed ticket chat')
+  expect(renameBodies[0]).toEqual({ ticketId: 'project/17:LT-6', title: 'Renamed ticket chat' })
+
+  fireEvent.click(within(renameDialog).getByRole('button', { name: 'Save' }))
+  expect(await screen.findByRole('button', { name: 'Renamed ticket chat', pressed: true })).toBeInTheDocument()
+  expect(screen.queryByRole('dialog', { name: 'Rename conversation' })).not.toBeInTheDocument()
+  expect(renameBodies).toEqual([
+    { ticketId: 'project/17:LT-6', title: 'Renamed ticket chat' },
+    { ticketId: 'project/17:LT-6', title: 'Renamed ticket chat' },
+  ])
+})
+
+it('copies the selected conversation with an in-progress user message and assistant reply', async () => {
+  const chat = detail({
+    id: 'copy-live-session',
+    title: 'Live copy chat',
+    messages: [
+      { id: 'saved-question', role: 'user', content: 'Earlier question', createdAt },
+      { id: 'saved-answer', role: 'assistant', content: 'Earlier answer', createdAt },
+    ],
+  })
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === `/api/chat/sessions/${chat.id}`) return jsonResponse(chat)
+    if (url.pathname.endsWith('/messages')) {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode([
+            `data: ${JSON.stringify({ type: 'reasoning', text: 'Live reasoning', streaming: true, modelId: 'provider/model', variant: 'high' })}\n\n`,
+            `data: ${JSON.stringify({ type: 'delta', text: 'Partial answer' })}\n\n`,
+          ].join('')))
+          init?.signal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
+        },
+      })
+      return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    return jsonResponse([summary({ id: chat.id, title: chat.title })])
+  }))
+  render(widget())
+
+  const composer = await screen.findByRole('textbox', { name: 'Message the assistant' })
+  await waitFor(() => expect(composer).toBeEnabled())
+  fireEvent.change(composer, { target: { value: 'Current question' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+  expect(await screen.findByText('Partial answer')).toBeInTheDocument()
+  const pendingThinking = screen.getByText('Thinking…', { selector: 'summary' })
+  fireEvent.click(pendingThinking)
+  expect(screen.getByText('Model: provider/model · Effort: high')).toBeVisible()
+  expect(screen.getByText('Live reasoning')).toBeVisible()
+
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'More options for Live copy chat conversation' }), { button: 0 })
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Copy conversation' }))
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(
+    'You:\nEarlier question\n\nAssistant:\nEarlier answer\n\nYou:\nCurrent question\n\nAssistant:\nPartial answer',
+  ))
+})
+
+it('shows completed reasoning with its model details and labels missing reasoning', async () => {
+  const chat = detail({
+    id: 'thinking-session',
+    title: 'Thinking chat',
+    messages: [
+      { id: 'thoughtful-answer', role: 'assistant', content: 'Answer with reasoning', reasoning: 'Completed reasoning text', modelId: 'provider/model', variant: 'balanced', createdAt },
+      { id: 'unavailable-answer', role: 'assistant', content: 'Answer without reasoning', createdAt },
+    ],
+  })
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    return url.pathname === `/api/chat/sessions/${chat.id}`
+      ? jsonResponse(chat)
+      : jsonResponse([summary({ id: chat.id, title: chat.title })])
+  }))
+  render(widget())
+
+  const answer = (await screen.findByText('Answer with reasoning')).closest('article')!
+  fireEvent.click(within(answer).getByText('Thinking', { selector: 'summary' }))
+  expect(within(answer).getByText('Model: provider/model · Effort: balanced')).toBeVisible()
+  expect(within(answer).getByText('Completed reasoning text')).toBeVisible()
+  const unavailable = screen.getByText('Answer without reasoning').closest('article')!
+  expect(within(unavailable).getByText('Thinking unavailable.')).toBeVisible()
+})
+
+it('tints ticket conversation tabs with their project color and leaves dashboard tabs untinted', async () => {
+  const ticketChat = summary({ id: 'colored-ticket-chat', ticketId: 'project/17:LT-6', title: 'Ticket chat' })
+  const dashboardChat = summary({ id: 'dashboard-chat', title: 'Dashboard chat' })
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === `/api/chat/sessions/${ticketChat.id}`) return jsonResponse(detail(ticketChat))
+    if (url.pathname === `/api/chat/sessions/${dashboardChat.id}`) return jsonResponse(detail(dashboardChat))
+    if (url.pathname === '/api/chat/sessions') return jsonResponse([ticketChat, dashboardChat])
+    return jsonResponse([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const ticketState = { ...baseUiState, activeView: 'ticket' as const, selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }
+  render(widget(ticketState))
+
+  const ticketTab = await screen.findByRole('button', { name: 'Ticket chat', pressed: true })
+  expect(ticketTab.parentElement).toHaveStyle({ borderColor: '#336699', backgroundColor: '#3366991a' })
+  const dashboardTab = await screen.findByRole('button', { name: 'Dashboard chat' })
+  expect(dashboardTab.parentElement).not.toHaveAttribute('style')
 })

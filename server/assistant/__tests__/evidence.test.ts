@@ -448,7 +448,7 @@ describe('assistant evidence workspace', () => {
     expect(sourceIndex).toContain('AGENTS.md → projects/7/source/AGENTS.md.txt')
     expect(sourceIndex).toContain('AGENTS.md.txt → projects/7/source/__looptroop-source-segment-1__')
     expect(sourceIndex).toContain('notes + π.txt → projects/7/source/notes + π.txt')
-    expect(sourceIndex).toContain('src/routes/[ticket-id]/page + café.ts → projects/7/source/src/routes/[ticket-id]/page + café.ts')
+    expect(sourceIndex).toContain(`${join('src', 'routes', '[ticket-id]', 'page + café.ts')} → projects/7/source/src/routes/[ticket-id]/page + café.ts`)
     expect(manifest.projects[0].omissions.secret_path).toBeGreaterThanOrEqual(7)
     expect(manifest.projects[0].omissionExamples).not.toHaveProperty('secret_path')
     expect(manifest.projects[0].omissions.excluded_directory).toBeGreaterThan(0)

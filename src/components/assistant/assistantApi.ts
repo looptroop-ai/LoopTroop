@@ -45,6 +45,22 @@ export async function fetchAssistantSession(id: string, scope: AssistantScope, s
   return await response.json() as AssistantSession
 }
 
+export async function renameAssistantSession(
+  id: string,
+  title: string,
+  scope: AssistantScope,
+  signal: AbortSignal,
+): Promise<AssistantSessionSummary> {
+  const response = await fetch(`/api/chat/sessions/${encodeURIComponent(id)}/title`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...scopeBody(scope), title }),
+    signal,
+  })
+  await throwIfNotOk(response, 'Failed to rename assistant conversation')
+  return await response.json() as AssistantSessionSummary
+}
+
 export async function closeAssistantSession(id: string, scope: AssistantScope, signal: AbortSignal): Promise<void> {
   const response = await fetch(`/api/chat/sessions/${encodeURIComponent(id)}/close`, {
     method: 'POST',
@@ -83,6 +99,9 @@ function parseFrame(frame: string): AssistantStreamEvent | null {
   if (!event || typeof event !== 'object') throw new Error('Invalid assistant response event')
   const value = event as Record<string, unknown>
   if (value.type === 'delta' && typeof value.text === 'string') return value as AssistantStreamEvent
+  if (value.type === 'reasoning' && typeof value.text === 'string' && value.streaming === true
+    && (value.modelId === undefined || typeof value.modelId === 'string')
+    && (value.variant === undefined || typeof value.variant === 'string')) return value as AssistantStreamEvent
   if (value.type === 'error' && typeof value.error === 'string') return value as AssistantStreamEvent
   if (value.type === 'done' && value.session && typeof value.session === 'object') return value as AssistantStreamEvent
   throw new Error('Invalid assistant response event')

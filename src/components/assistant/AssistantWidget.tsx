@@ -1,12 +1,16 @@
 import { memo, useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDownToLine, History, LoaderCircle, MessageCircle, Plus, Search, Send, Settings, X } from 'lucide-react'
+import { ArrowDownToLine, Check, Copy, Ellipsis, History, LoaderCircle, MessageCircle, Pencil, Plus, Search, Send, Settings, X } from 'lucide-react'
 import ReactMarkdown, { type Components } from 'react-markdown'
-import type { AssistantScope, AssistantSessionSummary } from '@shared/assistant'
+import type { AssistantScope, AssistantSession, AssistantSessionSummary } from '@shared/assistant'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useAssistant } from '@/hooks/useAssistant'
 import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { useProfile } from '@/hooks/useProfile'
 import { useUI } from '@/context/useUI'
 import { useTickets } from '@/hooks/useTickets'
+import { useProjects } from '@/hooks/useProjects'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { fetchAssistantHistory } from './assistantApi'
 
 interface AssistantWidgetProps {
@@ -45,8 +49,9 @@ function clampAssistantWindowPosition(position: AssistantWindowPosition, width: 
 }
 
 export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOpenConfiguration }: AssistantWidgetProps) {
-  const { state, dispatch } = useUI()
+  const { state } = useUI()
   const { data: tickets = [], isLoading: ticketsLoading } = useTickets()
+  const { data: projects = [] } = useProjects()
   const profile = useProfile()
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historySessions, setHistorySessions] = useState<AssistantSessionSummary[]>([])
@@ -65,8 +70,11 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
     ? state.selectedTicketId
     : undefined
   const scope: AssistantScope = { ...(ticketScope ? { ticketId: ticketScope } : {}) }
-  const scopeLabel = ticketScope
-    ? `Ticket ${state.selectedTicketExternalId ?? externalTicketId(ticketScope)}`
+  const assistant = useAssistant(scope, open)
+  const activeConversation = assistant.sessions.find(session => session.id === assistant.activeId)
+  const conversationTicket = activeConversation ? activeConversation.ticketId : ticketScope
+  const scopeLabel = conversationTicket
+    ? `Ticket ${tickets.find(ticket => ticket.id === conversationTicket)?.externalId ?? externalTicketId(conversationTicket)}`
     : 'All tickets'
   const chatModelConfigured = Boolean(profile.data?.chatModel?.trim())
 
@@ -172,9 +180,6 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
           : `Ticket ${externalTicketId(session.ticketId)} is no longer available, so this conversation can’t be opened.`)
         return
       }
-      dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
-    } else if (state.activeView === 'ticket') {
-      dispatch({ type: 'CLOSE_TICKET' })
     }
     setPendingHistorySession(session)
     setHistoryOpen(false)
@@ -183,8 +188,6 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
   const historyLoaded = useCallback((id: string) => {
     setPendingHistorySession(current => current?.id === id ? null : current)
   }, [])
-  const pendingMatchesScope = (pendingHistorySession?.ticketId ?? undefined) === ticketScope
-
   useEffect(() => {
     if (previousOpen.current && !open) launcherRef.current?.focus()
     previousOpen.current = open
@@ -249,13 +252,15 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
 
         <AssistantConversation
           scope={scope}
+          assistant={assistant}
           open={open}
           historySessions={historySessions}
           historyOpen={historyOpen}
           historyLoading={historyLoading}
           historyError={historyError}
-          pendingHistorySession={pendingMatchesScope ? pendingHistorySession : null}
+          pendingHistorySession={pendingHistorySession}
           tickets={tickets}
+          projects={projects}
           onHistoryOpenChange={setHistoryOpen}
           onHistorySelect={handleHistorySelect}
           onPendingHistoryLoaded={historyLoaded}
@@ -270,6 +275,7 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
 
 function AssistantConversation({
   scope,
+  assistant,
   open,
   historySessions,
   historyOpen,
@@ -277,6 +283,7 @@ function AssistantConversation({
   historyError,
   pendingHistorySession,
   tickets,
+  projects,
   onHistoryOpenChange,
   onHistorySelect,
   onPendingHistoryLoaded,
@@ -285,13 +292,15 @@ function AssistantConversation({
   onOpenConfiguration,
 }: {
   scope: AssistantScope
+  assistant: ReturnType<typeof useAssistant>
   open: boolean
   historySessions: AssistantSessionSummary[]
   historyOpen: boolean
   historyLoading: boolean
   historyError: string | null
   pendingHistorySession: AssistantSessionSummary | null
-  tickets: Array<{ id: string; externalId: string }>
+  tickets: Array<{ id: string; externalId: string; projectId: number }>
+  projects: Array<{ id: number; color: string }>
   onHistoryOpenChange: (open: boolean) => void
   onHistorySelect: (session: AssistantSessionSummary) => void
   onPendingHistoryLoaded: (id: string) => void
@@ -299,11 +308,16 @@ function AssistantConversation({
   profileLoading: boolean
   onOpenConfiguration: () => void
 }) {
-  const assistant = useAssistant(scope, open)
   const { selectSession } = assistant
   const [completedSessionId, setCompletedSessionId] = useState<string | null>(null)
   const historySearchRef = useRef<HTMLInputElement>(null)
   const [historySearch, setHistorySearch] = useState('')
+  const [renameSessionId, setRenameSessionId] = useState<string | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const [conversationCopyError, setConversationCopyError] = useState(false)
+  const [conversationCopied, copyConversationToClipboard, conversationCopyFailed, conversationCopyFailureCount] = useCopyToClipboard()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const conversationRef = useRef<HTMLDivElement>(null)
   const historyRef = useRef<HTMLDivElement>(null)
@@ -325,6 +339,52 @@ function AssistantConversation({
   } = useLogScrollAnchor()
   const history = historySessions.map(session => ({ session, scope: historyScopeLabel(session, tickets) }))
     .filter(({ session, scope: label }) => `${session.title} ${label}`.toLowerCase().includes(historySearch.trim().toLowerCase()))
+
+  const copyConversation = (id: string) => {
+    setConversationCopyError(false)
+    void assistant.getConversation(id).then(session => {
+      if (!session) {
+        setConversationCopyError(true)
+        return
+      }
+      void copyConversationToClipboard(formatConversationText(session))
+    }).catch(() => setConversationCopyError(true))
+  }
+
+  const startRename = (id: string, title: string) => {
+    setRenameSessionId(id)
+    setRenameTitle(title)
+    setRenameError(null)
+  }
+
+  const cancelRename = () => {
+    if (renaming) return
+    setRenameSessionId(null)
+    setRenameError(null)
+  }
+
+  const saveRename = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!renameSessionId || renaming) return
+    const title = renameTitle.trim()
+    if (!title) {
+      setRenameError('Enter a conversation name.')
+      return
+    }
+    setRenaming(true)
+    setRenameError(null)
+    try {
+      if (!await assistant.renameSession(renameSessionId, title)) {
+        setRenameError('Could not rename this conversation.')
+        return
+      }
+      setRenameSessionId(null)
+    } catch {
+      setRenameError('Could not rename this conversation.')
+    } finally {
+      setRenaming(false)
+    }
+  }
 
   useEffect(() => {
     if (!pendingHistorySession) return
@@ -429,17 +489,39 @@ function AssistantConversation({
           {assistant.openIds.map(id => {
             const conversation = assistant.sessions.find(session => session.id === id)
             const title = conversation?.title.trim() || 'New conversation'
+            const ticket = tickets.find(item => item.id === conversation?.ticketId)
+            const color = ticket ? projects.find(project => project.id === ticket.projectId)?.color : undefined
             return (
-              <div key={id} className="flex shrink-0 items-center rounded-md border border-border bg-muted/40">
+              <div key={id} className="flex shrink-0 items-center rounded-md border border-border bg-muted/40" style={color ? { borderColor: color, backgroundColor: `${color}1a` } : undefined}>
                 <button
                   type="button"
                   aria-pressed={assistant.activeId === id}
                   onClick={() => assistant.selectSession(id)}
                   title={title}
-                  className={`max-w-28 truncate rounded-l-md px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${assistant.activeId === id ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                  className={`max-w-28 truncate rounded-l-md px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${assistant.activeId === id ? `${color ? '' : 'bg-accent'} text-foreground` : 'text-muted-foreground hover:text-foreground'}`}
                 >
                   {title}
                 </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={`More options for ${title} conversation`}
+                      title={`More options for ${title}`}
+                      className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Ellipsis className="h-3 w-3" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => copyConversation(id)}>
+                      <Copy className="mr-2 h-3.5 w-3.5" aria-hidden="true" />Copy conversation
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => startRename(id, title)}>
+                      <Pencil className="mr-2 h-3.5 w-3.5" aria-hidden="true" />Rename
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <button
                   type="button"
                   aria-label={`Close ${title} conversation`}
@@ -454,6 +536,8 @@ function AssistantConversation({
             )
           })}
         </div>
+        {(conversationCopyFailed || conversationCopyError) && <span key={conversationCopyFailureCount} role="alert" className="px-2 text-xs text-destructive">{conversationCopyError ? 'Could not copy conversation' : 'Copy failed'}</span>}
+        {conversationCopied && <span role="status" className="sr-only">Conversation copied.</span>}
         {assistant.openIds.length > 0 && (
           <button type="button" aria-label="New chat" title="New chat" disabled={assistant.creating || profileLoading || !chatModelConfigured} onClick={() => void assistant.createSession()} className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {assistant.creating ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
@@ -519,7 +603,11 @@ function AssistantConversation({
               )}
               {open && activeSession?.messages.map(message => (
                 <article key={message.id} className={`mb-3 rounded-lg px-3 py-2 text-sm ${message.role === 'user' ? 'ml-6 bg-muted' : 'mr-2 bg-accent/50'}`}>
-                  <p className="mb-1 text-[11px] font-semibold text-muted-foreground">{message.role === 'user' ? 'You' : 'Assistant'}</p>
+                  <div className="mb-1 flex items-center gap-1">
+                    <p className="text-[11px] font-semibold text-muted-foreground">{message.role === 'user' ? 'You' : 'Assistant'}</p>
+                    {message.content && <CopyMessageButton role={message.role} content={message.content} />}
+                  </div>
+                  {message.role === 'assistant' && <ThinkingSection reasoning={message.reasoning} modelId={message.modelId} variant={message.variant} />}
                   {message.role === 'assistant'
                     ? <AssistantMarkdown>{message.content}</AssistantMarkdown>
                     : <p className="whitespace-pre-wrap break-words">{message.content}</p>}
@@ -528,11 +616,18 @@ function AssistantConversation({
               {open && assistant.pendingReply && (
                 <>
                   <article className="mb-3 ml-6 rounded-lg bg-muted px-3 py-2 text-sm">
-                    <p className="mb-1 text-[11px] font-semibold text-muted-foreground">You</p>
+                    <div className="mb-1 flex items-center gap-1">
+                      <p className="text-[11px] font-semibold text-muted-foreground">You</p>
+                      <CopyMessageButton role="user" content={assistant.pendingReply.message} />
+                    </div>
                     <p className="whitespace-pre-wrap break-words">{assistant.pendingReply.message}</p>
                   </article>
                   <article className="mb-3 mr-2 rounded-lg bg-accent/50 px-3 py-2 text-sm">
-                    <p className="mb-1 text-[11px] font-semibold text-muted-foreground">Assistant</p>
+                    <div className="mb-1 flex items-center gap-1">
+                      <p className="text-[11px] font-semibold text-muted-foreground">Assistant</p>
+                      {assistant.pendingReply.reply && <CopyMessageButton role="assistant" content={assistant.pendingReply.reply} />}
+                    </div>
+                    <ThinkingSection pending reasoning={assistant.pendingReply.reasoning} modelId={assistant.pendingReply.modelId} variant={assistant.pendingReply.variant} />
                     {assistant.pendingReply.reply
                       ? <AssistantMarkdown>{assistant.pendingReply.reply}</AssistantMarkdown>
                       : <span className="sr-only" role="status">Assistant is responding</span>}
@@ -610,8 +705,75 @@ function AssistantConversation({
           <p className="mt-1.5 px-1 text-[10px] text-muted-foreground">Enter to send · Shift+Enter for a new line</p>
         </form>
       </div>
+      <Dialog
+        open={renameSessionId !== null}
+        onOpenChange={open => { if (!open) cancelRename() }}
+      >
+        <DialogContent className="max-w-md" onEscapeKeyDown={event => { if (renaming) event.preventDefault() }}>
+          <DialogHeader>
+            <DialogTitle className="text-sm">Rename conversation</DialogTitle>
+            <DialogDescription>Choose a name for this conversation.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveRename} className="space-y-3">
+            <label htmlFor="assistant-conversation-title" className="text-sm font-medium">Conversation name</label>
+            <input
+              id="assistant-conversation-title"
+              autoFocus
+              maxLength={100}
+              value={renameTitle}
+              onChange={event => { setRenameTitle(event.target.value); setRenameError(null) }}
+              aria-invalid={Boolean(renameError)}
+              aria-describedby={renameError ? 'assistant-rename-error' : undefined}
+              disabled={renaming}
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+            />
+            {renameError && <p id="assistant-rename-error" role="alert" className="text-xs text-destructive">{renameError}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={cancelRename} disabled={renaming} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50">Cancel</button>
+              <button type="submit" disabled={renaming} className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50">{renaming ? 'Saving…' : 'Save'}</button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   )
+}
+
+function ThinkingSection({ reasoning, modelId, variant, pending = false }: { reasoning?: string; modelId?: string; variant?: string; pending?: boolean }) {
+  if (!pending && !reasoning?.trim()) {
+    return <p className="mb-1 text-xs text-muted-foreground">Thinking unavailable.</p>
+  }
+  return (
+    <details className="mb-2 rounded-md border border-purple-500/20 bg-purple-500/5 px-2 py-1 text-xs text-purple-600 dark:text-purple-400">
+      <summary className="cursor-pointer font-medium">{pending ? 'Thinking…' : 'Thinking'}</summary>
+      <p className="mt-1 text-muted-foreground">Model: {modelId || 'Not reported'} · Effort: {variant || 'Not reported'}</p>
+      <p className="mt-1 whitespace-pre-wrap break-words">{reasoning || 'Waiting for model thinking.'}</p>
+    </details>
+  )
+}
+
+function CopyMessageButton({ role, content }: { role: 'user' | 'assistant'; content: string }) {
+  const [copied, copyToClipboard, copyFailed, copyFailureCount] = useCopyToClipboard(undefined, content)
+  const label = role === 'user' ? 'your' : 'assistant'
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={`Copy ${label} message`}
+        title={copied ? 'Message copied' : `Copy ${label} message`}
+        onClick={() => { void copyToClipboard(content) }}
+        className="rounded p-0.5 text-muted-foreground hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" aria-hidden="true" /> : <Copy className="h-3 w-3" aria-hidden="true" />}
+      </button>
+      {copied && <span role="status" className="sr-only">Message copied.</span>}
+      {copyFailed && <span key={copyFailureCount} role="alert" className="text-[10px] text-destructive">Copy failed</span>}
+    </>
+  )
+}
+
+function formatConversationText(session: AssistantSession): string {
+  return session.messages.filter(message => message.content.trim()).map(({ role, content }) => `${role === 'user' ? 'You' : 'Assistant'}:\n${content}`).join('\n\n')
 }
 
 const assistantMarkdownComponents: Components = {

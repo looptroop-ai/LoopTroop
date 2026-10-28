@@ -6,6 +6,9 @@ export interface AssistantMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  reasoning?: string
+  modelId?: string
+  variant?: string
   createdAt: string
 }
 
@@ -26,5 +29,6 @@ export interface AssistantSession extends AssistantSessionSummary {
 
 export type AssistantStreamEvent =
   | { type: 'delta'; text: string }
+  | { type: 'reasoning'; text: string; streaming: boolean; modelId?: string; variant?: string }
   | { type: 'done'; session: AssistantSession }
   | { type: 'error'; error: string }

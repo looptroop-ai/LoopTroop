@@ -2,17 +2,22 @@ import type { AssistantScope, AssistantSession, AssistantSessionSummary, Assista
 import { throwIfNotOk } from '@/lib/fetchError'
 
 function scopeQuery(scope: AssistantScope): string {
-  const query = new URLSearchParams({ mode: scope.mode })
+  const query = new URLSearchParams()
   if (scope.ticketId) query.set('ticketId', scope.ticketId)
-  return query.toString()
+  const params = query.toString()
+  return params ? `?${params}` : ''
+}
+
+function sessionListQuery(scope: AssistantScope): string {
+  return scope.ticketId ? scopeQuery(scope) : '?scope=dashboard'
 }
 
 function scopeBody(scope: AssistantScope) {
-  return { mode: scope.mode, ...(scope.ticketId ? { ticketId: scope.ticketId } : {}) }
+  return scope.ticketId ? { ticketId: scope.ticketId } : {}
 }
 
 export async function fetchAssistantSessions(scope: AssistantScope, signal: AbortSignal): Promise<AssistantSessionSummary[]> {
-  const response = await fetch(`/api/chat/sessions?${scopeQuery(scope)}`, { signal })
+  const response = await fetch(`/api/chat/sessions${sessionListQuery(scope)}`, { signal })
   await throwIfNotOk(response, 'Failed to load assistant conversations')
   return await response.json() as AssistantSessionSummary[]
 }
@@ -35,7 +40,7 @@ export async function createAssistantSession(scope: AssistantScope, signal: Abor
 }
 
 export async function fetchAssistantSession(id: string, scope: AssistantScope, signal: AbortSignal): Promise<AssistantSession> {
-  const response = await fetch(`/api/chat/sessions/${encodeURIComponent(id)}?${scopeQuery(scope)}`, { signal })
+  const response = await fetch(`/api/chat/sessions/${encodeURIComponent(id)}${scopeQuery(scope)}`, { signal })
   await throwIfNotOk(response, 'Failed to open assistant conversation')
   return await response.json() as AssistantSession
 }

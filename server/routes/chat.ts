@@ -5,7 +5,7 @@ import type { AssistantScope, AssistantStreamEvent } from '@shared/assistant'
 import { sanitizeDiagnosticText } from '@shared/errorDiagnostics'
 import { AssistantError, assertAssistantSessionScope, closeAssistantSession, createAssistantSession, getAssistantSession, listAssistantSessions, promptAssistant } from '../assistant/sessions'
 
-const scopeSchema = z.object({ mode: z.enum(['help', 'tickets']), ticketId: z.string().min(1).max(200).optional() }).strict()
+const scopeSchema = z.object({ ticketId: z.string().min(1).max(200).optional() }).strict()
 const messageSchema = scopeSchema.extend({ message: z.string().trim().min(1).max(20_000) })
 export const chatRouter = new Hono()
 
@@ -18,7 +18,7 @@ chatRouter.onError((error, c) => c.json({ error: sanitizeDiagnosticText(error.me
 
 function parseScope(value: unknown): AssistantScope {
   const result = scopeSchema.safeParse(value)
-  if (!result.success) throw new AssistantError('Choose Help or Tickets and a valid ticket scope.')
+  if (!result.success) throw new AssistantError('Choose a valid ticket scope.')
   return result.data
 }
 
@@ -29,7 +29,11 @@ async function body(c: Context): Promise<unknown> {
 
 chatRouter.get('/chat/sessions', async c => {
   const query = c.req.query()
-  return c.json(await listAssistantSessions(Object.keys(query).length === 0 ? undefined : parseScope(query)))
+  if (Object.keys(query).length === 0) return c.json(await listAssistantSessions())
+  if (query.scope === 'dashboard' && Object.keys(query).length === 1) {
+    return c.json(await listAssistantSessions({}))
+  }
+  return c.json(await listAssistantSessions(parseScope(query)))
 })
 
 chatRouter.post('/chat/sessions', async c => {

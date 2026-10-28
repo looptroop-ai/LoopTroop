@@ -79,18 +79,19 @@ afterAll(() => {
 describe('chat session routes', () => {
   it('returns global history without a query and validates scoped list queries strictly', async () => {
     expect((await app.request('/api/chat/sessions')).status).toBe(200)
-    expect((await app.request('/api/chat/sessions?mode=help')).status).toBe(200)
-    expect((await app.request(`/api/chat/sessions?mode=help&extra=${randomUUID()}`)).status).toBe(400)
-    expect((await app.request(`/api/chat/sessions?ticketId=${randomUUID()}`)).status).toBe(400)
-    expect((await app.request(`/api/chat/sessions?mode=tickets&ticketId=${randomUUID()}`)).status).toBe(404)
+    expect((await app.request('/api/chat/sessions?scope=dashboard')).status).toBe(200)
+    expect((await app.request('/api/chat/sessions?scope=dashboard&extra=yes')).status).toBe(400)
+    expect((await app.request('/api/chat/sessions?mode=help')).status).toBe(400)
+    expect((await app.request(`/api/chat/sessions?ticketId=${randomUUID()}&extra=${randomUUID()}`)).status).toBe(400)
+    expect((await app.request(`/api/chat/sessions?ticketId=${randomUUID()}`)).status).toBe(404)
   })
 
   it('rejects invalid and extra create fields before opening an OpenCode session', async () => {
     configureProfile()
     const invalidBodies = [
-      {},
-      { mode: 'help', ticketId: randomUUID() },
-      { mode: 'help', unexpected: true },
+      { mode: 'help' },
+      { mode: 'tickets', ticketId: randomUUID() },
+      { unexpected: true },
     ]
     for (const body of invalidBodies) {
       const response = await app.request('/api/chat/sessions', {
@@ -112,14 +113,14 @@ describe('chat session routes', () => {
   it('creates a conversation with the public saved-session fields', async () => {
     configureProfile()
     const response = await app.request('/api/chat/sessions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'help' }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
     })
 
     expect(response.status).toBe(201)
     expect(response.headers.get('cache-control')).toBe('private, no-store')
-    await expect(response.json()).resolves.toMatchObject({
-      mode: 'help', ticketId: null, saved: true, canResume: true, messages: [], archived: false,
-    })
+    const session = await response.json() as Record<string, unknown>
+    expect(session).toMatchObject({ ticketId: null, saved: true, canResume: true, messages: [], archived: false })
+    expect(session).not.toHaveProperty('mode')
   })
 
   it('does not cache chat history responses', async () => {
@@ -131,14 +132,15 @@ describe('chat session routes', () => {
 
   it('validates message bodies and stale ticket scope before opening an SSE response', async () => {
     configureProfile()
-    const session = await createAssistantSession({ mode: 'help' })
+    const session = await createAssistantSession({})
     const getSession = vi.spyOn(adapter, 'getSession')
     const getMessages = vi.spyOn(adapter, 'getSessionMessages')
     const invalidBodies = [
-      { mode: 'help' },
-      { mode: 'help', message: '   ' },
-      { mode: 'help', message: 'question', extra: true },
-      { mode: 'help', message: 'x'.repeat(20_001) },
+      {},
+      { message: '   ' },
+      { message: 'question', extra: true },
+      { message: 'x'.repeat(20_001) },
+      { mode: 'help', message: 'question' },
     ]
     for (const body of invalidBodies) {
       const response = await app.request(`/api/chat/sessions/${session.id}/messages`, {
@@ -149,7 +151,7 @@ describe('chat session routes', () => {
 
     const staleScope = await app.request(`/api/chat/sessions/${session.id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'tickets', ticketId: randomUUID(), message: 'question' }),
+      body: JSON.stringify({ ticketId: randomUUID(), message: 'question' }),
     })
     expect(staleScope.status).toBe(404)
     expect(getSession).not.toHaveBeenCalled()
@@ -159,11 +161,11 @@ describe('chat session routes', () => {
 
   it('streams text deltas followed by a done event', async () => {
     configureProfile()
-    const session = await createAssistantSession({ mode: 'help' })
+    const session = await createAssistantSession({})
     const getMessages = vi.spyOn(adapter, 'getSessionMessages')
     const response = await app.request(`/api/chat/sessions/${session.id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'help', message: 'Explain the project' }),
+      body: JSON.stringify({ message: 'Explain the project' }),
     })
     const body = await response.text()
     const events = eventsFromSse(body)
@@ -178,11 +180,11 @@ describe('chat session routes', () => {
 
   it('sends prompt failures as SSE error events', async () => {
     configureProfile()
-    const session = await createAssistantSession({ mode: 'help' })
+    const session = await createAssistantSession({})
     adapter.promptSession = async () => { throw new Error('provider rejected request') }
     const response = await app.request(`/api/chat/sessions/${session.id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'help', message: 'Explain the project' }),
+      body: JSON.stringify({ message: 'Explain the project' }),
     })
     const events = eventsFromSse(await response.text())
 
@@ -192,7 +194,7 @@ describe('chat session routes', () => {
 
   it('aborts an active prompt when the client disconnects from SSE', async () => {
     configureProfile()
-    const session = await createAssistantSession({ mode: 'help' })
+    const session = await createAssistantSession({})
     const remoteId = remoteSessionId(session.id)
     const started = deferred<void>()
     const abortSession = vi.spyOn(adapter, 'abortSession')
@@ -207,7 +209,7 @@ describe('chat session routes', () => {
     const request = new Request(`http://localhost/api/chat/sessions/${session.id}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'help', message: 'Cancel this answer' }),
+      body: JSON.stringify({ message: 'Cancel this answer' }),
       signal: client.signal,
     })
     const response = await app.fetch(request)
@@ -223,14 +225,14 @@ describe('chat session routes', () => {
   it('rejects stale temporary sessions before opening an SSE response', async () => {
     configureProfile()
     db.update(profiles).set({ saveChatSessions: false }).run()
-    const session = await createAssistantSession({ mode: 'help' })
+    const session = await createAssistantSession({})
     const row = db.select().from(appMeta).all().find(entry => entry.key === `assistant.session.${session.id}`)!
     db.update(appMeta).set({ value: JSON.stringify({ ...JSON.parse(row.value), owner: 'previous-runtime' }) })
       .where(eq(appMeta.key, row.key)).run()
 
     const response = await app.request(`/api/chat/sessions/${session.id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'help', message: 'Question from an old runtime' }),
+      body: JSON.stringify({ message: 'Question from an old runtime' }),
     })
 
     expect(response.status).toBe(404)

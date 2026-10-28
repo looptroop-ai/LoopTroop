@@ -1,7 +1,7 @@
-import { memo, useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { memo, useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowDownToLine, History, LoaderCircle, MessageCircle, Plus, Search, Send, Settings, X } from 'lucide-react'
 import ReactMarkdown, { type Components } from 'react-markdown'
-import type { AssistantMode, AssistantScope, AssistantSessionSummary } from '@shared/assistant'
+import type { AssistantScope, AssistantSessionSummary } from '@shared/assistant'
 import { useAssistant } from '@/hooks/useAssistant'
 import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { useProfile } from '@/hooks/useProfile'
@@ -17,30 +17,138 @@ interface AssistantWidgetProps {
   onOpenConfiguration: () => void
 }
 
+interface AssistantWindowPosition {
+  left: number
+  top: number
+}
+
+const ASSISTANT_WINDOW_POSITION_KEY = 'looptroop.assistant.window-position'
+
+function readAssistantWindowPosition(): AssistantWindowPosition | null {
+  try {
+    const stored = window.sessionStorage.getItem(ASSISTANT_WINDOW_POSITION_KEY)
+    if (!stored) return null
+    const position = JSON.parse(stored) as Partial<AssistantWindowPosition>
+    if (typeof position.left !== 'number' || !Number.isFinite(position.left)
+      || typeof position.top !== 'number' || !Number.isFinite(position.top)) return null
+    return { left: position.left, top: position.top }
+  } catch {
+    return null
+  }
+}
+
+function clampAssistantWindowPosition(position: AssistantWindowPosition, width: number, height: number): AssistantWindowPosition {
+  return {
+    left: Math.min(Math.max(4, position.left), Math.max(4, window.innerWidth - width - 4)),
+    top: Math.min(Math.max(4, position.top), Math.max(4, window.innerHeight - height - 4)),
+  }
+}
+
 export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOpenConfiguration }: AssistantWidgetProps) {
   const { state, dispatch } = useUI()
   const { data: tickets = [], isLoading: ticketsLoading } = useTickets()
   const profile = useProfile()
-  const [mode, setMode] = useState<AssistantMode>('help')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historySessions, setHistorySessions] = useState<AssistantSessionSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [pendingHistorySession, setPendingHistorySession] = useState<AssistantSessionSummary | null>(null)
+  const [windowPosition, setWindowPosition] = useState<AssistantWindowPosition | null>(readAssistantWindowPosition)
+  const [isDraggingWindow, setIsDraggingWindow] = useState(false)
   const launcherRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
+  const dragRef = useRef<{ pointerId: number; offsetX: number; offsetY: number } | null>(null)
   const previousOpen = useRef(open)
   const panelId = useId()
   const titleId = useId()
-  const ticketModeScope = mode === 'tickets' && state.activeView === 'ticket' && state.selectedTicketId
+  const ticketScope = state.activeView === 'ticket' && state.selectedTicketId
     ? state.selectedTicketId
     : undefined
-  const scope: AssistantScope = { mode, ...(ticketModeScope ? { ticketId: ticketModeScope } : {}) }
-  const scopeLabel = mode === 'help'
-    ? 'Help'
-    : ticketModeScope
-      ? `Ticket ${state.selectedTicketExternalId ?? externalTicketId(ticketModeScope)}`
-      : 'All tickets'
+  const scope: AssistantScope = { ...(ticketScope ? { ticketId: ticketScope } : {}) }
+  const scopeLabel = ticketScope
+    ? `Ticket ${state.selectedTicketExternalId ?? externalTicketId(ticketScope)}`
+    : 'All tickets'
   const chatModelConfigured = Boolean(profile.data?.chatModel?.trim())
+
+  const handleWindowPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, [role="button"]'))) return
+    const rect = panelRef.current?.getBoundingClientRect()
+    if (!rect) return
+    dragRef.current = { pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    event.preventDefault()
+    setIsDraggingWindow(true)
+  }
+
+  const handleWindowKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.target !== event.currentTarget) return
+    const movement = {
+      ArrowLeft: { left: -16, top: 0 },
+      ArrowRight: { left: 16, top: 0 },
+      ArrowUp: { left: 0, top: -16 },
+      ArrowDown: { left: 0, top: 16 },
+    }[event.key]
+    if (!movement) return
+    const rect = panelRef.current?.getBoundingClientRect()
+    if (!rect) return
+    event.preventDefault()
+    setWindowPosition(clampAssistantWindowPosition({
+      left: (windowPosition?.left ?? rect.left) + movement.left,
+      top: (windowPosition?.top ?? rect.top) + movement.top,
+    }, rect.width, rect.height))
+  }
+
+  useEffect(() => {
+    if (!isDraggingWindow) return
+    const move = (event: PointerEvent) => {
+      const drag = dragRef.current
+      const panel = panelRef.current
+      if (!drag || event.pointerId !== drag.pointerId || !panel) return
+      const rect = panel.getBoundingClientRect()
+      setWindowPosition(clampAssistantWindowPosition({
+        left: event.clientX - drag.offsetX,
+        top: event.clientY - drag.offsetY,
+      }, rect.width, rect.height))
+    }
+    const stop = (event: PointerEvent) => {
+      if (event.pointerId !== dragRef.current?.pointerId) return
+      dragRef.current = null
+      setIsDraggingWindow(false)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+    }
+  }, [isDraggingWindow])
+
+  useEffect(() => {
+    if (!open || !windowPosition || !panelRef.current) return
+    const clampPosition = () => {
+      const rect = panelRef.current?.getBoundingClientRect()
+      if (!rect?.width || !rect.height) return
+      setWindowPosition(current => {
+        if (!current) return current
+        const next = clampAssistantWindowPosition(current, rect.width, rect.height)
+        return next.left === current.left && next.top === current.top ? current : next
+      })
+    }
+    clampPosition()
+    window.addEventListener('resize', clampPosition)
+    return () => window.removeEventListener('resize', clampPosition)
+  }, [open, windowPosition])
+
+  useEffect(() => {
+    if (!windowPosition) return
+    try {
+      window.sessionStorage.setItem(ASSISTANT_WINDOW_POSITION_KEY, JSON.stringify(windowPosition))
+    } catch {
+      // The moved position is optional when browser storage is unavailable.
+    }
+  }, [windowPosition])
 
   useEffect(() => {
     if (!open || !historyOpen) return
@@ -56,7 +164,7 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
   }, [historyOpen, open])
 
   const handleHistorySelect = (session: AssistantSessionSummary) => {
-    if (session.mode === 'tickets' && session.ticketId) {
+    if (session.ticketId) {
       const ticket = tickets.find(item => item.id === session.ticketId)
       if (!ticket) {
         setHistoryError(ticketsLoading
@@ -65,19 +173,17 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
         return
       }
       dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
-    } else if (session.mode === 'tickets' && state.activeView === 'ticket') {
+    } else if (state.activeView === 'ticket') {
       dispatch({ type: 'CLOSE_TICKET' })
     }
     setPendingHistorySession(session)
-    setMode(session.mode)
     setHistoryOpen(false)
   }
 
   const historyLoaded = useCallback((id: string) => {
     setPendingHistorySession(current => current?.id === id ? null : current)
   }, [])
-  const pendingMatchesScope = pendingHistorySession?.mode === mode
-    && (mode === 'help' || (pendingHistorySession.ticketId ?? undefined) === ticketModeScope)
+  const pendingMatchesScope = (pendingHistorySession?.ticketId ?? undefined) === ticketScope
 
   useEffect(() => {
     if (previousOpen.current && !open) launcherRef.current?.focus()
@@ -95,27 +201,39 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
           aria-controls={panelId}
           onClick={onOpen}
           title="Open assistant"
-          className="fixed bottom-20 right-4 z-[60] flex h-8 w-8 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground shadow-md transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="fixed bottom-4 right-[62px] z-[60] flex items-center justify-center rounded-full border border-border bg-primary-foreground p-2 text-primary shadow-md opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
           <MessageCircle className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
 
       <section
+        ref={panelRef}
         id={panelId}
         role="dialog"
         aria-modal="false"
         aria-labelledby={titleId}
         hidden={!open}
-        style={{ display: open ? 'flex' : 'none' }}
+        style={{
+          display: open ? 'flex' : 'none',
+          ...(windowPosition ? { left: windowPosition.left, top: windowPosition.top, right: 'auto', bottom: 'auto' } : {}),
+        }}
         onKeyDown={(event) => {
           if (event.key !== 'Escape') return
           event.stopPropagation()
           onDismiss()
         }}
-        className="fixed bottom-36 right-4 z-[60] flex h-[min(620px,calc(100dvh-10rem))] w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-background text-foreground shadow-2xl"
+        className={`fixed z-[60] flex h-[min(620px,calc(100dvh-10rem))] w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-background text-foreground shadow-2xl ${windowPosition ? '' : 'bottom-1 right-1'}`}
       >
-        <header className="border-b border-border p-3">
+        <header
+          onPointerDown={handleWindowPointerDown}
+          onKeyDown={handleWindowKeyDown}
+          role="group"
+          aria-label="Move assistant window with arrow keys"
+          aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+          tabIndex={0}
+          className={`touch-none select-none border-b border-border p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${isDraggingWindow ? 'cursor-grabbing' : 'cursor-move'}`}
+        >
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 id={titleId} className="text-sm font-semibold">LoopTroop assistant</h2>
@@ -124,10 +242,6 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
             <button type="button" aria-label="Close assistant window" title="Close assistant window" onClick={onDismiss} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <X className="h-4 w-4" aria-hidden="true" />
             </button>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="group" aria-label="Assistant mode">
-            <ModeButton selected={mode === 'help'} onClick={() => setMode('help')}>Help</ModeButton>
-            <ModeButton selected={mode === 'tickets'} onClick={() => setMode('tickets')}>Tickets</ModeButton>
           </div>
         </header>
 
@@ -149,14 +263,6 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
         />
       </section>
     </>
-  )
-}
-
-function ModeButton({ selected, onClick, children }: { selected: boolean; onClick: () => void; children: string }) {
-  return (
-    <button type="button" aria-pressed={selected} onClick={onClick} className={`rounded-md px-3 py-1.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selected ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
-      {children}
-    </button>
   )
 }
 
@@ -203,8 +309,10 @@ function AssistantConversation({
   const panelWasOpen = useRef(false)
   const listId = useId()
   const activeSession = assistant.activeSession
-  const draft = assistant.activeId ? assistant.drafts[assistant.activeId] ?? '' : ''
+  const draft = assistant.activeId ? assistant.drafts[assistant.activeId] ?? '' : assistant.newDraft
   const activeClosing = assistant.activeId !== null && assistant.closingIds.includes(assistant.activeId)
+  const cannotCompose = (assistant.activeId !== null && !activeSession?.canResume)
+    || (assistant.activeId === null && assistant.loading)
   const {
     setViewportRef,
     setContentRef,
@@ -256,7 +364,7 @@ function AssistantConversation({
       else conversationRef.current?.focus()
     })
     return () => cancelAnimationFrame(frame)
-  }, [activeClosing, activeSession?.canResume, assistant.activeId, assistant.openIds, assistant.opening, chatModelConfigured, historyOpen, open, profileLoading])
+  }, [activeClosing, activeSession?.canResume, assistant.activeId, assistant.loading, assistant.openIds, assistant.opening, chatModelConfigured, historyOpen, open, profileLoading])
 
   useEffect(() => {
     if (!assistant.activeId) return
@@ -270,13 +378,24 @@ function AssistantConversation({
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault()
-    if (!draft.trim() || !activeSession?.canResume || assistant.sending || activeClosing || !chatModelConfigured) return
+    if (!draft.trim() || assistant.sending || activeClosing || assistant.creating || cannotCompose || !chatModelConfigured || profileLoading) return
     const message = draft
+    setCompletedSessionId(null)
+    if (!assistant.activeId) {
+      void assistant.createSession().then(session => {
+        if (!session) return
+        enableAutoScroll()
+        scheduleScrollToBottom('smooth')
+        return assistant.sendMessage(message, session).then(sent => {
+          if (sent) setCompletedSessionId(session.id)
+        })
+      })
+      return
+    }
+    if (!activeSession?.canResume) return
     const sessionId = assistant.activeId
-    if (!sessionId) return
     enableAutoScroll()
     scheduleScrollToBottom('smooth')
-    setCompletedSessionId(null)
     void assistant.sendMessage(message).then(sent => {
       if (sent) setCompletedSessionId(sessionId)
     })
@@ -333,9 +452,11 @@ function AssistantConversation({
             )
           })}
         </div>
-        <button type="button" aria-label="New chat" title="New chat" disabled={assistant.creating || profileLoading || !chatModelConfigured} onClick={() => void assistant.createSession()} className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          {assistant.creating ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
-        </button>
+        {assistant.openIds.length > 0 && (
+          <button type="button" aria-label="New chat" title="New chat" disabled={assistant.creating || profileLoading || !chatModelConfigured} onClick={() => void assistant.createSession()} className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            {assistant.creating ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
+          </button>
+        )}
         <div ref={historyRef} className="relative shrink-0">
           <button ref={historyButtonRef} type="button" aria-expanded={historyOpen} aria-controls={listId} onClick={() => { onHistoryOpenChange(!historyOpen); setHistorySearch('') }} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" title="Conversation history">
             <History className="h-4 w-4" aria-hidden="true" />
@@ -391,7 +512,7 @@ function AssistantConversation({
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
                   <MessageCircle className="h-8 w-8 text-muted-foreground/70" aria-hidden="true" />
                   <p className="text-sm font-medium">Ask LoopTroop</p>
-                  <p className="max-w-64 text-xs text-muted-foreground">Start a chat for help with the app or questions about your tickets.</p>
+                  <p className="max-w-64 text-xs text-muted-foreground">Ask about LoopTroop or {scope.ticketId ? 'this ticket.' : 'any ticket.'}</p>
                 </div>
               )}
               {open && activeSession?.messages.map(message => (
@@ -465,12 +586,12 @@ function AssistantConversation({
               id="assistant-message"
               value={draft}
               onChange={event => {
-                if (assistant.activeId) assistant.setDraft(assistant.activeId, event.target.value)
+                assistant.setDraft(assistant.activeId, event.target.value)
                 assistant.setError(null)
               }}
               onKeyDown={handleComposerKeyDown}
-              placeholder={activeSession?.canResume ? 'Ask a question…' : 'Start a new chat to send a message'}
-              disabled={!activeSession?.canResume || !chatModelConfigured || profileLoading || activeClosing}
+              placeholder={activeSession && !activeSession.canResume ? 'Start a new chat to send a message' : 'Ask a question…'}
+              disabled={cannotCompose || !chatModelConfigured || profileLoading || assistant.creating || activeClosing}
               rows={1}
               className="max-h-28 min-h-9 flex-1 resize-y bg-transparent px-1.5 py-2 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
             />
@@ -478,7 +599,7 @@ function AssistantConversation({
               type="submit"
               aria-label="Send message"
               title="Send message"
-              disabled={!draft.trim() || !activeSession?.canResume || !chatModelConfigured || profileLoading || assistant.sending || activeClosing}
+              disabled={!draft.trim() || cannotCompose || !chatModelConfigured || profileLoading || assistant.sending || assistant.creating || activeClosing}
               className="mb-0.5 rounded-md bg-primary p-2 text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
               {assistant.sending ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
@@ -511,10 +632,9 @@ const AssistantMarkdown = memo(function AssistantMarkdown({ children }: { childr
 })
 
 function historyScopeLabel(session: AssistantSessionSummary, tickets: Array<{ id: string; externalId: string }>): string {
-  if (session.mode === 'help') return 'Help · All views'
-  if (!session.ticketId) return 'Tickets · All tickets'
+  if (!session.ticketId) return 'Dashboard · All tickets'
   const ticket = tickets.find(item => item.id === session.ticketId)
-  return `Tickets · ${ticket?.externalId ?? `Ticket ${externalTicketId(session.ticketId)}`}`
+  return `Ticket ${ticket?.externalId ?? externalTicketId(session.ticketId)}`
 }
 
 function externalTicketId(ticketId: string): string {

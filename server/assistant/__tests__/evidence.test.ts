@@ -234,9 +234,23 @@ describe('assistant evidence workspace', () => {
       }
       return { entries: [], hasOlder: false, olderCursor: null }
     })
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.hostname === 'api.github.com') {
+        return new Response(JSON.stringify({
+          tree: [
+            { path: 'README.md', type: 'blob', size: 20 },
+            { path: 'CHANGELOG.md', type: 'blob', size: 20 },
+          ],
+          truncated: false,
+        }))
+      }
+      return new Response(url.pathname.includes('/LoopTroop-Website/main/') ? 'current documentation' : 'installed LoopTroop source')
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const { prompt, permission } = await prepareAssistantEvidence(
-      { mode: 'tickets', ticketId: ticket.id }, cwd, undefined, 'inspect https://untrusted.example/worktree',
+      { ticketId: ticket.id }, cwd, undefined, 'inspect https://untrusted.example/worktree',
     )
     const evidence = join(cwd, 'evidence')
     const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
@@ -247,9 +261,10 @@ describe('assistant evidence workspace', () => {
     const files = await readdir(join(sourceDir, 'src'))
 
     expect(manifest.scope).toEqual({ kind: 'ticket', ticketId: ticket.id })
-    expect(manifest.officialDocs.status).toBe('not_in_scope')
-    expect(manifest.installedSource.status).toBe('not_in_scope')
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(manifest.officialDocs.files).toContain('official-docs/configuration.md')
+    expect(manifest.installedSource.includedPaths).toContain('README.md')
+    expect(await readFile(join(evidence, 'official-docs/configuration.md'), 'utf8')).toBe('current documentation')
+    expect(fetchMock).toHaveBeenCalled()
     expect(manifest.tickets).toHaveLength(1)
     expect(manifest.projects).toMatchObject([{ id: 7, sourceKind: 'ticket worktree' }])
     expect(existsSync(join(sourceDir, 'src', 'root-only.zig'))).toBe(false)
@@ -324,7 +339,7 @@ describe('assistant evidence workspace', () => {
     ticketMap.set(two.id, two)
     mocks.listTickets.mockReturnValue([one, two])
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, first.cwd)
+    await prepareAssistantEvidence({}, first.cwd)
     const dashboard = JSON.parse(await readFile(join(first.cwd, 'evidence', 'manifest.json'), 'utf8'))
     expect(mocks.listTickets).toHaveBeenCalledWith()
     expect(mocks.listProjects).toHaveBeenCalledWith()
@@ -337,7 +352,7 @@ describe('assistant evidence workspace', () => {
       projectRoot: first.projectRoot,
       localProject: { name: 'First', shortname: 'F' },
     })
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: one.id }, first.cwd)
+    await prepareAssistantEvidence({ ticketId: one.id }, first.cwd)
     const single = JSON.parse(await readFile(join(first.cwd, 'evidence', 'manifest.json'), 'utf8'))
     expect(single.tickets.map((entry: { ticketId: string }) => entry.ticketId)).toEqual(['7:ONE'])
     expect(single.projects.map((entry: { id: number }) => entry.id)).toEqual([7])
@@ -353,7 +368,7 @@ describe('assistant evidence workspace', () => {
     ])
     mocks.listTickets.mockReturnValue([ticket])
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
 
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(manifest.tickets.map((entry: { ticketId: string }) => entry.ticketId)).toEqual([ticket.id])
@@ -399,7 +414,7 @@ describe('assistant evidence workspace', () => {
     attachTicket(ticket, aliasedProjectRoot)
 
     const linkedCwd = join(linkedRoot, 'context')
-    const prepared = await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, linkedCwd)
+    const prepared = await prepareAssistantEvidence({ ticketId: ticket.id }, linkedCwd)
     const evidence = join(cwd, 'evidence')
     const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
     const projectSource = join(evidence, 'projects', '7', 'source')
@@ -450,14 +465,14 @@ describe('assistant evidence workspace', () => {
     attachTicket(ticket, projectRoot)
     mocks.runGit.mockResolvedValue({ ok: false, stdout: '' })
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
 
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(manifest.projects[0].omissions.gitignore_unavailable).toBe(1)
     expect(manifest.coverage.gaps).toContainEqual(expect.objectContaining({ area: 'project source: 7', detail: expect.stringContaining('Git ignore rules could not be checked') }))
   })
 
-  it('reuses unchanged ticket evidence and refreshes changed source and logs', async () => {
+  it('reuses unchanged ticket evidence and reports an unavailable source refresh before refreshing changed source and logs', async () => {
     const { cwd, projectRoot, root } = await fixture()
     const ticket = makeTicket('7:CACHE', 7)
     attachTicket(ticket, projectRoot)
@@ -468,14 +483,18 @@ describe('assistant evidence workspace', () => {
     mocks.getTicketPaths.mockReturnValue(paths)
     await Promise.all(Object.values(paths).map(path => writeFile(path, '')))
     await writeFile(join(projectRoot, 'source.ts'), 'original source')
-    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+    const scope = { ticketId: ticket.id }
 
     await prepareAssistantEvidence(scope, cwd)
     const pages = mocks.queryLogPage.mock.calls.length
     expect(pages).toBe(5)
+    const fetchCalls = fetchMock.mock.calls.length
     await prepareAssistantEvidence(scope, cwd)
     expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages)
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(fetchCalls)
+    const refreshed = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
+    expect(refreshed.installedSource.status).toBe('unavailable')
+    expect(refreshed.coverage.gaps).toContainEqual(expect.objectContaining({ area: 'installed source tree' }))
 
     await writeFile(join(projectRoot, 'source.ts'), 'updated source content')
     await prepareAssistantEvidence(scope, cwd)
@@ -488,6 +507,45 @@ describe('assistant evidence workspace', () => {
     await rm(join(cwd, 'evidence'), { recursive: true })
     await prepareAssistantEvidence(scope, cwd)
     expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages * 4)
+  })
+
+  it('refreshes question-selected installed source when reusing ticket evidence', async () => {
+    const { cwd, projectRoot, root } = await fixture()
+    const ticket = makeTicket('7:QUESTION-CACHE', 7)
+    attachTicket(ticket, projectRoot)
+    const paths = {
+      executionLogPath: join(root, 'normal.jsonl'), debugLogPath: join(root, 'debug.jsonl'),
+      aiLogPath: join(root, 'ai.jsonl'), beadsPath: join(root, 'beads.jsonl'),
+    }
+    mocks.getTicketPaths.mockReturnValue(paths)
+    await Promise.all(Object.values(paths).map(path => writeFile(path, '')))
+    const entries = [
+      { path: 'README.md', type: 'blob', size: 20 },
+      { path: 'src/alpha-logic.ts', type: 'blob', size: 20 },
+      { path: 'src/beta-logic.ts', type: 'blob', size: 20 },
+    ]
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.hostname === 'api.github.com') return new Response(JSON.stringify({ tree: entries, truncated: false }))
+      if (url.pathname.includes('/LoopTroop-Website/main/')) return new Response('current docs')
+      return new Response(`source for ${url.pathname}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const scope = { ticketId: ticket.id }
+
+    await prepareAssistantEvidence(scope, cwd, undefined, 'alpha behavior')
+    const first = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
+    const pages = mocks.queryLogPage.mock.calls.length
+    expect(first.installedSource.selectedPaths).toContain('src/alpha-logic.ts')
+
+    await prepareAssistantEvidence(scope, cwd, undefined, 'beta behavior')
+    const second = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
+
+    expect(mocks.queryLogPage).toHaveBeenCalledTimes(pages)
+    expect(second.installedSource.selectedPaths).toContain('src/beta-logic.ts')
+    expect(second.installedSource.selectedPaths).not.toContain('src/alpha-logic.ts')
+    expect(existsSync(join(cwd, 'evidence/installed-source/src/alpha-logic.ts'))).toBe(false)
+    expect(await readFile(join(cwd, 'evidence/installed-source/src/beta-logic.ts'), 'utf8')).toContain('beta-logic.ts')
   })
 
   it('refreshes dashboard snapshots after ticket and project deletion', async () => {
@@ -503,13 +561,13 @@ describe('assistant evidence workspace', () => {
     mocks.listTickets.mockReturnValue([ticket])
     await Promise.all(Object.values(paths).map(path => writeFile(path, '')))
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const firstManifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     const ticketPath = firstManifest.tickets[0].path
     expect(firstManifest.tickets).toHaveLength(1)
 
     mocks.listTickets.mockReturnValue([])
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const afterTicketDelete = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(afterTicketDelete.tickets).toEqual([])
     expect(existsSync(join(cwd, 'evidence', ticketPath))).toBe(false)
@@ -517,7 +575,7 @@ describe('assistant evidence workspace', () => {
     mocks.listProjects.mockReturnValue([])
     mocks.listAttachedProjectRoots.mockReturnValue([])
     await rm(projectRoot, { recursive: true, force: true })
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const afterProjectDelete = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(afterProjectDelete.projects).toEqual([])
     expect(afterProjectDelete.tickets).toEqual([])
@@ -552,7 +610,7 @@ describe('assistant evidence workspace', () => {
     }))
     await Promise.all(Object.values(paths).map(path => writeFile(path, 'pre-cleanup storage')))
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const firstManifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     const artifactPath = firstManifest.tickets[0].phaseArtifactFiles[0]
     const logPath = firstManifest.tickets[0].logs.system.files[0]
@@ -566,7 +624,7 @@ describe('assistant evidence workspace', () => {
       : [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath]
     await Promise.all(removedStoragePaths.map(path => rm(path, { force: true })))
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const refreshed = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(refreshed.tickets).toHaveLength(1)
     expect(refreshed.tickets[0].logs.system.files).toEqual([])
@@ -592,7 +650,7 @@ describe('assistant evidence workspace', () => {
     await Promise.all(Object.values(paths).map(path => writeFile(path, '')))
     const start = Date.now()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(start)
-    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+    const scope = { ticketId: ticket.id }
 
     await prepareAssistantEvidence(scope, cwd)
     const pages = mocks.queryLogPage.mock.calls.length
@@ -621,7 +679,7 @@ describe('assistant evidence workspace', () => {
     }
     mocks.getTicketPaths.mockReturnValue(paths)
     await Promise.all(Object.values(paths).map(path => writeFile(path, '')))
-    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+    const scope = { ticketId: ticket.id }
 
     await prepareAssistantEvidence(scope, cwd)
     const pages = mocks.queryLogPage.mock.calls.length
@@ -643,7 +701,7 @@ describe('assistant evidence workspace', () => {
       executionLogPath: join(root, 'normal.jsonl'), debugLogPath: join(root, 'debug.jsonl'),
       aiLogPath: join(root, 'ai.jsonl'), beadsPath: join(root, 'beads.jsonl'),
     })
-    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+    const scope = { ticketId: ticket.id }
     await prepareAssistantEvidence(scope, cwd)
     const pages = mocks.queryLogPage.mock.calls.length
     mocks.listPhaseAttempts.mockImplementation((_id: string, phase: string) => phase === WORKFLOW_PHASES[0]?.id ? [{ attemptNumber: 1 }] : [])
@@ -668,7 +726,7 @@ describe('assistant evidence workspace', () => {
       entries: [], hasOlder: true, olderCursor: `cursor-${++pageNumber}`,
     }))
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
 
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(manifest.tickets.map((entry: { ticketId: string }) => entry.ticketId)).toEqual([one.id, two.id])
@@ -687,7 +745,7 @@ describe('assistant evidence workspace', () => {
       ? Array.from({ length: 501 }, (_, index) => ({ phase, attemptNumber: index + 1 }))
       : [])
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
 
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     const ticketFile = JSON.parse(await readFile(join(cwd, 'evidence', manifest.tickets[0].path), 'utf8'))
@@ -706,7 +764,7 @@ describe('assistant evidence workspace', () => {
     mocks.queryLogPage.mockImplementation(async (_id: string, query: { view: string }) => ({
       entries: [], hasOlder: query.view === 'system', olderCursor: query.view === 'system' ? 'repeated' : null,
     }))
-    const scope = { mode: 'tickets' as const, ticketId: ticket.id }
+    const scope = { ticketId: ticket.id }
     await prepareAssistantEvidence(scope, cwd)
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(manifest.tickets[0].logs.system).toMatchObject({ complete: false, pageCount: 2, error: expect.stringContaining('repeated') })
@@ -743,7 +801,7 @@ describe('assistant evidence workspace', () => {
     const clock = vi.spyOn(Date, 'now')
     let now = Date.now()
     clock.mockImplementation(() => now)
-    await prepareAssistantEvidence({ mode: 'help' }, cwd, undefined, 'ticket history behavior')
+    await prepareAssistantEvidence({}, cwd, undefined, 'ticket history behavior')
     const firstCount = fetchMock.mock.calls.length
     const firstManifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
     expect(firstManifest.officialDocs.branch).toBe('main')
@@ -762,11 +820,11 @@ describe('assistant evidence workspace', () => {
     expect(sourceIndex).toContain('evidence path: installed-source/src/ticket/trailing-dot%2e')
     expect(sourceIndex).toContain('evidence path: installed-source/src/ticket/trailing-space%20')
     expect(await readFile(join(cwd, 'evidence', 'official-docs', 'configuration.md'), 'utf8')).toContain('current docs')
-    expect(mocks.listProjects).not.toHaveBeenCalled()
-    expect(mocks.listTickets).not.toHaveBeenCalled()
+    expect(mocks.listProjects).toHaveBeenCalledWith()
+    expect(mocks.listTickets).toHaveBeenCalledWith()
 
     now += 6 * 60_000
-    await prepareAssistantEvidence({ mode: 'help' }, cwd, undefined, 'ticket history behavior')
+    await prepareAssistantEvidence({}, cwd, undefined, 'ticket history behavior')
     const urls = fetchMock.mock.calls.slice(firstCount).map(([input]) => new URL(String(input)))
     expect(urls).toHaveLength(Object.keys(firstManifest.officialDocs.links).length)
     expect(urls.every(url => url.pathname.includes('/LoopTroop-Website/main/docs/'))).toBe(true)
@@ -808,7 +866,7 @@ describe('assistant evidence workspace', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    await prepareAssistantEvidence({ mode: 'help' }, cwd, undefined, 'the why did how help topic shared')
+    await prepareAssistantEvidence({}, cwd, undefined, 'the why did how help topic shared')
     const evidence = join(cwd, 'evidence')
     const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
     const sourceIndex = await readFile(join(evidence, manifest.installedSource.index), 'utf8')
@@ -837,7 +895,7 @@ describe('assistant evidence workspace', () => {
     const ticket = makeTicket('7:LINKED-ROOT', 7)
     attachTicket(ticket, projectLink)
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
 
     expect(await readFile(join(cwd, 'evidence/projects/7/source/source.ts'), 'utf8')).toBe('project source')
   })
@@ -851,9 +909,9 @@ describe('assistant evidence workspace', () => {
     await symlink(realDirectory, linkDirectory, process.platform === 'win32' ? 'junction' : 'dir')
     await writeFile(filePath, 'not a directory')
 
-    await expect(prepareAssistantEvidence({ mode: 'help' }, 'relative-context')).rejects.toThrow('must be absolute')
-    await expect(prepareAssistantEvidence({ mode: 'help' }, linkDirectory)).rejects.toThrow('app-owned directory')
-    await expect(prepareAssistantEvidence({ mode: 'help' }, filePath)).rejects.toThrow('app-owned directory')
+    await expect(prepareAssistantEvidence({}, 'relative-context')).rejects.toThrow('must be absolute')
+    await expect(prepareAssistantEvidence({}, linkDirectory)).rejects.toThrow('app-owned directory')
+    await expect(prepareAssistantEvidence({}, filePath)).rejects.toThrow('app-owned directory')
     expect(existsSync(join(realDirectory, 'evidence'))).toBe(false)
   })
 
@@ -886,7 +944,7 @@ describe('assistant evidence workspace', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    await prepareAssistantEvidence({ mode: 'help' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const evidence = join(cwd, 'evidence')
     const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
     const attemptedHosts = fetchMock.mock.calls.map(([input]) => new URL(String(input)).hostname)
@@ -930,7 +988,7 @@ describe('assistant evidence workspace', () => {
     await writeFile(join(projectRoot, 'tests', 'feature.test.ts'), sourceChunk)
     await writeFile(join(secondProjectRoot, 'project.zig'), 'second project source')
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
     const firstProject = manifest.projects.find((project: { id: number }) => project.id === 7)
     const secondProject = manifest.projects.find((project: { id: number }) => project.id === 8)
@@ -955,7 +1013,7 @@ describe('assistant evidence workspace', () => {
     await writeFile(join(oversizedProject, 'kept.zig'), 'small source')
     const oversizedTicket = makeTicket('8:OVERSIZED', 8)
     attachTicket(oversizedTicket, oversizedProject)
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: oversizedTicket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: oversizedTicket.id }, cwd)
     const secondManifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
     expect(secondManifest.projects[0].copiedFileCount).toBe(1)
     expect(secondManifest.projects[0].omissions.per_file_size_limit).toBe(1)
@@ -988,7 +1046,7 @@ describe('assistant evidence workspace', () => {
       } as Awaited<ReturnType<typeof actualFsPromises.opendir>>
     })
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
     const evidence = join(cwd, 'evidence')
     const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
     const sourceFiles: string[] = []
@@ -1018,7 +1076,7 @@ describe('assistant evidence workspace', () => {
     ])
     mocks.listTickets.mockReturnValue([projectTicket, orphanTicket])
 
-    await prepareAssistantEvidence({ mode: 'tickets' }, cwd)
+    await prepareAssistantEvidence({}, cwd)
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
 
     expect(manifest.projects[0].omissions.unavailable_project_root).toBe(1)
@@ -1037,7 +1095,7 @@ describe('assistant evidence workspace', () => {
     const ticket = makeTicket('7:OUTSIDE-WORKTREE', 7)
     attachTicket(ticket, projectRoot, outsideWorktree)
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
     const evidence = join(cwd, 'evidence')
     const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
     const sourceRoot = join(evidence, 'projects', '7', 'source')
@@ -1062,7 +1120,7 @@ describe('assistant evidence workspace', () => {
     const ticket = makeTicket('7:LINKED-WORKTREE', 7)
     attachTicket(ticket, projectRoot, linkedWorktree)
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
 
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence/manifest.json'), 'utf8'))
     expect(manifest.projects[0].sourceKind).toBe('attached project')
@@ -1098,7 +1156,7 @@ describe('assistant evidence workspace', () => {
       return { entries: [], hasOlder: false, olderCursor: null }
     })
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
     const gaps = manifest.coverage.gaps as Array<{ area: string; detail: string }>
 
@@ -1140,7 +1198,7 @@ describe('assistant evidence workspace', () => {
       } as Awaited<ReturnType<typeof actualFsPromises.opendir>>
     })
 
-    await expect(prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd, controller.signal))
+    await expect(prepareAssistantEvidence({ ticketId: ticket.id }, cwd, controller.signal))
       .rejects.toThrow('snapshot cancelled')
 
     expect(mocks.opendir.mock.calls.filter(([path]) => String(path) === projectRoot)).toHaveLength(1)
@@ -1156,11 +1214,10 @@ describe('assistant evidence workspace', () => {
     attachTicket(ticket, projectRoot)
     mocks.queryLogPage.mockResolvedValue(null)
 
-    await expect(prepareAssistantEvidence({ mode: 'help', ticketId: ticket.id }, cwd)).rejects.toThrow('Help scope cannot include a ticket id')
-    await expect(prepareAssistantEvidence({ mode: 'tickets', ticketId: 'not-a-ticket-ref' }, cwd)).rejects.toThrow('Ticket scope requires a valid ticket id')
+    await expect(prepareAssistantEvidence({ ticketId: 'not-a-ticket-ref' }, cwd)).rejects.toThrow('Ticket scope requires a valid ticket id')
     expect(existsSync(join(cwd, 'evidence'))).toBe(false)
 
-    await prepareAssistantEvidence({ mode: 'tickets', ticketId: ticket.id }, cwd)
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
     const manifest = JSON.parse(await readFile(join(cwd, 'evidence', 'manifest.json'), 'utf8'))
     const logHistory = manifest.tickets[0].logs as Record<string, { complete: boolean }>
     expect(Object.values(logHistory).every(view => !view.complete)).toBe(true)

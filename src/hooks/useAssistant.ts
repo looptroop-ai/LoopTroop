@@ -17,6 +17,7 @@ interface AssistantScopeState {
   openGeneration: number
   activeId: string | null
   drafts: Record<string, string>
+  newDraft: string
   loading: boolean
   openingId: string | null
   creating: boolean
@@ -31,6 +32,7 @@ const EMPTY_SCOPE_STATE: AssistantScopeState = {
   openGeneration: 0,
   activeId: null,
   drafts: {},
+  newDraft: '',
   loading: false,
   openingId: null,
   creating: false,
@@ -45,10 +47,9 @@ function summaryOf(session: AssistantSession): AssistantSessionSummary {
 
 export function useAssistant(scope: AssistantScope, enabled: boolean) {
   const stableScope = useMemo<AssistantScope>(() => ({
-    mode: scope.mode,
     ...(scope.ticketId ? { ticketId: scope.ticketId } : {}),
-  }), [scope.mode, scope.ticketId])
-  const scopeKey = `${stableScope.mode}:${stableScope.ticketId ?? ''}`
+  }), [scope.ticketId])
+  const scopeKey = stableScope.ticketId ? `ticket:${stableScope.ticketId}` : 'dashboard'
   const currentScopeKeyRef = useRef(scopeKey)
   currentScopeKeyRef.current = scopeKey
   const [scopes, setScopes] = useState<Record<string, AssistantScopeState>>({})
@@ -72,7 +73,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     setScopes(previous => {
       const nextState = update(previous[key] ?? EMPTY_SCOPE_STATE)
       const next = { ...previous }
-      if (key !== currentScopeKeyRef.current && nextState.openIds.length === 0 && !nextState.loading && !nextState.creating && nextState.closingIds.length === 0) {
+      if (key !== currentScopeKeyRef.current && nextState.openIds.length === 0 && !nextState.newDraft && !nextState.loading && !nextState.creating && nextState.closingIds.length === 0) {
         delete next[key]
       } else {
         next[key] = nextState
@@ -103,7 +104,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       const next = { ...previous }
       for (const [key, state] of Object.entries(previous)) {
         if (key === scopeKey) continue
-        if (state.openIds.length === 0 && !state.loading && !state.creating && state.closingIds.length === 0) {
+        if (state.openIds.length === 0 && !state.newDraft && !state.loading && !state.creating && state.closingIds.length === 0) {
           delete next[key]
           changed = true
           continue
@@ -260,8 +261,9 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     })
   }, [details, scopeKey, updateScope])
 
-  const setDraft = useCallback((id: string, value: string) => {
+  const setDraft = useCallback((id: string | null, value: string) => {
     updateScope(scopeKey, state => {
+      if (!id) return { ...state, newDraft: value }
       if (!state.openIds.includes(id)) return state
       const drafts = { ...state.drafts }
       if (value) drafts[id] = value
@@ -270,12 +272,12 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     })
   }, [scopeKey, updateScope])
 
-  const createSession = useCallback(async () => {
+  const createSession = useCallback(async (): Promise<AssistantSession | null> => {
     const controller = beginRequest()
     updateScope(scopeKey, state => ({ ...state, creating: true, error: null }))
     try {
       const session = await createAssistantSession(stableScope, controller.signal)
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return null
       updateScope(scopeKey, state => ({
         ...state,
         sessions: [summaryOf(session), ...state.sessions.filter(item => item.id !== session.id)],
@@ -283,14 +285,17 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
         openedAt: { ...state.openedAt, [session.id]: state.openGeneration + 1 },
         openGeneration: state.openGeneration + 1,
         activeId: session.id,
+        newDraft: '',
         creating: false,
       }))
       setDetails(previous => ({ ...previous, [session.id]: session }))
+      return session
     } catch (caught) {
       if (!controller.signal.aborted) updateScope(scopeKey, state => ({
         ...state,
         error: describeQueryError(caught) ?? 'Could not start an assistant conversation.',
       }))
+      return null
     } finally {
       endRequest(controller)
       if (!controller.signal.aborted) updateScope(scopeKey, state => ({ ...state, creating: false }))
@@ -396,8 +401,8 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     }
   }, [beginRequest, endRequest, scopeKey, stableScope, updateScope])
 
-  const sendMessage = useCallback(async (message: string): Promise<boolean> => {
-    const session = activeId ? details[activeId] : null
+  const sendMessage = useCallback(async (message: string, sessionOverride?: AssistantSession): Promise<boolean> => {
+    const session = sessionOverride ?? (activeId ? details[activeId] : null)
     const normalizedMessage = message.trim()
     if (!session?.canResume || !normalizedMessage || closingSessions.current.has(session.id) || current.closingIds.includes(session.id) || activeStreams.current.has(session.id)) return false
     const controller = beginRequest()
@@ -486,6 +491,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     sessions: current.sessions,
     openIds: current.openIds,
     drafts: current.drafts,
+    newDraft: current.newDraft,
     activeId,
     activeSession: activeDetail,
     loading: current.loading,

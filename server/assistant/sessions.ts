@@ -97,7 +97,9 @@ function configuration() {
 }
 
 export function assertAssistantScope(scope: AssistantScope): ReturnType<typeof getTicketByRef> {
-  if (scope.mode === 'help' && scope.ticketId) throw new AssistantError('Help conversations do not have a ticket scope.')
+  if (!scope || (scope.ticketId !== undefined && (typeof scope.ticketId !== 'string' || scope.ticketId.length === 0))) {
+    throw new AssistantError('Choose a valid ticket scope.')
+  }
   if (!scope.ticketId) return undefined
   const ticket = getTicketByRef(scope.ticketId)
   if (!ticket) throw new AssistantError('Ticket not found.', 404)
@@ -138,16 +140,18 @@ function find(id: string, scope: AssistantScope): SessionRecord {
   if (!row) throw new AssistantError('Conversation not found.', 404)
   const record = readSessionRecord(row.key, row.value)
   if (!record) throw new AssistantError('Conversation not found.', 404)
-  if (record.mode !== scope.mode || record.ticketId !== (ticket?.id ?? null)
-    || (scope.ticketId && record.projectId !== ticket?.projectId)) {
+  const inScope = ticket
+    ? record.mode === 'tickets' && record.ticketId === ticket.id && record.projectId === ticket.projectId
+    : record.ticketId === null && (record.mode === 'help' || record.mode === 'tickets')
+  if (!inScope) {
     throw new AssistantError('Conversation not found in this scope.', 404)
   }
   return record
 }
 
 function summary(record: SessionRecord): AssistantSessionSummary {
-  const { id, mode, ticketId, title, archived, createdAt, updatedAt } = record
-  return { id, mode, ticketId, title: temporaryTitles.get(id) ?? title, archived, createdAt, updatedAt }
+  const { id, ticketId, title, archived, createdAt, updatedAt } = record
+  return { id, ticketId, title: temporaryTitles.get(id) ?? title, archived, createdAt, updatedAt }
 }
 
 export function assistantMessages(messages: Message[]): AssistantMessage[] {
@@ -261,8 +265,9 @@ export async function listAssistantSessions(scope?: AssistantScope): Promise<Ass
   const ticket = scope ? assertAssistantScope(scope) : undefined
   cleanupTemporarySessions()
   return records().filter(record => (record.saved || record.owner === runtimeId) && (!scope
-    || (record.mode === scope.mode && record.ticketId === (ticket?.id ?? null)
-      && (!scope.ticketId || record.projectId === ticket?.projectId))))
+    || (ticket
+      ? record.mode === 'tickets' && record.ticketId === ticket.id && record.projectId === ticket.projectId
+      : record.ticketId === null && (record.mode === 'help' || record.mode === 'tickets'))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(summary)
 }
 
@@ -285,7 +290,7 @@ export async function createAssistantSession(scope: AssistantScope, signal?: Abo
     }
     const now = new Date().toISOString()
     const record: SessionRecord = {
-      id, mode: scope.mode, ticketId: ticket?.id ?? null, projectId: ticket?.projectId ?? null,
+      id, mode: 'tickets', ticketId: ticket?.id ?? null, projectId: ticket?.projectId ?? null,
       title: 'New chat', archived: false, saved: profile.saveChatSessions, owner: runtimeId,
       openCodeSessionId: remote.id, createdAt: now, updatedAt: now,
     }

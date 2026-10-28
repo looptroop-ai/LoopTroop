@@ -1,20 +1,24 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { fetchAssistantHistory, fetchAssistantSessions, readAssistantEvents } from '../assistantApi'
+import { createAssistantSession, fetchAssistantHistory, fetchAssistantSessions, readAssistantEvents, sendAssistantMessage } from '../assistantApi'
 
 afterEach(() => vi.unstubAllGlobals())
 
-it('keeps dashboard ticket history unfiltered and scopes a ticket session by encoded id', async () => {
+it('lists dashboard chats separately from global history and scopes a ticket by encoded id', async () => {
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('[]')))
   vi.stubGlobal('fetch', fetchMock)
   const signal = new AbortController().signal
 
-  await fetchAssistantSessions({ mode: 'tickets' }, signal)
-  await fetchAssistantSessions({ mode: 'tickets', ticketId: 'project/T-4 ?' }, signal)
+  await fetchAssistantSessions({}, signal)
+  await fetchAssistantSessions({ ticketId: 'project/T-4 ?' }, signal)
 
   const dashboardUrl = new URL(fetchMock.mock.calls[0]![0] as string, 'http://localhost')
   const ticketUrl = new URL(fetchMock.mock.calls[1]![0] as string, 'http://localhost')
-  expect([...dashboardUrl.searchParams.entries()]).toEqual([['mode', 'tickets']])
-  expect([...ticketUrl.searchParams.entries()]).toEqual([['mode', 'tickets'], ['ticketId', 'project/T-4 ?']])
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    '/api/chat/sessions?scope=dashboard',
+    '/api/chat/sessions?ticketId=project%2FT-4+%3F',
+  ])
+  expect([...dashboardUrl.searchParams.entries()]).toEqual([['scope', 'dashboard']])
+  expect([...ticketUrl.searchParams.entries()]).toEqual([['ticketId', 'project/T-4 ?']])
 })
 
 it('loads global history without a mode or ticket filter', async () => {
@@ -22,6 +26,20 @@ it('loads global history without a mode or ticket filter', async () => {
   vi.stubGlobal('fetch', fetchMock)
   await fetchAssistantHistory(new AbortController().signal)
   expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions', expect.any(Object))
+})
+
+it('sends only the selected ticket as assistant session context', async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(new Response('{}'))
+    .mockResolvedValueOnce(new Response(new ReadableStream()))
+  vi.stubGlobal('fetch', fetchMock)
+  const signal = new AbortController().signal
+
+  await createAssistantSession({ ticketId: 'project/T-4' }, signal)
+  await sendAssistantMessage('session-id', 'Question', { ticketId: 'project/T-4' }, signal)
+
+  expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ ticketId: 'project/T-4' })
+  expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ ticketId: 'project/T-4', message: 'Question' })
 })
 
 it('parses SSE events split across arbitrary network chunks', async () => {

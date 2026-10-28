@@ -1,7 +1,4 @@
-export type AssistantMode = 'help' | 'tickets'
-
 export interface AssistantScope {
-  mode: AssistantMode
   ticketId?: string
 }
 
@@ -14,7 +11,6 @@ export interface AssistantMessage {
 
 export interface AssistantSessionSummary {
   id: string
-  mode: AssistantMode
   ticketId: string | null
   title: string
   archived: boolean

@@ -11,7 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
-- Ask LoopTroop for help or discuss ticket history and project code in a read-only assistant, with a separate model and optional saved conversations.
+- Read LoopTroop docs, source, and ticket evidence in one read-only assistant, with dashboard or ticket scope and optional saved conversations.
 - Beads support external file targets with visible warnings and explicit empty targets; tickets with no repository changes finish without an empty commit or PR.
 - Retry starts failed AI work in a fresh session, with optional user guidance across supported AI steps; Continue preserves the existing conversation.
 - Model-generated YAML values beginning with `,`, `]`, or `}` now parse without changing their text.
@@ -20,11 +20,16 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 
-- Add a shared assistant window on the dashboard and inside tickets. Help uses official documentation and LoopTroop source; ticket questions cover every project from the dashboard or the selected ticket's records, saved logs, planning documents, and project code. Answers can cite their evidence and report missing or omitted sources.
-- Configure the assistant model separately below the council settings, with the existing model, effort, and routing controls. Save chat sessions is enabled by default and applies to new conversations. Closing a conversation archives it when saving is enabled or deletes its OpenCode session otherwise; hiding the window preserves open conversations. Search saved history across scopes and open the matching ticket before resuming another ticket's chat.
+- Add a shared read-only assistant window on the dashboard and inside tickets, with citations and notices for missing evidence.
+- Configure the assistant model separately below the council settings, with the existing model, effort, and routing controls. Save chat sessions is enabled by default and applies to new conversations. Closing a conversation archives it when saving is enabled or deletes its OpenCode session otherwise; hiding the window preserves open conversations. Search saved history by title and scope, and open the matching ticket before resuming its conversation.
 - Keep assistant conversations separate from workflow sessions and deny editing, shell commands, workflow actions, and reads outside prepared evidence. Repository snapshots keep ordinary source filenames and skip private paths, generated files, and symbolic links inside the project. Ticket logs and artifacts are redacted, collected within limits, and marked incomplete when history or a project is unavailable. Archived conversations remain available while OpenCode retains their sessions.
-- Preserve drafts, open tabs, and running replies when switching modes or tickets. Keep citations in a separate browser tab, follow replies while the reader is at the bottom, and offer a jump control when they scroll up. Unchanged assistant model settings can be saved while model discovery is unavailable.
-- Remove dedicated ticket conversations when their ticket or project is deleted or reset. Keep Help and dashboard history, including past replies about deleted tickets, and refresh dashboard evidence for later questions. Damaged conversation records cannot interrupt valid history; failed remote deletion keeps a receipt for retry. A conversation is refused if its ticket disappears while it is being created.
+- Preserve drafts, open tabs, and running replies when switching between dashboard and ticket context. A blank chat creates its conversation on the first send. Keep citations in a separate browser tab, follow replies while the reader is at the bottom, and offer a jump control when they scroll up. Unchanged assistant model settings can be saved while model discovery is unavailable.
+- Remove ticket-scoped conversations when their ticket or project is deleted or reset. Keep dashboard history, including past replies from legacy Help conversations and replies about deleted tickets, and refresh dashboard evidence for later questions. Damaged conversation records cannot interrupt valid history; failed remote deletion keeps a receipt for retry. A conversation is refused if its ticket disappears while it is being created.
+
+### Changed
+
+- Use one assistant experience for documentation, LoopTroop source, and ticket evidence. Dashboard conversations cover every attached project and ticket regardless of board filters; conversations started in a ticket view use only that ticket and its project. Sending the first message creates the first conversation, after which **New chat** appears. Legacy Help conversations become dashboard-scoped, while existing ticket conversations stay bound to their ticket.
+- Open the assistant window against the bottom and right edges, covering the launcher while open, and allow it to move by dragging; remember its position for the current browser session. Keep the fixed, inverted-color launcher just left of **Back to bottom**, at 70% opacity at rest and 100% on hover.
 
 ### Fixed
 

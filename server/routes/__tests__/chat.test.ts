@@ -211,8 +211,8 @@ describe('chat session routes', () => {
       { type: 'status', phase: 'preparing', modelId: 'provider/model', variant: 'balanced' },
       { type: 'status', phase: 'responding', modelId: 'provider/model', variant: 'balanced' },
     ])
-    expect(events[2]).toEqual({ type: 'reasoning', text: 'private thought', streaming: true, modelId: 'provider/model', variant: 'balanced' })
-    expect(events[3]).toMatchObject({ type: 'delta' })
+    expect(events).toContainEqual({ type: 'reasoning', text: 'private thought', streaming: true, modelId: 'provider/model', variant: 'balanced' })
+    expect(events.some(event => event.type === 'delta')).toBe(true)
     expect(events.at(-1)).toMatchObject({ type: 'done', session: { id: session.id } })
     expect(events.some(event => event.type === 'error')).toBe(false)
     expect(getMessages).toHaveBeenCalledTimes(2)

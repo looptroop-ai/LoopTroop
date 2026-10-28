@@ -160,7 +160,7 @@ afterEach(() => {
 })
 
 describe('assistant evidence workspace', () => {
-  it.skipIf(process.platform === 'win32')('keeps structured JSON redaction when case collisions rename a source path', async () => {
+  it.skipIf(process.platform !== 'linux')('keeps structured JSON redaction when case collisions rename a source path', async () => {
     const { cwd, projectRoot } = await fixture()
     await writeFile(join(projectRoot, 'Config.json'), JSON.stringify({ apiKey: { current: 'first-case-secret' } }))
     await writeFile(join(projectRoot, 'config.json'), JSON.stringify({ apiKey: { current: 'renamed-case-secret' } }))

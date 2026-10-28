@@ -112,6 +112,8 @@ describe('shared blocked error diagnostics', () => {
       'login(password=Hunter2xyz)',
       'gateway replied: Bearer abcdefgh-',
       'See ?token=opaque123&limit=10#results',
+      '#password: hunter2',
+      '#password=opaqueSecret',
       'GH_TOKEN: ${{ github.token }}',
     ].join('\n')
 
@@ -125,6 +127,8 @@ describe('shared blocked error diagnostics', () => {
       'login(password=[redacted])',
       'gateway replied: Bearer [redacted]',
       'See ?token=[redacted]&limit=10#results',
+      '#password: [redacted]',
+      '#password=[redacted]',
       'GH_TOKEN: ${{ github.token }}',
     ].join('\n'))
   })

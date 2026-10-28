@@ -138,7 +138,7 @@ function isEvidenceExpressionTail(value: string, start: number): boolean {
 
 /** Redact credential literals in evidence without rewriting URLs or source identifiers. */
 export function sanitizeEvidenceText(value: string): string {
-  const assigned = value.replace(EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN, (match, prefix: string, key: string, literal: string, offset: number, source: string) => {
+  const assigned = redactEscapedCredentials(value).replace(EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN, (match, prefix: string, key: string, literal: string, offset: number, source: string) => {
     if (!isEvidenceCredentialKey(key)) return match
     const before = source[offset - 1]
     if (before && '?&#'.includes(before) && prefix.trimEnd().endsWith('=')) return match

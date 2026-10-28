@@ -101,6 +101,13 @@ describe('shared blocked error diagnostics', () => {
     expect(clean).not.toContain('opaque_value')
   })
 
+  it('redacts credentials in escaped serialized source while preserving other fields', () => {
+    const source = String.raw`const config = "{\"apiKey\":\"operator-secret\",\"theme\":\"dark\"}"`
+    expect(sanitizeEvidenceText(source)).toBe(String.raw`const config = "{\"apiKey\":\"[redacted]\",\"theme\":\"dark\"}"`)
+    const nested = String.raw`{\\\"password\\\":\\\"nested-secret\\\"}`
+    expect(sanitizeEvidenceText(nested)).toBe(String.raw`{\\\"password\\\":\\\"[redacted]\\\"}`)
+  })
+
   it('redacts unquoted credential values with punctuation and base64 padding', () => {
     const source = [
       'apiKey: opaque==',

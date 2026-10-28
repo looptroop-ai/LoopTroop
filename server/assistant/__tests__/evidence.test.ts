@@ -160,6 +160,28 @@ afterEach(() => {
 })
 
 describe('assistant evidence workspace', () => {
+  it.skipIf(process.platform === 'win32')('keeps structured JSON redaction when case collisions rename a source path', async () => {
+    const { cwd, projectRoot } = await fixture()
+    await writeFile(join(projectRoot, 'Config.json'), JSON.stringify({ apiKey: { current: 'first-case-secret' } }))
+    await writeFile(join(projectRoot, 'config.json'), JSON.stringify({ apiKey: { current: 'renamed-case-secret' } }))
+    const ticket = makeTicket('7:JSON-CASE-COLLISION', 7)
+    attachTicket(ticket, projectRoot)
+
+    await prepareAssistantEvidence({ ticketId: ticket.id }, cwd)
+
+    const evidence = join(cwd, 'evidence')
+    const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'))
+    const sourceDir = join(evidence, 'projects', '7', 'source')
+    const sourceIndex = await readFile(join(evidence, manifest.projects[0].sourceIndex), 'utf8')
+    expect(sourceIndex).toContain('Config.json → projects/7/source/Config.json')
+    expect(sourceIndex).toContain('config.json → projects/7/source/__looptroop-source-segment-1__')
+    for (const file of ['Config.json', '__looptroop-source-segment-1__']) {
+      const copied = await readFile(join(sourceDir, file), 'utf8')
+      expect(JSON.parse(copied)).toEqual({ apiKey: '[redacted]' })
+      expect(copied).not.toMatch(/(?:first|renamed)-case-secret/)
+    }
+  })
+
   it('writes one validated ticket, every paged log and workflow artifact, sanitized source, and a safe worktree copy', async () => {
     const { cwd, projectRoot } = await fixture()
     await mkdir(join(projectRoot, 'src'), { recursive: true })

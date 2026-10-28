@@ -81,7 +81,7 @@ const PREFIXED_CREDENTIAL_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z
 const CREDENTIAL_HINT_PATTERN = /authorization|api[-_\s]?key|token|password|secret|cookie|private[-_\s]?key|access[-_\s]?key|credentials?|ssh[-_\s]?key|signing[-_\s]?key|passphrase|jwt|bearer|basic/i
 const EVIDENCE_AUTHORIZATION_TOKEN_PATTERN = /\b((?:Bearer|Basic)[ \t]+)([A-Za-z0-9._~+/-]+=*)/gi
 const EVIDENCE_AUTHORIZATION_PROSE_PATTERN = /^(?:authentication|authorization|credentials?|headers?|password|username|usage|flow|token|tokens|scheme)$/i
-const EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN = /((?<![a-z0-9_-])["']?([a-z0-9_-]+)["']?[ \t]*(?<![=!<>:])[:=](?![=>:=])[ \t]*)("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/-]+=*|[^\s"'`,;&?#)\x5d\x5b\x7b\x7d$():=<>!]+)(?=$|[\s,;}&#])/gi
+const EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN = /((?<![a-z0-9_-])["']?([a-z0-9_-]+)["']?[ \t]*(?<![=!<>:])[:=](?![=>:=])[ \t]*)("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/-]+=*|[^\s"'`,;\[\]{}]+)(?=$|[\s,;}&#])/gi
 const EVIDENCE_URL_USERINFO_PATTERN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/?#\s"'<>@]+@/gi
 const EVIDENCE_URL_PARAMETER_PATTERN = /([?&#])([a-z0-9_%.-]+)=([^&#\s"'<>]+)/gi
 const EVIDENCE_PLACEHOLDER = /^(?:string|number|boolean|object|unknown|any|never|void|undefined|null|none|your(?:[-_ ]|$)|example(?:[-_ ]|$)|sample(?:[-_ ]|$)|test(?:[-_ ]|$)|dummy(?:[-_ ]|$)|placeholder(?:[-_ ]|$)|replace(?:[-_ ]|$)|redacted(?:[-_ ]|$)|change[-_ ]?me(?:[-_ ]|$))$/i
@@ -115,13 +115,14 @@ function isEvidencePlaceholder(value: string): boolean {
 
 function isEvidenceCodeReference(value: string): boolean {
   return /^(?:await|yield|new|typeof|void|delete|throw|return)$/.test(value)
+    || /^[a-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\(\)$/.test(value)
     || /^(?:(?:[A-Z][a-z]+)+(?:<[^>\r\n]*>)?|[a-z_$][\w$]*\(|[a-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\(?)$/.test(value)
 }
 
 function isEvidenceAuthorizationToken(scheme: string, value: string): boolean {
   if (isEvidencePlaceholder(value) || CREDENTIAL_PROSE_PATTERN.test(value)) return false
   if (scheme.trim().toLowerCase() === 'basic') return /^[A-Za-z0-9+/]{8,}={0,2}$/.test(value)
-  return value.length >= 8 && (/[0-9._~+/-=]/.test(value) || (/[a-z]/.test(value) && /[A-Z]/.test(value)) || value.length >= 16)
+  return value.length >= 8 && (/[-0-9._~+/=]/.test(value) || (/[a-z]/.test(value) && /[A-Z]/.test(value)) || value.length >= 16)
 }
 
 function isEvidenceExpressionTail(value: string, start: number): boolean {
@@ -139,6 +140,8 @@ function isEvidenceExpressionTail(value: string, start: number): boolean {
 export function sanitizeEvidenceText(value: string): string {
   const assigned = value.replace(EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN, (match, prefix: string, key: string, literal: string, offset: number, source: string) => {
     if (!isEvidenceCredentialKey(key)) return match
+    if (source[offset - 1] && '?&#'.includes(source[offset - 1])) return match
+    if (source.startsWith('${{', offset + prefix.length)) return match
     if (isEvidenceExpressionTail(source, offset + match.length)) return match
     const quoted = literal.startsWith('"') || literal.startsWith("'")
     const rawValue = quoted ? literal.slice(1, -1) : literal
@@ -148,7 +151,8 @@ export function sanitizeEvidenceText(value: string): string {
       const quote = literal[0]
       return `${prefix}${quote}${REDACTED}${quote}`
     }
-    return `${prefix}${/^(Bearer|Basic)\s+/i.test(literal) ? literal.slice(0, literal.search(/\s/)) + ' ' : ''}${REDACTED}`
+    const closing = !literal.includes('(') ? literal.match(/\)+$/)?.[0] ?? '' : ''
+    return `${prefix}${/^(Bearer|Basic)\s+/i.test(literal) ? literal.slice(0, literal.search(/\s/)) + ' ' : ''}${REDACTED}${closing}`
   })
   return assigned
     .replace(EVIDENCE_URL_USERINFO_PATTERN, '$1[redacted]@')

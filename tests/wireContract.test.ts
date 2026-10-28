@@ -98,6 +98,7 @@ const EXPECTED_ROUTES = [
   'GET /api/tickets/:id/skips',
   'GET /api/tickets/:id/ui-state',
   'GET /api/workflow/meta',
+  'PATCH /api/chat/sessions/:id/title',
   'PATCH /api/profile',
   'PATCH /api/projects/:id',
   'PATCH /api/tickets/:id',

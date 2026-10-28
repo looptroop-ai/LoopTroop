@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Summary
 
 - Read LoopTroop docs, source, and ticket evidence in one read-only assistant, with shared scoped tabs, copyable messages, and model-provided reasoning.
+- Clear deleted ticket chats from open tabs on view changes, and keep newer answers after close failures.
 - Beads support external file targets with visible warnings and explicit empty targets; tickets with no repository changes finish without an empty commit or PR.
 - Retry starts failed AI work in a fresh session, with optional user guidance across supported AI steps; Continue preserves the existing conversation.
 - Model-generated YAML values beginning with `,`, `]`, or `}` now parse without changing their text.
@@ -35,6 +36,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
+- Refresh assistant sessions when the ticket view changes so deleted ticket chats are evicted without disturbing other tabs. Cancel a pending close-failure transcript refresh when a new message starts.
+- Keep toast notifications visible above the assistant window while it is open.
 - Show the assistant conversation menu above the chat window, group model steps into one thinking section per answer, distinguish context preparation from the model response, and retain matching reasoning received during a reply when OpenCode omits it from the returned message.
 
 - Keep retry-note history when ordinary Retry retires guidance or Manual QA recovery succeeds. Preserve council guidance notices through Continue and refinement, discard saved Full Answers when a model is stopped or Part 1 is restarted, and keep phase retry notes on the failed PRD part, including workflow timeouts. Recheck coding recovery ownership before reset, cleanup, and bead updates. Recover aged interview stop reservations without bypassing remote-stop confirmation, and block owned unexpected interview request failures while preserving submitted answers. Hold interview ownership through terminal route handling so stale failures cannot block identical successor submissions.
@@ -56,6 +59,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Security
 
+- Preserve structured credential redaction for JSON source files renamed in evidence snapshots, and redact unquoted credential values containing punctuation or base64 padding.
 - Apply evidence-only assistant permissions when creating sessions and sending questions, and refuse OpenCode updates that do not confirm them. Exclude ignored files, environment and key files, and generated ticket state from repository snapshots. Redact recognizable credentials and signed URL parameters in copied evidence and returned transcripts. Store copied agent instruction files under neutral names and prevent assistant transcripts from being cached by browsers or proxies.
 - Nested shell checks follow wrapper directory changes. Tar checks recognize abbreviated options and exact flag precedence, keep option values separate from flags, verify every archive output and extraction directory, and refuse external command helpers and indirect options whose effects cannot be verified. Exclusion-only Git pathspecs receive whole-checkout protection, and inline shell options cannot hide the command behind option values or `--`. Windows filesystem paths retain their separators during command checks. POSIX escapes, including escaped option punctuation, are checked by the shell lexer so escaped quotes and comment apostrophes cannot hide Git or GitHub writes.
 - The command guard checks conditional and grouped shell state before trusting the current directory, protects managed Git indexes and stash restoration, checks executable-path, Git helper-path, and loader changes, and preserves BOM-prefixed paths in overwrite checks. It also inspects `watch` and `Start-Process` commands, rejects uninspected interactive shells, and no longer treats ordinary archive or file-mutation operands as help or dry-run flags. Interpreter inline evaluation such as `python -c` remains outside this request-time guard.

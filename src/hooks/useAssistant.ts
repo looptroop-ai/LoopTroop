@@ -188,7 +188,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       endRequest(controller)
       updateState(state => ({ ...state, loading: false }))
     }
-  }, [beginRequest, enabled, endRequest, globalRefresh, updateState])
+  }, [beginRequest, enabled, endRequest, globalRefresh, scopeKey, updateState])
 
   useEffect(() => {
     if (!enabled || !activeId || activeDetail) return
@@ -471,6 +471,8 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     const normalizedMessage = message.trim()
     if (!session?.canResume || !normalizedMessage || closingSessions.current.has(session.id) || current.closingIds.includes(session.id) || activeStreams.current.has(session.id)) return false
     const sessionScope: AssistantScope = session.ticketId ? { ticketId: session.ticketId } : {}
+    detailRequests.current.get(session.id)?.abort()
+    detailRequests.current.delete(session.id)
     const controller = beginRequest()
     activeStreams.current.set(session.id, { controller, message: normalizedMessage })
     updateState(state => {

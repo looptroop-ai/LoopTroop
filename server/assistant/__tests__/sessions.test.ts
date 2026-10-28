@@ -501,7 +501,7 @@ describe('assistant prompts', () => {
       ['preparing', 'google/gemini-3.8-flash', undefined],
       ['responding', 'google/gemini-3.8-flash', undefined],
     ])
-    expect(reasoningUpdates).toEqual(['Intermediate thought', 'Intermediate thought\nLatest thought'])
+    expect(reasoningUpdates).toEqual(['Intermediate thought\nLatest thought'])
     expect(result.messages).toEqual([
       { id: 'previous-answer', role: 'assistant', content: 'Earlier answer', reasoning: 'Earlier thought', createdAt: '' },
       { id: 'intermediate-answer', role: 'assistant', content: 'Intermediate answer', reasoning: 'Intermediate thought', modelId: 'google/gemini-3.8-flash', createdAt: '' },
@@ -525,6 +525,16 @@ describe('assistant prompts', () => {
       { role: 'user', content: 'Question', reasoning: undefined },
       { role: 'assistant', content: 'Live answer', reasoning: 'Live thought' },
     ])
+  })
+
+  it('does not emit a reasoning update when the model produces no reasoning', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({})
+    const onReasoning = vi.fn()
+
+    await sessions.promptAssistant(session.id, {}, 'Question', new AbortController().signal, () => undefined, onReasoning)
+
+    expect(onReasoning).not.toHaveBeenCalled()
   })
 
   it('keeps source citations from the previous answer available to follow-up selection', async () => {
@@ -570,7 +580,7 @@ describe('assistant prompts', () => {
     )
 
     expect(deltas).toEqual(['Completed answer'])
-    expect(reasoningUpdates).toEqual([['password: ', 'provider/model', 'balanced'], ['password: [redacted]', 'provider/model', 'balanced']])
+    expect(reasoningUpdates).toEqual([['password: [redacted]', 'provider/model', 'balanced']])
     expect(JSON.stringify(reasoningUpdates)).not.toContain('opaque-secret')
     expect(result).toMatchObject({ canResume: false, messages: [
       { role: 'user', content: 'Question' },
@@ -580,6 +590,58 @@ describe('assistant prompts', () => {
       },
     ] })
     expect(storedRecord(session.id)).toBeUndefined()
+  })
+
+  it('throttles live reasoning snapshots and flushes the final sanitized text', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({})
+    const reasoningUpdates: string[] = []
+    vi.useFakeTimers()
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')
+    try {
+      adapter.promptSession = async (remoteId, _parts, _signal, options) => {
+        let thought = ''
+        const emitDelta = (delta: string) => {
+          thought += delta
+          options?.onEvent?.({
+            type: 'reasoning', sessionId: remoteId, messageId: 'answer', partId: 'thought',
+            text: thought, delta, streaming: true, complete: false,
+          })
+        }
+        for (let index = 0; index < 100; index += 1) emitDelta('x')
+        expect(reasoningUpdates).toEqual([])
+        await vi.advanceTimersByTimeAsync(250)
+        expect(reasoningUpdates).toEqual(['x'.repeat(100)])
+
+        emitDelta('\npassword: ')
+        await vi.advanceTimersByTimeAsync(250)
+        expect(reasoningUpdates).toEqual(['x'.repeat(100), `${'x'.repeat(100)}\npassword: `])
+        emitDelta('opaque-secret')
+        return 'Completed answer'
+      }
+
+      const result = await sessions.promptAssistant(
+        session.id, {}, 'Question', new AbortController().signal, () => undefined,
+        text => reasoningUpdates.push(text),
+      )
+
+      expect(reasoningUpdates).toEqual([
+        'x'.repeat(100),
+        `${'x'.repeat(100)}\npassword: `,
+        `${'x'.repeat(100)}\npassword: [redacted]`,
+      ])
+      expect(JSON.stringify(reasoningUpdates)).not.toContain('opaque-secret')
+      expect(result.messages.at(-1)).toMatchObject({ role: 'assistant', reasoning: `${'x'.repeat(100)}\npassword: [redacted]` })
+      const reasoningTimers = setTimeoutSpy.mock.results.flatMap((result, index) =>
+        setTimeoutSpy.mock.calls[index]?.[1] === 250 ? [result.value] : [])
+      expect(reasoningTimers).toHaveLength(3)
+      for (const timer of reasoningTimers) expect(clearTimeoutSpy).toHaveBeenCalledWith(timer)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(reasoningUpdates).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('uses the configured model and variant with read-only permissions and no auto-approval', async () => {

@@ -186,8 +186,8 @@ async function writeText(filePath: string, value: string): Promise<void> {
   await writeFile(filePath, value, 'utf8')
 }
 
-async function writeSourceText(filePath: string, value: string): Promise<void> {
-  if (extname(filePath).toLowerCase() === '.json') {
+async function writeSourceText(filePath: string, value: string, sourcePath = filePath): Promise<void> {
+  if (extname(sourcePath).toLowerCase() === '.json') {
     let parsed: unknown
     try {
       parsed = JSON.parse(value)
@@ -1004,7 +1004,7 @@ async function snapshotLocalProject(
         }
         const snapshotPath = sourceSnapshotPath(pathKey, reservedSnapshotPaths)
         const target = join(destination, ...snapshotPath.split('/'))
-        await writeSourceText(target, text)
+        await writeSourceText(target, text, relativePath)
         budget.files += 1
         budget.bytes += size
         scopeBudget.files += 1
@@ -1215,7 +1215,7 @@ async function writeInstalledSource(
       const snapshotPath = snapshotPaths.get(file.path)
       if (!snapshotPath) throw new Error('Installed source snapshot path was not reserved')
       const destination = join(evidenceDirectory, 'installed-source', ...snapshotPath.split('/'))
-      await writeSourceText(destination, text)
+      await writeSourceText(destination, text, file.path)
       included.set(file.path, snapshotPath)
     }))
     downloadedBytes += batchBytes

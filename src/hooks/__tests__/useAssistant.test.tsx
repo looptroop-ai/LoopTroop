@@ -35,7 +35,7 @@ function detail(item: AssistantSessionSummary, messages: AssistantSession['messa
   return { ...item, messages, canResume: true, saved: true }
 }
 
-it('loads all live sessions once and keeps their tabs and original scope across view changes', async () => {
+it('refreshes all live sessions when the selected ticket changes and keeps the other tabs', async () => {
   const ticketId = randomUUID()
   const ticketChat = summary(ticketId)
   const dashboardChat = summary(null)
@@ -56,11 +56,36 @@ it('loads all live sessions once and keeps their tabs and original scope across 
   hook.rerender({ currentTicketId: randomUUID() })
   expect(hook.result.current.activeId).toBe(ticketChat.id)
   expect(hook.result.current.openIds).toEqual([ticketChat.id, dashboardChat.id])
-  expect(api.fetchAssistantHistory).toHaveBeenCalledTimes(1)
+  await waitFor(() => expect(api.fetchAssistantHistory).toHaveBeenCalledTimes(2))
 
   act(() => hook.result.current.selectSession(dashboardChat.id))
   await waitFor(() => expect(api.fetchAssistantSession).toHaveBeenCalledWith(dashboardChat.id, {}, expect.any(AbortSignal)))
   expect(hook.result.current.activeId).toBe(dashboardChat.id)
+})
+
+it('evicts deleted ticket chats on return to the dashboard without closing other tabs', async () => {
+  const deletedTicketId = randomUUID()
+  const deletedChat = summary(deletedTicketId)
+  const otherTicketChat = summary(randomUUID())
+  const dashboardChat = summary(null)
+  api.fetchAssistantHistory
+    .mockResolvedValueOnce([deletedChat, otherTicketChat, dashboardChat])
+    .mockResolvedValueOnce([otherTicketChat, dashboardChat])
+  api.fetchAssistantSession.mockImplementation(async (id: string) => detail(
+    [deletedChat, otherTicketChat, dashboardChat].find(item => item.id === id) ?? dashboardChat,
+  ))
+
+  const hook = renderHook(({ currentTicketId }: { currentTicketId?: string }) => useAssistant(
+    currentTicketId ? { ticketId: currentTicketId } : {}, true,
+  ), { initialProps: { currentTicketId: deletedTicketId as string | undefined } })
+
+  await waitFor(() => expect(hook.result.current.openIds).toContain(deletedChat.id))
+  hook.rerender({ currentTicketId: undefined })
+
+  await waitFor(() => expect(hook.result.current.openIds).not.toContain(deletedChat.id))
+  expect(hook.result.current.openIds).toEqual(expect.arrayContaining([otherTicketChat.id, dashboardChat.id]))
+  expect(hook.result.current.sessions.map(item => item.id)).not.toContain(deletedChat.id)
+  expect(hook.result.current.activeId).not.toBe(deletedChat.id)
 })
 
 it('uses each conversation scope for send, rename, close and copy while new chats use the current view', async () => {
@@ -154,4 +179,42 @@ it('distinguishes preparing context from the model responding', async () => {
   await waitFor(() => expect(hook.result.current.pendingReply).toMatchObject({ phase: 'preparing', modelId: 'google/model' }))
   await act(async () => { continueStream(); await sending })
   expect(hook.result.current.pendingReply).toBeNull()
+})
+
+it('ignores a close-failure refresh that finishes after a newer answer', async () => {
+  const chat = summary(null)
+  const staleSnapshot = detail(chat, [
+    { id: 'old-answer', role: 'assistant', content: 'Earlier answer', createdAt: '' },
+  ])
+  const newAnswer = detail(chat, [
+    { id: 'new-question', role: 'user', content: 'New question', createdAt: '' },
+    { id: 'new-answer', role: 'assistant', content: 'New answer', createdAt: '' },
+  ])
+  let resolveCloseRefresh!: (session: AssistantSession) => void
+  const closeRefresh = new Promise<AssistantSession>(resolve => { resolveCloseRefresh = resolve })
+  api.fetchAssistantHistory.mockResolvedValue([chat])
+  api.fetchAssistantSession
+    .mockResolvedValueOnce(detail(chat))
+    .mockReturnValueOnce(closeRefresh)
+  api.closeAssistantSession.mockRejectedValue(new Error('Close failed'))
+  api.sendAssistantMessage.mockResolvedValue(new Response(''))
+  api.readAssistantEvents.mockImplementation(async function* () {
+    yield { type: 'done', session: newAnswer }
+  })
+
+  const hook = renderHook(() => useAssistant({}, true))
+  await waitFor(() => expect(hook.result.current.activeSession?.id).toBe(chat.id))
+  let closed: boolean | undefined
+  await act(async () => { closed = await hook.result.current.closeSession(chat.id) })
+  expect(closed).toBe(false)
+  await waitFor(() => expect(api.fetchAssistantSession).toHaveBeenCalledTimes(2))
+  const closeRefreshSignal = api.fetchAssistantSession.mock.calls[1]?.[2] as AbortSignal
+
+  await act(async () => { expect(await hook.result.current.sendMessage('New question')).toBe(true) })
+  expect(hook.result.current.activeSession?.messages.map(message => message.content)).toContain('New answer')
+  expect(closeRefreshSignal.aborted).toBe(true)
+
+  await act(async () => { resolveCloseRefresh(staleSnapshot); await closeRefresh })
+  expect(hook.result.current.activeSession?.messages.map(message => message.content)).toContain('New answer')
+  expect(hook.result.current.activeSession?.messages.map(message => message.content)).not.toContain('Earlier answer')
 })

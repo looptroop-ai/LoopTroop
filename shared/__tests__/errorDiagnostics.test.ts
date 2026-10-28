@@ -101,6 +101,34 @@ describe('shared blocked error diagnostics', () => {
     expect(clean).not.toContain('opaque_value')
   })
 
+  it('redacts unquoted credential values with punctuation and base64 padding', () => {
+    const source = [
+      'apiKey: opaque==',
+      'token: opaque!value',
+      'password: $opaque',
+      'clientSecret: opaque:value',
+      'accessToken: (opaque)',
+      'refreshToken: <opaque>',
+      'login(password=Hunter2xyz)',
+      'gateway replied: Bearer abcdefgh-',
+      'See ?token=opaque123&limit=10#results',
+      'GH_TOKEN: ${{ github.token }}',
+    ].join('\n')
+
+    expect(sanitizeEvidenceText(source)).toBe([
+      'apiKey: [redacted]',
+      'token: [redacted]',
+      'password: [redacted]',
+      'clientSecret: [redacted]',
+      'accessToken: [redacted]',
+      'refreshToken: [redacted]',
+      'login(password=[redacted])',
+      'gateway replied: Bearer [redacted]',
+      'See ?token=[redacted]&limit=10#results',
+      'GH_TOKEN: ${{ github.token }}',
+    ].join('\n'))
+  })
+
   it('redacts standalone auth schemes and capitalized secrets without rewriting prose or code', () => {
     const source = [
       'gateway replied: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2ln',
@@ -126,6 +154,7 @@ describe('shared blocked error diagnostics', () => {
       'type Token = { value: string }',
       'token: process.env.TOKEN',
       'token: getToken()',
+      'token: client.getToken()',
       'token: await getToken()',
       'token: candidate || fallback',
       'token: candidate & mask',
@@ -158,6 +187,7 @@ describe('shared blocked error diagnostics', () => {
       'type Token = { value: string }',
       'token: process.env.TOKEN',
       'token: getToken()',
+      'token: client.getToken()',
       'token: await getToken()',
       'token: candidate || fallback',
       'token: candidate & mask',

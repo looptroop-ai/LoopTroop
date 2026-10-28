@@ -81,7 +81,7 @@ const PREFIXED_CREDENTIAL_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z
 const CREDENTIAL_HINT_PATTERN = /authorization|api[-_\s]?key|token|password|secret|cookie|private[-_\s]?key|access[-_\s]?key|credentials?|ssh[-_\s]?key|signing[-_\s]?key|passphrase|jwt|bearer|basic/i
 const EVIDENCE_AUTHORIZATION_TOKEN_PATTERN = /\b((?:Bearer|Basic)[ \t]+)([A-Za-z0-9._~+/-]+=*)/gi
 const EVIDENCE_AUTHORIZATION_PROSE_PATTERN = /^(?:authentication|authorization|credentials?|headers?|password|username|usage|flow|token|tokens|scheme)$/i
-const EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN = /((?<![a-z0-9_-])["']?([a-z0-9_-]+)["']?[ \t]*(?<![=!<>:])[:=](?![=>:=])[ \t]*)("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/-]+=*|[^\s"'`,;\[\]{}]+)(?=$|[\s,;}&#])/gi
+const EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN = /((?<![a-z0-9_-])["']?([a-z0-9_-]+)["']?[ \t]*(?<![=!<>:])[:=](?![=>:=])[ \t]*)("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/-]+=*|[^\s"'`,;\x5b\x5d{}]+)(?=$|[\s,;}&#])/gi
 const EVIDENCE_URL_USERINFO_PATTERN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/?#\s"'<>@]+@/gi
 const EVIDENCE_URL_PARAMETER_PATTERN = /([?&#])([a-z0-9_%.-]+)=([^&#\s"'<>]+)/gi
 const EVIDENCE_PLACEHOLDER = /^(?:string|number|boolean|object|unknown|any|never|void|undefined|null|none|your(?:[-_ ]|$)|example(?:[-_ ]|$)|sample(?:[-_ ]|$)|test(?:[-_ ]|$)|dummy(?:[-_ ]|$)|placeholder(?:[-_ ]|$)|replace(?:[-_ ]|$)|redacted(?:[-_ ]|$)|change[-_ ]?me(?:[-_ ]|$))$/i

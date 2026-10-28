@@ -1202,6 +1202,7 @@ it('validates, cancels, and retries conversation renames without losing the ente
 
   const options = await screen.findByRole('button', { name: 'More options for Ticket questions conversation' })
   fireEvent.pointerDown(options, { button: 0 })
+  expect(await screen.findByRole('menu')).toHaveClass('z-[70]')
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }))
   const firstDialog = await screen.findByRole('dialog', { name: 'Rename conversation' })
   expect(within(firstDialog).getByRole('textbox', { name: 'Conversation name' })).toHaveAttribute('maxLength', '100')

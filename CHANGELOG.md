@@ -21,7 +21,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Added
 
 - Add a shared read-only assistant window on the dashboard and inside tickets, with citations and notices for missing evidence.
-- Copy individual user and assistant messages, rename conversations, or copy a conversation's messages from its tab menu. Conversation copies omit reasoning.
+- Copy individual user and assistant messages using small text controls, rename conversations, or copy a conversation's messages from its tab menu. Conversation copies omit reasoning.
 - Show model-provided reasoning live in a collapsed section with available model and effort details. Filter recognizable credentials and display a short unavailable message when the provider supplies none.
 - Configure the assistant model separately below the council settings, with the existing model, effort, and routing controls. Save chat sessions is enabled by default and applies to new conversations. Closing a conversation archives it when saving is enabled or deletes its OpenCode session otherwise; hiding the window preserves open conversations. Search saved history by title and scope, then restore a conversation without changing the current screen.
 - Keep assistant conversations separate from workflow sessions and deny editing, shell commands, workflow actions, and reads outside prepared evidence. Repository snapshots keep ordinary source filenames and skip private paths, generated files, and symbolic links inside the project. Ticket logs and artifacts are redacted, collected within limits, and marked incomplete when history or a project is unavailable. Archived conversations remain available while OpenCode retains their sessions.
@@ -34,6 +34,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Open the assistant window against the bottom and right edges, covering the launcher while open, and allow it to move by dragging; remember its position for the current browser session. Keep the inverted-color launcher in the same fixed bottom-right position across views, at 70% opacity at rest and 100% on hover.
 
 ### Fixed
+
+- Show the assistant conversation menu above the chat window, distinguish context preparation from the model response, and retain matching reasoning received during a reply when OpenCode omits it from the returned message.
 
 - Keep retry-note history when ordinary Retry retires guidance or Manual QA recovery succeeds. Preserve council guidance notices through Continue and refinement, discard saved Full Answers when a model is stopped or Part 1 is restarted, and keep phase retry notes on the failed PRD part, including workflow timeouts. Recheck coding recovery ownership before reset, cleanup, and bead updates. Recover aged interview stop reservations without bypassing remote-stop confirmation, and block owned unexpected interview request failures while preserving submitted answers. Hold interview ownership through terminal route handling so stale failures cannot block identical successor submissions.
 

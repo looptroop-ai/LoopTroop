@@ -28,6 +28,7 @@ export interface AssistantSession extends AssistantSessionSummary {
 }
 
 export type AssistantStreamEvent =
+  | { type: 'status'; phase: 'preparing' | 'responding'; modelId?: string; variant?: string }
   | { type: 'delta'; text: string }
   | { type: 'reasoning'; text: string; streaming: boolean; modelId?: string; variant?: string }
   | { type: 'done'; session: AssistantSession }

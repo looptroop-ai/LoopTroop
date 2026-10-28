@@ -61,6 +61,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     reply: string
     reasoning: string
     reasoningStarted: boolean
+    phase: 'preparing' | 'responding'
     modelId?: string
     variant?: string
   }>>({})
@@ -481,7 +482,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
     setSendingIds(previous => previous.includes(session.id) ? previous : [...previous, session.id])
     setPendingReplies(previous => ({
       ...previous,
-      [session.id]: { sessionId: session.id, message: normalizedMessage, startedAt: Date.now(), reply: '', reasoning: '', reasoningStarted: false },
+      [session.id]: { sessionId: session.id, message: normalizedMessage, startedAt: Date.now(), reply: '', reasoning: '', reasoningStarted: false, phase: 'preparing' },
     }))
     setError(null)
     let accepted = false
@@ -491,10 +492,19 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
       let finished = false
       for await (const event of readAssistantEvents(response, controller.signal)) {
         if (controller.signal.aborted) return false
-        if (event.type === 'delta') {
+        if (event.type === 'status') {
           setPendingReplies(previous => {
             const pending = previous[session.id]
-            return pending ? { ...previous, [session.id]: { ...pending, reply: pending.reply + event.text } } : previous
+            return pending ? { ...previous, [session.id]: {
+              ...pending, phase: event.phase,
+              ...(event.modelId !== undefined ? { modelId: event.modelId } : {}),
+              ...(event.variant !== undefined ? { variant: event.variant } : {}),
+            } } : previous
+          })
+        } else if (event.type === 'delta') {
+          setPendingReplies(previous => {
+            const pending = previous[session.id]
+            return pending ? { ...previous, [session.id]: { ...pending, reply: pending.reply + event.text, phase: 'responding' } } : previous
           })
         } else if (event.type === 'reasoning') {
           setPendingReplies(previous => {
@@ -502,6 +512,7 @@ export function useAssistant(scope: AssistantScope, enabled: boolean) {
             return pending ? { ...previous, [session.id]: {
               ...pending,
               reasoning: event.text,
+              phase: 'responding',
               reasoningStarted: true,
               ...(event.modelId !== undefined ? { modelId: event.modelId } : {}),
               ...(event.variant !== undefined ? { variant: event.variant } : {}),

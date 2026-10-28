@@ -85,7 +85,8 @@ it('uses each conversation scope for send, rename, close and copy while new chat
   let finishStream!: () => void
   const streamGate = new Promise<void>(resolve => { finishStream = resolve })
   api.readAssistantEvents.mockImplementation(async function* () {
-    yield { type: 'reasoning', text: '', streaming: true, modelId: 'model-id', variant: 'high' }
+    yield { type: 'status', phase: 'responding', modelId: 'model-id', variant: 'high' }
+    yield { type: 'reasoning', text: '', streaming: true }
     yield { type: 'reasoning', text: 'Working through the evidence', streaming: true }
     yield { type: 'delta', text: 'Partial reply' }
     await streamGate
@@ -103,6 +104,7 @@ it('uses each conversation scope for send, rename, close and copy while new chat
     message: 'Question',
     reply: 'Partial reply',
     reasoningStarted: true,
+    phase: 'responding',
     reasoning: 'Working through the evidence',
     modelId: 'model-id',
     variant: 'high',
@@ -130,4 +132,26 @@ it('uses each conversation scope for send, rename, close and copy while new chat
   })
   expect(await hook.result.current.closeSession(ticketChat.id)).toBe(true)
   expect(api.closeAssistantSession).toHaveBeenCalledWith(ticketChat.id, { ticketId: originalTicketId }, expect.any(AbortSignal))
+})
+
+it('distinguishes preparing context from the model responding', async () => {
+  const chat = summary(null)
+  api.fetchAssistantHistory.mockResolvedValue([chat])
+  api.fetchAssistantSession.mockResolvedValue(detail(chat))
+  api.sendAssistantMessage.mockResolvedValue(new Response(''))
+  let continueStream!: () => void
+  const gate = new Promise<void>(resolve => { continueStream = resolve })
+  api.readAssistantEvents.mockImplementation(async function* () {
+    yield { type: 'status', phase: 'preparing', modelId: 'google/model' }
+    await gate
+    yield { type: 'status', phase: 'responding', modelId: 'google/model', variant: 'medium' }
+    yield { type: 'done', session: detail(chat) }
+  })
+  const hook = renderHook(() => useAssistant({}, true))
+  await waitFor(() => expect(hook.result.current.activeSession?.id).toBe(chat.id))
+  let sending!: Promise<boolean>
+  act(() => { sending = hook.result.current.sendMessage('Question') })
+  await waitFor(() => expect(hook.result.current.pendingReply).toMatchObject({ phase: 'preparing', modelId: 'google/model' }))
+  await act(async () => { continueStream(); await sending })
+  expect(hook.result.current.pendingReply).toBeNull()
 })

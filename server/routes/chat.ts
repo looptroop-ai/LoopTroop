@@ -81,6 +81,7 @@ chatRouter.post('/chat/sessions/:id/messages', async c => {
         c.req.param('id'), scope, message, signal,
         text => send({ type: 'delta', text }),
         (text, modelId, variant) => send({ type: 'reasoning', text, streaming: true, modelId, variant }),
+        (phase, modelId, variant) => send({ type: 'status', phase, modelId, variant }),
       )
       send({ type: 'done', session })
     } catch (error) {

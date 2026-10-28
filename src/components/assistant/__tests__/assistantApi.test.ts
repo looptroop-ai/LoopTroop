@@ -60,7 +60,7 @@ it('parses SSE events split across arbitrary network chunks', async () => {
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     start(reader) {
-      reader.enqueue(encoder.encode('data: {"type":"del'))
+      reader.enqueue(encoder.encode('data: {"type":"status","phase":"preparing","modelId":"model"}\n\ndata: {"type":"del'))
       reader.enqueue(encoder.encode('ta","text":"Hi"}\r\n\r\ndata: {"type":"reasoning","text":"","streaming":true,"modelId":"model"}\n\n'))
       reader.enqueue(encoder.encode('data: {"type":"error","error":"stop"}\n\n'))
       reader.close()
@@ -70,6 +70,7 @@ it('parses SSE events split across arbitrary network chunks', async () => {
   const events = []
   for await (const event of readAssistantEvents(new Response(stream), controller.signal)) events.push(event)
   expect(events).toEqual([
+    { type: 'status', phase: 'preparing', modelId: 'model' },
     { type: 'delta', text: 'Hi' },
     { type: 'reasoning', text: '', streaming: true, modelId: 'model' },
     { type: 'error', error: 'stop' },

@@ -98,6 +98,9 @@ function parseFrame(frame: string): AssistantStreamEvent | null {
   const event: unknown = JSON.parse(data)
   if (!event || typeof event !== 'object') throw new Error('Invalid assistant response event')
   const value = event as Record<string, unknown>
+  if (value.type === 'status' && (value.phase === 'preparing' || value.phase === 'responding')
+    && (value.modelId === undefined || typeof value.modelId === 'string')
+    && (value.variant === undefined || typeof value.variant === 'string')) return value as AssistantStreamEvent
   if (value.type === 'delta' && typeof value.text === 'string') return value as AssistantStreamEvent
   if (value.type === 'reasoning' && typeof value.text === 'string' && value.streaming === true
     && (value.modelId === undefined || typeof value.modelId === 'string')

@@ -403,9 +403,14 @@ export async function promptAssistant(
   signal: AbortSignal,
   onText: (text: string) => void,
   onReasoning: (text: string, modelId?: string, variant?: string) => void = () => undefined,
+  onStatus: (phase: 'preparing' | 'responding', modelId?: string, variant?: string) => void = () => undefined,
 ): Promise<AssistantSession> {
   const record = find(id, scope)
   const profile = configuration()
+  const modelId = profile.chatModel ? sanitizeEvidenceText(profile.chatModel) : undefined
+  const variant = profile.chatModelVariant?.trim()
+    ? sanitizeEvidenceText(profile.chatModelVariant)
+    : undefined
   if (active.has(id) || closing.has(id)) throw new AssistantError('This conversation is busy.', 409)
   if (active.size >= 3) throw new AssistantError('Other chat answers are still running. Try again shortly.', 409)
   const controller = new AbortController()
@@ -438,6 +443,7 @@ export async function promptAssistant(
   requestSignal.addEventListener('abort', stop, { once: true })
   preparationSignal.addEventListener('abort', stop, { once: true })
   try {
+    onStatus('preparing', modelId, variant)
     if (!record.saved && record.owner !== runtimeId) throw new AssistantError('This temporary conversation has expired.', 404)
     if (!await adapter.getSession(record.openCodeSessionId, preparationSignal)) throw new AssistantError('OpenCode no longer has this conversation. Start a new chat.', 409)
     // A browser or daemon restart can leave an earlier remote turn running.
@@ -454,30 +460,48 @@ export async function promptAssistant(
     const evidence = await prepareAssistantEvidence(scope, directory(id), preparationSignal, questionContext)
     requestSignal.throwIfAborted()
     find(id, scope)
-    const partText = new Map<string, string>()
-    const partReasoning = new Map<string, string>()
+    const partText = new Map<string, Map<string, string>>()
+    const partReasoning = new Map<string, Map<string, string>>()
+    const previousMessageIds = new Set(previous.map(entry => entry.id))
+    let lastTextMessageId: string | undefined
+    let lastReasoningMessageId: string | undefined
+    const messageParts = (parts: Map<string, Map<string, string>>, messageId?: string) => {
+      if (messageId === undefined) return ''
+      return [...(parts.get(messageId)?.values() ?? [])].filter(value => value.trim()).join('\n')
+    }
+    const allMessageParts = (parts: Map<string, Map<string, string>>) =>
+      [...parts.values()].flatMap(message => [...message.values()]).filter(value => value.trim()).join('\n')
     let lastPartKey: string | undefined
     const onEvent = (event: StreamEvent) => {
-      if (answerSignal?.aborted) return
+      if (answerSignal?.aborted || event.sessionId !== record.openCodeSessionId) return
       if (event.type === 'reasoning') {
-        const key = `${event.messageId ?? ''}:${event.partId ?? ''}`
-        const before = partReasoning.get(key) ?? ''
-        partReasoning.set(key, event.delta !== undefined ? before + event.delta : event.text)
+        const messageId = event.messageId ?? ''
+        const parts = partReasoning.get(messageId) ?? new Map<string, string>()
+        const partId = event.partId ?? ''
+        const before = parts.get(partId) ?? ''
+        parts.set(partId, event.delta !== undefined ? before + event.delta : event.text)
+        partReasoning.set(messageId, parts)
+        lastReasoningMessageId = event.messageId
         onReasoning(
-          sanitizeEvidenceText([...partReasoning.values()].join('\n')),
-          profile.chatModel ? sanitizeEvidenceText(profile.chatModel) : undefined,
-          profile.chatModelVariant?.trim() ? sanitizeEvidenceText(profile.chatModelVariant) : undefined,
+          sanitizeEvidenceText(allMessageParts(partReasoning)),
+          modelId,
+          variant,
         )
         return
       }
       if (event.type !== 'text') return
-      const key = `${event.messageId ?? ''}:${event.partId ?? ''}`
-      const before = partText.get(key) ?? ''
+      const messageId = event.messageId ?? ''
+      const parts = partText.get(messageId) ?? new Map<string, string>()
+      const partId = event.partId ?? ''
+      const key = `${messageId}:${partId}`
+      const before = parts.get(partId) ?? ''
       const after = event.delta !== undefined ? before + event.delta : event.text
       const delta = after.startsWith(before) ? after.slice(before.length) : ''
-      partText.set(key, after)
+      parts.set(partId, after)
+      partText.set(messageId, parts)
+      lastTextMessageId = event.messageId
       if (delta) {
-        if (lastPartKey && lastPartKey !== key && partText.get(lastPartKey)) onText('\n')
+        if (lastPartKey && lastPartKey !== key) onText('\n')
         onText(delta)
         lastPartKey = key
       }
@@ -488,6 +512,7 @@ export async function promptAssistant(
     answerSignal.throwIfAborted()
     remoteStop = undefined
     running.remoteMayBeRunning = true
+    onStatus('responding', modelId, variant)
     await adapter.promptSession(record.openCodeSessionId, [{ type: 'text', content: message }], answerSignal, {
       modelRef: profile.chatModel!, variant: profile.chatModelVariant ?? undefined,
       permission: evidence.permission, autoApprovePermissions: false, onEvent,
@@ -505,22 +530,45 @@ export async function promptAssistant(
       title: currentRecord.saved && currentRecord.title === 'New chat' ? title : currentRecord.title,
     })
     const session = await detail(find(id, scope), requestSignal)
-    if (session.canResume) return session
-    const answer = [...partText.values()].join('\n')
-    const reasoning = [...partReasoning.values()].filter(value => value.trim()).join('\n')
+    const freshAssistantIds = new Set(session.messages
+      .filter(entry => entry.role === 'assistant' && !previousMessageIds.has(entry.id))
+      .map(entry => entry.id))
+    if (freshAssistantIds.size > 0) {
+      let changed = false
+      const messages = session.messages.map(entry => {
+        if (entry.role !== 'assistant' || !freshAssistantIds.has(entry.id)) return entry
+        const streamedReasoning = messageParts(partReasoning, entry.id)
+        const streamedText = messageParts(partText, entry.id)
+        if (!((streamedReasoning && !entry.reasoning?.trim()) || (streamedText && !entry.content.trim()))) return entry
+        changed = true
+        return {
+          ...entry,
+          ...(streamedText && !entry.content.trim() ? { content: sanitizeEvidenceText(streamedText) } : {}),
+          ...(streamedReasoning && !entry.reasoning?.trim() ? { reasoning: sanitizeEvidenceText(streamedReasoning) } : {}),
+          ...(!entry.modelId && modelId ? { modelId } : {}),
+          ...(!entry.variant && variant ? { variant } : {}),
+        }
+      })
+      return changed ? { ...session, messages } : session
+    }
+    const answer = [...partText.values()].flatMap(parts => [...parts.values()]).filter(value => value.trim()).join('\n')
+    const reasoning = messageParts(partReasoning, lastTextMessageId ?? lastReasoningMessageId)
+    if (session.canResume && !answer && !reasoning) return session
     const createdAt = new Date().toISOString()
+    const knownMessages = session.canResume ? session.messages : previousMessages
+    const hasCurrentQuestion = session.canResume && session.messages.some(entry => entry.role === 'user' && !previousMessageIds.has(entry.id))
     return {
       ...session,
       messages: [
-        ...previousMessages,
-        { id: randomUUID(), role: 'user', content: sanitizeEvidenceText(message), createdAt },
+        ...knownMessages,
+        ...(!hasCurrentQuestion ? [{ id: randomUUID(), role: 'user' as const, content: sanitizeEvidenceText(message), createdAt }] : []),
         ...(answer || reasoning ? [{
           id: randomUUID(),
           role: 'assistant' as const,
           content: sanitizeEvidenceText(answer),
           ...(reasoning ? { reasoning: sanitizeEvidenceText(reasoning) } : {}),
-          ...(profile.chatModel ? { modelId: sanitizeEvidenceText(profile.chatModel) } : {}),
-          ...(profile.chatModelVariant?.trim() ? { variant: sanitizeEvidenceText(profile.chatModelVariant) } : {}),
+          ...(modelId ? { modelId } : {}),
+          ...(variant ? { variant } : {}),
           createdAt,
         }] : []),
       ],

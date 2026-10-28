@@ -438,6 +438,95 @@ describe('assistant session persistence', () => {
 })
 
 describe('assistant prompts', () => {
+  it('reports preparation separately and merges transient reasoning into only its matching reply', async () => {
+    configureProfile({ chatModel: 'google/gemini-3.8-flash' })
+    const session = await sessions.createAssistantSession({})
+    const remoteId = remoteSessionId(session.id)
+    const previous: Message = {
+      id: 'previous-answer', role: 'assistant', content: 'Earlier answer',
+      parts: [
+        { id: 'previous-body', sessionID: remoteId, messageID: 'previous-answer', type: 'text', text: 'Earlier answer' },
+        { id: 'previous-thought', sessionID: remoteId, messageID: 'previous-answer', type: 'reasoning', text: 'Earlier thought' },
+      ],
+    }
+    adapter.messages.set(remoteId, [previous])
+
+    const preparationStarted = deferred<void>()
+    const preparationRelease = deferred<void>()
+    mockPrepareAssistantEvidence.mockImplementation(async () => {
+      preparationStarted.resolve()
+      await preparationRelease.promise
+      return { prompt: 'test evidence', permission: [{ permission: '*', pattern: '*', action: 'deny' }] }
+    })
+    const dispatch = vi.fn(async (_remoteId: string, _parts: unknown[], _signal?: AbortSignal, options?: { onEvent?: (event: StreamEvent) => void }) => {
+      options?.onEvent?.({
+        type: 'reasoning', sessionId: remoteId, messageId: 'intermediate-answer', partId: 'intermediate-thought',
+        text: 'Intermediate thought', streaming: true, complete: false,
+      })
+      options?.onEvent?.({
+        type: 'reasoning', sessionId: remoteId, messageId: 'latest-answer', partId: 'latest-thought',
+        text: 'Latest thought', streaming: true, complete: false,
+      })
+      options?.onEvent?.({
+        type: 'text', sessionId: remoteId, messageId: 'latest-answer', partId: 'body',
+        text: 'Latest answer', streaming: false, complete: true,
+      })
+      adapter.messages.set(remoteId, [
+        previous,
+        { id: 'intermediate-answer', role: 'assistant', content: 'Intermediate answer', parts: [
+          { id: 'intermediate-body', sessionID: remoteId, messageID: 'intermediate-answer', type: 'text', text: 'Intermediate answer' },
+        ] },
+        { id: 'latest-answer', role: 'assistant', content: 'Latest answer', parts: [
+          { id: 'latest-body', sessionID: remoteId, messageID: 'latest-answer', type: 'text', text: 'Latest answer' },
+        ] },
+      ])
+      return 'Latest answer'
+    })
+    adapter.promptSession = dispatch as typeof adapter.promptSession
+    const statuses: Array<[string, string | undefined, string | undefined]> = []
+    const reasoningUpdates: string[] = []
+    const prompt = sessions.promptAssistant(
+      session.id, {}, 'Question', new AbortController().signal, () => undefined,
+      text => reasoningUpdates.push(text),
+      (phase, modelId, variant) => statuses.push([phase, modelId, variant]),
+    )
+
+    await preparationStarted.promise
+    expect(statuses).toEqual([['preparing', 'google/gemini-3.8-flash', undefined]])
+    expect(dispatch).not.toHaveBeenCalled()
+    preparationRelease.resolve()
+    const result = await prompt
+
+    expect(statuses).toEqual([
+      ['preparing', 'google/gemini-3.8-flash', undefined],
+      ['responding', 'google/gemini-3.8-flash', undefined],
+    ])
+    expect(reasoningUpdates).toEqual(['Intermediate thought', 'Intermediate thought\nLatest thought'])
+    expect(result.messages).toEqual([
+      { id: 'previous-answer', role: 'assistant', content: 'Earlier answer', reasoning: 'Earlier thought', createdAt: '' },
+      { id: 'intermediate-answer', role: 'assistant', content: 'Intermediate answer', reasoning: 'Intermediate thought', modelId: 'google/gemini-3.8-flash', createdAt: '' },
+      { id: 'latest-answer', role: 'assistant', content: 'Latest answer', reasoning: 'Latest thought', modelId: 'google/gemini-3.8-flash', createdAt: '' },
+    ])
+    expect(dispatch.mock.calls[0]?.[3]).toMatchObject({ modelRef: 'google/gemini-3.8-flash', variant: undefined })
+  })
+
+  it('keeps a streamed reply when OpenCode has not saved the assistant message yet', async () => {
+    configureProfile()
+    const session = await sessions.createAssistantSession({})
+    adapter.promptSession = async (remoteId, _parts, _signal, options) => {
+      options?.onEvent?.({ type: 'reasoning', sessionId: remoteId, messageId: 'reply', partId: 'thinking', text: 'Live thought', streaming: false, complete: true })
+      options?.onEvent?.({ type: 'text', sessionId: remoteId, messageId: 'reply', partId: 'answer', text: 'Live answer', streaming: false, complete: true })
+      adapter.messages.set(remoteId, [{ id: 'current-question', role: 'user', content: 'Question' }])
+      return 'Live answer'
+    }
+    const result = await sessions.promptAssistant(session.id, {}, 'Question', new AbortController().signal, () => undefined)
+    expect(result.canResume).toBe(true)
+    expect(result.messages.map(({ role, content, reasoning }) => ({ role, content, reasoning }))).toEqual([
+      { role: 'user', content: 'Question', reasoning: undefined },
+      { role: 'assistant', content: 'Live answer', reasoning: 'Live thought' },
+    ])
+  })
+
   it('keeps source citations from the previous answer available to follow-up selection', async () => {
     configureProfile()
     const session = await sessions.createAssistantSession({})

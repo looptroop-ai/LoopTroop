@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDownToLine, Check, Copy, Ellipsis, History, LoaderCircle, MessageCircle, Pencil, Plus, Search, Send, Settings, X } from 'lucide-react'
+import { ArrowDownToLine, Copy, Ellipsis, History, LoaderCircle, MessageCircle, Pencil, Plus, Search, Send, Settings, X } from 'lucide-react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import type { AssistantScope, AssistantSession, AssistantSessionSummary } from '@shared/assistant'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -513,7 +513,7 @@ function AssistantConversation({
                       <Ellipsis className="h-3 w-3" aria-hidden="true" />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
+                  <DropdownMenuContent align="end" className="z-[70]">
                     <DropdownMenuItem onSelect={() => copyConversation(id)}>
                       <Copy className="mr-2 h-3.5 w-3.5" aria-hidden="true" />Copy conversation
                     </DropdownMenuItem>
@@ -627,7 +627,9 @@ function AssistantConversation({
                       <p className="text-[11px] font-semibold text-muted-foreground">Assistant</p>
                       {assistant.pendingReply.reply && <CopyMessageButton role="assistant" content={assistant.pendingReply.reply} />}
                     </div>
-                    <ThinkingSection pending reasoning={assistant.pendingReply.reasoning} modelId={assistant.pendingReply.modelId} variant={assistant.pendingReply.variant} />
+                    {assistant.pendingReply.phase === 'preparing'
+                      ? <p className="mb-1 text-xs text-muted-foreground">Preparing context…</p>
+                      : <ThinkingSection pending reasoning={assistant.pendingReply.reasoning} modelId={assistant.pendingReply.modelId} variant={assistant.pendingReply.variant} />}
                     {assistant.pendingReply.reply
                       ? <AssistantMarkdown>{assistant.pendingReply.reply}</AssistantMarkdown>
                       : <span className="sr-only" role="status">Assistant is responding</span>}
@@ -762,9 +764,9 @@ function CopyMessageButton({ role, content }: { role: 'user' | 'assistant'; cont
         aria-label={`Copy ${label} message`}
         title={copied ? 'Message copied' : `Copy ${label} message`}
         onClick={() => { void copyToClipboard(content) }}
-        className="rounded p-0.5 text-muted-foreground hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="rounded px-0.5 text-[10px] leading-none text-muted-foreground hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        {copied ? <Check className="h-3 w-3 text-green-500" aria-hidden="true" /> : <Copy className="h-3 w-3" aria-hidden="true" />}
+        {copied ? 'Copied' : 'Copy'}
       </button>
       {copied && <span role="status" className="sr-only">Message copied.</span>}
       {copyFailed && <span key={copyFailureCount} role="alert" className="text-[10px] text-destructive">Copy failed</span>}

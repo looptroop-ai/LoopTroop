@@ -77,6 +77,15 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+it('keeps the launcher in the same fixed position on the dashboard and in a ticket', () => {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([]))))
+  const view = render(widget(baseUiState, false))
+  expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toHaveClass('fixed', 'bottom-9', 'right-[72px]')
+
+  view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6' }, false))
+  expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toHaveClass('fixed', 'bottom-9', 'right-[72px]')
+})
+
 it('disables the composer while the assistant model is missing or loading', async () => {
   mockProfile.data.chatModel = null
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])))
@@ -1081,7 +1090,7 @@ it('keeps a fixed accessible size and Escape dismisses the window back to its la
   expect(panel).toHaveClass('h-[min(620px,calc(100dvh-10rem))]', 'w-[min(420px,calc(100vw-2rem))]')
   expect(panel).toHaveClass('bottom-1', 'right-1')
   const launcher = screen.getByRole('button', { name: 'Open LoopTroop assistant' })
-  expect(launcher).toHaveClass('p-2', 'bottom-4', 'right-[62px]', 'bg-primary-foreground', 'text-primary', 'opacity-70', 'hover:opacity-100')
+  expect(launcher).toHaveClass('p-2', 'bottom-9', 'right-[72px]', 'bg-primary-foreground', 'text-primary', 'opacity-70', 'hover:opacity-100')
   expect(launcher.querySelector('svg')).toHaveClass('h-4', 'w-4')
   expect(screen.queryByRole('button', { name: 'Help' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Tickets' })).not.toBeInTheDocument()

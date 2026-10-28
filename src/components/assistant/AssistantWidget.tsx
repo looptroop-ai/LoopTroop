@@ -190,22 +190,24 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
     previousOpen.current = open
   }, [open])
 
+  const launcher = launcherVisible && (
+    <button
+      ref={launcherRef}
+      type="button"
+      aria-label="Open LoopTroop assistant"
+      aria-expanded={open}
+      aria-controls={panelId}
+      onClick={onOpen}
+      title="Open assistant"
+      className="fixed bottom-9 right-[72px] z-[60] flex items-center justify-center rounded-full border border-border bg-primary-foreground p-2 text-primary shadow-md opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+    >
+      <MessageCircle className="h-4 w-4" aria-hidden="true" />
+    </button>
+  )
+
   return (
     <>
-      {launcherVisible && (
-        <button
-          ref={launcherRef}
-          type="button"
-          aria-label="Open LoopTroop assistant"
-          aria-expanded={open}
-          aria-controls={panelId}
-          onClick={onOpen}
-          title="Open assistant"
-          className="fixed bottom-4 right-[62px] z-[60] flex items-center justify-center rounded-full border border-border bg-primary-foreground p-2 text-primary shadow-md opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          <MessageCircle className="h-4 w-4" aria-hidden="true" />
-        </button>
-      )}
+      {launcher}
 
       <section
         ref={panelRef}

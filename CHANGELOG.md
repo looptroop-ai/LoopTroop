@@ -29,7 +29,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Changed
 
 - Use one assistant experience for documentation, LoopTroop source, and ticket evidence. Dashboard conversations cover every attached project and ticket regardless of board filters; conversations started in a ticket view use only that ticket and its project. Sending the first message creates the first conversation, after which **New chat** appears. Legacy Help conversations become dashboard-scoped, while existing ticket conversations stay bound to their ticket.
-- Open the assistant window against the bottom and right edges, covering the launcher while open, and allow it to move by dragging; remember its position for the current browser session. Keep the fixed, inverted-color launcher just left of **Back to bottom**, at 70% opacity at rest and 100% on hover.
+- Open the assistant window against the bottom and right edges, covering the launcher while open, and allow it to move by dragging; remember its position for the current browser session. Keep the inverted-color launcher in the same fixed bottom-right position across views, at 70% opacity at rest and 100% on hover.
 
 ### Fixed
 

@@ -108,7 +108,7 @@ it('disables the composer while the assistant model is missing or loading', asyn
   expect(composer).toBeDisabled()
 })
 
-it('loads global conversations once and shows the selected app scope without changing it', async () => {
+it('refreshes global conversations when the app scope changes', async () => {
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])))
   vi.stubGlobal('fetch', fetchMock)
   const view = render(widget())
@@ -123,7 +123,7 @@ it('loads global conversations once and shows the selected app scope without cha
   }
   view.rerender(widget(ticketUi))
   expect(screen.getByText('Ticket LT-6')).toBeInTheDocument()
-  expect(fetchMock.mock.calls.map(call => String(call[0])).filter(url => new URL(url, 'http://localhost').pathname === '/api/chat/sessions')).toEqual(['/api/chat/sessions'])
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(2))
 })
 
 it('starts the first chat on send and keeps New chat for opening another', async () => {
@@ -324,9 +324,10 @@ it('keeps same-runtime temporary tabs open when app scope changes', async () => 
   expect(await screen.findByRole('button', { name: 'Unsaved notes', pressed: true })).toBeInTheDocument()
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
   expect(screen.getByRole('button', { name: 'Unsaved notes', pressed: true })).toBeInTheDocument()
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(2))
   view.rerender(widget())
   expect(await screen.findByRole('button', { name: 'Unsaved notes', pressed: true })).toBeInTheDocument()
-  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(1)
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(3))
   expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/close$/), expect.anything())
 })
 
@@ -786,9 +787,10 @@ it('keeps an archived conversation tab open across app scopes and lets the serve
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6', selectedTicketExternalId: 'LT-6' }))
   expect(screen.getByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
   expect(screen.getByText('All tickets')).toBeInTheDocument()
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(3))
   view.rerender(widget())
   expect(await screen.findByRole('button', { name: 'Old planning chat', pressed: true })).toBeInTheDocument()
-  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(2)
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/chat/sessions')).toHaveLength(4))
 
   view.rerender(widget(baseUiState, false))
   expect(document.querySelector('.assistant-markdown')).not.toBeInTheDocument()

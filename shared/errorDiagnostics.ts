@@ -140,7 +140,8 @@ function isEvidenceExpressionTail(value: string, start: number): boolean {
 export function sanitizeEvidenceText(value: string): string {
   const assigned = value.replace(EVIDENCE_CREDENTIAL_ASSIGNMENT_PATTERN, (match, prefix: string, key: string, literal: string, offset: number, source: string) => {
     if (!isEvidenceCredentialKey(key)) return match
-    if (source[offset - 1] && '?&#'.includes(source[offset - 1])) return match
+    const before = source[offset - 1]
+    if (before && '?&#'.includes(before)) return match
     if (source.startsWith('${{', offset + prefix.length)) return match
     if (isEvidenceExpressionTail(source, offset + match.length)) return match
     const quoted = literal.startsWith('"') || literal.startsWith("'")

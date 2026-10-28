@@ -1287,6 +1287,7 @@ it('shows completed reasoning with its model details and labels missing reasonin
     title: 'Thinking chat',
     messages: [
       { id: 'thoughtful-answer', role: 'assistant', content: 'Answer with reasoning', reasoning: 'Completed reasoning text', modelId: 'provider/model', variant: 'balanced', createdAt },
+      { id: 'next-question', role: 'user', content: 'Another question', createdAt },
       { id: 'unavailable-answer', role: 'assistant', content: 'Answer without reasoning', createdAt },
     ],
   })
@@ -1304,6 +1305,28 @@ it('shows completed reasoning with its model details and labels missing reasonin
   expect(within(answer).getByText('Completed reasoning text')).toBeVisible()
   const unavailable = screen.getByText('Answer without reasoning').closest('article')!
   expect(within(unavailable).getByText('Thinking unavailable.')).toBeVisible()
+})
+
+it('shows one thinking section for multiple assistant steps in one answer', async () => {
+  const chat = detail({ id: 'multi-step', title: 'Multi-step chat', messages: [
+    { id: 'question', role: 'user', content: 'Question', createdAt },
+    { id: 'step-1', role: 'assistant', content: '', reasoning: 'First thought', modelId: 'provider/model', variant: 'high', createdAt },
+    { id: 'step-2', role: 'assistant', content: 'Final answer', reasoning: 'Second thought', modelId: 'provider/model', variant: 'high', createdAt },
+    { id: 'next-question', role: 'user', content: 'Next question', createdAt },
+    { id: 'next-answer', role: 'assistant', content: 'Next answer', reasoning: 'Next thought', createdAt },
+  ] })
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost')
+    return url.pathname === `/api/chat/sessions/${chat.id}`
+      ? jsonResponse(chat)
+      : jsonResponse([summary({ id: chat.id, title: chat.title })])
+  }))
+  render(widget())
+  const answer = (await screen.findByText('Final answer')).closest('article')!
+  expect(within(answer).getAllByText('Thinking', { selector: 'summary' })).toHaveLength(1)
+  fireEvent.click(within(answer).getByText('Thinking', { selector: 'summary' }))
+  expect(within(answer).getByText(/First thought/)).toHaveTextContent('Second thought')
+  expect(screen.getAllByText('Thinking', { selector: 'summary' })).toHaveLength(2)
 })
 
 it('tints ticket conversation tabs with their project color and leaves dashboard tabs untinted', async () => {

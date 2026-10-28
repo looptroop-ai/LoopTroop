@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowDownToLine, Copy, Ellipsis, History, LoaderCircle, MessageCircle, Pencil, Plus, Search, Send, Settings, X } from 'lucide-react'
 import ReactMarkdown, { type Components } from 'react-markdown'
-import type { AssistantScope, AssistantSession, AssistantSessionSummary } from '@shared/assistant'
+import type { AssistantMessage, AssistantScope, AssistantSession, AssistantSessionSummary } from '@shared/assistant'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useAssistant } from '@/hooks/useAssistant'
@@ -601,7 +601,7 @@ function AssistantConversation({
                   <p className="max-w-64 text-xs text-muted-foreground">Ask about LoopTroop or {scope.ticketId ? 'this ticket.' : 'any ticket.'}</p>
                 </div>
               )}
-              {open && activeSession?.messages.map(message => (
+              {open && groupAssistantReplies(activeSession?.messages ?? []).map(message => (
                 <article key={message.id} className={`mb-3 rounded-lg px-3 py-2 text-sm ${message.role === 'user' ? 'ml-6 bg-muted' : 'mr-2 bg-accent/50'}`}>
                   <div className="mb-1 flex items-center gap-1">
                     <p className="text-[11px] font-semibold text-muted-foreground">{message.role === 'user' ? 'You' : 'Assistant'}</p>
@@ -774,8 +774,24 @@ function CopyMessageButton({ role, content }: { role: 'user' | 'assistant'; cont
   )
 }
 
+function groupAssistantReplies(messages: AssistantMessage[]): AssistantMessage[] {
+  const grouped: AssistantMessage[] = []
+  for (const message of messages) {
+    const previous = grouped.at(-1)
+    if (message.role !== 'assistant' || previous?.role !== 'assistant') {
+      grouped.push({ ...message })
+      continue
+    }
+    previous.content = [previous.content, message.content].filter(Boolean).join('\n\n')
+    previous.reasoning = [previous.reasoning, message.reasoning].filter(Boolean).join('\n\n') || undefined
+    previous.modelId = message.modelId || previous.modelId
+    previous.variant = message.variant || previous.variant
+  }
+  return grouped
+}
+
 function formatConversationText(session: AssistantSession): string {
-  return session.messages.filter(message => message.content.trim()).map(({ role, content }) => `${role === 'user' ? 'You' : 'Assistant'}:\n${content}`).join('\n\n')
+  return groupAssistantReplies(session.messages).filter(message => message.content.trim()).map(({ role, content }) => `${role === 'user' ? 'You' : 'Assistant'}:\n${content}`).join('\n\n')
 }
 
 const assistantMarkdownComponents: Components = {

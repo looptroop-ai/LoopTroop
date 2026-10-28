@@ -35,7 +35,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
-- Show the assistant conversation menu above the chat window, distinguish context preparation from the model response, and retain matching reasoning received during a reply when OpenCode omits it from the returned message.
+- Show the assistant conversation menu above the chat window, group model steps into one thinking section per answer, distinguish context preparation from the model response, and retain matching reasoning received during a reply when OpenCode omits it from the returned message.
 
 - Keep retry-note history when ordinary Retry retires guidance or Manual QA recovery succeeds. Preserve council guidance notices through Continue and refinement, discard saved Full Answers when a model is stopped or Part 1 is restarted, and keep phase retry notes on the failed PRD part, including workflow timeouts. Recheck coding recovery ownership before reset, cleanup, and bead updates. Recover aged interview stop reservations without bypassing remote-stop confirmation, and block owned unexpected interview request failures while preserving submitted answers. Hold interview ownership through terminal route handling so stale failures cannot block identical successor submissions.
 

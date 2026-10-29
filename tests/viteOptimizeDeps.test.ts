@@ -91,4 +91,11 @@ describe('Vite dependency optimization policy', () => {
       '@tanstack/query-core',
     ]))
   })
+
+  it('permits remote development hosts in Vite server and preview configurations', async () => {
+    const serveConfig = await resolveConfig({}, 'serve')
+    const buildConfig = await resolveConfig({}, 'build')
+    expect(serveConfig.server.allowedHosts).toBe(true)
+    expect(buildConfig.preview.allowedHosts).toBe(true)
+  })
 })

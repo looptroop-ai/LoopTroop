@@ -343,6 +343,7 @@ export default defineConfig({
   server: {
     headers: DEV_SERVER_RESOURCE_HEADERS,
     host: devHostMode.enabled ? devHostMode.bindHost : undefined,
+    allowedHosts: true,
     port: getFrontendPort(),
     strictPort: true,
     warmup: {
@@ -366,6 +367,7 @@ export default defineConfig({
   preview: {
     headers: DEV_SERVER_RESOURCE_HEADERS,
     host: devHostMode.enabled ? devHostMode.bindHost : undefined,
+    allowedHosts: true,
     port: getFrontendPort(),
     strictPort: true,
     proxy: apiProxy,

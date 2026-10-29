@@ -72,7 +72,7 @@ frontend packages inlined into the client bundle.
 | `cross-spawn` | 7.0.6 | MIT | Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio> |
 | `decode-named-character-reference` | 1.3.0 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `devlop` | 1.1.0 | MIT | Copyright (c) 2023 Titus Wormer <tituswormer@gmail.com> |
-| `drizzle-orm` | 1.0.0-rc.4 | Apache-2.0 | Drizzle Team |
+| `drizzle-orm` | 1.0.0-rc.5 | Apache-2.0 | Drizzle Team |
 | `estree-util-is-identifier-name` | 3.0.0 | MIT | Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com> |
 | `extend` | 3.0.2 | MIT | Copyright (c) 2014 Stefan Thomas |
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |

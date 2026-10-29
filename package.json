@@ -164,7 +164,6 @@
   },
   "//allowScripts": "Install-script policy: .github/SECURITY.md#install-script-policy",
   "allowScripts": {
-    "esbuild@0.25.12": true,
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": false
   }

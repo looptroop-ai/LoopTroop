@@ -13,12 +13,12 @@ frontend packages inlined into the client bundle.
 
 | Package | Version | Licence | Copyright |
 | --- | --- | --- | --- |
-| `@codemirror/autocomplete` | 6.20.3 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@codemirror/autocomplete` | 6.20.4 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/lang-yaml` | 6.1.3 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/language` | 6.13.1 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@codemirror/merge` | 6.12.2 | MIT | Copyright (C) 2018-2022 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@codemirror/merge` | 6.12.3 | MIT | Copyright (C) 2018-2022 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/state` | 6.7.6 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@codemirror/view` | 6.43.14 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@codemirror/view` | 6.43.15 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@floating-ui/core` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/dom` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.13 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.104.3 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.104.3 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.104.5 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.104.5 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `@ungap/structured-clone` | 1.4.0 | ISC | Copyright (c) 2021, Andrea Giammarchi, @WebReflection |
 | `argparse` | 3.0.3 | PSF-2.0 | - |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
@@ -84,7 +84,7 @@ frontend packages inlined into the client bundle.
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.5.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.57.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.61.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `mdast-util-from-markdown` | 2.1.0 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-hast` | 13.2.1 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-string` | 4.0.0 | MIT | Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com> |
@@ -141,7 +141,7 @@ frontend packages inlined into the client bundle.
 | `vfile-message` | 4.0.3 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `w3c-keyname` | 2.2.8 | MIT | Copyright (C) 2016 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `which` | 2.0.2 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
-| `xstate` | 5.33.2 | MIT | Copyright (c) 2015 David Khourshid |
+| `xstate` | 5.33.3 | MIT | Copyright (c) 2015 David Khourshid |
 | `zod` | 4.6.7 | MIT | Copyright (c) 2025 Colin McDonnell |
 
 ## Licence Texts
@@ -265,7 +265,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@codemirror/autocomplete@6.20.3`, `@codemirror/language@6.13.1`, `@codemirror/state@6.7.6`, `@codemirror/view@6.43.14`
+Applies to: `@codemirror/autocomplete@6.20.4`, `@codemirror/language@6.13.1`, `@codemirror/state@6.7.6`, `@codemirror/view@6.43.15`
 
 ```text
 MIT License
@@ -405,7 +405,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.104.3`, `@tanstack/react-query@5.104.3`
+Applies to: `@tanstack/query-core@5.104.5`, `@tanstack/react-query@5.104.5`
 
 ```text
 MIT License
@@ -527,7 +527,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@codemirror/merge@6.12.2`
+Applies to: `@codemirror/merge@6.12.3`
 
 ```text
 MIT License
@@ -1187,7 +1187,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.57.0`
+Applies to: `lucide-react@1.61.0`
 
 ```text
 ISC License
@@ -1609,7 +1609,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `xstate@5.33.2`
+Applies to: `xstate@5.33.3`
 
 ```text
 The MIT License (MIT)

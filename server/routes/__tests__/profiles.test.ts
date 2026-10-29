@@ -17,10 +17,11 @@ import { beginOpenCodePromptActivity } from '../../opencode/providerCatalogReloa
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 vi.mock('../../opencode/modelValidation', () => ({
+  validateConfiguredModel: vi.fn(),
   validateModelSelection: vi.fn(),
 }))
 
-import { validateModelSelection } from '../../opencode/modelValidation'
+import { validateConfiguredModel, validateModelSelection } from '../../opencode/modelValidation'
 
 function createProfileApp() {
   const app = new Hono()
@@ -33,6 +34,7 @@ describe('profileRouter numeric validation', () => {
     initializeDatabase()
     db.delete(profiles).run()
     vi.restoreAllMocks()
+    vi.mocked(validateConfiguredModel).mockImplementation(async (modelId) => modelId?.trim() || null)
     vi.unstubAllEnvs()
     mockGetOpenCodeConnection.mockReset()
   })
@@ -92,6 +94,9 @@ describe('profileRouter numeric validation', () => {
       structuredRetryCount: 1,
       opencodeRetryLimit: 10,
       opencodeRetryDelay: 60_000,
+      chatModel: null,
+      chatModelVariant: null,
+      saveChatSessions: true,
     })
 
     const stored = db.select().from(profiles).get()
@@ -101,6 +106,166 @@ describe('profileRouter numeric validation', () => {
     expect(stored?.manualQaEnabled).toBe(true)
     expect(stored?.opencodeRetryLimit).toBe(10)
     expect(stored?.opencodeRetryDelay).toBe(60_000)
+    expect(stored?.chatModel).toBeNull()
+    expect(stored?.chatModelVariant).toBeNull()
+    expect(stored?.saveChatSessions).toBe(true)
+  })
+
+  it('saves an assistant model independently, including a model already used by the council', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'openai/gpt-5.4',
+      councilMembers: JSON.stringify(['openai/gpt-5.4', 'anthropic/claude-sonnet-4']),
+    }).run()
+    vi.mocked(validateConfiguredModel).mockResolvedValueOnce('openai/gpt-5.4')
+    vi.mocked(validateModelSelection).mockClear()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatModel: 'openai/gpt-5.4',
+        chatModelVariant: 'high',
+        saveChatSessions: false,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      mainImplementer: 'openai/gpt-5.4',
+      councilMembers: JSON.stringify(['openai/gpt-5.4', 'anthropic/claude-sonnet-4']),
+      chatModel: 'openai/gpt-5.4',
+      chatModelVariant: 'high',
+      saveChatSessions: false,
+    })
+    expect(validateConfiguredModel).toHaveBeenCalledWith('openai/gpt-5.4', 'high')
+    expect(validateModelSelection).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['clearing', null],
+    ['changing', 'provider/next-assistant'],
+  ] as const)('clears the saved assistant variant when %s the model without a new variant', async (_change, nextModel) => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModel: 'provider/assistant',
+      chatModelVariant: 'high',
+    }).run()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModel: nextModel }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      chatModel: nextModel,
+      chatModelVariant: null,
+    })
+    expect(db.select().from(profiles).get()).toMatchObject({
+      chatModel: nextModel,
+      chatModelVariant: null,
+    })
+  })
+
+  it('validates a changed variant against the unchanged assistant model', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModel: 'provider/assistant',
+      chatModelVariant: 'balanced',
+    }).run()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModelVariant: 'high' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(validateConfiguredModel).toHaveBeenCalledWith('provider/assistant', 'high')
+    expect(db.select().from(profiles).get()).toMatchObject({ chatModelVariant: 'high' })
+  })
+
+  it('clears an assistant variant when the profile has no model', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModelVariant: 'high',
+    }).run()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModelVariant: 'high' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(db.select().from(profiles).get()).toMatchObject({ chatModel: null, chatModelVariant: null })
+    expect(validateConfiguredModel).not.toHaveBeenCalled()
+  })
+
+  it('does not save a submitted assistant variant when creating a profile without a model', async () => {
+    vi.mocked(validateModelSelection).mockResolvedValue({
+      mainImplementer: 'provider/implementer',
+      councilMembers: ['provider/implementer', 'provider/reviewer'],
+    })
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mainImplementer: 'provider/implementer',
+        councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+        chatModelVariant: 'high',
+      }),
+    })
+
+    expect(response.status).toBe(201)
+    await expect(response.json()).resolves.toMatchObject({ chatModel: null, chatModelVariant: null })
+    expect(validateConfiguredModel).not.toHaveBeenCalled()
+  })
+
+  it('saves unrelated settings without revalidating an unchanged assistant model', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'provider/implementer',
+      councilMembers: JSON.stringify(['provider/implementer', 'provider/reviewer']),
+      chatModel: 'provider/assistant',
+      chatModelVariant: 'high',
+    }).run()
+    vi.mocked(validateConfiguredModel).mockClear()
+    vi.mocked(validateConfiguredModel).mockRejectedValue(new Error('OpenCode is offline'))
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModel: 'provider/assistant', chatModelVariant: 'high', saveChatSessions: false }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ chatModel: 'provider/assistant', saveChatSessions: false })
+    expect(validateConfiguredModel).not.toHaveBeenCalled()
+    expect(mockGetOpenCodeConnection).not.toHaveBeenCalled()
+  })
+
+  it('rejects an assistant model that is not in the connected catalog without changing the profile', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'openai/gpt-5.4',
+      councilMembers: JSON.stringify(['openai/gpt-5.4', 'anthropic/claude-sonnet-4']),
+    }).run()
+    const before = db.select().from(profiles).get()
+    vi.mocked(validateConfiguredModel).mockRejectedValueOnce(new Error('Selected model is not configured in OpenCode: bad/model'))
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatModel: 'bad/model' }),
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('not configured in OpenCode') })
+    expect(db.select().from(profiles).get()).toEqual(before)
   })
 
   it('persists each supported Git hook policy', async () => {

@@ -23,6 +23,7 @@ import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from
 import { closeQuestionWait, listOpenQuestionWaitTicketIds } from './storage/questionWaits'
 import { resolveAiQuestionSettings } from './workflow/phases/helpers'
 import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
+import { startAssistantSessionCleanup } from './assistant/sessions'
 
 export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
@@ -339,6 +340,8 @@ export async function startupSequence(): Promise<void> {
   } catch (err) {
     console.warn(`[startup] OpenCode health check failed: ${getErrorMessage(err)}`)
   }
+
+  startAssistantSessionCleanup()
 
   console.log('[startup] Step 5: Hydrate XState actors from attached project databases')
   const hydrated = hydrateAllTickets()

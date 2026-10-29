@@ -1048,7 +1048,7 @@ describe('ProjectForm', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Project' }))
     expect(confirm).toHaveBeenCalledWith(
-      'Are you sure you want to delete this project? This will remove its local .looptroop state from the repo and cannot be undone.',
+      'Delete this project, its local .looptroop state, and its dedicated ticket assistant conversations? This cannot be undone.',
     )
     expect(mockProjectMutations.remove.mutate).not.toHaveBeenCalled()
 

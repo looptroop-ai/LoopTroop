@@ -112,6 +112,11 @@ export interface OpenCodeTransport {
     options?: OpenCodeSessionCreateOptions,
     signal?: AbortSignal,
   ): Promise<Session>;
+  deleteSession(
+    sessionId: string,
+    directory?: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   updateSession(
     sessionId: string,
     directory: string | undefined,

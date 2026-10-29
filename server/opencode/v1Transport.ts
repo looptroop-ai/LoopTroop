@@ -53,6 +53,22 @@ function normalizeSafeHttpUrl(value: string): string | undefined {
   }
 }
 
+function confirmsPermissionRules(
+  actual: unknown,
+  requested: ReadonlyArray<OpenCodePermissionRule>,
+  appended = false,
+): boolean {
+  if (requested.length === 0) return true
+  if (!Array.isArray(actual)) return false
+  const applied = appended ? actual.slice(-requested.length) : actual
+  return applied.length === requested.length && requested.every((rule, index) => {
+    const candidate = applied[index]
+    if (!candidate || typeof candidate !== 'object') return false
+    const record = candidate as Record<string, unknown>
+    return record.permission === rule.permission && record.pattern === rule.pattern && record.action === rule.action
+  })
+}
+
 export type OpenCodeV1Client = ReturnType<typeof createOpencodeClient>
 
 export class OpenCodeV1Transport implements OpenCodeTransport {
@@ -76,7 +92,40 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
       ...(options?.permission ? { permission: options.permission.map(rule => ({ ...rule })) } : {}),
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
     if (!res.data) throw new Error('OpenCode returned no session payload')
-    return this.mapSession(res.data as Record<string, unknown>)
+    const session = res.data as Record<string, unknown>
+    if (options?.permission && !confirmsPermissionRules(session.permission, options.permission)) {
+      const permissionError = new Error('OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.')
+      const sessionId = typeof session.id === 'string' && session.id ? session.id : undefined
+      if (sessionId) {
+        try {
+          await this.deleteSession(sessionId, projectPath, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS))
+        } catch (cleanupError) {
+          const error = new AggregateError(
+            [permissionError, cleanupError],
+            `${permissionError.message} Cleanup of rejected session ${sessionId} failed: ${getErrorMessage(cleanupError)}`,
+            { cause: permissionError },
+          )
+          Object.assign(error, { openCodeSessionId: sessionId })
+          throw error
+        }
+      }
+      throw permissionError
+    }
+    return this.mapSession(session)
+  }
+
+  async deleteSession(sessionId: string, directory?: string, signal?: AbortSignal): Promise<void> {
+    try {
+      const res = this.rejectHttpError(await this.client.session.delete({
+        sessionID: sessionId,
+        ...(directory ? { directory } : {}),
+      }, this.requestOptions(this.withSdkOperationTimeout(signal))))
+      if (res.data !== true && !this.isConfirmedSessionNotFoundResponse(res))
+        throw new Error(`OpenCode did not confirm deletion of session ${sessionId}`)
+    } catch (error) {
+      if (this.isConfirmedSessionNotFoundError(error)) return
+      throw error
+    }
   }
 
   async updateSession(
@@ -91,6 +140,11 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
       ...(options.permission ? { permission: options.permission.map(rule => ({ ...rule })) } : {}),
     }, this.requestOptions(this.withSdkOperationTimeout(signal)))
     if (!res.data) throw new Error('OpenCode returned no updated session payload')
+    if (options.permission) {
+      if (!confirmsPermissionRules(res.data.permission, options.permission, true)) {
+        throw new Error('OpenCode did not confirm the requested session permissions. Upgrade OpenCode before retrying.')
+      }
+    }
   }
 
   async dispatchPrompt(request: OpenCodePromptRequest, signal?: AbortSignal) {

@@ -41,3 +41,10 @@ export const SHARED_PROFILE_DEFAULTS = {
   toolOutputMaxChars: 12_000,
   toolErrorMaxChars: 6_000,
 } as const
+
+/** Defaults used only by the configuration-level assistant, never by projects or tickets. */
+export const PROFILE_CHAT_DEFAULTS = {
+  chatModel: null,
+  chatModelVariant: null,
+  saveChatSessions: true,
+} as const

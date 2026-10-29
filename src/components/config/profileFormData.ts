@@ -1,5 +1,5 @@
 import type { CreateProfileInput, Profile } from '@/hooks/useProfile'
-import { SHARED_PROFILE_DEFAULTS } from '@shared/profileDefaults'
+import { PROFILE_CHAT_DEFAULTS, SHARED_PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
 import { numericFields, buildInitialRawNumeric } from './numericFieldConfig'
@@ -7,13 +7,14 @@ import { getProfileCouncil } from '@/lib/profileCouncil'
 import { createActionId } from '@/lib/actionId'
 
 const DEFAULT_FORM_DATA = {
+  ...PROFILE_CHAT_DEFAULTS,
   ...SHARED_PROFILE_DEFAULTS,
   mainImplementer: '',
   gitHookPolicy: DEFAULT_GIT_HOOK_POLICY,
   ignoreMode: DEFAULT_IGNORE_MODE,
 } satisfies CreateProfileInput
 
-export type ProfileFormData = { [K in keyof typeof DEFAULT_FORM_DATA]: NonNullable<CreateProfileInput[K]> }
+export type ProfileFormData = { [K in keyof typeof DEFAULT_FORM_DATA]: Exclude<CreateProfileInput[K], undefined> }
 
 export interface CouncilSlot {
   id: string

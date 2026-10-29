@@ -8,6 +8,11 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+it('keeps toast notifications above the assistant window', () => {
+  render(<ToastProvider><div /></ToastProvider>)
+  expect(screen.getByRole('status')).toHaveClass('z-[61]')
+})
+
 it('dismisses simultaneous toasts independently and expires the remaining toast', async () => {
   vi.useFakeTimers()
   // Force collisions if timestamp/random IDs are reintroduced.

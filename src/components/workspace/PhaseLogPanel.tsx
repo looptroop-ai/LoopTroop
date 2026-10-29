@@ -797,7 +797,7 @@ export function PhaseLogPanel({
                 <ArrowDownToLine className="w-4 h-4" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="left" className="text-xs">Back to bottom</TooltipContent>
+            <TooltipContent side="top" className="text-xs">Back to bottom</TooltipContent>
           </Tooltip>
         )}
       </div>

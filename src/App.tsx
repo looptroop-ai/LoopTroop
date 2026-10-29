@@ -12,6 +12,7 @@ const PromptsDialog = lazyWithChunkReload('PromptsDialog', () => import('@/compo
 import { KeyboardShortcuts } from '@/components/shared/KeyboardShortcuts'
 import { StartupRestorePopup } from '@/components/shared/StartupRestorePopup'
 import { AboutDialog } from '@/components/config/AboutDialog'
+import { AssistantWidget } from '@/components/assistant/AssistantWidget'
 import { ToastProvider } from '@/components/shared/Toast'
 import { AIQuestionProvider } from '@/context/AIQuestionContext'
 import {
@@ -254,6 +255,7 @@ function App() {
   const modalDirtyRef = useRef(modalDirty)
   modalDirtyRef.current = modalDirty
   const [isAboutOpen, setIsAboutOpen] = useState(false)
+  const [isAssistantOpen, setIsAssistantOpen] = useState(false)
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
       return !localStorage.getItem(WELCOME_DISCLAIMER_STORAGE_KEY)
@@ -266,11 +268,16 @@ function App() {
   const isRestorePopupOpen = !isWelcomeOpen
     && startupStatus?.storage.kind === 'restored'
     && startupStatus.ui.restoreNotice.shouldShow === true
+  const startupOverlayOpen = Boolean(isWelcomeOpen || isRestorePopupOpen)
   const isModalOpen = activeModal !== null || isAboutOpen || isWelcomeOpen || isRestorePopupOpen
 
   useEffect(() => {
     if (activeModal !== 'ticket') setTicketModalEditing(false)
   }, [activeModal])
+
+  useEffect(() => {
+    if (startupOverlayOpen) setIsAssistantOpen(false)
+  }, [startupOverlayOpen])
 
   useEffect(() => {
     if (openedWithModalRef.current === 'profile') {
@@ -668,6 +675,13 @@ function App() {
         </CenteredModal>
 
         <KeyboardShortcuts />
+        <AssistantWidget
+          open={isAssistantOpen && !startupOverlayOpen}
+          launcherVisible={!startupOverlayOpen}
+          onOpen={() => setIsAssistantOpen(true)}
+          onDismiss={() => setIsAssistantOpen(false)}
+          onOpenConfiguration={() => openModal('profile')}
+        />
       </AIQuestionProvider>
     </ToastProvider>
   )

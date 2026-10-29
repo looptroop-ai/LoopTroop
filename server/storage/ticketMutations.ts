@@ -2,6 +2,7 @@ import { and, desc, eq, isNull } from 'drizzle-orm'
 import { existsSync, rmSync } from 'fs'
 import { resolve } from 'node:path'
 import { runGitMutationOrThrow } from '../git/runCommand'
+import { queueAssistantSessionCleanup } from '../assistant/sessionCleanup'
 import { assertSafeRefName } from '../git/ref'
 import { z } from 'zod'
 import { getProjectContextById } from './projects'
@@ -820,6 +821,8 @@ export async function deleteTicket(ticketRef: string): Promise<boolean> {
     tx.delete(tickets).where(eq(tickets.id, localTicketId)).run()
   })
 
+  queueAssistantSessionCleanup({ ticketId: ticketRef })
+
   // Filesystem removal happens after DB transaction succeeds.
   // If it fails, the DB is the source of truth and the orphaned
   // filesystem can be cleaned up later.
@@ -858,6 +861,7 @@ export async function cleanupCanceledTicketData(
       rmSync(logPath, { force: true })
     }
   }
+  if (opts.deleteContent || opts.deleteLog) queueAssistantSessionCleanup({ ticketId: ticketRef })
 
   return true
 }

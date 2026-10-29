@@ -1,5 +1,6 @@
-import { fetchConnectedModelIds } from './providerCatalog'
+import { fetchConnectedModelIds, fetchProviderCatalog, flattenCatalogModels } from './providerCatalog'
 import { parseCouncilMembers } from '../council/members'
+import { isOpenRouterRoutingModel } from '../../shared/openRouterRouting'
 
 export const MAX_COUNCIL_MEMBERS = 10
 
@@ -9,8 +10,39 @@ export interface ValidatedModelSelection {
 }
 
 function cleanModelId(modelId: string): string {
-  if (modelId.startsWith('openrouter/')) {
+  if (isOpenRouterRoutingModel(modelId)) {
     return modelId.split(':')[0]!
+  }
+  return modelId
+}
+
+/** Validate a standalone profile model without applying council membership rules. */
+export async function validateConfiguredModel(
+  modelIdRaw: string | null | undefined,
+  variantRaw?: string | null,
+): Promise<string | null> {
+  const modelId = typeof modelIdRaw === 'string' ? modelIdRaw.trim() : ''
+  if (!modelId) return null
+
+  const variant = typeof variantRaw === 'string' ? variantRaw.trim() : ''
+  if (variant) {
+    const model = flattenCatalogModels(await fetchProviderCatalog(), 'connected')
+      .find(({ fullId }) => fullId === modelId || fullId === cleanModelId(modelId))
+    if (!model) {
+      throw new Error(`Selected model is not configured in OpenCode: ${modelId}`)
+    }
+    if (!Object.prototype.hasOwnProperty.call(model.variants ?? {}, variant)) {
+      throw new Error(`Selected variant is not configured for OpenCode model ${modelId}: ${variant}`)
+    }
+    return modelId
+  }
+
+  const connectedModelIds = new Set(await fetchConnectedModelIds())
+  if (connectedModelIds.size === 0) {
+    throw new Error('No configured OpenCode models are available.')
+  }
+  if (!connectedModelIds.has(modelId) && !connectedModelIds.has(cleanModelId(modelId))) {
+    throw new Error(`Selected model is not configured in OpenCode: ${modelId}`)
   }
   return modelId
 }
@@ -30,7 +62,7 @@ export async function validateModelSelection(
   }
 
   const cleanMain = cleanModelId(mainImplementer)
-  if (!connectedModelIds.has(cleanMain)) {
+  if (!connectedModelIds.has(mainImplementer) && !connectedModelIds.has(cleanMain)) {
     throw new Error(`Main implementer model is not configured in OpenCode: ${mainImplementer}`)
   }
 
@@ -52,7 +84,7 @@ export async function validateModelSelection(
   }
 
   const invalidCouncilMembers = normalizedCouncilMembers.filter((memberId) => {
-    return !connectedModelIds.has(cleanModelId(memberId))
+    return !connectedModelIds.has(memberId) && !connectedModelIds.has(cleanModelId(memberId))
   })
   if (invalidCouncilMembers.length > 0) {
     throw new Error(`Council member models are not configured in OpenCode: ${invalidCouncilMembers.join(', ')}`)

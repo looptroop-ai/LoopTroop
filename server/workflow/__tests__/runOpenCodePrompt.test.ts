@@ -368,10 +368,17 @@ describe('runOpenCodePrompt', () => {
     })
     const eventSubscribe = overrides.eventSubscribe ?? overrides.subscribe ?? defaultSubscribe
     const globalEvent = overrides.globalEvent ?? overrides.subscribe ?? defaultSubscribe
+    let sessionPermissions: unknown[] = []
     return {
       session: {
-        create: overrides.create ?? (async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } })),
-        update: overrides.update ?? (async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } })),
+        create: overrides.create ?? (async (input: { permission?: unknown[] }) => {
+          sessionPermissions = input.permission ?? []
+          return { data: { id: 'ses-1', directory: '/tmp/project', permission: sessionPermissions } }
+        }),
+        update: overrides.update ?? (async (input: { permission?: unknown[] }) => {
+          sessionPermissions = [...sessionPermissions, ...(input.permission ?? [])]
+          return { data: { id: 'ses-1', directory: '/tmp/project', permission: sessionPermissions } }
+        }),
         list: overrides.list ?? (async () => ({ data: [] })),
         prompt: overrides.prompt ?? (async () => ({ data: { parts: [] } })),
         messages: overrides.messages ?? (async () => ({ data: [] })),
@@ -406,7 +413,7 @@ describe('runOpenCodePrompt', () => {
           directory: '/tmp/project',
           permission: OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS,
         })
-        return { data: { id: 'ses-1', directory: '/tmp/project' } }
+        return { data: { id: 'ses-1', directory: '/tmp/project', permission: OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } }
       },
     })
     const adapter = new OpenCodeSDKAdapter('http://localhost:4096', sessionCreate as unknown as OpenCodeSDKClient)
@@ -434,7 +441,7 @@ describe('runOpenCodePrompt', () => {
     const fakeClient = createFakeSdkClient({
       update: async (...args: unknown[]) => {
         updateCalls.push(args)
-        return { data: { id: 'ses-1', directory: '/tmp/project' } }
+        return { data: { id: 'ses-1', directory: '/tmp/project', permission: (args[0] as { permission?: unknown }).permission } }
       },
       prompt: async (...args: unknown[]) => {
         promptCalls.push(args)
@@ -2198,7 +2205,7 @@ describe('runOpenCodePrompt', () => {
     writeFileSync(join(logDir, '2026-05-22T151603.log'), 'ERROR 2026-05-22T15:45:45 +166301ms service=llm providerID=kilo modelID=kilo-auto/free session.id=ses-generic small=false agent=build mode=primary error={"error":{"name":"AI_APICallError","url":"https://api.kilo.ai/api/gateway/chat/completions","requestBodyValues":{"model":"anthropic/claude-haiku-4.5","messages":[{"role":"user","content":"prompt must not leak"}]},"statusCode":402,"isRetryable":false,"responseBody":"{\\"error\\":{\\"title\\":\\"Low Credit Warning!\\",\\"message\\":\\"Add credits to continue, or switch to a free model\\"},\\"error_type\\":\\"usage_limit_exceeded\\"}"}}} stream error')
     try {
       const fakeClient = createFakeSdkClient({
-        create: async () => ({ data: { id: 'ses-generic', directory: '/tmp/project' } }),
+        create: async (...args: unknown[]) => ({ data: { id: 'ses-generic', directory: '/tmp/project', permission: (args[0] as { permission?: unknown }).permission } }),
         prompt: async () => {
           await new Promise<void>((resolve) => setTimeout(resolve, 20))
           return { data: { parts: [] } }
@@ -2432,8 +2439,8 @@ describe('runOpenCodePrompt', () => {
 
     const fakeClient = {
       session: {
-        create: async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } }),
-        update: async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } }),
+        create: async (input: { permission?: unknown }) => ({ data: { id: 'ses-1', directory: '/tmp/project', permission: input.permission } }),
+        update: async (input: { permission?: unknown }) => ({ data: { id: 'ses-1', directory: '/tmp/project', permission: input.permission } }),
         prompt: async () => ({
           data: {
             info: { id: 'msg-echo' },

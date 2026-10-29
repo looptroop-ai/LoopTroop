@@ -143,6 +143,9 @@ export function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS profiles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       main_implementer TEXT,
+      chat_model TEXT,
+      chat_model_variant TEXT,
+      save_chat_sessions INTEGER NOT NULL DEFAULT ${PROFILE_DEFAULTS.saveChatSessions ? 1 : 0},
       manual_qa_enabled INTEGER NOT NULL DEFAULT ${PROFILE_DEFAULTS.manualQaEnabled ? 1 : 0},
       git_hook_policy TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.gitHookPolicy}',
       ignore_mode TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.ignoreMode}',
@@ -182,6 +185,9 @@ export function initializeDatabase() {
   migrateLegacyProfilesTable()
   ensureColumn('profiles', 'coverage_follow_up_budget_percent', `INTEGER DEFAULT ${PROFILE_DEFAULTS.coverageFollowUpBudgetPercent}`)
   ensureColumn('profiles', 'manual_qa_enabled', `INTEGER NOT NULL DEFAULT ${PROFILE_DEFAULTS.manualQaEnabled ? 1 : 0}`)
+  ensureColumn('profiles', 'chat_model', 'TEXT')
+  ensureColumn('profiles', 'chat_model_variant', 'TEXT')
+  ensureColumn('profiles', 'save_chat_sessions', `INTEGER NOT NULL DEFAULT ${PROFILE_DEFAULTS.saveChatSessions ? 1 : 0}`)
   ensureColumn('profiles', 'git_hook_policy', `TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.gitHookPolicy}'`)
   ensureColumn('profiles', 'ignore_mode', `TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.ignoreMode}'`)
   ensureColumn('profiles', 'max_coverage_passes', `INTEGER DEFAULT ${PROFILE_DEFAULTS.maxCoveragePasses}`)

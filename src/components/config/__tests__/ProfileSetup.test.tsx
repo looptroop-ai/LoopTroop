@@ -15,6 +15,9 @@ const existingProfile = {
   id: 1,
   mainImplementer: 'opencode/big-pickle',
   mainImplementerVariant: null as string | null,
+  chatModel: null as string | null,
+  chatModelVariant: null as string | null,
+  saveChatSessions: true,
   councilMembers: JSON.stringify(['opencode/big-pickle', 'openai/gpt-5.1-codex']),
   councilMemberVariants: null as string | null,
   minCouncilQuorum: 1,
@@ -192,6 +195,96 @@ describe('ProfileSetup', () => {
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
   })
 
+  it('keeps assistant model and session-saving edits through profile refreshes and submits the draft', async () => {
+    const onDirtyChange = vi.fn()
+    const view = await renderProfileSetup(undefined, onDirtyChange)
+
+    fireEvent.click(screen.getByRole('button', { name: /Assistant Model .*Search models/ }))
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Save chat sessions' })).getByRole('radio', { name: 'Disabled' }))
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+
+    profileForTest = { ...existingProfile, chatModel: 'openai/server-refresh' }
+    view.rendered.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <TooltipProvider>
+          <ToastProvider>
+            <ProfileSetup onClose={() => undefined} onDirtyChange={onDirtyChange} />
+          </ToastProvider>
+        </TooltipProvider>
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByRole('button', { name: 'Assistant Model openai/next-model' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatModel: 'openai/next-model',
+        chatModelVariant: null,
+        saveChatSessions: false,
+      }),
+      expect.anything(),
+    ))
+  })
+
+  it('lets the assistant reuse a council model with its own effort and routing settings', async () => {
+    useRealModelPickerForTest = true
+    const chatModelId = 'openrouter/deepseek/deepseek-v4-flash'
+    const model = (fullId: string, name: string, variants?: OpenCodeModel['variants']): OpenCodeModel => ({
+      fullId,
+      id: fullId,
+      name,
+      providerID: fullId.split('/')[0] ?? '',
+      providerName: 'Test provider',
+      family: 'test',
+      costInput: 0,
+      costOutput: 0,
+      contextWindow: 128_000,
+      canReason: true,
+      canSeeImages: false,
+      canUseTools: true,
+      status: 'stable',
+      variants,
+    })
+    const models = [
+      model('opencode/big-pickle', 'Big Pickle'),
+      model(chatModelId, 'DeepSeek V4 Flash', { low: {}, high: {} }),
+    ]
+    profileForTest = {
+      ...existingProfile,
+      councilMembers: JSON.stringify([existingProfile.mainImplementer, chatModelId]),
+    }
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      return {
+        ok: true,
+        json: async () => url === '/api/health/opencode'
+          ? { status: 'ok' }
+          : { models, connectedProviders: ['opencode', 'openrouter'], defaultModels: {} },
+      } as Response
+    })
+
+    await renderProfileSetup()
+    fireEvent.click(screen.getByRole('button', { name: /Assistant Model .*Search models/ }))
+    const option = await screen.findByRole('option', { name: /DeepSeek V4 Flash/ })
+    expect(option).toBeEnabled()
+    fireEvent.click(option)
+
+    const effortButtons = await screen.findAllByRole('button', { name: /High/ })
+    fireEvent.click(effortButtons.at(-1)!)
+    const routingButtons = screen.getAllByRole('button', { name: 'Floor' })
+    fireEvent.click(routingButtons.at(-1)!)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatModel: `${chatModelId}:floor`,
+        chatModelVariant: 'high',
+      }),
+      expect.anything(),
+    ))
+  })
+
   it('disables configuration fields until profile loading finishes without a saved profile', async () => {
     profileForTest = undefined
     profileLoadingForTest = true
@@ -345,9 +438,11 @@ describe('ProfileSetup', () => {
     expect(screen.getByText('OpenCode Provider Recovery')).toBeInTheDocument()
     const advancedButton = screen.getByRole('button', { name: 'Advanced' })
     expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByRole('radio', { name: 'Disabled' })).not.toBeInTheDocument()
+    const manualQaDisabled = document.getElementById('profile-manual-qa-disabled')
+    expect(manualQaDisabled).toBeInTheDocument()
+    expect(manualQaDisabled?.closest('[hidden]')).toBeInTheDocument()
     fireEvent.click(advancedButton)
-    expect(screen.getByRole('radio', { name: 'Disabled' })).toHaveAttribute('aria-checked', 'true')
+    expect(manualQaDisabled).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText('Coverage Follow-Up Budget (%)')).toBeInTheDocument()
     expect(screen.getByText('Interview Coverage Passes')).toBeInTheDocument()
     expect(screen.getByText('Structured Output Retries')).toBeInTheDocument()
@@ -593,7 +688,7 @@ describe('ProfileSetup', () => {
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('data-state', 'checked')
     const docsLinks = screen.getAllByRole('link', { name: /Open documentation for / })
-    expect(docsLinks).toHaveLength(24)
+    expect(docsLinks).toHaveLength(26)
 
     expect(screen.getByRole('link', { name: 'Open documentation for AI questions' })).toHaveAttribute(
       'href',
@@ -676,7 +771,7 @@ describe('ProfileSetup', () => {
     await renderProfileSetup()
 
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Enabled' }))
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Manual QA setting' })).getByRole('radio', { name: 'Enabled' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Observe' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Repository' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))

@@ -2126,7 +2126,7 @@ describe('OpenCode adapter transport orchestration', () => {
     const client = {
       session: {
         get: vi.fn(async () => ({ data: { id: 'session-1', directory: '/worktree' } })),
-        update: vi.fn(async () => ({ data: { id: 'session-1' } })),
+        update: vi.fn(async (input: { permission?: unknown }) => ({ data: { id: 'session-1', permission: input.permission } })),
         messages: vi.fn(async () => ({ data: [v1Message('old-assistant', 'stale answer')] })),
         prompt: vi.fn(async () => {
           await permissionSettled
@@ -2233,6 +2233,76 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.interruptSession).toHaveBeenCalledWith('session-1', '/worktree')
   })
 
+  it('keeps directory ownership after failed deletion and clears it after a successful retry', async () => {
+    const sessionId = 'temporary-session'
+    const deleteSession = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('OpenCode answered HTTP 401'), { status: 401 }))
+      .mockResolvedValueOnce(undefined)
+    const replyQuestion = vi.fn(async () => undefined)
+    const { transport } = createV2Transport({
+      createSession: vi.fn(async () => ({ id: sessionId, directory: '/trusted/worktree' })),
+      listPendingQuestions: vi.fn(async () => [{ id: 'question-1', sessionID: sessionId, questions: [] }]),
+      replyQuestion,
+      deleteSession,
+    })
+    const adapter = createAdapter(transport)
+    const controller = new AbortController()
+    await adapter.createSession('/workspace')
+    await adapter.listPendingQuestions(undefined, undefined, sessionId)
+
+    await expect(adapter.deleteSession?.(sessionId, controller.signal)).rejects.toThrow('HTTP 401')
+    await adapter.replyQuestion('question-1', [['approved']])
+    expect(replyQuestion).toHaveBeenCalledWith(
+      sessionId,
+      'question-1',
+      [['approved']],
+      '/trusted/worktree',
+      undefined,
+    )
+
+    await expect(adapter.deleteSession?.(sessionId, controller.signal)).resolves.toBeUndefined()
+    await expect(adapter.replyQuestion('question-1', [['approved']])).rejects.toThrow('no trusted session directory')
+    expect(deleteSession).toHaveBeenNthCalledWith(1, sessionId, '/trusted/worktree', controller.signal)
+    expect(deleteSession).toHaveBeenNthCalledWith(2, sessionId, '/trusted/worktree', controller.signal)
+  })
+
+  it('fails closed when deletion cannot establish trusted directory ownership', async () => {
+    const deleteSession = vi.fn(async () => undefined)
+    const { transport } = createV2Transport({
+      getSession: vi.fn(async () => ({ id: 'session-1' })),
+      deleteSession,
+    })
+    const adapter = createAdapter(transport)
+
+    await expect(adapter.deleteSession?.('session-1')).rejects.toThrow('no trusted worktree directory')
+    expect(deleteSession).not.toHaveBeenCalled()
+  })
+
+  it('treats a confirmed missing session as already deleted', async () => {
+    const deleteSession = vi.fn(async () => undefined)
+    const { transport } = createV2Transport({
+      getSession: vi.fn(async () => null),
+      deleteSession,
+    })
+    const adapter = createAdapter(transport)
+
+    await expect(adapter.deleteSession?.('session-1')).resolves.toBeUndefined()
+    expect(deleteSession).not.toHaveBeenCalled()
+  })
+
+  it('propagates authentication failures while resolving an uncached session for deletion', async () => {
+    const unauthorized = Object.assign(new Error('OpenCode answered HTTP 401'), { status: 401 })
+    const deleteSession = vi.fn(async () => undefined)
+    const { transport } = createV2Transport({
+      getSession: vi.fn(async () => { throw unauthorized }),
+      deleteSession,
+    })
+    const adapter = createAdapter(transport)
+
+    await expect(adapter.deleteSession?.('session-1')).rejects.toBe(unauthorized)
+    expect(deleteSession).not.toHaveBeenCalled()
+  })
+
   it('wraps session creation errors and uses the cached worktree directory for cleanup', async () => {
     const failure = new Error('session-scoped permissions are unsupported')
     const failingAdapter = createAdapter(createV2Transport({
@@ -2244,7 +2314,7 @@ describe('OpenCode adapter transport orchestration', () => {
     )
     await expect(failingAdapter.createSession('/workspace', undefined, {
       permission: [{ permission: 'read', pattern: '*', action: 'allow' }],
-    })).rejects.toThrow(/allow-all permissions.*Upgrade OpenCode/s)
+    })).rejects.toThrow(/requested permissions.*Upgrade OpenCode/s)
 
     const session = { id: 'created-session', directory: '/trusted/worktree' }
     const { transport } = createV2Transport({

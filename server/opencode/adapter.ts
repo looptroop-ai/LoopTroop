@@ -75,6 +75,7 @@ export interface OpenCodeAdapter {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<Message[]>;
+  deleteSession?(sessionId: string, signal?: AbortSignal): Promise<void>;
   subscribeToEvents(
     sessionId: string,
     signal?: AbortSignal,
@@ -328,8 +329,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const errorMessage = getErrorMessage(err);
       const error = new Error(
         options?.permission
-          ? `Failed to create OpenCode session with allow-all permissions: ${errorMessage}. ` +
-            "Allow-all sessions require an OpenCode server that supports session-scoped permissions. " +
+          ? `Failed to create OpenCode session with requested permissions: ${errorMessage}. ` +
+            "Custom permissions require an OpenCode server that supports session-scoped permissions. " +
             "Upgrade OpenCode, then restart LoopTroop (`looptroop restart`) or the OpenCode server it uses."
           : `Failed to create OpenCode session: ${errorMessage}`,
         { cause: err },
@@ -1906,6 +1907,23 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       }
       return false;
     }
+  }
+
+  async deleteSession(sessionId: string, signal?: AbortSignal): Promise<void> {
+    const transport = await this.getTransport(signal);
+    let directory = this.sessionDirectories.get(sessionId);
+    if (!directory) {
+      const session = await this.getSessionWithTransport(sessionId, signal, transport);
+      if (!session) {
+        this.forgetSessionDirectory(sessionId);
+        return;
+      }
+      directory = session.directory;
+      if (!directory)
+        throw new Error(`OpenCode session ${sessionId} has no trusted worktree directory`);
+    }
+    await transport.deleteSession(sessionId, directory, signal);
+    this.forgetSessionDirectory(sessionId);
   }
 
   forgetSessionDirectory(sessionId: string): void {

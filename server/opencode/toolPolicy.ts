@@ -1,8 +1,28 @@
-import { isAbsolute, relative } from 'path'
+import { dirname, isAbsolute, join, parse, relative, resolve } from 'path'
 import type { OpenCodePermissionRule, PromptSessionOptions } from './types'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from './permissions'
 
 export type OpenCodeToolPolicy = 'default' | 'disabled' | 'read_only' | 'execution_setup_online'
+
+export function assistantPermissions(directory: string): ReadonlyArray<OpenCodePermissionRule> {
+  const evidenceRoot = join(resolve(directory), 'evidence').replaceAll('\\', '/')
+  const ancestorRelativeEvidence: string[] = []
+  for (let ancestor = dirname(evidenceRoot); ; ancestor = dirname(ancestor)) {
+    ancestorRelativeEvidence.push(relative(ancestor, evidenceRoot).replaceAll('\\', '/'))
+    if (ancestor === parse(ancestor).root) break
+  }
+  const paths = [
+    'evidence', 'evidence/**', evidenceRoot, `${evidenceRoot}/**`,
+    ...ancestorRelativeEvidence.flatMap(path => [path, `${path}/**`]),
+  ]
+  const scopedPaths = [...new Set(paths.flatMap(path => [path, path.replaceAll('/', '\\')]))]
+  return Object.freeze([
+    { permission: '*', pattern: '*', action: 'deny' },
+    ...(['read', 'list', 'glob'] as const).flatMap(permission => scopedPaths.map(pattern => ({ permission, pattern, action: 'allow' as const }))),
+    // grep checks its expression rather than its path, so the wildcard deny keeps it unavailable.
+    { permission: 'external_directory', pattern: '*', action: 'deny' },
+  ])
+}
 
 const OPENCODE_DEFAULT_OVERRIDES: Readonly<Record<string, boolean>> = Object.freeze({
   webfetch: false,

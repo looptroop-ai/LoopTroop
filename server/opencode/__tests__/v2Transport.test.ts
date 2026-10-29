@@ -266,6 +266,31 @@ function promptRequest(
 }
 
 describe("OpenCode v2 fetch transport", () => {
+  it("deletes sessions through the v2 API and treats a confirmed missing session as deleted", async () => {
+    let calls = 0;
+    const { transport, requests } = createTransport((_request, init) => {
+      calls += 1;
+      assert(init.signal);
+      if (calls === 1) return emptyResponse();
+      if (calls === 2)
+        return jsonResponse({ _tag: "SessionNotFoundError" }, 404);
+      return jsonResponse({ message: "forbidden" }, 401);
+    });
+
+    await expect(transport.deleteSession("session/1", "/workspace")).resolves.toBeUndefined();
+    await expect(transport.deleteSession("session/1", "/workspace")).resolves.toBeUndefined();
+    await expect(transport.deleteSession("session/1", "/workspace")).rejects.toMatchObject({
+      name: "V2OpenCodeHttpError",
+      status: 401,
+    });
+
+    expect(requests.map(({ method, url, body }) => ({ method, path: url.pathname, body }))).toEqual([
+      { method: "DELETE", path: "/api/session/session%2F1", body: undefined },
+      { method: "DELETE", path: "/api/session/session%2F1", body: undefined },
+      { method: "DELETE", path: "/api/session/session%2F1", body: undefined },
+    ]);
+  });
+
   it("reads a session and skips an update when no permission change was requested", async () => {
     const { transport, requests } = createTransport((request) => {
       if (request.url.pathname === "/api/session/session%2F1") {
@@ -2741,10 +2766,15 @@ describe("OpenCode v2 fetch transport", () => {
     ]);
   });
 
-  it("updates v2 permission rules and confirms an interrupt only after the server is idle", async () => {
+  it("verifies updated v2 permissions and confirms an interrupt only after the server is idle", async () => {
+    const permissions = [
+      { action: "shell", resource: "git status", effect: "deny" },
+    ];
     const { transport, requests } = createTransport((request) => {
-      if (request.url.pathname === "/api/session/session-1")
+      if (request.url.pathname === "/api/session/session-1" && request.method === "PATCH")
         return emptyResponse();
+      if (request.url.pathname === "/api/session/session-1" && request.method === "GET")
+        return jsonResponse({ data: { id: "session-1", permissions } });
       if (request.url.pathname.endsWith("/interrupt"))
         return jsonResponse({ interrupted: true });
       if (request.url.pathname.endsWith("/wait")) return emptyResponse();
@@ -2764,6 +2794,7 @@ describe("OpenCode v2 fetch transport", () => {
       requests.map((request) => `${request.method} ${request.url.pathname}`),
     ).toEqual([
       "PATCH /api/session/session-1",
+      "GET /api/session/session-1",
       "POST /api/session/session-1/interrupt",
       "POST /api/experimental/session/session-1/wait",
     ]);
@@ -2772,7 +2803,58 @@ describe("OpenCode v2 fetch transport", () => {
         { action: "shell", resource: "git status", effect: "deny" },
       ],
     });
-    expect(requests[1]?.url.searchParams.get("resume")).toBe("false");
+    expect(requests[1]?.body).toBeUndefined();
+    expect(requests[2]?.url.searchParams.get("resume")).toBe("false");
+  });
+
+  it("rejects a v2 permission update when session readback differs", async () => {
+    const { transport, requests } = createTransport((request) => {
+      if (request.url.pathname === "/api/session/session-1" && request.method === "PATCH")
+        return emptyResponse();
+      if (request.url.pathname === "/api/session/session-1" && request.method === "GET")
+        return jsonResponse({ data: { id: "session-1", permissions: [] } });
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    });
+
+    await expect(transport.updateSession("session-1", "/workspace", {
+      permission: [
+        { permission: "read", pattern: "evidence/**", action: "allow" },
+      ],
+    })).rejects.toThrow("did not confirm the requested session permissions");
+    expect(requests.map((request) => request.method)).toEqual(["PATCH", "GET"]);
+  });
+
+  it("rejects extra trailing v2 rules that would override the requested last match", async () => {
+    const requested = [
+      { permission: "read", pattern: "*", action: "deny" as const },
+      { permission: "read", pattern: "evidence/**", action: "allow" as const },
+    ];
+    const { transport, requests } = createTransport((request) => {
+      if (request.url.pathname !== "/api/session/session-1")
+        throw new Error(`Unexpected ${request.method} ${request.url}`);
+      if (request.method === "PATCH") return emptyResponse();
+      return jsonResponse({
+        data: {
+          id: "session-1",
+          permissions: [
+            { action: "read", resource: "*", effect: "deny" },
+            { action: "read", resource: "evidence/**", effect: "allow" },
+            { action: "read", resource: "*", effect: "allow" },
+          ],
+        },
+      });
+    });
+
+    await expect(transport.updateSession("session-1", "/workspace", {
+      permission: requested,
+    })).rejects.toThrow("did not confirm the requested session permissions");
+    expect(requests.map((request) => request.method)).toEqual(["PATCH", "GET"]);
+    expect(requests[0]?.body).toEqual({
+      permissions: [
+        { action: "read", resource: "*", effect: "deny" },
+        { action: "read", resource: "evidence/**", effect: "allow" },
+      ],
+    });
   });
 
   it("treats an already-missing session as successfully interrupted", async () => {

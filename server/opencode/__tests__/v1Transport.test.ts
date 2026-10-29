@@ -57,11 +57,12 @@ describe('OpenCode v1 transport direct behavior', () => {
           time: { created: 1_700_000_000_000, updated: 1_700_000_001_000 },
           title: 'Work session',
           version: 'v1',
+          permission: [{ permission: 'read', pattern: '*', action: 'allow' }],
         },
       })
       .mockResolvedValueOnce({})
     const update = vi.fn()
-      .mockResolvedValueOnce({ data: { id: 'session-1' } })
+      .mockResolvedValueOnce({ data: { id: 'session-1', permission: [{ permission: 'write', pattern: 'src/**', action: 'deny' }] } })
       .mockResolvedValueOnce({})
     const get = vi.fn()
       .mockResolvedValueOnce({ data: { id: 'session-1', directory: '/workspace' } })
@@ -107,6 +108,89 @@ describe('OpenCode v1 transport direct behavior', () => {
     ])
     await expect(sdk.getSessionMessages('session-1')).resolves.toEqual([])
     expect(messages).toHaveBeenCalledWith({ sessionID: 'session-1', directory: '/workspace', limit: expect.any(Number) }, expect.any(Object))
+  })
+
+  it('refuses to create a v1 session when requested permissions are not confirmed', async () => {
+    const requested = [{ permission: 'read', pattern: 'evidence/**', action: 'allow' as const }]
+    const create = vi.fn()
+      .mockResolvedValueOnce({ data: { id: 'session-1', permission: [] } })
+      .mockResolvedValueOnce({ data: { id: 'session-2', permission: [{ ...requested[0], action: 'deny' }] } })
+      .mockResolvedValueOnce({ data: { permission: [] } })
+    const remove = vi.fn().mockResolvedValue({ data: true })
+    const sdk = transport({ session: { create, delete: remove } })
+
+    await expect(sdk.createSession('/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+    await expect(sdk.createSession('/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+    await expect(sdk.createSession('/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+    expect(remove).toHaveBeenNthCalledWith(1, { sessionID: 'session-1', directory: '/workspace' }, expect.anything())
+    expect(remove).toHaveBeenNthCalledWith(2, { sessionID: 'session-2', directory: '/workspace' }, expect.anything())
+    expect(remove).toHaveBeenCalledTimes(2)
+  })
+
+  it('exposes the rejected v1 session id when immediate cleanup fails', async () => {
+    const requested = [{ permission: 'read', pattern: 'evidence/**', action: 'allow' as const }]
+    const create = vi.fn().mockResolvedValue({ data: { id: 'orphaned-session', permission: [] } })
+    const remove = vi.fn().mockResolvedValue({ data: false })
+    const sdk = transport({ session: { create, delete: remove } })
+
+    let failure: unknown
+    try {
+      await sdk.createSession('/workspace', { permission: requested })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure).toMatchObject({ openCodeSessionId: 'orphaned-session' })
+    expect((failure as AggregateError).errors).toHaveLength(2)
+    expect(remove).toHaveBeenCalledWith({ sessionID: 'orphaned-session', directory: '/workspace' }, expect.anything())
+  })
+
+  it('deletes sessions through the SDK and requires confirmation', async () => {
+    const remove = vi.fn()
+      .mockResolvedValueOnce({ data: true })
+      .mockResolvedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({ data: false })
+      .mockResolvedValueOnce({ response: { status: 401 } })
+    const sdk = transport({ session: { delete: remove } })
+
+    await expect(sdk.deleteSession('session-1', '/workspace')).resolves.toBeUndefined()
+    await expect(sdk.deleteSession('missing')).resolves.toBeUndefined()
+    await expect(sdk.deleteSession('unconfirmed')).rejects.toThrow('did not confirm deletion')
+    await expect(sdk.deleteSession('unauthorized')).rejects.toThrow('HTTP 401')
+
+    expect(remove).toHaveBeenNthCalledWith(1, {
+      sessionID: 'session-1',
+      directory: '/workspace',
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(remove).toHaveBeenNthCalledWith(2, { sessionID: 'missing' }, expect.anything())
+  })
+
+  it('refuses prompts whose requested permissions were ignored or changed by the server', async () => {
+    const requested = [{ permission: '*', pattern: '*', action: 'deny' as const }]
+    const update = vi.fn()
+      .mockResolvedValueOnce({ data: { id: 'session-1' } })
+      .mockResolvedValueOnce({ data: { id: 'session-1', permission: [{ ...requested[0], action: 'allow' }] } })
+    const sdk = transport({ session: { update } })
+
+    await expect(sdk.updateSession('session-1', '/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+    await expect(sdk.updateSession('session-1', '/workspace', { permission: requested })).rejects.toThrow('did not confirm')
+  })
+
+  it('accepts v1 permission updates appended after the existing session rules', async () => {
+    const requested = [{ permission: '*', pattern: '*', action: 'deny' as const }]
+    const update = vi.fn().mockResolvedValue({
+      data: {
+        id: 'session-1',
+        permission: [
+          { permission: 'read', pattern: '*', action: 'allow' },
+          ...requested,
+        ],
+      },
+    })
+    const sdk = transport({ session: { update } })
+
+    await expect(sdk.updateSession('session-1', '/workspace', { permission: requested })).resolves.toBeUndefined()
   })
 
   it('partitions prompts, forwards request options, and rejects unconfirmed SDK responses', async () => {

@@ -202,6 +202,12 @@ export class MockOpenCodeAdapter implements OpenCodeAdapter {
     return true
   }
 
+  async deleteSession(sessionId: string, _signal?: AbortSignal): Promise<void> {
+    this.sessions = this.sessions.filter((session) => session.id !== sessionId)
+    this.messages.delete(sessionId)
+    this.mockQuestions = this.mockQuestions.filter((question) => question.sessionID !== sessionId)
+  }
+
   async *subscribeToEvents(sessionId: string, _signal?: AbortSignal): AsyncGenerator<StreamEvent> {
     yield { type: 'done', sessionId }
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText, sanitizeDiagnosticValue } from '../errorDiagnostics'
+import { normalizeBlockedErrorDiagnostics, sanitizeDiagnosticText, sanitizeDiagnosticValue, sanitizeEvidenceText, sanitizeEvidenceValue } from '../errorDiagnostics'
 
 describe('shared blocked error diagnostics', () => {
   it('preserves full structured log evidence and repeated lines while redacting nested credentials', () => {
@@ -28,6 +28,271 @@ describe('shared blocked error diagnostics', () => {
     })
     expect(sanitizeDiagnosticValue(clean)).toEqual(clean)
     expect(value.data.headers['x-api-key']).toEqual(['opaque-key'])
+  })
+
+  it('preserves source links and identifiers while redacting credential literals', () => {
+    const source = [
+      '[config](https://www.example.com/docs/configuration#assistant-chat)',
+      "fetch('https://api.example.com/items?limit=10&page=2#results')",
+      'interface Opts { token: string; password?: string }',
+      'interface CredentialOptions { token: ExtremelyLongSecurityTokenType }',
+      "const password = form.get('password')",
+      'const password = readPasswordFromEnvironment()',
+      'const token = client.token',
+      "fetch('https://api.example.com/items?token=ordinary-query-value#results')",
+      "const apiKey = 'sk-test-secret-value-123456';",
+      'Authorization: Bearer opaque-credential-token',
+      "const url = 'https://user:pass@example.com/api?x=1#section'",
+    ].join('\n')
+
+    const clean = sanitizeEvidenceText(source)
+
+    expect(clean).toContain('[config](https://www.example.com/docs/configuration#assistant-chat)')
+    expect(clean).toContain("fetch('https://api.example.com/items?limit=10&page=2#results')")
+    expect(clean).toContain('interface Opts { token: string; password?: string }')
+    expect(clean).toContain('interface CredentialOptions { token: ExtremelyLongSecurityTokenType }')
+    expect(clean).toContain("const password = form.get('password')")
+    expect(clean).toContain('const password = readPasswordFromEnvironment()')
+    expect(clean).toContain('const token = client.token')
+    expect(clean).toContain("fetch('https://api.example.com/items?token=[redacted]#results')")
+    expect(clean).toContain("const apiKey = '[redacted]'")
+    expect(clean).toContain('Authorization: Bearer [redacted]')
+    expect(clean).toContain("https://[redacted]@example.com/api?x=1#section")
+    expect(clean).not.toContain('sk-test-secret-value-123456')
+    expect(clean).not.toContain('opaque-credential-token')
+
+    expect(sanitizeEvidenceValue({ apiKey: 'literal-secret', source: 'https://example.com/a?x=1#top' })).toEqual({
+      apiKey: '[redacted]',
+      source: 'https://example.com/a?x=1#top',
+    })
+  })
+
+  it('redacts unquoted and prefixed credential assignments without changing code references or empty values', () => {
+    const source = [
+      'password: supersecret123',
+      'api_key: opaque-secret-token',
+      'client_secret = opaque_value',
+      'API_KEY=opaque_value',
+      'api_key: API_KEY_HERE',
+      'AWS_SECRET_ACCESS_KEY=opaque_aws_value',
+      'serviceApiKey=opaque_service_value',
+      'token: ExtremelyLongSecurityTokenType',
+      'token: client.token',
+      'password: readPasswordFromEnvironment()',
+      'token: ""',
+      'token=',
+    ].join('\n')
+
+    const clean = sanitizeEvidenceText(source)
+
+    expect(clean).toContain('password: [redacted]')
+    expect(clean).toContain('api_key: [redacted]')
+    expect(clean).toContain('client_secret = [redacted]')
+    expect(clean).toContain('API_KEY=[redacted]')
+    expect(clean).toContain('api_key: API_KEY_HERE')
+    expect(clean).toContain('AWS_SECRET_ACCESS_KEY=[redacted]')
+    expect(clean).toContain('serviceApiKey=[redacted]')
+    expect(clean).toContain('token: ExtremelyLongSecurityTokenType')
+    expect(clean).toContain('token: client.token')
+    expect(clean).toContain('password: readPasswordFromEnvironment()')
+    expect(clean).toContain('token: ""')
+    expect(clean).toContain('token=')
+    expect(clean).not.toContain('opaque-')
+    expect(clean).not.toContain('opaque_value')
+  })
+
+  it('redacts credentials in escaped serialized source while preserving other fields', () => {
+    const source = String.raw`const config = "{\"apiKey\":\"operator-secret\",\"theme\":\"dark\"}"`
+    expect(sanitizeEvidenceText(source)).toBe(String.raw`const config = "{\"apiKey\":\"[redacted]\",\"theme\":\"dark\"}"`)
+    const nested = String.raw`{\\\"password\\\":\\\"nested-secret\\\"}`
+    expect(sanitizeEvidenceText(nested)).toBe(String.raw`{\\\"password\\\":\\\"[redacted]\\\"}`)
+  })
+
+  it('redacts unquoted credential values with punctuation and base64 padding', () => {
+    const source = [
+      'apiKey: opaque==',
+      'token: opaque!value',
+      'password: $opaque',
+      'clientSecret: opaque:value',
+      'accessToken: (opaque)',
+      'refreshToken: <opaque>',
+      'login(password=Hunter2xyz)',
+      'gateway replied: Bearer abcdefgh-',
+      'See ?token=opaque123&limit=10#results',
+      '#password: hunter2',
+      '#password=opaqueSecret',
+      'GH_TOKEN: ${{ github.token }}',
+    ].join('\n')
+
+    expect(sanitizeEvidenceText(source)).toBe([
+      'apiKey: [redacted]',
+      'token: [redacted]',
+      'password: [redacted]',
+      'clientSecret: [redacted]',
+      'accessToken: [redacted]',
+      'refreshToken: [redacted]',
+      'login(password=[redacted])',
+      'gateway replied: Bearer [redacted]',
+      'See ?token=[redacted]&limit=10#results',
+      '#password: [redacted]',
+      '#password=[redacted]',
+      'GH_TOKEN: ${{ github.token }}',
+    ].join('\n'))
+  })
+
+  it('redacts standalone auth schemes and capitalized secrets without rewriting prose or code', () => {
+    const source = [
+      'gateway replied: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2ln',
+      'gateway replied: Bearer abcdefghijklmnop',
+      'Basic dXNlcjpwYXNzd29yZA==',
+      'Basic authentication',
+      'Basic\nauthentication',
+      'Bearer authentication',
+      'Authorization: Bearer short',
+      'Authorization: Bearer abcdefghijklmnop',
+      'password: Summer2024',
+      'password: newSecret123',
+      'API_KEY=Xk9fQ2mPz7Lq',
+      'AWS_SECRET_ACCESS_KEY=Wj4lrXUtnFEMIK7MDENG',
+      'Send a bearer token instead of the cookie',
+      '## Basic usage',
+      'The basic\nflow',
+      'if (expectedStartToken === null) {',
+      'dbCredentials: {',
+      'persist-credentials: false',
+      'id-token: write',
+      'GH_TOKEN: ${{ github.token }}',
+      'type Token = { value: string }',
+      'token: process.env.TOKEN',
+      'token: getToken()',
+      'token: client.getToken()',
+      'token: await getToken()',
+      'token: candidate || fallback',
+      'token: candidate & mask',
+      'token: candidate ? fallback : candidate',
+      'token: candidate === null',
+      'token: "opaque-secret" + suffix',
+    ].join('\n')
+
+    expect(sanitizeEvidenceText(source)).toBe([
+      'gateway replied: Bearer [redacted]',
+      'gateway replied: Bearer [redacted]',
+      'Basic [redacted]',
+      'Basic authentication',
+      'Basic\nauthentication',
+      'Bearer authentication',
+      'Authorization: Bearer [redacted]',
+      'Authorization: Bearer [redacted]',
+      'password: [redacted]',
+      'password: [redacted]',
+      'API_KEY=[redacted]',
+      'AWS_SECRET_ACCESS_KEY=[redacted]',
+      'Send a bearer token instead of the cookie',
+      '## Basic usage',
+      'The basic\nflow',
+      'if (expectedStartToken === null) {',
+      'dbCredentials: {',
+      'persist-credentials: false',
+      'id-token: write',
+      'GH_TOKEN: ${{ github.token }}',
+      'type Token = { value: string }',
+      'token: process.env.TOKEN',
+      'token: getToken()',
+      'token: client.getToken()',
+      'token: await getToken()',
+      'token: candidate || fallback',
+      'token: candidate & mask',
+      'token: candidate ? fallback : candidate',
+      'token: candidate === null',
+      'token: "opaque-secret" + suffix',
+    ].join('\n'))
+  })
+
+  it('redacts auth, access, refresh, and bearer aliases in structured and text evidence', () => {
+    expect(sanitizeEvidenceValue({
+      auth: { access: 'opaque-access', refresh: 'opaque-refresh' },
+      access: 'opaque-access',
+      refresh: 'opaque-refresh',
+      bearer: 'opaque-bearer',
+    })).toEqual({
+      auth: '[redacted]',
+      access: '[redacted]',
+      refresh: '[redacted]',
+      bearer: '[redacted]',
+    })
+
+    expect(sanitizeEvidenceText('auth: { access: "opaque-access", refresh: "opaque-refresh" }\nbearer: opaque-bearer'))
+      .toBe('auth: { access: "[redacted]", refresh: "[redacted]" }\nbearer: [redacted]')
+    expect(sanitizeEvidenceValue({ hasAuth: false, isAccess: 'false' })).toEqual({ hasAuth: false, isAccess: 'false' })
+    expect(sanitizeEvidenceText('hasAuth=false isAccess=false')).toBe('hasAuth=false isAccess=false')
+  })
+
+  it('redacts URL userinfo and credential query values while preserving ordinary parameters and prose', () => {
+    const source = [
+      'https://opaqueKey123@example.com/path?apiKey=opaqueApiKey123&limit=10#access_token=opaqueAccessToken',
+      'const endpoint = "https://api.example.com/items?api%5Fkey=opaqueKey123&limit=10"',
+      'https://api.example.com/items?page=2#results',
+      '## Basic usage',
+      'Send a bearer token instead of the cookie',
+      'The basic\nflow',
+      'const opts = { token: "" }',
+    ].join('\n')
+
+    expect(sanitizeEvidenceText(source)).toBe([
+      'https://[redacted]@example.com/path?apiKey=[redacted]&limit=10#access_token=[redacted]',
+      'const endpoint = "https://api.example.com/items?api%5Fkey=[redacted]&limit=10"',
+      'https://api.example.com/items?page=2#results',
+      '## Basic usage',
+      'Send a bearer token instead of the cookie',
+      'The basic\nflow',
+      'const opts = { token: "" }',
+    ].join('\n'))
+  })
+
+  it('redacts signed URL parameters while keeping ordinary query values', () => {
+    const url = 'https://s3.amazonaws.com/b/f.zip?X-Amz-Credential=opaque-credential&X-Amz-Signature=abc123&sig=opaque-sig&hmac=opaque-hmac&mac=opaque-mac&hash=opaque-hash&key=opaque-key&keyId=opaque-key-id&auth=opaque-auth&limit=10'
+
+    expect(sanitizeEvidenceText(url)).toBe('https://s3.amazonaws.com/b/f.zip?X-Amz-Credential=[redacted]&X-Amz-Signature=[redacted]&sig=[redacted]&hmac=[redacted]&mac=[redacted]&hash=[redacted]&key=[redacted]&keyId=[redacted]&auth=[redacted]&limit=10')
+  })
+
+  it('handles a 512 KiB punctuation-heavy hostname-like input promptly', () => {
+    const pathological = 'a.'.repeat(256 * 1024)
+    const started = performance.now()
+
+    expect(sanitizeEvidenceText(pathological) === pathological).toBe(true)
+    expect(performance.now() - started).toBeLessThan(1500)
+    expect(sanitizeEvidenceText('https://user:pw@x.io/')).toBe('https://[redacted]@x.io/')
+    expect(sanitizeEvidenceText('git+ssh://u@h/x')).toBe('git+ssh://[redacted]@h/x')
+  })
+
+  it('keeps expression-tail checks on the same line across repeated credential matches', () => {
+    const line = `password: opaque-secret${' '.repeat(24)}in: metadata\n`
+    const source = line.repeat(4096)
+    const started = performance.now()
+    const clean = sanitizeEvidenceText(source)
+
+    expect(clean.match(/\[redacted\]/g)).toHaveLength(4096)
+    expect(clean.startsWith(`password: [redacted]${' '.repeat(24)}in: metadata\n`)).toBe(true)
+    expect(sanitizeEvidenceText('password: newSecret123\nin: metadata')).toBe('password: [redacted]\nin: metadata')
+    expect(performance.now() - started).toBeLessThan(1500)
+  })
+
+  it('redacts complete structured credentials, including objects and arrays under prefixed keys', () => {
+    expect(sanitizeEvidenceValue({
+      apiKey: { current: 'opaque-api-key', previous: 'opaque-old-key' },
+      aws_secret_access_key: ['opaque-aws-key'],
+      credentials: { password: 'opaque-password' },
+      nextPageToken: 'opaque-page-cursor',
+      inputToken: 14,
+      outputToken: '15',
+    })).toEqual({
+      apiKey: '[redacted]',
+      aws_secret_access_key: '[redacted]',
+      credentials: '[redacted]',
+      nextPageToken: 'opaque-page-cursor',
+      inputToken: 14,
+      outputToken: '15',
+    })
   })
 
   it('stops cyclic or excessive nesting with an explicit evidence marker', () => {

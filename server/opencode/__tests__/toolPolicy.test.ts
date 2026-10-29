@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { parse, relative, resolve } from 'node:path'
 import type { OpenCodePermissionRule } from '../types'
 import {
   OPENCODE_DISABLED_PERMISSIONS,
@@ -9,6 +10,7 @@ import {
   isPermissionDeniedByRules,
   resolveOpenCodePermissions,
   toolPolicyMayAskQuestions,
+  assistantPermissions,
   type OpenCodeToolPolicy,
 } from '../toolPolicy'
 
@@ -19,6 +21,43 @@ function questionRules(rules: readonly OpenCodePermissionRule[] | undefined): Op
 }
 
 describe('resolveOpenCodePermissions', () => {
+  it('confines assistant reads while denying writes, other tools, and external directories', () => {
+    const directory = resolve('assistant-policy-test')
+    const rules = assistantPermissions(directory)
+    const rootRelativeEvidence = relative(parse(directory).root, resolve(directory, 'evidence')).replaceAll('\\', '/')
+    const rootRelativeFile = `${rootRelativeEvidence}/manifest.json`
+    for (const tool of ['read', 'list']) {
+      expect(isPermissionDeniedByRules(rules, tool, ['evidence/tickets/ticket.json'])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, tool, [`${directory.replaceAll('\\', '/')}/evidence/manifest.json`])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, tool, [rootRelativeFile])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, tool, [resolve('outside/private.txt')])).toBe(true)
+    }
+    expect(isPermissionDeniedByRules(rules, 'glob', ['evidence/**/*.md'])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'glob', ['**/*.md'])).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'glob', [`${rootRelativeEvidence}/**/*.md`])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'grep', ['frontend'])).toBe(true)
+    expect(isPermissionDeniedByRules(rules, 'external_directory', [resolve('outside')])).toBe(true)
+    for (const tool of ['external_directory', 'bash', 'edit', 'task', 'question', 'webfetch']) {
+      expect(isPermissionDeniedByRules(rules, tool, ['*'])).toBe(true)
+    }
+  })
+
+  it('allows evidence paths relative to any enclosing worktree', () => {
+    const worktree = resolve('nested-config-repo')
+    const directory = resolve(worktree, '.config/looptroop/assistant/session-1')
+    const rules = assistantPermissions(directory)
+    const evidenceFile = relative(worktree, resolve(directory, 'evidence/manifest.json')).replaceAll('\\', '/')
+    const evidenceGlob = relative(worktree, resolve(directory, 'evidence/**/*.json')).replaceAll('\\', '/')
+    const otherSessionFile = relative(worktree, resolve(worktree, '.config/looptroop/assistant/session-2/evidence/manifest.json')).replaceAll('\\', '/')
+
+    for (const permission of ['read', 'list']) {
+      expect(isPermissionDeniedByRules(rules, permission, [evidenceFile])).toBe(false)
+      expect(isPermissionDeniedByRules(rules, permission, [otherSessionFile])).toBe(true)
+    }
+    expect(isPermissionDeniedByRules(rules, 'glob', [evidenceGlob])).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'glob', [evidenceGlob.replace('session-1', 'session-2')])).toBe(true)
+  })
+
   it('states the question rule exactly once, whatever the policy said', () => {
     for (const policy of ALL_POLICIES) {
       for (const questionsAllowed of [true, false]) {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeAtomicTmpPath } from '../io/atomicWrite'
 import { RecoveryBlockedError } from '../io/recovery'
 import { makeTempDir, removeTempDir } from '../test/tempDir'
+import { recoverTicketRuntimeArtifacts, startupSequence } from '../startup'
 
 const startupFixture = vi.hoisted(() => ({
   tickets: [] as Array<{ id: string }>,
@@ -15,6 +16,7 @@ const startupFixture = vi.hoisted(() => ({
   formatStartupStorageSummary: vi.fn(() => 'scratch'),
   hydrateAllTickets: vi.fn(() => 0),
   rebuildTicketRuntimeProjections: vi.fn(() => 0),
+  startAssistantSessionCleanup: vi.fn(),
   health: null as {
     available: boolean
     protocol?: 'v1' | 'v2'
@@ -69,6 +71,9 @@ vi.mock('../machines/persistence', async (importOriginal) => ({
 vi.mock('../storage/ticketRuntimeProjection', () => ({
   rebuildTicketRuntimeProjections: startupFixture.rebuildTicketRuntimeProjections,
 }))
+vi.mock('../assistant/sessions', () => ({
+  startAssistantSessionCleanup: startupFixture.startAssistantSessionCleanup,
+}))
 
 const roots: string[] = []
 
@@ -83,6 +88,7 @@ afterEach(() => {
   startupFixture.formatStartupStorageSummary.mockClear()
   startupFixture.hydrateAllTickets.mockClear()
   startupFixture.rebuildTicketRuntimeProjections.mockClear()
+  startupFixture.startAssistantSessionCleanup.mockClear()
   startupFixture.health = null
   startupFixture.healthError = null
   vi.restoreAllMocks()
@@ -102,7 +108,6 @@ describe('startup artifact recovery', () => {
     const unrelatedTemp = makeAtomicTmpPath(unrelatedTarget)
     writeFileSync(unrelatedTemp, 'keep this user content')
 
-    const { recoverTicketRuntimeArtifacts } = await import('../startup')
     const result = recoverTicketRuntimeArtifacts()
 
     expect(result.recoveredTmpFiles).toBe(1)
@@ -151,7 +156,6 @@ describe('startup artifact recovery', () => {
       beadsPath: target,
     }
 
-    const { startupSequence } = await import('../startup')
     for (let boot = 0; boot < 2; boot += 1) {
       await expect(startupSequence()).rejects.toBeInstanceOf(RecoveryBlockedError)
       expect(readFileSync(target, 'utf8')).toBe('{"id":"B-1","status":"done"}\n')
@@ -187,7 +191,6 @@ describe('startup artifact recovery', () => {
       },
     }))
 
-    const { startupSequence } = await import('../startup')
     await expect(startupSequence()).rejects.toBeInstanceOf(RecoveryBlockedError)
     expect(readFileSync(target, 'utf8')).toBe('{"port":4310}')
     expect(readFileSync(temp, 'utf8')).toBe(complete)
@@ -195,6 +198,7 @@ describe('startup artifact recovery', () => {
     expect(startupFixture.startWalCheckpoint).not.toHaveBeenCalled()
     expect(startupFixture.rebuildTicketRuntimeProjections).not.toHaveBeenCalled()
     expect(startupFixture.hydrateAllTickets).not.toHaveBeenCalled()
+    expect(startupFixture.startAssistantSessionCleanup).not.toHaveBeenCalled()
   }, 30_000)
 
   it('warns for reachable OpenCode model discovery failures and prints protocol names once', async () => {
@@ -203,7 +207,6 @@ describe('startup artifact recovery', () => {
     process.env.LOOPTROOP_CONFIG_DIR = configDir
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
-    const { startupSequence } = await import('../startup')
 
     startupFixture.health = {
       available: true,
@@ -231,12 +234,12 @@ describe('startup artifact recovery', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     startupFixture.healthError = new Error('health adapter rejected')
-    const { startupSequence } = await import('../startup')
 
     await expect(startupSequence()).resolves.toBeUndefined()
 
     expect(warn).toHaveBeenCalledWith('[startup] OpenCode health check failed: health adapter rejected')
     expect(startupFixture.hydrateAllTickets).toHaveBeenCalledTimes(1)
+    expect(startupFixture.startAssistantSessionCleanup).toHaveBeenCalledTimes(1)
     expect(log).toHaveBeenCalledWith('[startup] Startup complete')
   }, 30_000)
 })

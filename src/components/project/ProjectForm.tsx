@@ -390,7 +390,7 @@ export const ProjectForm = ({ onClose, onBack, project, onDirtyChange }: Project
 
   const handleDelete = () => {
     if (!editingProject) return
-    if (!confirm('Are you sure you want to delete this project? This will remove its local .looptroop state from the repo and cannot be undone.')) return
+    if (!confirm('Delete this project, its local .looptroop state, and its dedicated ticket assistant conversations? This cannot be undone.')) return
     deleteProject.mutate(editingProject.id, {
       onSuccess: () => {
         addToast('success', 'Project deleted and local LoopTroop state removed.')

@@ -92,10 +92,20 @@ describe('Vite dependency optimization policy', () => {
     ]))
   })
 
-  it('permits remote development hosts in Vite server and preview configurations', async () => {
+  it('permits Tailscale development hosts in Vite server and preview configurations', async () => {
     const serveConfig = await resolveConfig({}, 'serve')
     const buildConfig = await resolveConfig({}, 'build')
-    expect(serveConfig.server.allowedHosts).toBe(true)
-    expect(buildConfig.preview.allowedHosts).toBe(true)
+    expect(serveConfig.server.allowedHosts).toEqual(['.ts.net'])
+    expect(buildConfig.preview.allowedHosts).toEqual(['.ts.net'])
+  })
+
+  it('includes custom allowed hosts from LOOPTROOP_ALLOWED_HOSTS', async () => {
+    process.env.LOOPTROOP_ALLOWED_HOSTS = 'myhost.internal, custom.dev'
+    try {
+      const config = await resolveConfig({}, 'serve')
+      expect(config.server.allowedHosts).toEqual(['.ts.net', 'myhost.internal', 'custom.dev'])
+    } finally {
+      delete process.env.LOOPTROOP_ALLOWED_HOSTS
+    }
   })
 })

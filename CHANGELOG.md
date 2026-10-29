@@ -37,7 +37,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
-- Configure `allowedHosts` in Vite's development and preview servers so reverse proxies and tunnels like Tailscale Serve are not blocked by Vite's DNS-rebinding protection.
+- Allow `.ts.net` and custom `LOOPTROOP_ALLOWED_HOSTS` in Vite's development and preview servers so reverse proxies like Tailscale Serve are permitted without disabling DNS-rebinding protection.
 - Refresh assistant sessions when the ticket view changes so deleted ticket chats are evicted without disturbing other tabs. Cancel a pending close-failure transcript refresh when a new message starts.
 - Keep toast notifications visible above the assistant window while it is open.
 - Show the assistant conversation menu above the chat window, group model steps into one thinking section per answer, distinguish context preparation from the model response, and retain matching reasoning received during a reply when OpenCode omits it from the returned message.

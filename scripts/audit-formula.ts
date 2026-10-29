@@ -14,7 +14,8 @@
  * not in one, and the public tap must not be touched by a check.
  */
 import { execFileSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { renderHomebrewFormula } from './package-manifests.ts'
 import { createLocalTap, removeLocalTap } from './brew-local-tap.ts'
@@ -52,9 +53,14 @@ function flag(name: string): string {
   return value
 }
 
+// Keep formula trust out of the developer's Homebrew configuration.
+const brewConfig = mkdtempSync(join(tmpdir(), 'looptroop-brew-config-'))
+const brewEnv = { ...process.env, XDG_CONFIG_HOME: brewConfig }
+process.once('exit', () => rmSync(brewConfig, { recursive: true, force: true }))
+
 function brew(args: string[], allowFailure = false): string {
   try {
-    return execFileSync(toolPath('brew'), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return execFileSync(toolPath('brew'), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: brewEnv })
   } catch (error) {
     if (allowFailure) return ''
     const shown = error instanceof Error && 'stdout' in error
@@ -65,19 +71,24 @@ function brew(args: string[], allowFailure = false): string {
 }
 
 const formula = renderHomebrewFormula({ version: flag('version'), url: flag('url'), sha256: flag('sha256') })
+const formulaName = `${AUDIT_TAP}/looptroop`
 
 const tapDir = createLocalTap(AUDIT_TAP)
 writeFileSync(join(tapDir, 'Formula', 'looptroop.rb'), formula)
 
 try {
+  process.stdout.write('brew trust --formula...\n')
+  // Older Homebrew lacks tap trust; audit remains authoritative on every version.
+  brew(['trust', '--formula', formulaName], true)
+
   process.stdout.write('brew style...\n')
-  process.stdout.write(brew(['style', `${AUDIT_TAP}/looptroop`]))
+  process.stdout.write(brew(['style', formulaName]))
 
   process.stdout.write('brew audit --strict...\n')
   process.stdout.write(brew([
     'audit', '--strict', '--formula',
     ...(args.switch('online') ? ['--online'] : []),
-    `${AUDIT_TAP}/looptroop`,
+    formulaName,
   ]))
 
   process.stdout.write('\nPASS: Homebrew has no objection to the formula.\n')

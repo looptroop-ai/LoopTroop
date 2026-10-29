@@ -11,6 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
+- Package installs now require Node.js 24.18.1 or newer, which includes the July security fixes.
 - The development frontend opens through Tailscale Serve (`*.ts.net`) instead of answering "Blocked request".
 - Read LoopTroop docs, source, and ticket evidence in one read-only assistant, with shared scoped tabs, copyable messages, and model-provided reasoning.
 - Clear deleted ticket chats from open tabs on view changes, and keep newer answers after close failures.
@@ -62,6 +63,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Security
 
+- Raise the package floor to Node.js 24.18.1, which includes the July security fixes. The package engine, launcher, installer scripts, and README now use the same floor.
 - Preserve structured credential redaction for JSON source files renamed in evidence snapshots, and redact credentials in escaped serialized strings and unquoted values containing punctuation or base64 padding.
 - Apply evidence-only assistant permissions when creating sessions and sending questions, and refuse OpenCode updates that do not confirm them. Exclude ignored files, environment and key files, and generated ticket state from repository snapshots. Redact recognizable credentials and signed URL parameters in copied evidence and returned transcripts. Store copied agent instruction files under neutral names and prevent assistant transcripts from being cached by browsers or proxies.
 - Nested shell checks follow wrapper directory changes. Tar checks recognize abbreviated options and exact flag precedence, keep option values separate from flags, verify every archive output and extraction directory, and refuse external command helpers and indirect options whose effects cannot be verified. Exclusion-only Git pathspecs receive whole-checkout protection, and inline shell options cannot hide the command behind option values or `--`. Windows filesystem paths retain their separators during command checks. POSIX escapes, including escaped option punctuation, are checked by the shell lexer so escaped quotes and comment apostrophes cannot hide Git or GitHub writes.

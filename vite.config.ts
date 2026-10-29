@@ -21,13 +21,6 @@ const backendOrigin = getBackendOrigin()
 const apiToken = process.env.LOOPTROOP_API_TOKEN?.trim() ?? ''
 const apiTokenHeader = 'X-LoopTroop-Token'
 const devHostMode = resolveDevHostMode()
-const rawAllowedHosts = process.env.LOOPTROOP_ALLOWED_HOSTS?.trim()
-const devAllowedHosts: boolean | string[] = rawAllowedHosts === 'true' || rawAllowedHosts === '*'
-  ? true
-  : [
-      '.ts.net',
-      ...(rawAllowedHosts ? rawAllowedHosts.split(',').map((host) => host.trim()).filter(Boolean) : []),
-    ]
 
 /**
  * The `/api` proxy, shared by `vite dev` and `vite preview`.
@@ -350,7 +343,13 @@ export default defineConfig({
   server: {
     headers: DEV_SERVER_RESOURCE_HEADERS,
     host: devHostMode.enabled ? devHostMode.bindHost : undefined,
-    allowedHosts: devAllowedHosts,
+    // The Host check is what keeps a DNS-rebound page away from the `/api`
+    // proxy, which attaches the API token, so this is a list and never `true`.
+    // Tailscale Serve forwards its `*.ts.net` name, and only Tailscale publishes
+    // records under that suffix. Any other proxy name goes in Vite's own
+    // `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`, and `preview` inherits the
+    // result, which is why it sets no list of its own.
+    allowedHosts: ['.ts.net'],
     port: getFrontendPort(),
     strictPort: true,
     warmup: {
@@ -374,7 +373,6 @@ export default defineConfig({
   preview: {
     headers: DEV_SERVER_RESOURCE_HEADERS,
     host: devHostMode.enabled ? devHostMode.bindHost : undefined,
-    allowedHosts: devAllowedHosts,
     port: getFrontendPort(),
     strictPort: true,
     proxy: apiProxy,

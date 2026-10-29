@@ -5,6 +5,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, win32 } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
 import { defaultTrustedPrefixes, resolveTrustedTool } from '../scripts/trusted-tool.ts'
 import { launchTool, planToolLaunch, spawnProgram } from '../scripts/tool-path.ts'
@@ -113,6 +114,77 @@ describe('throwaway Homebrew tap', () => {
 
   it('says a directory that does not exist is not one of ours', () => {
     expect(isOwnedTap(join(freshDir(), 'nothing-here'))).toBe(false)
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('Homebrew formula audit trust', () => {
+  it.each([
+    { failAudit: false, trustSupported: true },
+    { failAudit: true, trustSupported: true },
+    { failAudit: false, trustSupported: false },
+  ])('cleans isolated trust (audit failure=$failAudit, trust supported=$trustSupported)', ({ failAudit, trustSupported }) => {
+    const directory = freshDir()
+    const bin = join(directory, 'bin')
+    const repository = join(directory, 'brew-repository')
+    const userConfig = join(directory, 'user-config')
+    const log = join(directory, 'brew.log')
+    mkdirSync(bin)
+    mkdirSync(repository)
+    mkdirSync(userConfig)
+    writeFileSync(join(bin, 'brew'), `#!/bin/sh
+echo "$XDG_CONFIG_HOME|$*" >> "$BREW_LOG"
+if [ "$1" = "--repository" ]; then
+  echo "$BREW_REPOSITORY"
+elif [ "$1" = "trust" ]; then
+  if [ "$BREW_FAIL_TRUST" = "1" ]; then
+    exit 1
+  fi
+  mkdir -p "$XDG_CONFIG_HOME/homebrew"
+  echo trusted > "$XDG_CONFIG_HOME/homebrew/trust.json"
+elif [ "$1" = "audit" ] && [ "$BREW_FAIL_AUDIT" = "1" ]; then
+  exit 1
+fi
+`, { mode: 0o755 })
+
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('../scripts/audit-formula.ts', import.meta.url)),
+      '--version', '9.9.9', '--url', 'https://example.invalid/bundle.tar.gz', '--sha256', '0'.repeat(64),
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        PATH: [bin, process.env.PATH].filter(Boolean).join(delimiter),
+        LOOPTROOP_TRUSTED_EXECUTABLE_DIRS: bin,
+        BREW_LOG: log,
+        BREW_REPOSITORY: repository,
+        BREW_FAIL_AUDIT: failAudit ? '1' : '0',
+        BREW_FAIL_TRUST: trustSupported ? '0' : '1',
+        XDG_CONFIG_HOME: userConfig,
+      },
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(failAudit ? 1 : 0)
+    if (failAudit) expect(result.stderr).toContain('brew audit objected to the formula.')
+    else expect(result.stdout).toContain('PASS: Homebrew has no objection to the formula.')
+
+    const entries = readFileSync(log, 'utf8').trim().split('\n').map(line => line.split('|'))
+    const expectedCalls = [
+      '--repository',
+      'trust --formula looptroop-ai/audit/looptroop',
+      'style looptroop-ai/audit/looptroop',
+      'audit --strict --formula looptroop-ai/audit/looptroop',
+    ]
+    if (!failAudit) expectedCalls.push('--repository')
+    expect(entries.map(([, args]) => args)).toEqual(expectedCalls)
+    const isolatedConfig = entries[1][0]
+    expect(isolatedConfig).not.toBe(userConfig)
+    expect(entries.slice(1, 4).every(([config]) => config === isolatedConfig)).toBe(true)
+    expect(existsSync(isolatedConfig)).toBe(false)
+    expect(existsSync(join(userConfig, 'homebrew', 'trust.json'))).toBe(false)
+    if (!failAudit) expect(existsSync(join(repository, 'Library', 'Taps', 'looptroop-ai', 'homebrew-audit'))).toBe(false)
   })
 })
 

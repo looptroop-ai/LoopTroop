@@ -37,6 +37,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
+- Use formula-scoped, disposable trust for Homebrew audits when the installed Homebrew supports it.
 - `npm run dev` and `vite preview` now accept `*.ts.net` host names, so Tailscale Serve can front the loopback Vite server as the documentation describes. Vite's host check had been rejecting those names with a 403. The check stays on: other names are still refused, and another proxy's name can be added through Vite's own `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`, which `vite preview` now inherits.
 - Refresh assistant sessions when the ticket view changes so deleted ticket chats are evicted without disturbing other tabs. Cancel a pending close-failure transcript refresh when a new message starts.
 - Keep toast notifications visible above the assistant window while it is open.

@@ -1,7 +1,7 @@
 import { Node, Project, SyntaxKind } from 'ts-morph'
 import { readFileSync } from 'node:fs'
 import { resolveConfig } from 'vite'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEV_SERVER_RESOURCE_HEADERS,
   FRONTEND_DEDUPED_DEPENDENCIES,
@@ -90,5 +90,33 @@ describe('Vite dependency optimization policy', () => {
       '@tanstack/react-query',
       '@tanstack/query-core',
     ]))
+  })
+
+})
+
+describe('Vite allowed hosts', () => {
+  // Every input Vite adds to the list, so a developer's shell cannot change the result.
+  function stubHostInputs(additionalHosts?: string) {
+    vi.stubEnv('__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS', additionalHosts)
+    vi.stubEnv('LOOPTROOP_DEV_HOST', undefined)
+    vi.stubEnv('npm_config_long', undefined)
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('accepts Tailscale Serve names in dev and preview without disabling the host check', async () => {
+    stubHostInputs()
+    const config = await resolveConfig({}, 'serve')
+    expect(config.server.allowedHosts).toEqual(['.ts.net'])
+    expect(config.preview.allowedHosts).toEqual(['.ts.net'])
+  })
+
+  it("lets Vite's own variable add proxy names to dev and preview", async () => {
+    stubHostInputs('proxy.example')
+    const config = await resolveConfig({}, 'serve')
+    expect(config.server.allowedHosts).toEqual(['.ts.net', 'proxy.example'])
+    expect(config.preview.allowedHosts).toEqual(['.ts.net', 'proxy.example'])
   })
 })

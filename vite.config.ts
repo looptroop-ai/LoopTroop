@@ -343,6 +343,13 @@ export default defineConfig({
   server: {
     headers: DEV_SERVER_RESOURCE_HEADERS,
     host: devHostMode.enabled ? devHostMode.bindHost : undefined,
+    // The Host check is what keeps a DNS-rebound page away from the `/api`
+    // proxy, which attaches the API token, so this is a list and never `true`.
+    // Tailscale Serve forwards its `*.ts.net` name, and only Tailscale publishes
+    // records under that suffix. Any other proxy name goes in Vite's own
+    // `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`, and `preview` inherits the
+    // result, which is why it sets no list of its own.
+    allowedHosts: ['.ts.net'],
     port: getFrontendPort(),
     strictPort: true,
     warmup: {

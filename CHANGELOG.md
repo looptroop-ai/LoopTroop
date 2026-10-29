@@ -11,6 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
+- The development frontend opens through Tailscale Serve (`*.ts.net`) instead of answering "Blocked request".
 - Read LoopTroop docs, source, and ticket evidence in one read-only assistant, with shared scoped tabs, copyable messages, and model-provided reasoning.
 - Clear deleted ticket chats from open tabs on view changes, and keep newer answers after close failures.
 - Beads support external file targets with visible warnings and explicit empty targets; tickets with no repository changes finish without an empty commit or PR.
@@ -36,6 +37,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
+- `npm run dev` and `vite preview` now accept `*.ts.net` host names, so Tailscale Serve can front the loopback Vite server as the documentation describes. Vite's host check had been rejecting those names with a 403. The check stays on: other names are still refused, and another proxy's name can be added through Vite's own `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`, which `vite preview` now inherits.
 - Refresh assistant sessions when the ticket view changes so deleted ticket chats are evicted without disturbing other tabs. Cancel a pending close-failure transcript refresh when a new message starts.
 - Keep toast notifications visible above the assistant window while it is open.
 - Show the assistant conversation menu above the chat window, group model steps into one thinking section per answer, distinguish context preparation from the model response, and retain matching reasoning received during a reply when OpenCode omits it from the returned message.

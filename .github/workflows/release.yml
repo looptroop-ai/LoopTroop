@@ -97,7 +97,7 @@ jobs:
       dist_tag: ${{ steps.state.outputs.dist_tag }}
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -465,7 +465,7 @@ jobs:
       bundle_sha256: ${{ steps.manifest.outputs.bundle_sha256 }}
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -722,7 +722,7 @@ jobs:
       # The repo is needed for the smoke script itself; the *package* under test
       # comes only from the downloaded tarball.
       - name: Audit runner network activity
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -785,7 +785,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -1287,7 +1287,7 @@ jobs:
       # "this release installs correctly" rather than two that drift. That needs
       # a checkout, which this job did not previously have.
       - name: Audit runner network activity
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -1565,7 +1565,7 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          version: v0.38.0
+          version: v0.38.1
 
       # `--provenance=false` is load-bearing, not a preference. With provenance
       # on, buildx wraps even a single-platform build in an index to carry the

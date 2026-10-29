@@ -179,7 +179,8 @@ fi
     ]
     if (!failAudit) expectedCalls.push('--repository')
     expect(entries.map(([, args]) => args)).toEqual(expectedCalls)
-    const isolatedConfig = entries[1][0]
+    const isolatedConfig = entries[1]?.[0]
+    if (isolatedConfig === undefined) throw new Error('Homebrew trust was not called.')
     expect(isolatedConfig).not.toBe(userConfig)
     expect(entries.slice(1, 4).every(([config]) => config === isolatedConfig)).toBe(true)
     expect(existsSync(isolatedConfig)).toBe(false)

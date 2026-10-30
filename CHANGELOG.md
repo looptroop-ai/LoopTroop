@@ -9,6 +9,27 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.6.2 (2026-10-30)
+
+
+### Release Highlights
+
+**🚀 LoopTroop — What's New Since v0.6.1**
+
+A major update bringing a new AI assistant, smarter error recovery, and more reliable ticket execution!
+
+- **1. 💬 Meet Your New AI Chat Assistant!** — Talk to AI directly inside LoopTroop! Ask how LoopTroop works, get help understanding features, or ask questions about your tickets, their progress, errors, and history.
+- **2. 🎯 AI That Understands Your Tickets** — The assistant uses real ticket logs, planning documents, project code, and documentation to answer questions with supporting references. Chat about one specific ticket or across all your attached projects.
+- **3. 🗂️ Multiple Chats & Conversation History** — Keep several AI conversations open, switch between them, search previous chats, rename conversations, and copy messages. Saved conversations can be reopened later!
+- **4. 🧠 Choose Your AI & See Its Thinking** — Configure a separate AI model for chatting, select its reasoning effort, and see live responses. When supported by the model, you can expand its thinking process.
+- **5. 🔄 Smarter Retry & Continue** — Failed AI tasks are easier to recover. Retry starts a fresh AI session, while Continue resumes the previous conversation when possible, preserving completed work.
+- **6. ✍️ Tell the AI How to Retry** — Add custom instructions when retrying a failed task or individual AI council member. Guide the AI toward a solution without restarting the entire workflow.
+- **7. 📂 Work With Files Outside Your Repository** — Tickets can now target files in external folders, with visible warnings when work extends beyond the repository.
+- **8. ✅ Tickets Without Code Changes** — Tasks involving only checks or external files can now finish successfully without creating unnecessary Git commits or pull requests.
+- **9. 🛡️ Safer AI Code Delivery** — Stronger safeguards help prevent AI agents from directly modifying protected project files or pushing changes to GitHub. LoopTroop remains responsible for delivering code.
+- **10. 🔀 Better Recovery From Early PR Merges** — If a pull request gets merged before LoopTroop finishes, it can verify what was merged and prepare a separate corrective PR for any remaining changes.
+- **✨ Overall:** LoopTroop is becoming easier to use and more reliable, with a major new way to interact with your projects: **just ask the AI!**
+
 ### Summary
 
 - Package installs now require Node.js 24.18.1 or newer, which includes the July security fixes.

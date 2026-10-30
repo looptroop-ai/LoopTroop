@@ -94,7 +94,7 @@ curl -fsSL https://www.looptroop.ovh/install | sh
 irm https://www.looptroop.ovh/install.ps1 | iex
 ```
 
-Requires Node 24.18.0 or newer. Installs the latest release through npm.
+Requires Node 24.18.1 or newer. Installs the latest release through npm.
 
 </details>
 
@@ -106,7 +106,7 @@ npm install -g looptroop
 npm install -g looptroop@latest # upgrade
 ```
 
-Requires Node 24.18.0 or newer.
+Requires Node 24.18.1 or newer.
 
 </details>
 
@@ -171,7 +171,7 @@ bun add -g looptroop
 bun add -g looptroop@latest # upgrade
 ```
 
-Requires bun and Node 24.18.0 or newer.
+Requires bun and Node 24.18.1 or newer.
 
 </details>
 
@@ -183,7 +183,7 @@ pnpm add -g looptroop
 pnpm add -g looptroop@latest # upgrade
 ```
 
-Requires pnpm and Node 24.18.0 or newer. New releases may be delayed by pnpm's
+Requires pnpm and Node 24.18.1 or newer. New releases may be delayed by pnpm's
 24-hour publication-age check.
 
 </details>
@@ -197,7 +197,7 @@ export PATH="$(yarn global bin):$PATH"
 yarn global upgrade looptroop@latest # upgrade
 ```
 
-Requires Yarn 1.x and Node 24.18.0 or newer. Add the PATH line to your shell
+Requires Yarn 1.x and Node 24.18.1 or newer. Add the PATH line to your shell
 profile. For modern Yarn or PowerShell, use another install method.
 
 </details>

@@ -34,6 +34,7 @@ import { relative } from "path";
 import { ContainedPathError, resolveContainedPath } from "../lib/containedPath";
 import { readFileNoFollowSync } from "../io/readFile";
 import { pathToFileURL } from "url";
+import { setTimeout as delay } from "node:timers/promises";
 import { logIfVerbose, warnIfVerbose } from "../runtime";
 import { getOpenCodeBaseUrl } from "./runtimeConfig";
 import type { Bead } from "../phases/beads/types";
@@ -236,6 +237,20 @@ function formatBeadContext(bead: Bead): string {
   ].join("\n");
 }
 
+/** Pause before repeating a prompt whose preparation failed, so a busy OpenCode can catch up. */
+export const PROMPT_PREFLIGHT_RETRY_DELAY_MS = 2_000;
+
+/** OpenCode timed out or the connection failed, as opposed to refusing on purpose. */
+function isOpenCodeConnectionFailure(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current instanceof Object && depth < 8; depth++) {
+    if ((current as { name?: unknown }).name === "TimeoutError") return true;
+    if (current instanceof TypeError && current.message === "fetch failed") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   private readonly baseUrl: string;
   private readonly injectedV1Client?: OpenCodeV1Client;
@@ -349,6 +364,48 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     parts: PromptPart[],
     signal?: AbortSignal,
     options?: PromptSessionOptions,
+  ): Promise<string> {
+    if (this.activePromptSessions.has(sessionId)) {
+      throw new Error(
+        `OpenCode session ${sessionId} already has a prompt in progress`,
+      );
+    }
+    const promptSignal = options?.signal ?? signal;
+    const firstAttempt = { dispatchStarted: false };
+    try {
+      return await this.promptSessionOnce(sessionId, parts, signal, options, firstAttempt);
+    } catch (error) {
+      // Everything before the dispatch only reads or prepares OpenCode state, so
+      // a timeout or dropped connection there (LODA-11: all 8 council members hit
+      // a 5 s stream limit while the host was busy) is safe to repeat: the model
+      // has not seen the prompt and no work can run twice. Deliberate refusals,
+      // such as another prompt still running in the session, are not repeated.
+      if (
+        firstAttempt.dispatchStarted ||
+        promptSignal?.aborted ||
+        isAbortError(error) ||
+        !isOpenCodeConnectionFailure(error)
+      ) throw error;
+      const reason = getErrorMessage(error);
+      console.warn(`[opencode] Prompt for session ${sessionId} failed before it was sent; trying once more: ${reason}`);
+      options?.onEvent?.({
+        type: "debug_event",
+        sessionId,
+        eventName: "prompt.preflight.retry",
+        summary: `OpenCode failed before the prompt was sent; trying once more: ${reason}`,
+        details: { error: reason },
+      });
+      await delay(PROMPT_PREFLIGHT_RETRY_DELAY_MS, undefined, promptSignal ? { signal: promptSignal } : undefined);
+      return await this.promptSessionOnce(sessionId, parts, signal, options, { dispatchStarted: false });
+    }
+  }
+
+  private async promptSessionOnce(
+    sessionId: string,
+    parts: PromptPart[],
+    signal: AbortSignal | undefined,
+    options: PromptSessionOptions | undefined,
+    attempt: { dispatchStarted: boolean },
   ): Promise<string> {
     if (this.activePromptSessions.has(sessionId)) {
       throw new Error(
@@ -1448,6 +1505,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           ? { tools: promptOptions.tools as Record<string, boolean> }
           : {}),
       };
+      attempt.dispatchStarted = true;
       if (transport.protocol === "v2") v2DispatchStarted = true;
       operation = transport.protocol === "v1"
         ? "sending the prompt or waiting for its response"

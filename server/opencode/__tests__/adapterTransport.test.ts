@@ -2501,3 +2501,79 @@ describe('OpenCode permission reply receipts in the timing line', () => {
     expect(timing).toMatchObject({ details: { outcome: 'confirmed', attempts: 2, confirmedBy: 'pending_check' } })
   })
 })
+
+describe('OpenCode prompt preparation retry', () => {
+  const ownTurn = (source: ReturnType<typeof createV2Transport>['source'], markDispatched: () => void) => vi.fn(async () => {
+    markDispatched()
+    source.push(
+      inboxEvent('inbox_enqueued', 'inbox-own', 51),
+      executionEvent('execution_started', 52),
+      inboxEvent('inbox_delivered', 'inbox-own', 53),
+      executionEvent('execution_terminal', 54),
+    )
+    return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+  })
+
+  it('repeats a prompt once when OpenCode timed out before the prompt was sent', async () => {
+    let historyReads = 0
+    const { transport, source, markDispatched } = createV2Transport({
+      readSessionLog: vi.fn(async (_id, after?: number) => {
+        if (after === undefined && ++historyReads === 1) {
+          throw new DOMException('OpenCode v2 event stream connection timed out', 'TimeoutError')
+        }
+        return { events: [], cursor: after ?? 50, coverageComplete: after !== undefined }
+      }),
+    })
+    transport.dispatchPrompt = ownTurn(source, markDispatched)
+    const events: StreamEvent[] = []
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+      { onEvent: (event) => { events.push(event) } },
+    )).resolves.toBe('current answer')
+
+    expect(historyReads).toBe(2)
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'debug_event',
+      eventName: 'prompt.preflight.retry',
+      details: { error: expect.stringContaining('event stream connection timed out') },
+    }))
+  })
+
+  it('does not repeat a deliberate refusal before the prompt was sent', async () => {
+    const { transport } = createV2Transport({
+      readSessionLog: vi.fn(async () => { throw new Error('history unavailable') }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('history unavailable')
+    expect(transport.readSessionLog).toHaveBeenCalledOnce()
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('does not repeat a prompt whose dispatch had started', async () => {
+    const { transport } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => { throw new TypeError('fetch failed') }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow()
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+  })
+
+  it('stops waiting to repeat when the caller cancels', async () => {
+    const controller = new AbortController()
+    const { transport } = createV2Transport({
+      waitForIdle: vi.fn(async () => {
+        realSetTimeout(() => controller.abort(), 10)
+        throw new TypeError('fetch failed')
+      }),
+    })
+
+    await expect(settleWithin(createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], controller.signal,
+    ), 'cancelled retry wait')).rejects.toMatchObject({ name: 'AbortError' })
+    expect(transport.waitForIdle).toHaveBeenCalledOnce()
+  })
+})

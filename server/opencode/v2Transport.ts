@@ -55,7 +55,9 @@ const PROMPT_DISPATCH_TIMEOUT_MS = 180_000;
 // one it had already applied; each attempt gets this long.
 const PERMISSION_REPLY_TIMEOUT_MS = 15_000;
 const PERMISSION_REPLY_ATTEMPTS = 3;
-const EVENT_CONNECT_TIMEOUT_MS = 5_000;
+// A busy host (several council sessions opening at once) has kept OpenCode
+// from sending stream headers for over 5 s while it was otherwise healthy.
+const EVENT_CONNECT_TIMEOUT_MS = 30_000;
 const EVENT_RECONNECT_ATTEMPTS = 3;
 const IDLE_WAIT_TIMEOUT_MS = 60_000;
 const LIST_PAGE_SIZE = 100;

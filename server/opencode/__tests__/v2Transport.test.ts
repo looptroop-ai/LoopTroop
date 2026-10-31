@@ -3094,10 +3094,15 @@ describe("OpenCode v2 fetch transport", () => {
         "/workspace",
         controller.signal,
       );
+      let openSettled = false;
+      open.catch(() => undefined).finally(() => { openSettled = true; });
       const openResult = expect(open).rejects.toMatchObject({
         name: "TimeoutError",
       });
-      await vi.advanceTimersByTimeAsync(5_000);
+      // A busy OpenCode can take longer than 5 s to send stream headers.
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(openSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       await openResult;
 
       const waitingForFirstEvent = createTransport((request, init) => {
@@ -3113,7 +3118,7 @@ describe("OpenCode v2 fetch transport", () => {
       const firstEventResult = expect(firstEvent).rejects.toMatchObject({
         name: "TimeoutError",
       });
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(30_000);
       await firstEventResult;
 
       const waitingForWatermark = createTransport((request, init) => {

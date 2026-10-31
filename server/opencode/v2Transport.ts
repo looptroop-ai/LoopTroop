@@ -1033,16 +1033,18 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     const url = this.makeUrl(path, options.query);
     const headers = new Headers(this.headers);
     headers.set("accept", "application/json");
+    const method = options.method ?? "GET";
+    const timeoutMs = options.timeoutMs ?? API_OPERATION_TIMEOUT_MS;
     const timeout =
       options.timeoutMs === null
         ? undefined
         : createTimeoutSignal(
             options.signal,
-            options.timeoutMs ?? API_OPERATION_TIMEOUT_MS,
-            "OpenCode v2 request timed out",
+            timeoutMs,
+            `OpenCode did not answer ${method} ${path} within ${timeoutMs / 1000} s`,
           );
     const init: RequestInit = {
-      method: options.method ?? "GET",
+      method,
       headers,
       signal: timeout?.signal ?? options.signal,
       redirect: "manual",

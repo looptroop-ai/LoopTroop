@@ -4120,7 +4120,7 @@ export async function handleRelevantFilesScan(
         }),
       });
       if (sessionId && !await new SessionManager(adapter).abortAndAbandonSession(sessionId)) {
-        throw new Error(`Could not confirm abort of relevant-files scan session ${sessionId}`);
+        throw new Error(`Relevant files scan failed, and OpenCode did not confirm that it stopped the scan session ${sessionId} afterwards.`);
       }
       sendEvent({
         type: "ERROR",
@@ -4210,7 +4210,7 @@ export async function handleRelevantFilesScan(
       modelId: codingModelId,
     })) {
       if (!await new SessionManager(adapter).abortAndAbandonSession(sessionId)) {
-        throw new Error(`Could not confirm abort of relevant-files scan session ${sessionId}`, { cause: err });
+        throw new Error(`Relevant files scan failed, and OpenCode did not confirm that it stopped the scan session ${sessionId} afterwards.`, { cause: err });
       }
     }
     if (err instanceof CancelledError) throw err;

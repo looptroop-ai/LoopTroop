@@ -674,7 +674,7 @@ describe('OpenCode adapter transport orchestration', () => {
       { autoApprovePermissions: true },
     )).rejects.toMatchObject({
       name: 'OpenCodePromptReceiptUnavailableError',
-      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('receipt') },
+      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('did not confirm that it received the prompt') },
     })
     expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
     expect(transport.replyPermission).not.toHaveBeenCalled()
@@ -1014,7 +1014,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(prompt).rejects.toMatchObject({
       name: 'AbortError',
       openCodePromptReceiptUnavailable: true,
-      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('receipt') },
+      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('did not confirm that it received the prompt') },
     })
     expect(transport.replyPermission).not.toHaveBeenCalled()
   })
@@ -2411,7 +2411,7 @@ describe('OpenCode permission reply timing', () => {
       const { transport, source } = createV2Transport({
         replyPermission: vi.fn(async () => {
           clock.now += 5_000
-          throw new Error('OpenCode v2 request timed out')
+          throw new Error('OpenCode did not answer POST /api/session/session-1/permission/permission-1/reply within 5 s')
         }),
         dispatchPrompt: vi.fn(async () => {
           source.push(inboxEvent('inbox_enqueued', 'inbox-own', 51), askedPermission('permission-1'))
@@ -2422,14 +2422,14 @@ describe('OpenCode permission reply timing', () => {
       await expect(createAdapter(transport).promptSession(
         'session-1', [{ type: 'text', content: 'prompt' }], undefined,
         { autoApprovePermissions: true, onEvent },
-      )).rejects.toThrow('Failed to auto-approve OpenCode permission bash: OpenCode v2 request timed out')
+      )).rejects.toThrow('Failed to auto-approve OpenCode permission bash: OpenCode did not answer POST /api/session/session-1/permission/permission-1/reply within 5 s')
 
       expect(timingEvents(onEvent)).toEqual([expect.objectContaining({
         details: expect.objectContaining({
           outcome: 'failed',
           replyMs: 5_000,
           totalMs: 5_000,
-          error: 'OpenCode v2 request timed out',
+          error: 'OpenCode did not answer POST /api/session/session-1/permission/permission-1/reply within 5 s',
         }),
       })])
     })

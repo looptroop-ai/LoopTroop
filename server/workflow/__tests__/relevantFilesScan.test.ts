@@ -103,7 +103,7 @@ describe('handleRelevantFilesScan', () => {
     const sendEvent = vi.fn()
     const operation = handleRelevantFilesScan(ticket.id, context, sendEvent, new AbortController().signal)
     if (!stopConfirmed) {
-      await expect(operation).rejects.toThrow('Could not confirm abort of relevant-files scan session scan-cleanup-session')
+      await expect(operation).rejects.toThrow('Relevant files scan failed, and OpenCode did not confirm that it stopped the scan session scan-cleanup-session afterwards.')
       expect(sendEvent).not.toHaveBeenCalled()
     } else {
       await operation

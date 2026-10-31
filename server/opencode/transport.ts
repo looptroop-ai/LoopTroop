@@ -32,8 +32,11 @@ export class OpenCodePromptReceiptUnavailableError extends Error {
     readonly sessionId: string,
     options?: ErrorOptions,
   ) {
+    const cause = options?.cause instanceof Error && options.cause.message
+      ? ` (${options.cause.message})`
+      : "";
     super(
-      "OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.",
+      `OpenCode did not confirm that it received the prompt${cause}, so LoopTroop cannot tell whether the AI started working on it.`,
       options,
     );
     this.name = "OpenCodePromptReceiptUnavailableError";

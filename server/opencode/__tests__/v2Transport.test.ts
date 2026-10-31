@@ -416,6 +416,33 @@ describe("OpenCode v2 fetch transport", () => {
     expect(error).toBeInstanceOf(OpenCodePromptReceiptUnavailableError);
   });
 
+  it("names the unanswered request and its time limit when the prompt POST times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const { transport } = createTransport((request, init) => {
+        if (!request.url.pathname.endsWith("/prompt")) return emptyResponse();
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      });
+
+      const dispatch = transport.dispatchPrompt(promptRequest()).catch((value) => value);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const error = await dispatch;
+
+      expect(error).toBeInstanceOf(OpenCodePromptReceiptUnavailableError);
+      expect(error.cause).toMatchObject({
+        name: "TimeoutError",
+        message: "OpenCode did not answer POST /api/session/session%2F1/prompt within 5 s",
+      });
+      expect(error.message).toBe(
+        "OpenCode did not confirm that it received the prompt (OpenCode did not answer POST /api/session/session%2F1/prompt within 5 s), so LoopTroop cannot tell whether the AI started working on it.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves explicit v2 prompt rejections instead of classifying them as receipt-unknown", async () => {
     const { transport } = createTransport((request) => {
       if (

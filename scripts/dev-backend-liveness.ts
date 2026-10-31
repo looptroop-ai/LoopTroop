@@ -1,11 +1,13 @@
 export const LOOPTROOP_DEV_BACKEND_GRACE_MS = 'LOOPTROOP_DEV_BACKEND_GRACE_MS'
 
 /**
- * A normal watch restart takes a few seconds. The grace period has to clear
- * that comfortably, because declaring the backend dead while it is merely
- * restarting would tear the stack down on every file save.
+ * A watch restart is a full boot, and a boot is not quick everywhere: on a
+ * loaded dev host one took 2 min 22 s, and the old 60 s grace declared every
+ * such restart dead, taking the stack (OpenCode included) down on a file save.
+ * The grace has to clear a real boot with room to spare; a backend that truly
+ * died is still caught, just within minutes rather than one.
  */
-export const DEFAULT_GRACE_MS = 60_000
+export const DEFAULT_GRACE_MS = 300_000
 
 export interface LivenessState {
   /** Until the backend has answered once, there is nothing to compare against. */

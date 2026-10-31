@@ -14,6 +14,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The Debug log now shows how long each automatic permission approval took, so slow approvals can be traced.
 - Errors from an OpenCode server that answers too slowly now say which request went unanswered and for how long.
 - Tickets no longer stop when OpenCode is slow to confirm a permission approval it already acted on, or when the first prompt waits for OpenCode to start up.
+- The relevant-files scan now explores the repository with read-only file tools instead of shell commands.
 
 ### Added
 
@@ -23,9 +24,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - **A slow permission confirmation no longer blocks the ticket.** OpenCode acts on LoopTroop's "allow" within about 100 ms but sometimes takes several seconds to confirm it; LoopTroop gave up after 5 s and stopped a healthy run. Each reply now gets 15 s. If that runs out, LoopTroop asks OpenCode whether the request is still waiting: if it is gone, the reply landed and the run continues; if it is still waiting, the reply is sent again, up to three attempts. The Debug timing line records `attempts` and how the reply was confirmed.
 - **The first prompt after OpenCode starts can wait for it.** OpenCode starts a folder's instance (plugins, model catalog: 6–10 s on a cold server) while the first prompt waits. That prompt now gets the same 180 s allowance as session creation instead of 5 s, which had failed the relevant-files scan and every council vote after a restart.
+- **Saving a file no longer takes the whole dev stack down.** The `npm run dev` watchdog treated the backend as dead after 60 s of silence, but a watch restart can take over two minutes on a loaded machine. Every slow restart then stopped the stack, OpenCode included, and the frontend answered "Backend not ready" until everything came back. The default grace period is now 5 minutes, and `LOOPTROOP_DEV_BACKEND_GRACE_MS` still overrides it.
 
 ### Changed
 
+- **The relevant-files scan is read-only.** It now uses OpenCode's file-reading, search and directory-listing tools, like the other planning steps, instead of shell commands. Its prompt already asked for those tools. With shell commands, each command needed a permission round trip to OpenCode (37 to 65 per scan), and any one of them could stall the scan.
 - **Clearer OpenCode timeout errors.** "OpenCode v2 request timed out" now reads, for example, "OpenCode did not answer POST /api/session/…/prompt within 5 s". A prompt that OpenCode never confirmed now says so in plain words and includes that reason, instead of "OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified." When the relevant-files scan fails and its session cannot be stopped, the error now leads with the scan failure instead of "Could not confirm abort of relevant-files scan session".
 
 ## 0.6.2 (2026-10-30)

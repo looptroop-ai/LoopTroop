@@ -74,7 +74,8 @@ describe('shouldDeclareDead', () => {
       { reachable: false, nowMs: 1_000 },
     ])
 
-    expect(shouldDeclareDead(state, { nowMs: 11_000, graceMs: DEFAULT_GRACE_MS })).toBe(false)
+    // 2 min 22 s: the slowest restart measured on a loaded dev host.
+    expect(shouldDeclareDead(state, { nowMs: 143_000, graceMs: DEFAULT_GRACE_MS })).toBe(false)
   })
 
   it('declares death once the silence outlasts the grace period', () => {
@@ -83,7 +84,7 @@ describe('shouldDeclareDead', () => {
       { reachable: false, nowMs: 1_000 },
     ])
 
-    expect(shouldDeclareDead(state, { nowMs: 61_000, graceMs: DEFAULT_GRACE_MS })).toBe(true)
+    expect(shouldDeclareDead(state, { nowMs: 301_000, graceMs: DEFAULT_GRACE_MS })).toBe(true)
   })
 
   it('fires exactly at the deadline, not a probe later', () => {
@@ -92,8 +93,8 @@ describe('shouldDeclareDead', () => {
       { reachable: false, nowMs: 1_000 },
     ])
 
-    expect(shouldDeclareDead(state, { nowMs: 60_999, graceMs: DEFAULT_GRACE_MS })).toBe(false)
-    expect(shouldDeclareDead(state, { nowMs: 61_000, graceMs: DEFAULT_GRACE_MS })).toBe(true)
+    expect(shouldDeclareDead(state, { nowMs: 300_999, graceMs: DEFAULT_GRACE_MS })).toBe(false)
+    expect(shouldDeclareDead(state, { nowMs: 301_000, graceMs: DEFAULT_GRACE_MS })).toBe(true)
   })
 
   it('forgives a recovered blip, so a flap never accumulates toward death', () => {
@@ -105,7 +106,7 @@ describe('shouldDeclareDead', () => {
     ])
 
     // The clock restarted at 3_000, so the earlier blip contributes nothing.
-    expect(shouldDeclareDead(state, { nowMs: 62_000, graceMs: DEFAULT_GRACE_MS })).toBe(false)
+    expect(shouldDeclareDead(state, { nowMs: 302_000, graceMs: DEFAULT_GRACE_MS })).toBe(false)
   })
 })
 

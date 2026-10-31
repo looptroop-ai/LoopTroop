@@ -165,13 +165,13 @@ describe('handleRelevantFilesScan', () => {
       sessionOwnership: { ticketId: ticket.id, phase: 'SCANNING_RELEVANT_FILES', memberId: TEST.implementer, keepActive: true },
       model: TEST.implementer,
       variant: 'xhigh',
-      toolPolicy: 'default',
+      toolPolicy: 'read_only',
     })
     expect(runOpenCodePromptMock.mock.calls[0]?.[0]).toMatchObject({
       sessionOwnership: { ticketId: ticket.id, phase: 'SCANNING_RELEVANT_FILES', memberId: TEST.implementer, keepActive: true },
       model: TEST.implementer,
       variant: 'xhigh',
-      toolPolicy: 'default',
+      toolPolicy: 'read_only',
       timeoutKind: 'ai_response',
       timeoutMs: expect.any(Number),
     })

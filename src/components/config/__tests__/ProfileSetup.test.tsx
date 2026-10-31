@@ -477,14 +477,9 @@ describe('ProfileSetup', () => {
     expect(screen.getByRole('button', { name: 'Council member 2 openai/gpt-5.1-codex' })).toBeInTheDocument()
 
     const addButton = screen.getByRole('button', { name: 'Add Council Member' })
-    fireEvent.click(addButton)
-    fireEvent.click(addButton)
-    fireEvent.click(addButton)
-    fireEvent.click(addButton)
-    fireEvent.click(addButton)
-    fireEvent.click(addButton)
-    fireEvent.click(addButton)
-    fireEvent.click(addButton)
+    await act(async () => {
+      for (let added = 0; added < 8; added++) addButton.click()
+    })
 
     expect(screen.getByRole('button', { name: 'Council member 10 Council member 10…' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add Council Member' })).not.toBeInTheDocument()

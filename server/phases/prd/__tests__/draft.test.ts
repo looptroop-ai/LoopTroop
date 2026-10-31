@@ -885,6 +885,27 @@ describe.concurrent('draftPRD', () => {
     expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
   })
 
+  it('repairs a required command cwd written as the absolute project path', async () => {
+    const prdYaml = makePrdYaml().replace(
+      'required_commands: [npm run test]',
+      'required_commands: [{mode: process, program: npm, args: [test], cwd: /tmp/test/packages/app, env: {}}]',
+    )
+    const adapter = new TestOpenCodeAdapter([resolvedYaml(), prdYaml])
+
+    const result = await draftPRD(adapter, COUNCIL,
+      ticket('Harden PRD drafting output', 'Keep the PRD drafting phase strict and restart-safe.'),
+      '/tmp/test', DRAFT_OPTS,
+    )
+
+    expect(result.drafts[0]).toMatchObject({
+      memberId: 'model-a',
+      outcome: 'completed',
+      structuredOutput: { autoRetryCount: 0 },
+    })
+    expect(result.drafts[0]?.content).toContain('cwd: packages/app')
+    expect(result.drafts[0]?.content).not.toContain('/tmp/test')
+  })
+
   it('keeps full answers structured retries inside the same session while starting PRD drafting in a fresh one', async () => {
     const adapter = new TestOpenCodeAdapter(['This is not valid interview YAML.', resolvedYaml(), makePrdYaml()])
     const fullAnswerProgress: Array<{ status: string; sessionId?: string }> = []

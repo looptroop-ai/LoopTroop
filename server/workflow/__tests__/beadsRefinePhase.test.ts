@@ -263,6 +263,7 @@ function buildValidBeadsCoverageRevisionOutput(
     secondBeadDescription?: string
     affectedItemLabel?: string
     rationale?: string
+    secondBeadCwd?: string
   } = {},
 ): string {
   const secondBeadTitle = options.secondBeadTitle ?? 'Render coverage warning state'
@@ -293,7 +294,7 @@ function buildValidBeadsCoverageRevisionOutput(
           },
           acceptanceCriteria: ['Approval shows unresolved coverage warning details.'],
           tests: ['Approval tests render the remaining coverage gaps warning.'],
-          testCommands: [{ mode: 'process', program: 'npm', args: ['test', '--', 'ApprovalView'], cwd: '.', env: {} }],
+          testCommands: [{ mode: 'process', program: 'npm', args: ['test', '--', 'ApprovalView'], cwd: options.secondBeadCwd ?? '.', env: {} }],
         },
       ],
       gap_resolutions: [
@@ -443,6 +444,43 @@ describe('handleBeadsRefine', () => {
     })
     expect(retryPrompt.at(-1)?.content).toContain('Beads Refinement Structured Output Retry')
     expect(retryPrompt.at(-1)?.content).toContain('changes must account for the diff')
+  })
+
+  it('repairs a refined testCommands cwd written as the absolute worktree path', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
+      title: 'Repair refined bead cwd',
+      description: 'Accept a refined bead command whose cwd is the absolute worktree path.',
+    })
+    const winnerId = TEST.councilMembers[0]
+    writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
+    phaseIntermediate.set(`${ticket.id}:beads`, {
+      phase: 'beads',
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [
+        { memberId: winnerId, outcome: 'completed', content: buildBeadSubsetContent(), duration: 1 },
+        {
+          memberId: TEST.councilMembers[1],
+          outcome: 'completed',
+          content: buildBeadSubsetContent({ includeSecondBead: true, secondBeadId: 'bead-9', secondBeadTitle: 'Adopt losing-draft telemetry' }),
+          duration: 1,
+        },
+      ],
+      memberOutcomes: { [winnerId]: 'completed', [TEST.councilMembers[1]]: 'completed' },
+      contextBuilder: () => [],
+    })
+    const refinementOutput = buildValidRefinementOutput().replace('cwd: "."', `cwd: "${paths.worktreePath}"`)
+    refineDraftMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const validateResponse = args[12] as (content: string) => { normalizedContent?: string }
+      return { content: validateResponse(refinementOutput).normalizedContent, rawAttempts: [] }
+    })
+
+    await handleBeadsRefine(ticket.id, context, vi.fn(), new AbortController().signal)
+
+    const refinedArtifact = getLatestPhaseArtifact(ticket.id, 'beads_refined', 'REFINING_BEADS')
+    const refinedContent = (JSON.parse(refinedArtifact!.content) as { refinedContent: string }).refinedContent
+    expect(refinedContent).toContain('Surface retry metadata')
+    expect(refinedContent).not.toContain(paths.worktreePath)
   })
 
   it('refuses to refine against an unparseable winning draft without spending a model call', async () => {
@@ -1068,7 +1106,7 @@ describe('handleBeadsRefine', () => {
     expect(storedTicket?.runtime.percentComplete).toBe(0)
   })
 
-  it('runs a beads coverage extra fix, re-audits the candidate, and expands it before approval', async () => {
+  it('runs a beads coverage extra fix, re-audits the candidate, and expands it before approval, repairing an absolute command cwd', async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Apply a beads coverage extra fix',
       description: 'Revise the semantic plan and persist an audited, executable result.',
@@ -1102,7 +1140,8 @@ describe('handleBeadsRefine', () => {
     runOpenCodePromptMock
       .mockResolvedValueOnce({
         session: { id: 'beads-extra-fix-revision', projectPath: paths.worktreePath },
-        response: buildValidBeadsCoverageRevisionOutput(coverageGap),
+        // Accepted only when the worktree reaches the revision parser as the repair root.
+        response: buildValidBeadsCoverageRevisionOutput(coverageGap, { secondBeadCwd: resolve(paths.worktreePath, 'src') }),
         messages: [],
       })
       .mockResolvedValueOnce({
@@ -1130,8 +1169,12 @@ describe('handleBeadsRefine', () => {
     })
 
     expect(runOpenCodePromptMock).toHaveBeenCalledTimes(3)
-    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_coverage_revision', 'WAITING_BEADS_APPROVAL')!.content))
-      .toMatchObject({ winnerId: TEST.implementer, candidateVersion: 2, source: 'ai_fix_button', extraFixNumber: 1 })
+    const revision = JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_coverage_revision', 'WAITING_BEADS_APPROVAL')!.content)
+    expect(revision).toMatchObject({ winnerId: TEST.implementer, candidateVersion: 2, source: 'ai_fix_button', extraFixNumber: 1 })
+    const revisedBeads = (jsYaml.load(revision.refinedContent) as { beads: Array<{ testCommands: Array<{ cwd: string }> }> }).beads
+    expect(revisedBeads[1]!.testCommands[0]!.cwd).toBe('src')
+    // Accepted on the first answer: a structured retry must not mask a missing root.
+    expect(revision.rawAttempts).toEqual([expect.objectContaining({ attempt: 1, outcome: 'accepted' })])
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_coverage', 'WAITING_BEADS_APPROVAL')!.content))
       .toMatchObject({ status: 'clean', finalCandidateVersion: 2, remainingGaps: [] })
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'beads_expanded', 'WAITING_BEADS_APPROVAL')!.content))

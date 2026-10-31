@@ -163,6 +163,17 @@ describe('executeBeadsExpandStep', () => {
     }))
   })
 
+  it('repairs a testCommands cwd written as the absolute worktree path', async () => {
+    queueResponses([response({ testCommands: [{ ...createShellCommandSpec('npm test'), cwd: '/tmp/worktree' }] })])
+
+    const result = await executeBeadsExpandStep(params())
+
+    expect(result.hydratedBeads[0]?.testCommands).toEqual([createShellCommandSpec('npm test')])
+    expect(result.hydratedContent).not.toContain('/tmp/worktree')
+    expect(result.structuredMeta.autoRetryCount).toBe(0)
+    expect(runOpenCodePromptMock).toHaveBeenCalledTimes(1)
+  })
+
   it('retries preserved-field drift with correction guidance and returns the valid response', async () => {
     queueResponses([
       response({ title: 'A rewritten title' }),

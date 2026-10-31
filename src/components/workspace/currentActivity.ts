@@ -398,10 +398,13 @@ export function deriveCurrentActivities(
     const firstActivityEntry = firstActivityIndex >= 0 ? entriesAfterPrompt[firstActivityIndex]! : null
     const hasFirstActivity = firstActivityEntry !== null
     const promptCompletionEntry = entriesAfterPrompt.findLast(({ entry }) => isPromptCompletionEntry(entry))
+    const successfulResult = entriesAfterPrompt.find(({ entry }) => isPromptResultEntry(entry) && !isEmptyModelOutputEntry(entry))
     const diagnosticCandidates: DiagnosticCandidate[] = []
 
     for (const indexedEntry of entriesAfterPrompt) {
       const { entry } = indexedEntry
+      if (successfulResult && compareIndexedEntries(indexedEntry, successfulResult) > 0
+        && !getSessionId(entry) && !getBeadId(entry)) continue
       if (isProviderRetryTimeoutEntry(entry)) {
         diagnosticCandidates.push({ kind: 'provider_retry_timeout', indexedEntry })
       } else if (isProviderTimeoutPreservedEntry(entry)) {

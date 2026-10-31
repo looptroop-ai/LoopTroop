@@ -722,3 +722,13 @@ it('does not treat a quoted result summary inside a council failure as an empty 
     }),
   ])).toBeNull()
 })
+
+
+it.each(['Timeout', 'OpenCode prompt timed out after 120000ms.', 'Workflow deadline timeout'])('does not assign a later unscoped %s to a successful prompt', message => {
+  expect(deriveCurrentActivity([
+    makePrompt(), makeLog('success', 'OpenCode coding_main: model session=ses_waiting, messages=3, responseChars=20.', {
+      sessionId: 'ses_waiting', timestamp: timestamp(1_000),
+    }),
+    makeLog('later-error', `[ERROR] ${message}`, { source: 'error', kind: 'error', timestamp: timestamp(2_000) }),
+  ])).toBeNull()
+})

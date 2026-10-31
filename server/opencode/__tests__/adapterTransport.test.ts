@@ -2466,3 +2466,38 @@ describe('OpenCode permission reply timing', () => {
     ])
   })
 })
+
+describe('OpenCode permission reply receipts in the timing line', () => {
+  it('records how many attempts a reply took and how it was confirmed', async () => {
+    const onEvent = vi.fn()
+    const { transport, source } = createV2Transport({
+      replyPermission: vi.fn(async () => ({ attempts: 2, confirmedBy: 'pending_check' as const })),
+      dispatchPrompt: vi.fn(async () => {
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          { event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'permission-1', permission: 'bash' } },
+        )
+        source.fail(new Error('SSE disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: true }
+        if (after === 51) return {
+          events: [executionEvent('execution_started', 52), inboxEvent('inbox_delivered', 'inbox-own', 53), executionEvent('execution_terminal', 54)],
+          cursor: 54,
+          coverageComplete: true,
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+      { autoApprovePermissions: true, onEvent },
+    )
+
+    const timing = onEvent.mock.calls.map(([event]) => event as StreamEvent)
+      .find((event) => event.type === 'debug_event' && event.eventName === 'permission.reply.timing')
+    expect(timing).toMatchObject({ details: { outcome: 'confirmed', attempts: 2, confirmedBy: 'pending_check' } })
+  })
+})

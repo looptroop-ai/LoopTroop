@@ -43,6 +43,13 @@ export class OpenCodePromptReceiptUnavailableError extends Error {
   }
 }
 
+/** How a v2 permission reply was confirmed, for the Debug log. */
+export interface PermissionReplyReceipt {
+  attempts: number;
+  /** response: OpenCode answered; pending_check / not_found_on_retry: an earlier timed-out attempt had landed. */
+  confirmedBy: "response" | "pending_check" | "not_found_on_retry";
+}
+
 export type PromptDispatch =
   | { kind: "completed"; message: Message }
   | { kind: "accepted"; receipt: PromptReceipt };
@@ -185,7 +192,7 @@ export interface OpenCodeTransport {
     directory?: string,
     signal?: AbortSignal,
     message?: string,
-  ): Promise<void>;
+  ): Promise<PermissionReplyReceipt | void>;
   interruptSession(sessionId: string, directory?: string): Promise<boolean>;
   checkHealth(signal?: AbortSignal): Promise<HealthStatus>;
 }

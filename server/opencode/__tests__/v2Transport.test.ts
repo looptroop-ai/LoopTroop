@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { assert, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { SESSION_LIST_LIMIT } from "../../lib/constants";
 import {
   OpenCodePromptReceiptUnavailableError,
@@ -427,16 +427,16 @@ describe("OpenCode v2 fetch transport", () => {
       });
 
       const dispatch = transport.dispatchPrompt(promptRequest()).catch((value) => value);
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(180_000);
       const error = await dispatch;
 
       expect(error).toBeInstanceOf(OpenCodePromptReceiptUnavailableError);
       expect(error.cause).toMatchObject({
         name: "TimeoutError",
-        message: "OpenCode did not answer POST /api/session/session%2F1/prompt within 5 s",
+        message: "OpenCode did not answer POST /api/session/session%2F1/prompt within 180 s",
       });
       expect(error.message).toBe(
-        "OpenCode did not confirm that it received the prompt (OpenCode did not answer POST /api/session/session%2F1/prompt within 5 s), so LoopTroop cannot tell whether the AI started working on it.",
+        "OpenCode did not confirm that it received the prompt (OpenCode did not answer POST /api/session/session%2F1/prompt within 180 s), so LoopTroop cannot tell whether the AI started working on it.",
       );
     } finally {
       vi.useRealTimers();
@@ -3657,5 +3657,114 @@ describe("OpenCode v2 fetch transport", () => {
     } finally {
       await iterator.return?.();
     }
+  });
+});
+
+describe("OpenCode v2 slow permission replies and prompts", () => {
+  // Like a real fetch: answers after `ms` unless the request is aborted first.
+  const answerAfter = (ms: number, init: RequestInit, response: () => Response) => new Promise<Response>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(response()), ms);
+    init.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(init.signal?.reason); }, { once: true });
+  });
+  const replyPath = "/api/session/session-1/permission/permission-1/reply";
+  const listPath = "/api/session/session-1/permission";
+  const hang = (init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+  });
+  const notFound = () => jsonResponse({ _tag: "PermissionNotFoundError", message: "Permission request not found: permission-1" }, 404);
+
+  async function replyWith(
+    replies: Array<"hang" | "ok" | "not_found" | "server_error">,
+    pending: Array<boolean | "hang">,
+    signal?: AbortSignal,
+  ) {
+    const replyQueue = [...replies];
+    const pendingQueue = [...pending];
+    const { transport, requests } = createTransport((request, init) => {
+      if (request.url.pathname === replyPath) {
+        const next = replyQueue.shift();
+        if (next === "hang") return hang(init);
+        if (next === "not_found") return notFound();
+        if (next === "server_error") return jsonResponse({ message: "boom" }, 500);
+        return emptyResponse();
+      }
+      if (request.url.pathname === listPath) {
+        const next = pendingQueue.shift();
+        if (next === "hang") return hang(init);
+        return jsonResponse({ data: next ? [{ id: "permission-1", sessionID: "session-1" }] : [] });
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    });
+    const result = transport.replyPermission("session-1", "permission-1", "once", "/workspace", signal)
+      .then((value) => ({ value }), (error: unknown) => ({ error }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    return { outcome: await result, calls: requests.map((request) => `${request.method} ${request.url.pathname}`) };
+  }
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("waits longer than the old 5 s for a reply confirmation", async () => {
+    const { transport } = createTransport((request, init) => {
+      if (request.url.pathname !== replyPath) throw new Error("unexpected");
+      return answerAfter(12_000, init, () => emptyResponse());
+    });
+    const result = transport.replyPermission("session-1", "permission-1", "once");
+    await vi.advanceTimersByTimeAsync(12_000);
+    await expect(result).resolves.toEqual({ attempts: 1, confirmedBy: "response" });
+  });
+
+  it("treats a timed-out reply as applied when OpenCode no longer lists the request", async () => {
+    const { outcome, calls } = await replyWith(["hang"], [false]);
+    expect(outcome).toEqual({ value: { attempts: 1, confirmedBy: "pending_check" } });
+    expect(calls).toEqual([`POST ${replyPath}`, `GET ${listPath}`]);
+  });
+
+  it("sends the reply again while the request is still pending", async () => {
+    const { outcome, calls } = await replyWith(["hang", "ok"], [true]);
+    expect(outcome).toEqual({ value: { attempts: 2, confirmedBy: "response" } });
+    expect(calls).toEqual([`POST ${replyPath}`, `GET ${listPath}`, `POST ${replyPath}`]);
+  });
+
+  it("resends when the pending check itself times out, and accepts not-found on the resend", async () => {
+    const { outcome, calls } = await replyWith(["hang", "not_found"], ["hang"]);
+    expect(outcome).toEqual({ value: { attempts: 2, confirmedBy: "not_found_on_retry" } });
+    expect(calls).toEqual([`POST ${replyPath}`, `GET ${listPath}`, `POST ${replyPath}`]);
+  });
+
+  it("gives up after three timed-out attempts on a request that stays pending", async () => {
+    const { outcome, calls } = await replyWith(["hang", "hang", "hang"], [true, true]);
+    expect(outcome).toMatchObject({ error: { name: "TimeoutError", message: `OpenCode did not answer POST ${replyPath} within 15 s` } });
+    expect(calls.filter((call) => call === `POST ${replyPath}`)).toHaveLength(3);
+  });
+
+  it("does not treat a first-attempt not-found or a server error as success, and does not retry them", async () => {
+    for (const reply of ["not_found", "server_error"] as const) {
+      const { outcome, calls } = await replyWith([reply], []);
+      expect(outcome).toMatchObject({ error: { name: "V2OpenCodeHttpError" } });
+      expect(calls).toEqual([`POST ${replyPath}`]);
+    }
+  });
+
+  it("does not retry after the caller cancels", async () => {
+    const controller = new AbortController();
+    const { transport, requests } = createTransport((_request, init) => hang(init));
+    const result = transport.replyPermission("session-1", "permission-1", "once", undefined, controller.signal)
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(1_000);
+    controller.abort(new DOMException("stopped", "AbortError"));
+    await expect(result).resolves.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("lets the first prompt wait while a cold OpenCode boots the folder's instance", async () => {
+    const { transport } = createTransport((request, init) => {
+      if (!request.url.pathname.endsWith("/prompt")) return emptyResponse();
+      return answerAfter(10_000, init, () => jsonResponse({ data: { id: "inbox-1" } }));
+    });
+    const dispatch = transport.dispatchPrompt(promptRequest());
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(dispatch).resolves.toMatchObject({ kind: "accepted", receipt: { inboxID: "inbox-1" } });
   });
 });

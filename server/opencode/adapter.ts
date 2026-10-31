@@ -17,6 +17,7 @@ import type {
   OpenCodeTransportEvent,
   OpenCodeTransportEventEnvelope,
   OpenCodeSessionLog,
+  PermissionReplyReceipt,
   PromptDispatch,
 } from "./transport";
 import {
@@ -1028,7 +1029,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const observedAt = permissionObservedAt.get(permissionKey) ?? startedAt;
         permissionObservedAt.delete(permissionKey);
         const sentAt = Date.now();
-        const reportReplyTiming = (outcome: string, error?: unknown) => {
+        const reportReplyTiming = (outcome: string, error?: unknown, receipt?: PermissionReplyReceipt) => {
           const settledAt = Date.now();
           promptOptions.onEvent?.({
             type: "debug_event",
@@ -1047,6 +1048,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               // OpenCode accepting the reply
               replyMs: settledAt - sentAt,
               totalMs: settledAt - observedAt,
+              ...(receipt ? { attempts: receipt.attempts, confirmedBy: receipt.confirmedBy } : {}),
               ...(error === undefined ? {} : { error: getErrorMessage(error) }),
             },
           });
@@ -1068,8 +1070,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               operationSignal,
             );
         permissionReplyPending = permissionReply
-          .then(() => {
-            reportReplyTiming("confirmed");
+          .then((receipt) => {
+            reportReplyTiming("confirmed", undefined, receipt ?? undefined);
             if (rejectionMessage) {
               successfullyRejectedPermissionSessions.add(permissionSessionId);
             }

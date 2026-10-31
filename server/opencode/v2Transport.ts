@@ -15,6 +15,7 @@ import type {
   OpenCodeSessionUpdateOptions,
   OpenCodeTransport,
   OpenCodeTransportEventEnvelope,
+  PermissionReplyReceipt,
   PromptDispatch,
 } from "./transport";
 import {
@@ -47,6 +48,13 @@ type FetchOptions = {
 
 const API_OPERATION_TIMEOUT_MS = SDK_OPERATION_TIMEOUT_MS;
 const SESSION_CREATE_TIMEOUT_MS = 180_000;
+// OpenCode 2.2.5 boots a folder's instance (plugins, model catalog: 6-8 s cold)
+// while the first prompt POST waits, not during session creation.
+const PROMPT_DISPATCH_TIMEOUT_MS = 180_000;
+// Replies normally confirm in ~70 ms but OpenCode has taken 3-5.5 s to answer
+// one it had already applied; each attempt gets this long.
+const PERMISSION_REPLY_TIMEOUT_MS = 15_000;
+const PERMISSION_REPLY_ATTEMPTS = 3;
 const EVENT_CONNECT_TIMEOUT_MS = 5_000;
 const EVENT_RECONNECT_ATTEMPTS = 3;
 const IDLE_WAIT_TIMEOUT_MS = 60_000;
@@ -833,6 +841,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           method: "POST",
           signal,
           serverOperation: false,
+          timeoutMs: PROMPT_DISPATCH_TIMEOUT_MS,
           body: {
             text: prompt.text,
             ...(prompt.files.length > 0 ? { files: prompt.files } : {}),
@@ -939,16 +948,52 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     _directory?: string,
     signal?: AbortSignal,
     message?: string,
-  ): Promise<void> {
-    await this.request(
-      `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(permissionId)}/reply`,
-      {
-        method: "POST",
-        signal,
-        expectedStatus: 204,
-        body: { decision: reply, ...(message ? { message } : {}) },
-      },
-    );
+  ): Promise<PermissionReplyReceipt> {
+    const path = `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(permissionId)}/reply`;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.request(path, {
+          method: "POST",
+          signal,
+          expectedStatus: 204,
+          timeoutMs: PERMISSION_REPLY_TIMEOUT_MS,
+          body: { decision: reply, ...(message ? { message } : {}) },
+        });
+        return { attempts: attempt, confirmedBy: "response" };
+      } catch (error) {
+        // The request can only have gone away because an earlier attempt landed.
+        if (attempt > 1 && isPermissionNotFound(error))
+          return { attempts: attempt, confirmedBy: "not_found_on_retry" };
+        if (!isOwnTimeout(error, signal) || attempt >= PERMISSION_REPLY_ATTEMPTS)
+          throw error;
+        // OpenCode acts on a reply before it answers it (LODA-11: the approved
+        // command ran 130 ms after the ask, the 204 never came within 5 s), so
+        // check whether this one already landed before sending it again.
+        if (!(await this.isPermissionPending(sessionId, permissionId, signal)))
+          return { attempts: attempt, confirmedBy: "pending_check" };
+      }
+    }
+  }
+
+  /** Unknown (the list itself failed) counts as pending, so the reply is sent again. */
+  private async isPermissionPending(
+    sessionId: string,
+    permissionId: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    try {
+      const pending = dataOf(
+        await this.request(`/api/session/${encodeURIComponent(sessionId)}/permission`, {
+          signal,
+          timeoutMs: PERMISSION_REPLY_TIMEOUT_MS,
+        }),
+      );
+      if (!Array.isArray(pending)) return true;
+      return pending.some((request) => asRecord(request)?.id === permissionId);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return true;
+    }
   }
 
   async interruptSession(
@@ -1638,6 +1683,19 @@ async function httpResponseError(response: Response, serverOperation: boolean, s
 function dataOf(value: unknown): unknown {
   const record = asRecord(value);
   return record && Object.hasOwn(record, "data") ? record.data : value;
+}
+
+function isPermissionNotFound(error: unknown): boolean {
+  return (
+    error instanceof V2OpenCodeHttpError &&
+    error.status === 404 &&
+    asRecord(error.body)?._tag === "PermissionNotFoundError"
+  );
+}
+
+/** This transport's own request timer fired, not the caller's signal. */
+function isOwnTimeout(error: unknown, signal?: AbortSignal): boolean {
+  return asRecord(error)?.name === "TimeoutError" && !signal?.aborted;
 }
 
 function isSessionNotFound(error: unknown): error is V2OpenCodeHttpError {

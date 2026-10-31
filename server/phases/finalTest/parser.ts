@@ -2,7 +2,7 @@ import { normalizeFinalTestCommandsOutput } from '../../structuredOutput'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { unwrapTaggedStructuredOutput } from '../parserTaggedStructuredOutput'
 import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
-import type { CommandSpec } from '@shared/commandSpec'
+import type { CommandSpec, CommandSpecRepairOptions } from '@shared/commandSpec'
 import type { HostContext } from '@shared/hostContext'
 
 export const FINAL_TEST_COMMANDS_MARKER = openTag(PROTOCOL_TAGS.FINAL_TEST_COMMANDS)
@@ -23,10 +23,14 @@ export interface FinalTestCommandPlan {
   retryDiagnostic?: StructuredRetryDiagnostic
 }
 
-export function parseFinalTestCommands(output: string, hostContext?: HostContext): FinalTestCommandPlan {
+export function parseFinalTestCommands(
+  output: string,
+  hostContext?: HostContext,
+  commandOptions?: CommandSpecRepairOptions,
+): FinalTestCommandPlan {
   const parsed = unwrapTaggedStructuredOutput(
     output,
-    normalizeFinalTestCommandsOutput(output, hostContext),
+    normalizeFinalTestCommandsOutput(output, hostContext, commandOptions),
     {
       markerStart: FINAL_TEST_COMMANDS_MARKER,
       markerEnd: FINAL_TEST_COMMANDS_END,

@@ -345,4 +345,26 @@ describe('generateExecutionSetupPlan', () => {
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toHaveLength(0)
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toHaveLength(1)
   })
+
+  it.each([['initial prompt', 1], ['structured retry', 2]] as const)(
+    'repairs a step command cwd written as the absolute worktree path (%s)', async (_stage, acceptedOnPrompt) => {
+      const adapter = new SequencedMockOpenCodeAdapter()
+      const response = buildReadyPlanResponse().replace(
+        '      - project bootstrap',
+        '      - {mode: process, program: project, args: [bootstrap], cwd: /tmp/test/packages/app, env: {}}',
+      )
+      if (acceptedOnPrompt === 2) adapter.mockResponses.set('mock-session-1#1', 'I drafted the setup plan.')
+      adapter.mockResponses.set(`mock-session-1#${acceptedOnPrompt}`, response)
+
+      const result = await generateExecutionSetupPlan(
+        adapter,
+        [{ type: 'text', content: 'Execution setup plan context' }],
+        '/tmp/test',
+      )
+
+      expect(result.plan?.steps[0]?.commands[0]?.cwd).toBe('packages/app')
+      // Accepted on this prompt itself, not rescued by a later structured retry.
+      expect(result.structuredOutput.autoRetryCount).toBe(acceptedOnPrompt - 1)
+    },
+  )
 })

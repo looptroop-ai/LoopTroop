@@ -11,7 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
-- PRD and bead commands survive two common AI formatting mistakes, and an invalid command now says exactly which one it is.
+- AI-written commands survive two common formatting mistakes in every planning step, and an invalid command now says exactly which one it is.
 
 ### Fixed
 
@@ -21,7 +21,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Changed
 
-- Both repairs live in the shared command normalizer (`shared/commandSpec.ts`). The relabel applies everywhere commands are normalized, including final-test and execution-setup plans. The working-directory repair applies to PRD and bead output (drafts, refinement, coverage revision, expansion), whose parsers are now given the worktree path. Stored-artifact readers and API schemas still accept only repository-relative paths.
+- Both repairs live in the shared command normalizer (`shared/commandSpec.ts`). The relabel applies everywhere commands are normalized, including final-test and execution-setup plans. The working-directory repair applies to fresh model output in PRD and bead steps (drafts, refinement, coverage revision, expansion), final-test command plans and execution-setup plans, whose parsers are now given the worktree path. Stored-artifact readers and API schemas still accept only repository-relative paths.
 
 ## 0.6.2 (2026-10-30)
 

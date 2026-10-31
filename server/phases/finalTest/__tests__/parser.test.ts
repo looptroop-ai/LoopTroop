@@ -201,3 +201,27 @@ describe.concurrent('parseFinalTestCommands', () => {
     ])
   })
 })
+
+describe.concurrent('parseFinalTestCommands absolute cwd repair', () => {
+  const repoRoot = '/root/repo/.looptroop/worktrees/T-1'
+  const output = (cwd: string) => [
+    '<FINAL_TEST_COMMANDS>',
+    JSON.stringify({ commands: [{ mode: 'process', program: 'npm', args: ['test'], cwd, env: {} }] }),
+    '</FINAL_TEST_COMMANDS>',
+  ].join('')
+
+  it('rewrites the worktree path, or a folder inside it, to the relative form', () => {
+    const root = parseFinalTestCommandsForHost(output(repoRoot), HOST, { repoRoot })
+    const sub = parseFinalTestCommandsForHost(output(`${repoRoot}/packages/app`), HOST, { repoRoot })
+
+    expect(root.errors).toEqual([])
+    expect(root.commands[0]?.cwd).toBe('.')
+    expect(sub.commands[0]?.cwd).toBe('packages/app')
+    expect(sub.repairApplied).toBe(true)
+  })
+
+  it('still rejects an absolute cwd when no worktree is given or the path is outside it', () => {
+    expect(parseFinalTestCommands(output(repoRoot)).errors).not.toEqual([])
+    expect(parseFinalTestCommandsForHost(output('/root/other'), HOST, { repoRoot }).errors).not.toEqual([])
+  })
+})

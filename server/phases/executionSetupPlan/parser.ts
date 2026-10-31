@@ -3,10 +3,13 @@ import { normalizeExecutionSetupPlanOutput } from '../../structuredOutput'
 import { unwrapTaggedStructuredOutput } from '../parserTaggedStructuredOutput'
 import type { ExecutionSetupPlanParseResult } from './types'
 
-export function parseExecutionSetupPlanResult(output: string): ExecutionSetupPlanParseResult {
+export function parseExecutionSetupPlanResult(
+  output: string,
+  options: { repoRoot?: string } = {},
+): ExecutionSetupPlanParseResult {
   const parsed = unwrapTaggedStructuredOutput(
     output,
-    normalizeExecutionSetupPlanOutput(output),
+    normalizeExecutionSetupPlanOutput(output, { repoRoot: options.repoRoot }),
     {
       markerStart: EXECUTION_SETUP_PLAN_RESULT_MARKER,
       markerEnd: EXECUTION_SETUP_PLAN_RESULT_END,

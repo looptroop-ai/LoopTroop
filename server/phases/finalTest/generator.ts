@@ -163,7 +163,7 @@ export async function generateFinalTests(
   activeSessionId = result.session.id
 
   let response = result.response
-  let commandPlan = parseFinalTestCommands(response)
+  let commandPlan = parseFinalTestCommands(response, hostContext, { repoRoot: projectPath })
   const rawAttempts: RawAttempt[] = []
   const retryDiagnostics: NonNullable<StructuredOutputMetadata['retryDiagnostics']> = []
   const structuredRetryCount = normalizeStructuredRetryCount(callbacks?.structuredRetryCount)
@@ -308,7 +308,7 @@ export async function generateFinalTests(
       throw error
     }
 
-    commandPlan = parseFinalTestCommands(response)
+    commandPlan = parseFinalTestCommands(response, hostContext, { repoRoot: projectPath })
     structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
       repairApplied: Boolean(commandPlan.repairApplied),
       repairWarnings: commandPlan.repairWarnings ?? [],

@@ -388,3 +388,37 @@ describe('parseExecutionSetupPlanResult', () => {
     expect(repaired.value.ticketId).toBe('RICH-4')
   })
 })
+
+describe('execution setup plan absolute cwd repair', () => {
+  const repoRoot = '/root/repo/.looptroop/worktrees/T-1'
+  const command = (cwd: string) => ({ mode: 'process', program: 'project', args: ['check'], cwd, env: {} })
+  const planWithCwd = (cwd: string) => wrapPlan(JSON.stringify({
+    ...buildPlanPayload([{ purpose: 'Install locked dependencies.', commands: [command(cwd)] }]),
+    workspace_probes: [{ id: 'workspace-1', command: command(cwd), purpose: 'load the repository project' }],
+    git_hooks: { validation_commands: [{ id: 'hook-1', hook: 'pre-commit', command: command(cwd), purpose: 'run the hook check' }] },
+    project_commands: { prepare: [command(cwd)], test_full: [command(cwd)], lint_full: [command(cwd)], typecheck_full: [command(cwd)] },
+  }))
+
+  it('rewrites a cwd inside the worktree to its relative form in every command field', () => {
+    const parsed = parseExecutionSetupPlanResult(planWithCwd(`${repoRoot}/packages/app`), { repoRoot })
+
+    expect(parsed.errors).toEqual([])
+    const plan = parsed.plan!
+    const cwds = [
+      plan.workspaceProbes[0]!.command.cwd,
+      plan.gitHooks.validationCommands[0]!.command.cwd,
+      plan.steps[0]!.commands[0]!.cwd,
+      plan.projectCommands.prepare[0]!.cwd,
+      plan.projectCommands.testFull[0]!.cwd,
+      plan.projectCommands.lintFull[0]!.cwd,
+      plan.projectCommands.typecheckFull[0]!.cwd,
+    ]
+    expect(cwds).toEqual(Array(7).fill('packages/app'))
+    expect(parsed.repairWarnings?.filter((warning) => warning.includes('packages/app'))).toHaveLength(7)
+  })
+
+  it('still rejects an absolute cwd when no worktree is given or the path is outside it', () => {
+    expect(parseExecutionSetupPlanResult(planWithCwd(repoRoot)).plan).toBeNull()
+    expect(parseExecutionSetupPlanResult(planWithCwd('/root/other'), { repoRoot }).plan).toBeNull()
+  })
+})

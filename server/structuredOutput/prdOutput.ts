@@ -19,7 +19,8 @@ import {
 } from './yamlUtils'
 import { takeRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure, createStructuredCandidateFailureTracker } from './failure'
-import { normalizeCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { z } from 'zod'
+import { normalizeCommandSpec, type CommandSpec, type CommandSpecRepairOptions } from '@shared/commandSpec'
 import { detectHostContext } from '../lib/hostContext'
 
 const PRD_NESTED_MAPPING_CHILDREN = {
@@ -65,6 +66,8 @@ function readOptionalString(record: Record<string, unknown>, aliases: string[]):
 function normalizeVerification(
   record: Record<string, unknown>,
   repairWarnings: string[],
+  location: string,
+  commandOptions: CommandSpecRepairOptions,
 ): { required_commands: CommandSpec[] } {
   const verification = getNestedRecord(record, ['verification'])
   const rawCommands = getValueByAliases(verification, ['required_commands', 'requiredcommands', 'commands'])
@@ -72,9 +75,17 @@ function normalizeVerification(
   const host = detectHostContext()
   return {
     required_commands: commands.map((value, index) => {
-      const normalized = normalizeCommandSpec(value, host)
+      const field = `${location} verification.required_commands[${index}]`
+      let normalized: ReturnType<typeof normalizeCommandSpec>
+      try {
+        normalized = normalizeCommandSpec(value, host, commandOptions)
+      } catch (error) {
+        // A bare Zod path ("shell") does not tell a retrying model which command to fix.
+        if (error instanceof z.ZodError) throw new Error(`${field} is not a valid command:\n${z.prettifyError(error)}`, { cause: error })
+        throw error
+      }
       if (normalized.warning) {
-        repairWarnings.push(`verification.required_commands[${index}]: ${normalized.warning}`)
+        repairWarnings.push(`${field}: ${normalized.warning}`)
       }
       return normalized.command
     }),
@@ -135,6 +146,7 @@ function normalizeUserStory(
   storyIndex: number,
   usedStoryIds: Set<string>,
   repairWarnings: string[],
+  commandOptions: CommandSpecRepairOptions,
 ): PrdDocument['epics'][number]['user_stories'][number] {
   if (!isRecord(value)) {
     throw new Error(`Epic user story at index ${storyIndex} is not an object`)
@@ -155,7 +167,7 @@ function normalizeUserStory(
     title: getRequiredString(value, ['title', 'name'], `user story title at index ${storyIndex}`),
     acceptance_criteria: toStringArray(getValueByAliases(value, ['acceptance_criteria', 'acceptancecriteria'])),
     implementation_steps: toStringArray(getValueByAliases(value, ['implementation_steps', 'implementationsteps', 'steps'])),
-    verification: normalizeVerification(value, repairWarnings),
+    verification: normalizeVerification(value, repairWarnings, `User story ${id}`, commandOptions),
   }
 }
 
@@ -165,12 +177,13 @@ function normalizeEpic(
   usedEpicIds: Set<string>,
   usedStoryIds: Set<string>,
   repairWarnings: string[],
+  commandOptions: CommandSpecRepairOptions,
 ): PrdDocument['epics'][number] {
   if (!isRecord(value)) throw new Error(`Epic at index ${index} is not an object`)
 
   const rawStories = getValueByAliases(value, ['user_stories', 'userstories', 'stories'])
   const userStories = Array.isArray(rawStories)
-    ? rawStories.map((story, storyIndex) => normalizeUserStory(story, index, storyIndex, usedStoryIds, repairWarnings))
+    ? rawStories.map((story, storyIndex) => normalizeUserStory(story, index, storyIndex, usedStoryIds, repairWarnings, commandOptions))
     : []
 
   if (userStories.length === 0) {
@@ -241,6 +254,8 @@ export function normalizePrdYamlOutput(
     ticketId: string
     interviewContent?: string
     losingDraftMeta?: Array<{ memberId: string }>
+    /** The directory the model worked in; see `CommandSpecRepairOptions`. */
+    repoRoot?: string
   },
 ): StructuredOutputResult<PrdDocument & { changes?: RefinementChange[] }> {
   if (looksLikePromptEcho(rawContent)) {
@@ -294,7 +309,7 @@ export function normalizePrdYamlOutput(
       const usedEpicIds = new Set<string>()
       const usedStoryIds = new Set<string>()
       const epics = Array.isArray(rawEpics)
-        ? rawEpics.map((epic, index) => normalizeEpic(epic, index, usedEpicIds, usedStoryIds, repairWarnings))
+        ? rawEpics.map((epic, index) => normalizeEpic(epic, index, usedEpicIds, usedStoryIds, repairWarnings, { repoRoot: options.repoRoot }))
         : []
 
       if (epics.length === 0) {

@@ -9,6 +9,20 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- PRD and bead commands survive two common AI formatting mistakes, and an invalid command now says exactly which one it is.
+
+### Fixed
+
+- **A command labelled "shell" but written as a program with arguments no longer blocks the ticket.** A model wrote `mode: shell` with `program: bash` and `args`, but no `shell` and no `script`, and two attempts in a row failed validation on a PRD coverage revision. Such a command is now relabelled `mode: process`, which is what its fields describe, and the change is recorded as a repair warning.
+- **An absolute working directory inside the ticket's worktree is accepted.** A council member wrote `cwd` as the worktree's full path 36 times, and its whole PRD draft was rejected because commands must use repository-relative paths. A path that is the worktree, or inside it, is now rewritten as `.` or the relative subpath, with a repair warning. A path anywhere else still fails.
+- **Invalid commands say where they are.** A failing PRD command used to report only a field name such as `shell`. It now names the story and position, for example `User story US-1-1 verification.required_commands[1]`, so the structured retry tells the model which command to fix. Bead commands report `testCommands[n]` together with the problem fields.
+
+### Changed
+
+- Both repairs live in the shared command normalizer (`shared/commandSpec.ts`). The relabel applies everywhere commands are normalized, including final-test and execution-setup plans. The working-directory repair applies to PRD and bead output (drafts, refinement, coverage revision, expansion), whose parsers are now given the worktree path. Stored-artifact readers and API schemas still accept only repository-relative paths.
+
 ## 0.6.2 (2026-10-30)
 
 

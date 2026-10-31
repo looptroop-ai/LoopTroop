@@ -249,6 +249,7 @@ export function validatePrdCoverageRevisionOutput(
     interviewContent: string
     currentCandidateContent: string
     coverageGaps: string[]
+    repoRoot?: string
   },
 ): ValidatedPrdCoverageRevision {
   // `validatePrdRefinementOutput` installs a sink per candidate, but the
@@ -270,6 +271,7 @@ function validatePrdCoverageRevisionRecord(
     interviewContent: string
     currentCandidateContent: string
     coverageGaps: string[]
+    repoRoot?: string
   },
   aliasWarnings: string[],
 ): ValidatedPrdCoverageRevision {
@@ -279,6 +281,7 @@ function validatePrdCoverageRevisionRecord(
     winnerDraftContent: options.currentCandidateContent,
     // A coverage revision accounts for its edits in gap_resolutions.
     missingChangesPolicy: 'accounted_elsewhere',
+    repoRoot: options.repoRoot,
   })
   const parsedGapResolutions = parseGapResolutions(
     rawContent,

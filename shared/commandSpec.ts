@@ -110,10 +110,80 @@ export function renderCommandSpec(command: CommandSpec | string, processShell: C
     .join(' ')
 }
 
-export function normalizeCommandSpec(value: unknown, host: HostContext): NormalizedCommandSpec {
+export interface CommandSpecRepairOptions {
+  /** Absolute directory the command runs from; an absolute `cwd` at or inside it is made relative. */
+  repoRoot?: string
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function trimPath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+/** `cwd` relative to `root`, or null when it is neither `root` nor a directory inside it. */
+function relativeToRoot(cwd: string, root: string): string | null {
+  const normalizedRoot = trimPath(root)
+  const normalizedCwd = trimPath(cwd)
+  if (!normalizedRoot) return null
+  // Windows paths compare without case; POSIX paths keep it.
+  const fold = (value: string) => (/^[a-zA-Z]:\//.test(`${normalizedRoot}/`) ? value.toLowerCase() : value)
+  if (fold(normalizedCwd) === fold(normalizedRoot)) return '.'
+  if (!fold(normalizedCwd).startsWith(`${fold(normalizedRoot)}/`)) return null
+  // A `..` that escapes the root survives this and is rejected by the schema.
+  return normalizedCwd.slice(normalizedRoot.length + 1)
+}
+
+/**
+ * Formatting-only repairs for a command object a model wrote. Nothing is
+ * invented: the fields already say what to run and where.
+ */
+export function repairCommandSpecShape(
+  value: unknown,
+  options: CommandSpecRepairOptions = {},
+): { value: unknown; warnings: string[] } {
+  if (!isRecordValue(value)) return { value, warnings: [] }
+  let next = value
+  const warnings: string[] = []
+
+  const { program, args } = next
+  if (
+    next.mode === 'shell'
+    && next.shell === undefined
+    && next.script === undefined
+    && typeof program === 'string'
+    && program.trim()
+    && (args === undefined || (Array.isArray(args) && args.every((arg) => typeof arg === 'string')))
+  ) {
+    next = { ...next, mode: 'process' }
+    warnings.push('Relabelled a command marked mode "shell" as mode "process", because it was written with program and args.')
+  }
+
+  const { cwd } = next
+  if (options.repoRoot && typeof cwd === 'string' && cwd.trim() && !isRepoRelativePath(cwd)) {
+    const relative = relativeToRoot(cwd, options.repoRoot)
+    if (relative !== null) {
+      next = { ...next, cwd: relative }
+      warnings.push(`Rewrote the absolute working directory ${JSON.stringify(cwd)} as ${JSON.stringify(relative)}, relative to the repository root.`)
+    }
+  }
+
+  return { value: next, warnings }
+}
+
+export function normalizeCommandSpec(
+  rawValue: unknown,
+  host: HostContext,
+  options: CommandSpecRepairOptions = {},
+): NormalizedCommandSpec {
+  const { value, warnings } = repairCommandSpecShape(rawValue, options)
   const parsed = commandSpecSchema.safeParse(value)
   if (parsed.success) {
-    return { command: parsed.data, repaired: false }
+    return warnings.length > 0
+      ? { command: parsed.data, repaired: true, warning: warnings.join(' ') }
+      : { command: parsed.data, repaired: false }
   }
   if (typeof value === 'string' && value.trim()) {
     return {

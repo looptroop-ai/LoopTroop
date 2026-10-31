@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeBeadsJsonlOutput } from '../beadsOutput'
+import { normalizeBeadSubsetYamlOutput, normalizeBeadsJsonlOutput } from '../beadsOutput'
 
 function bead(overrides: Record<string, unknown> = {}) {
   return {
@@ -60,5 +60,47 @@ describe('expanded bead target parsing', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value[0]?.targetFiles).toEqual([])
+  })
+})
+
+describe('model-written bead test commands', () => {
+  const repoRoot = '/root/repo/.looptroop/worktrees/T-1'
+  const withCommands = (testCommands: unknown[]) => {
+    const record = bead({ testCommands }) as Record<string, unknown>
+    delete record.testCommandReason
+    return record
+  }
+
+  it('repairs a mislabelled shell command and an absolute worktree cwd in expanded beads', () => {
+    const result = normalizeBeadsJsonlOutput(JSON.stringify(withCommands([
+      { mode: 'shell', program: 'npm', args: ['test'], cwd: `${repoRoot}/packages/app` },
+    ])), { repoRoot })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value[0]?.testCommands).toEqual([
+      { mode: 'process', program: 'npm', args: ['test'], cwd: 'packages/app', env: {} },
+    ])
+    expect(result.repairApplied).toBe(true)
+    expect(result.repairWarnings.join('\n')).toContain('Bead at index 0 testCommands[0]: Relabelled')
+    expect(result.repairWarnings.join('\n')).toContain('Rewrote the absolute working directory')
+  })
+
+  it('repairs the same commands in bead drafts', () => {
+    const result = normalizeBeadSubsetYamlOutput(JSON.stringify({ beads: [withCommands([
+      { mode: 'process', program: 'npm', args: ['test'], cwd: repoRoot },
+    ])] }), undefined, { repoRoot })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value[0]?.testCommands[0]?.cwd).toBe('.')
+    expect(result.repairWarnings.join('\n')).toContain('Bead verify-config testCommands[0]: Rewrote')
+  })
+
+  it('still rejects a working directory outside the repository and says which command', () => {
+    const result = normalizeBeadsJsonlOutput(JSON.stringify(withCommands([
+      { mode: 'process', program: 'npm', cwd: '/root/repo' },
+    ])), { repoRoot })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toMatch(/at testCommands\[0\]:[\s\S]*cwd/)
   })
 })

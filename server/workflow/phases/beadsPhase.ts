@@ -156,7 +156,7 @@ export async function executeBeadsExpandStep(params: {
     })
 
     try {
-      const expandedResult = normalizeBeadsJsonlOutput(response)
+      const expandedResult = normalizeBeadsJsonlOutput(response, { repoRoot: params.worktreePath })
       if (!expandedResult.ok) {
         throw attachStructuredRetryDiagnostic(
           new Error(expandedResult.error),
@@ -729,6 +729,7 @@ export async function handleBeadsRefine(
           const validated = validateBeadsRefinementOutput(content, {
             winnerDraftContent: winnerDraft.content,
             losingDraftMeta,
+            repoRoot: intermediate.worktreePath,
           })
           refineStructuredMeta = buildStructuredMetadata(refineStructuredMeta, {
             repairApplied: validated.repairApplied,

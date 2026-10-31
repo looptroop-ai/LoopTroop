@@ -581,11 +581,14 @@ export function validatePrdRefinementOutput(
      * them in `gap_resolutions`, and its prompt never asks for `changes`.
      */
     missingChangesPolicy?: 'require' | 'accounted_elsewhere'
+    /** The directory the model worked in; see `CommandSpecRepairOptions`. */
+    repoRoot?: string
   },
 ): ValidatedPrdRefinement {
   const winnerResult = normalizePrdYamlOutput(options.winnerDraftContent, {
     ticketId: options.ticketId,
     interviewContent: options.interviewContent,
+    repoRoot: options.repoRoot,
   })
   if (!winnerResult.ok) {
     throw new Error(`Winning PRD draft is invalid: ${winnerResult.error}`)
@@ -595,6 +598,7 @@ export function validatePrdRefinementOutput(
     ticketId: options.ticketId,
     interviewContent: options.interviewContent,
     losingDraftMeta: options.losingDraftMeta,
+    repoRoot: options.repoRoot,
   })
   if (!refinementResult.ok) {
     throw attachStructuredRetryDiagnostic(

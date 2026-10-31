@@ -64,7 +64,7 @@ export async function draftBeads(
     onOpenCodeStreamEvent,
     onDraftProgress,
     (content) => {
-      const result = normalizeBeadSubsetYamlOutput(content)
+      const result = normalizeBeadSubsetYamlOutput(content, undefined, { repoRoot: projectPath })
       if (!result.ok) {
         throw attachStructuredRetryDiagnostic(
           new Error(result.error),

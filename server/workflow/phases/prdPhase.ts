@@ -834,6 +834,7 @@ export async function handlePrdRefine(
           interviewContent: winnerFullAnswers.content,
           winnerDraftContent: winnerDraft.content,
           losingDraftMeta,
+          repoRoot: intermediate.worktreePath,
         })
         validatedRefinement = result
         structuredMeta = buildStructuredMetadata(structuredMeta, {

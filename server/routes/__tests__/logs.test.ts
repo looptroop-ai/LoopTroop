@@ -635,6 +635,81 @@ describe('ticket log projection API', () => {
     }
   })
 
+  it('pages compact activity evidence across channels without changing source log content', async () => {
+    const { ticket } = createLogTestTicket()
+    const paths = getTicketPaths(ticket.id)!
+    const fields = { phaseAttempt: 2, modelId: 'test/model', sessionId: 'session-activity' }
+    const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
+    const prompt = '[PROMPT] test/model prompt #1\n' + 'prompt body '.repeat(100)
+    const text = '  ' + 'response text '.repeat(100) + '  '
+    appendLogEvent(ticket.id, 'info', 'CODING', prompt, {
+      ...fields, timestamp: time(0), audience: 'ai', kind: 'prompt', entryId: 'activity-prompt',
+    }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'First AI activity observed.', {
+      ...fields, timestamp: time(1), audience: 'all', kind: 'milestone', entryId: 'activity-started',
+    }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'Session retry #1: provider unavailable.', {
+      ...fields, timestamp: time(3), audience: 'ai', kind: 'session', entryId: 'activity-retry',
+    }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'error', 'CODING', 'Workflow deadline timeout after 1000ms', {
+      ...fields, timestamp: time(4), audience: 'debug', kind: 'error', entryId: 'activity-timeout',
+    }, 'error', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'OpenCode coding_main: test/model session=session-activity, messages=1, responseChars=20.', {
+      ...fields, timestamp: time(4), audience: 'all', kind: 'milestone', entryId: 'activity-result',
+    }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'AI session completed.', {
+      ...fields, timestamp: time(6), audience: 'all', kind: 'milestone', entryId: 'activity-completed',
+    }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'model_output', 'CODING', text, {
+      ...fields, timestamp: time(7), audience: 'ai', kind: 'text', entryId: 'activity-text',
+    }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'debug', 'CODING', 'raw debug chatter', {
+      ...fields, timestamp: time(8), kind: 'milestone',
+    }, 'debug', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', '[CMD] $ ignored-command', {
+      ...fields, timestamp: time(9), kind: 'milestone',
+    }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other attempt', {
+      ...fields, phaseAttempt: 1, timestamp: time(10), kind: 'prompt',
+    }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'RUNNING_FINAL_TEST', 'other phase', {
+      ...fields, timestamp: time(11), kind: 'prompt',
+    }, 'system', 'RUNNING_FINAL_TEST')
+    appendFileSync(paths.aiLogPath, JSON.stringify({
+      ...fields, phase: 'CODING', status: 'CODING', timestamp: time(2), type: 'info',
+      audience: 'ai', kind: 'tool', source: 'model:test/model', entryId: 'activity-tool',
+      content: 'tool output '.repeat(100),
+    }) + '\n')
+
+    const url = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&phaseAttempt=2&view=activity&limit=1`
+    const entries: Array<{ entryId: string; content: string; modelId: string; sessionId: string }> = []
+    let before: string | null = null
+    do {
+      const response = await app.request(url + (before ? `&before=${encodeURIComponent(before)}` : ''))
+      expect(response.status).toBe(200)
+      const page = await response.json() as { entries: typeof entries; olderCursor: string | null; hasOlder: boolean }
+      entries.unshift(...page.entries)
+      before = page.hasOlder ? page.olderCursor : null
+    } while (before)
+
+    expect(entries.map(entry => entry.entryId)).toEqual([
+      'activity-prompt', 'activity-started', 'activity-tool', 'activity-retry',
+      'activity-timeout', 'activity-result', 'activity-completed', 'activity-text',
+    ])
+    expect(entries.every(entry => entry.modelId === fields.modelId && entry.sessionId === fields.sessionId)).toBe(true)
+    expect(entries[0]!.content).toBe(prompt.slice(0, 256))
+    expect(entries.at(-1)!.content).toBe(text.trim().slice(0, 256))
+    expect(listOpenCodeNativeLogFilesMock).not.toHaveBeenCalled()
+    expect(await exportLogEntries(ticket.id, {
+      scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'activity',
+    }, { pageSize: 2 })).toEqual(entries)
+    const original = await exportLogEntries(ticket.id, {
+      scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'ai',
+    })
+    expect(original?.find(entry => entry.entryId === 'activity-prompt')?.content).toBe(prompt)
+    expect(original?.find(entry => entry.entryId === 'activity-text')?.content).toBe(text)
+  })
+
   it('makes historical DEBUG a four-source ticket-scoped union', async () => {
     const { ticket, repoDir } = createLogTestTicket()
     appendLogEvent(ticket.id, 'info', 'CODING', 'system row', {

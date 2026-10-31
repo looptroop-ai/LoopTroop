@@ -1,10 +1,10 @@
 import { extractLogFingerprint } from '@shared/logIdentity'
 import { isAiLogEntry, isDebugLogEntry } from '@shared/logClassification'
 
-export type LogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug'
+export type LogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug' | 'activity'
 
 /** The shared durable/API classifier. Keep this aligned with the visible log tab semantics. */
-export function classifyPersistedLogEntry(entry: Record<string, unknown>): Exclude<LogView, 'overview'> {
+export function classifyPersistedLogEntry(entry: Record<string, unknown>): Exclude<LogView, 'overview' | 'activity'> {
   const type = String(entry.type ?? '')
   const source = String(entry.source ?? '')
   const audience = String(entry.audience ?? '')

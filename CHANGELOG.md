@@ -9,6 +9,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+
+### Fixed
+
+- Keep AI activity warnings tied to the exact model session, phase, and attempt. One council member's empty response can no longer flag every member, and concurrent sessions using the same model stay separate. Restored logs use chronological evidence from a dedicated activity view, so switching log tabs cannot change the banner. Recovered responses, successful retries, completed work, failures, and user stops clear obsolete waiting states. Empty-output checks include available transcript text; their log message no longer claims a restart occurred. Deadline warnings stop using a dispatch snapshot after a question pauses the shared timer, and an expired snapshot says the outcome is still pending instead of declaring a timeout. Stable diagnostic codes and ordinary log history remain available.
+
 ## 0.6.2 (2026-10-30)
 
 
@@ -31,6 +36,8 @@ A major update bringing a new AI assistant, smarter error recovery, and more rel
 - **✨ Overall:** LoopTroop is becoming easier to use and more reliable, with a major new way to interact with your projects: **just ask the AI!**
 
 ### Summary
+
+- AI activity warnings now track the correct session and clear when that work recovers.
 
 - Package installs now require Node.js 24.18.1 or newer, which includes the July security fixes.
 - The development frontend opens through Tailscale Serve (`*.ts.net`) instead of answering "Blocked request".

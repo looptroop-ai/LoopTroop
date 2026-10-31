@@ -9,6 +9,10 @@ import { makeRuntimeBead, type RuntimeBeadInput } from '@/test/factories'
 import { createJsonResponse, createTestQueryClient, withLogContext } from '@/test/renderHelpers'
 import { QueryClientProvider } from '@tanstack/react-query'
 
+const { useTicketPhaseAttemptsMock } = vi.hoisted(() => ({ useTicketPhaseAttemptsMock: vi.fn() }))
+
+vi.mock('@/hooks/useTicketPhaseAttempts', () => ({ useTicketPhaseAttempts: useTicketPhaseAttemptsMock }))
+
 vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({
     children,
@@ -242,6 +246,7 @@ afterAll(() => {
 })
 
 beforeEach(() => {
+  useTicketPhaseAttemptsMock.mockReturnValue({ data: undefined, isSuccess: false })
   animationFrames.clear()
   nextAnimationFrameId = 1
   scrollToMock.mockClear()
@@ -1863,6 +1868,92 @@ describe('PhaseLogPanel', () => {
     expect(Boolean(strip.compareDocumentPosition(viewport) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
   })
 
+  it('restores current activity independently of the selected log filter', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true })
+    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
+      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+      sessionId: 'ses_current', phaseAttempt: 2,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      for (const name of ['ERROR', 'SYS', 'AI', 'DEBUG']) {
+        fireEvent.click(screen.getByRole('button', { name }))
+        await waitFor(() => expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current'))
+      }
+      const activityRequests = fetchSpy.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+        .filter(url => url.searchParams.get('view') === 'activity')
+      expect(activityRequests).toHaveLength(1)
+      expect(activityRequests[0]!.searchParams.get('phaseAttempt')).toBe('2')
+      expect(activityRequests[0]!.searchParams.get('limit')).toBe('200')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('waits for complete activity evidence before showing a current warning', async () => {
+    let resolveOlder!: (response: Response) => void
+    const olderResponse = new Promise<Response>(resolve => { resolveOlder = resolve })
+    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
+      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+      sessionId: 'ses_current', phaseAttempt: 2,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
+      if (url.searchParams.has('before')) return olderResponse
+      return createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: true, olderCursor: 'older-activity' })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" phaseAttempt={2} ticket={makeTicket()} />)
+      await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('before=older-activity'))).toBe(true))
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      resolveOlder(await createJsonResponse({ entries: [], hasOlder: false }))
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('does not infer current warnings when activity evidence fails to load', async () => {
+    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
+      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+      sessionId: 'ses_current', phaseAttempt: 2,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return url.searchParams.get('view') === 'activity'
+        ? createJsonResponse({ error: 'unavailable' }, 503)
+        : createJsonResponse({ entries: [], hasOlder: false })
+    })
+    try {
+      renderWithTooltipProvider(withLogContext(makeLogContext({ getLogsForPhase: () => [prompt] }),
+        <PhaseLogPanel phase="CODING" phaseAttempt={2} ticket={makeTicket()} />))
+      await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(true))
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('does not warn about the original deadline while AI questions pause the ticket', () => {
+    const prompt = makeLog('paused-prompt', '[PROMPT] Draft questions.', {
+      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+      sessionId: 'ses_paused', timeoutMs: 100_000, deadlineAt: '2026-03-10T10:01:40.000Z',
+    })
+    renderWithTooltipProvider(<PhaseLogPanel phase="CODING" logs={[prompt]}
+      ticket={{ ...makeTicket(), pendingQuestions: { requestCount: 1, questionCount: 1, deadlineAt: null, stoppedAt: null } }} />)
+    expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('Waiting for first model activity')
+    expect(screen.queryByText('Approaching timeout')).not.toBeInTheDocument()
+  })
+
   it('does not show stale near-timeout activity when reviewing a past phase', () => {
     const logs: LogEntry[] = [
       makeLog('prompt-past', '[PROMPT] openai/gpt-5-codex prompt #1\nDraft the PRD.', {
@@ -1899,8 +1990,9 @@ describe('PhaseLogPanel', () => {
         kind: 'prompt',
         modelId: 'openai/gpt-5-codex',
         sessionId: 'ses_live_prd',
+        timestamp: new Date(Date.now() - 85_000).toISOString(),
         timeoutMs: 100_000,
-        deadlineAt: '2026-03-10T10:01:40.000Z',
+        deadlineAt: new Date(Date.now() + 15_000).toISOString(),
         timeoutKind: 'ai_response',
       }),
     ]

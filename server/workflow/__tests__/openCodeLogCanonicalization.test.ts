@@ -174,7 +174,7 @@ describe('OpenCode log canonicalization', () => {
     expect(getPersistedEntries().some((entry) => entry.entryId === 'ses-1:transcript-summary')).toBe(false)
   })
 
-  it('persists structured model attribution on OpenCode summary rows across stages', () => {
+  it('persists structured model and session attribution on OpenCode summary rows across stages', () => {
     const memberId = 'openai/gpt-5-mini'
     const stages = ['draft', 'vote', 'coverage', 'refine'] as const
 
@@ -207,8 +207,52 @@ describe('OpenCode log canonicalization', () => {
         message: `OpenCode ${stage}: ${memberId} session=ses-${stage}, messages=1, responseChars=${`${stage} response`.length}.`,
         source: 'system',
         modelId: memberId,
+        sessionId: `ses-${stage}`,
       })),
     ))
+  })
+
+  it.each(['', ' \n '])('attributes blank response %j to its session without claiming a restart', (response) => {
+    emitOpenCodeSessionLogs(
+      TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-empty', 'coding_main',
+      response, [], createOpenCodeStreamState(), 'bead-empty', 2,
+    )
+
+    expect(getNormalPersistedEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: expect.stringContaining('session=ses-empty, messages=0, responseChars=0.'),
+        modelId: TEST.model,
+        sessionId: 'ses-empty',
+        beadId: 'bead-empty',
+        beadIteration: 2,
+      }),
+      expect.objectContaining({
+        message: 'OpenCode returned no response text (stage: coding_main, messages: 0).',
+        modelId: TEST.model,
+        sessionId: 'ses-empty',
+        beadId: 'bead-empty',
+        beadIteration: 2,
+      }),
+    ]))
+    expect(JSON.stringify(getPersistedEntries())).not.toContain('will be started')
+    expect(JSON.stringify(getPersistedEntries())).not.toContain('was restarted')
+  })
+
+  it('backfills available transcript text without logging an empty-response milestone', () => {
+    emitOpenCodeSessionLogs(
+      TEST.ticketId, TEST.externalId, 'CODING', TEST.model, 'ses-transcript', 'coding_main',
+      '', [{ id: 'msg-transcript', role: 'assistant', content: 'Visible transcript response.' }],
+      createOpenCodeStreamState(),
+    )
+
+    expect(getPersistedTextEntries()).toContainEqual(expect.objectContaining({
+      sessionId: 'ses-transcript', content: 'Visible transcript response.',
+    }))
+    expect(getNormalPersistedEntries()).toContainEqual(expect.objectContaining({
+      message: expect.stringContaining('session=ses-transcript, messages=1, responseChars=28.'),
+      sessionId: 'ses-transcript',
+    }))
+    expect(getNormalPersistedEntries().some((entry) => String(entry.message).includes('no response text'))).toBe(false)
   })
 
   it('combines multiple text parts for the same assistant message into one persisted row', () => {

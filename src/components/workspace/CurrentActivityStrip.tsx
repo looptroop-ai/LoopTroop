@@ -10,6 +10,8 @@ interface CurrentActivityStripProps {
   entries: LogEntry[]
   enabled?: boolean
   activeStatus?: string | null
+  activePhaseAttempt?: number
+  suppressNearTimeout?: boolean
   className?: string
 }
 
@@ -77,7 +79,7 @@ function ActivityRow({ activity }: { activity: CurrentActivity }) {
   )
 }
 
-export function CurrentActivityStrip({ entries, enabled = true, activeStatus, className }: CurrentActivityStripProps) {
+export function CurrentActivityStrip({ entries, enabled = true, activeStatus, activePhaseAttempt, suppressNearTimeout, className }: CurrentActivityStripProps) {
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => {
@@ -85,8 +87,8 @@ export function CurrentActivityStrip({ entries, enabled = true, activeStatus, cl
   }, [entries])
 
   const activities = useMemo(
-    () => (enabled ? deriveCurrentActivities(entries, nowMs, { activeStatus }) : []),
-    [activeStatus, enabled, entries, nowMs],
+    () => (enabled ? deriveCurrentActivities(entries, nowMs, { activeStatus, activePhaseAttempt, suppressNearTimeout }) : []),
+    [activePhaseAttempt, activeStatus, enabled, entries, nowMs, suppressNearTimeout],
   )
 
   const hasAnyActive = useMemo(() => activities.some((a) => a.active), [activities])

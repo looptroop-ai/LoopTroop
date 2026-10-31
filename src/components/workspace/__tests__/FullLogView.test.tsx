@@ -31,6 +31,9 @@ const getAllLogsMock = vi.fn(() => [] as LogEntry[])
 const getLogsForPhaseMock = vi.fn(() => [] as LogEntry[])
 const loadAllLogsMock = vi.fn()
 const isLoadingLogScopeMock = vi.fn(() => false)
+const { useTicketPhaseAttemptsMock } = vi.hoisted(() => ({ useTicketPhaseAttemptsMock: vi.fn() }))
+
+vi.mock('@/hooks/useTicketPhaseAttempts', () => ({ useTicketPhaseAttempts: useTicketPhaseAttemptsMock }))
 
 vi.mock('@/context/useLogContext', () => ({
   useLogs: () => ({
@@ -176,6 +179,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  useTicketPhaseAttemptsMock.mockReturnValue({ data: undefined, isSuccess: false })
   getAllLogsMock.mockReset()
   getLogsForPhaseMock.mockReset()
   loadAllLogsMock.mockReset()
@@ -1126,6 +1130,8 @@ describe('FullLogView', () => {
   })
 
   it('shows the current activity strip below the toolbar and above the full log body', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [], isSuccess: true })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))
     getAllLogsMock.mockReturnValue([
       makeLog('prompt-1', '[PROMPT] openai/gpt-5-codex prompt #1\nImplement bead 2.', 'CODING', {
         source: 'model:openai/gpt-5-codex',
@@ -1146,6 +1152,7 @@ describe('FullLogView', () => {
     expect(strip).toHaveTextContent(/session ses_full_current/i)
     expect(strip).toHaveTextContent(/bead bead-2/i)
     expect(Boolean(strip.compareDocumentPosition(viewport) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    fetchSpy.mockRestore()
   })
 
   it('does not show stale near-timeout activity from older phases in the full log view', async () => {
@@ -1166,5 +1173,80 @@ describe('FullLogView', () => {
 
     expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Approaching timeout/i)).not.toBeInTheDocument()
+  })
+
+  it('restores current-attempt activity after reload and keeps it when filters change', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true })
+    getAllLogsMock.mockReturnValue([
+      makeLog('archived-prompt', '[PROMPT] An earlier attempt.', 'CODING', {
+        source: 'model:provider/old', audience: 'ai', kind: 'prompt', modelId: 'provider/old', sessionId: 'ses_old', phaseAttempt: 1,
+      }),
+    ])
+    const prompt = makeLog('current-prompt', '[PROMPT] Current attempt.', 'CODING', {
+      source: 'model:provider/current', audience: 'ai', kind: 'prompt', modelId: 'provider/current', sessionId: 'ses_current', phaseAttempt: 2,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      const strip = screen.getByRole('status', { name: 'Current activity' })
+      expect(strip).toHaveTextContent('ses_current')
+      expect(strip).not.toHaveTextContent('ses_old')
+      for (const name of ['ERROR', 'SYS', 'AI', 'DEBUG']) {
+        await act(async () => fireEvent.click(screen.getByRole('button', { name: name === 'AI' ? /^AI(?: >|$)/ : name })))
+        expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      }
+      const activityRequests = fetchSpy.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+        .filter(url => url.searchParams.get('view') === 'activity')
+      expect(activityRequests).toHaveLength(1)
+      expect(activityRequests[0]!.searchParams.get('scope')).toBe('phase')
+      expect(activityRequests[0]!.searchParams.get('phase')).toBe('CODING')
+      expect(activityRequests[0]!.searchParams.get('phaseAttempt')).toBe('2')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('suppresses current activity until the active attempt is known', async () => {
+    getAllLogsMock.mockReturnValue([
+      makeLog('archived-prompt', '[PROMPT] An earlier attempt.', 'CODING', {
+        source: 'model:provider/old', audience: 'ai', kind: 'prompt', modelId: 'provider/old', sessionId: 'ses_old', phaseAttempt: 1,
+      }),
+    ])
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))
+    try {
+      await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(false)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('does not reuse a cached active attempt while its current version is refreshing', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: true })
+    getAllLogsMock.mockReturnValue([
+      makeLog('archived-prompt', '[PROMPT] An earlier attempt.', 'CODING', {
+        source: 'model:provider/old', audience: 'ai', kind: 'prompt', modelId: 'provider/old', sessionId: 'ses_old', phaseAttempt: 1,
+      }),
+    ])
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))
+    try {
+      const rendered = await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(false)
+      useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
+      rendered.rerender(<FullLogView ticket={makeTicket()} />)
+      await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(true))
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes('view=activity')).every(([input]) => String(input).includes('phaseAttempt=2'))).toBe(true)
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 })

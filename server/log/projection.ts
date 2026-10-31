@@ -1628,7 +1628,17 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     }
     modelIds = (modelStatement.all(...params) as Array<{ model_id: string }>).map(row => row.model_id)
   }
-  if (query.view === 'ai') { clauses.push(AI_VISIBLE_ROWS) }
+  if (query.view === 'activity') {
+    // Keep lifecycle evidence independent of the selected log tab without reading raw/native debug logs.
+    clauses.push(DEBUG_VISIBLE_ROWS)
+    clauses.push(`json_extract(entry_json, '$.kind') IN (
+      'prompt', 'milestone', 'session', 'error', 'text', 'model_output', 'assistant', 'reasoning', 'tool', 'step',
+      'question', 'todo', 'part_summary', 'file_edit', 'file-edited', 'file_edited', 'done'
+    )`)
+    clauses.push("(channel != 'debug' OR json_extract(entry_json, '$.kind') = 'error')")
+    clauses.push("classification != 'command'")
+  }
+  else if (query.view === 'ai') { clauses.push(AI_VISIBLE_ROWS) }
   else { clauses.push("channel = 'normal'") }
   // The overview backs the ALL tab. Apply its visible-row rules before LIMIT
   // so a page of commands or AI detail-only rows cannot produce an apparently
@@ -1649,7 +1659,7 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
       )
     )`)
   }
-  if (query.view !== 'overview' && query.view !== 'ai') {
+  if (query.view !== 'overview' && query.view !== 'ai' && query.view !== 'activity') {
     clauses.push('classification = ?')
     params.push(query.view)
   }
@@ -1677,14 +1687,18 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
 
   const pageClauses = [...clauses]
   const pageParams = [...params]
+  const chronologicalView = query.view === 'ai' || query.view === 'activity'
+  const timestamp = query.view === 'ai' ? AI_START_TIMESTAMP : 'timestamp'
+  const timestampRank = query.view === 'ai' ? AI_START_RANK : "(CASE WHEN timestamp = '' THEN 1 ELSE 0 END)"
+  const mirrorKey = query.view === 'activity' ? "(p.channel || ':' || p.mirror_key)" : 'p.mirror_key'
   if (before !== null) {
-    if (query.view === 'ai') {
+    if (chronologicalView) {
       const rank = before.timestamp === '' ? 1 : 0
       pageClauses.push(`(
-        ${AI_START_RANK} < ?
-        OR (${AI_START_RANK} = ? AND ${AI_START_TIMESTAMP} < ?)
-        OR (${AI_START_RANK} = ? AND ${AI_START_TIMESTAMP} = ? AND p.mirror_key < ?)
-        OR (${AI_START_RANK} = ? AND ${AI_START_TIMESTAMP} = ? AND p.mirror_key = ? AND p.mirror_occurrence < ?)
+        ${timestampRank} < ?
+        OR (${timestampRank} = ? AND ${timestamp} < ?)
+        OR (${timestampRank} = ? AND ${timestamp} = ? AND ${mirrorKey} < ?)
+        OR (${timestampRank} = ? AND ${timestamp} = ? AND ${mirrorKey} = ? AND p.mirror_occurrence < ?)
       )`)
       pageParams.push(
         rank,
@@ -1698,11 +1712,10 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     }
   }
   const where = pageClauses.join(' AND ')
-  const timestamp = query.view === 'ai' ? AI_START_TIMESTAMP : 'timestamp'
-  const order = query.view === 'ai'
-    ? `${AI_START_RANK} DESC, sort_timestamp DESC, p.mirror_key DESC, p.mirror_occurrence DESC`
+  const order = chronologicalView
+    ? `${timestampRank} DESC, sort_timestamp DESC, ${mirrorKey} DESC, p.mirror_occurrence DESC`
     : 'ordinal DESC'
-  const sql = `SELECT ordinal, ${timestamp} AS sort_timestamp, mirror_key, mirror_occurrence, entry_json FROM execution_log_projection AS p WHERE ${where} ORDER BY ${order} LIMIT ?`
+  const sql = `SELECT ordinal, ${timestamp} AS sort_timestamp, ${mirrorKey} AS mirror_key, mirror_occurrence, entry_json FROM execution_log_projection AS p WHERE ${where} ORDER BY ${order} LIMIT ?`
   let statement = storage.statements.queryPages.get(sql)
   if (!statement) {
     statement = sqlite.prepare(sql)
@@ -1717,6 +1730,11 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   return {
     entries: page.reverse().map(row => {
       const entry = JSON.parse(row.entry_json)
+      if (query.view === 'activity' && entry.kind !== 'milestone' && entry.kind !== 'session' && entry.kind !== 'error') {
+        for (const field of ['content', 'message']) {
+          if (typeof entry[field] === 'string') entry[field] = entry[field].trim().slice(0, 256)
+        }
+      }
       if (query.view === 'ai') {
         if (row.sort_timestamp) entry.timestamp = row.sort_timestamp
         entry._logMirrorKey = row.mirror_key

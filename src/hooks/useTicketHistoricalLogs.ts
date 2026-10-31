@@ -13,7 +13,7 @@ import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { QUERY_STALE_TIME_30S } from '@/lib/constants'
 
-export type HistoricalLogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug'
+export type HistoricalLogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug' | 'activity'
 
 export interface HistoricalLogScope {
   scope: 'phase' | 'lifecycle'

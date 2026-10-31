@@ -661,6 +661,7 @@ export async function handleCoding(
                   },
                   onContinuableTimeoutPreserved: ({
                     beadId,
+                    sessionId,
                     iteration,
                     message,
                   }) => {
@@ -673,6 +674,7 @@ export async function handleCoding(
                       {
                         source: "system",
                         modelId: codingModelId,
+                        sessionId,
                         beadId,
                         beadIteration: iteration,
                       },

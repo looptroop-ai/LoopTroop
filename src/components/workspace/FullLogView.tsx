@@ -30,6 +30,7 @@ import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
 import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
 import { useTicketSkips } from '@/hooks/useTicketSkips'
+import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { SkipSummary } from './SkipSummary'
 import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
 import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
@@ -183,6 +184,33 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     () => ticket?.id ? mergeEntriesBatch(historicalLogs.entries, allLogs, historicalView === 'ai') : allLogs,
     [allLogs, historicalLogs.entries, historicalView, ticket?.id],
   )
+  const isTerminalTicket = isTerminalWorkflowStatus(ticket?.status)
+  const phaseAttempts = useTicketPhaseAttempts(
+    isTerminalTicket ? undefined : ticket?.id,
+    isTerminalTicket ? undefined : ticket?.status,
+  )
+  const activePhaseAttempt = phaseAttempts.data?.find(attempt => attempt.state === 'active')?.attemptNumber
+  const activityQueryEnabled = Boolean(ticket?.id) && !isTerminalTicket && phaseAttempts.isSuccess && !phaseAttempts.isFetching
+  const activityLogs = useTicketHistoricalLogs(ticket?.id, {
+    scope: 'phase',
+    phase: ticket?.status,
+    phaseAttempt: activePhaseAttempt,
+    view: 'activity',
+    limit: 200,
+  }, activityQueryEnabled)
+  const currentActivityEntries = useMemo(
+    () => mergeEntriesBatch(activityLogs.entries, allLogs),
+    [activityLogs.entries, allLogs],
+  )
+  const fetchAllActivityLogs = activityLogs.fetchAllOlder
+  useEffect(() => {
+    if (!activityQueryEnabled || !activityLogs.hasOlder || activityLogs.isError) return
+    let cancelled = false
+    void fetchAllActivityLogs(() => cancelled).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [fetchAllActivityLogs, activityLogs.hasOlder, activityLogs.isError, activityQueryEnabled])
+  const activityEvidenceReady = !ticket?.id || (phaseAttempts.isSuccess && !phaseAttempts.isFetching
+    && activityLogs.isSuccess && !activityLogs.isFetching && !activityLogs.hasOlder && !activityLogs.isError)
 
   useEffect(() => {
     if (ticket?.id) return
@@ -314,7 +342,6 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const totalTextLines = ticket?.id
     ? Math.max(loadedTextLines, historicalLogs.totalTextLines ?? loadedTextLines)
     : loadedTextLines
-  const isTerminalTicket = isTerminalWorkflowStatus(ticket?.status)
 
   const beadLabelOptions: StatusLabelOptions | undefined = useMemo(() => {
     if (!ticket) return undefined
@@ -747,9 +774,11 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
       {/* Log content */}
       <CurrentActivityStrip
-        entries={allLogs}
-        enabled={!isTerminalTicket}
+        entries={currentActivityEntries}
+        enabled={!isTerminalTicket && activityEvidenceReady}
         activeStatus={ticket?.status ?? null}
+        activePhaseAttempt={activePhaseAttempt}
+        suppressNearTimeout={(ticket?.pendingQuestions?.requestCount ?? 0) > 0}
       />
       {ticket?.id && historicalLogs.isError && hasLogs ? (
         <QueryErrorNotice

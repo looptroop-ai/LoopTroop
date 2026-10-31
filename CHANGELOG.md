@@ -9,6 +9,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- The Debug log now shows how long each automatic permission approval took, so slow approvals can be traced.
+
+### Added
+
+- **Permission reply timing in the Debug log.** Every automatic permission reply now writes an `opencode.permission.reply.timing` line with the decision, the outcome (`confirmed`, `failed`, or `already_closed`) and the time split three ways: how long LoopTroop held the request before handling it, how long its policy and guard checks took, and how long OpenCode took to accept the reply. A failed reply is logged before the run stops, with the error. The normal log is unchanged.
+
 ## 0.6.2 (2026-10-30)
 
 

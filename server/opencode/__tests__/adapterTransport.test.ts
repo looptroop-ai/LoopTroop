@@ -2341,3 +2341,128 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(resolver).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('OpenCode permission reply timing', () => {
+  const askedPermission = (permissionId: string, cursor?: number): OpenCodeTransportEventEnvelope => ({
+    ...(cursor === undefined ? {} : { cursor }),
+    event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId, permission: 'bash', patterns: ['ls'] },
+  })
+  const timingEvents = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
+    .map(([event]) => event as StreamEvent)
+    .filter((event) => event.type === 'debug_event' && event.eventName === 'permission.reply.timing')
+
+  async function withClock<T>(run: (clock: { now: number }) => Promise<T>): Promise<T> {
+    const clock = { now: 1_000 }
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now)
+    try {
+      return await run(clock)
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  it('splits a confirmed reply into LoopTroop hold time and OpenCode reply time', async () => {
+    await withClock(async (clock) => {
+      const onEvent = vi.fn()
+      const { transport, source, markDispatched } = createV2Transport({
+        replyPermission: vi.fn(async () => { clock.now += 700 }),
+        dispatchPrompt: vi.fn(async () => {
+          markDispatched()
+          source.push(
+            inboxEvent('inbox_enqueued', 'inbox-own', 51),
+            executionEvent('execution_started', 52),
+            askedPermission('permission-1', 53),
+          )
+          // let the stream observe the ask before the receipt is known, so LoopTroop must hold it
+          await new Promise<void>((resolve) => realSetTimeout(resolve, 0))
+          clock.now += 300
+          realSetTimeout(() => source.push(
+            inboxEvent('inbox_delivered', 'inbox-own', 54),
+            executionEvent('execution_terminal', 55),
+          ), 0)
+          return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+        }),
+      })
+
+      await expect(createAdapter(transport).promptSession(
+        'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+        { autoApprovePermissions: true, onEvent },
+      )).resolves.toBe('current answer')
+
+      expect(timingEvents(onEvent)).toEqual([expect.objectContaining({
+        sessionId: 'session-1',
+        details: {
+          permissionId: 'permission-1',
+          permission: 'bash',
+          decision: 'once',
+          outcome: 'confirmed',
+          heldMs: 300,
+          checkMs: 0,
+          replyMs: 700,
+          totalMs: 1_000,
+        },
+      })])
+    })
+  })
+
+  it('records a failed reply before the prompt fails', async () => {
+    await withClock(async (clock) => {
+      const onEvent = vi.fn()
+      const { transport, source } = createV2Transport({
+        replyPermission: vi.fn(async () => {
+          clock.now += 5_000
+          throw new Error('OpenCode v2 request timed out')
+        }),
+        dispatchPrompt: vi.fn(async () => {
+          source.push(inboxEvent('inbox_enqueued', 'inbox-own', 51), askedPermission('permission-1'))
+          return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+        }),
+      })
+
+      await expect(createAdapter(transport).promptSession(
+        'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+        { autoApprovePermissions: true, onEvent },
+      )).rejects.toThrow('Failed to auto-approve OpenCode permission bash: OpenCode v2 request timed out')
+
+      expect(timingEvents(onEvent)).toEqual([expect.objectContaining({
+        details: expect.objectContaining({
+          outcome: 'failed',
+          replyMs: 5_000,
+          totalMs: 5_000,
+          error: 'OpenCode v2 request timed out',
+        }),
+      })])
+    })
+  })
+
+  it('records a rejection that a sibling rejection already closed', async () => {
+    const onEvent = vi.fn()
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'sibling') throw Object.assign(new Error('Permission request not found: sibling'), { status: 404 })
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          askedPermission('first', 53),
+          askedPermission('sibling', 54),
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+      { permission: [{ permission: 'bash', pattern: '*', action: 'deny' }], autoApprovePermissions: true, onEvent },
+    )).resolves.toBe('current answer')
+
+    expect(timingEvents(onEvent).map((event) => event.type === 'debug_event' && event.details)).toEqual([
+      expect.objectContaining({ permissionId: 'first', decision: 'reject', outcome: 'confirmed' }),
+      expect.objectContaining({ permissionId: 'sibling', decision: 'reject', outcome: 'already_closed', error: 'Permission request not found: sibling' }),
+    ])
+  })
+})

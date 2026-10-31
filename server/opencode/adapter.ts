@@ -987,7 +987,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         string,
         { event: StreamEvent; order: number }
       >();
+      // When each permission request first reached LoopTroop, so the debug log can
+      // split a slow auto-approval into LoopTroop's wait and OpenCode's reply time.
+      const permissionObservedAt = new Map<string, number>();
       const replyToPermission = async (streamEvent: StreamEvent) => {
+        const startedAt = Date.now();
         const permissionSessionId = streamEvent.sessionId;
         const permissionKey = streamEvent.type === "permission"
           ? `${permissionSessionId}\u0000${streamEvent.permissionId}`
@@ -1020,6 +1024,33 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const rejectionMessage = guardRejection ?? (deniedByPolicy
           ? `LoopTroop denied the ${streamEvent.permission ?? "tool"} request because this workflow's tool policy does not allow it.`
           : undefined);
+        const decision = rejectionMessage ? "reject" : "once";
+        const observedAt = permissionObservedAt.get(permissionKey) ?? startedAt;
+        permissionObservedAt.delete(permissionKey);
+        const sentAt = Date.now();
+        const reportReplyTiming = (outcome: string, error?: unknown) => {
+          const settledAt = Date.now();
+          promptOptions.onEvent?.({
+            type: "debug_event",
+            sessionId: permissionSessionId,
+            eventName: "permission.reply.timing",
+            summary: `Permission ${decision} reply ${outcome} after ${settledAt - observedAt} ms`,
+            details: {
+              permissionId: streamEvent.permissionId,
+              permission: streamEvent.permission,
+              decision,
+              outcome,
+              // waiting before LoopTroop began handling it (v2 holds a request until it can be attributed to this prompt)
+              heldMs: startedAt - observedAt,
+              // LoopTroop's policy and guard checks
+              checkMs: sentAt - startedAt,
+              // OpenCode accepting the reply
+              replyMs: settledAt - sentAt,
+              totalMs: settledAt - observedAt,
+              ...(error === undefined ? {} : { error: getErrorMessage(error) }),
+            },
+          });
+        };
         const permissionReply = rejectionMessage
           ? transport.replyPermission(
               permissionSessionId,
@@ -1038,6 +1069,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             );
         permissionReplyPending = permissionReply
           .then(() => {
+            reportReplyTiming("confirmed");
             if (rejectionMessage) {
               successfullyRejectedPermissionSessions.add(permissionSessionId);
             }
@@ -1047,7 +1079,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               this.isConfirmedPermissionNotFoundError(error) &&
               Boolean(rejectionMessage) &&
               successfullyRejectedPermissionSessions.has(permissionSessionId)
-            ) return;
+            ) {
+              reportReplyTiming("already_closed", error);
+              return;
+            }
+            reportReplyTiming("failed", error);
             permissionReplyFailure = new Error(
               `Failed to ${rejectionMessage ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
               { cause: error },
@@ -1185,6 +1221,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             streamEvent.permissionId &&
             !handledPermissionIds.has(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`)
           ) {
+            const observedKey = `${streamEvent.sessionId}\u0000${streamEvent.permissionId}`;
+            if (!permissionObservedAt.has(observedKey)) permissionObservedAt.set(observedKey, Date.now());
             if (transport.protocol === "v2" || beforeV2Dispatch) {
               pendingPermissionEvents.set(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`, {
                 event: streamEvent,

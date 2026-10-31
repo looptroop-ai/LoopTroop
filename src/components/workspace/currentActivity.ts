@@ -297,7 +297,7 @@ function buildDiagnosticActivity(
         diagnostic: kind,
         active: false,
         severity: 'warning',
-        label: 'Model returned no visible output',
+        label: 'Model returned no response text',
         elapsedMs,
         modelId: getModelId(prompt),
         sessionId: prompt.sessionId,

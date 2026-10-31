@@ -136,7 +136,7 @@ describe('deriveCurrentActivity', () => {
     ], BASE_TIME_MS + 5_000)
 
     expect(activity?.kind).toBe('empty_model_output')
-    expect(activity?.label).toBe('Model returned no visible output')
+    expect(activity?.label).toBe('Model returned no response text')
     expect(activity?.diagnostic).toBe('empty_model_output')
   })
 

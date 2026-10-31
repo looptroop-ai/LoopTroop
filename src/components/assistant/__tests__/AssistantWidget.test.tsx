@@ -1102,10 +1102,11 @@ it('keeps a fixed accessible size and Escape dismisses the window back to its la
   expect(panel).toHaveAttribute('hidden')
 })
 
-it('drags the assistant window, clamps it to the viewport, and restores its position for the tab session', () => {
+it('drags the assistant window, clamps it to the viewport, and restores its position for the tab session', async () => {
   window.sessionStorage.clear()
   vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([]))))
   const view = render(widget())
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toBeEnabled())
   const panel = screen.getByRole('dialog', { name: 'LoopTroop assistant' })
   vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({
     x: 100,
@@ -1132,6 +1133,7 @@ it('drags the assistant window, clamps it to the viewport, and restores its posi
   view.unmount()
 
   render(widget())
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toBeEnabled())
   const restoredPanel = screen.getByRole('dialog', { name: 'LoopTroop assistant' })
   vi.spyOn(restoredPanel, 'getBoundingClientRect').mockReturnValue({
     x: 4,

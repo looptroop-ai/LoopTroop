@@ -712,3 +712,13 @@ it('does not invent terminal elapsed time when the diagnostic has no timestamp',
     }),
   ], BASE_TIME_MS + 500_000)).toMatchObject({ kind: 'model_no_activity_timeout', elapsedMs: undefined })
 })
+
+
+it('does not treat a quoted result summary inside a council failure as an empty response', () => {
+  expect(deriveCurrentActivity([
+    makePrompt(), makeLog('invalid-draft', '[ERROR] Invalid draft: OpenCode council: model session=ses_waiting, messages=3, responseChars=0.', {
+      source: 'model:openai/gpt-5-codex', kind: 'error', audience: 'ai',
+      entryId: 'ses_waiting:draft-finished', sessionId: 'ses_waiting', timestamp: timestamp(1_000),
+    }),
+  ])).toBeNull()
+})

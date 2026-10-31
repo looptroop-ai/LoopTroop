@@ -135,8 +135,8 @@ function isEmptyModelOutputEntry(entry: LogEntry): boolean {
 }
 
 function isPromptResultEntry(entry: LogEntry): boolean {
-  return isTrustedDiagnosticEntry(entry)
-    && /\bOpenCode\b.+\bsession=\S+,\s*messages=\d+,\s*responseChars=\d+\b/i.test(entry.line)
+  return entry.kind === 'milestone' && entry.source === 'system' && isTrustedDiagnosticEntry(entry)
+    && /^(?:\[SYS\]\s*)?OpenCode\b.+\bsession=\S+,\s*messages=\d+,\s*responseChars=\d+\b/i.test(entry.line)
 }
 
 function isPromptCompletionEntry(entry: LogEntry): boolean {

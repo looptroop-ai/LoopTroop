@@ -376,8 +376,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       return await this.promptSessionOnce(sessionId, parts, signal, options, firstAttempt);
     } catch (error) {
       // Everything before the dispatch only reads or prepares OpenCode state, so
-      // a timeout or dropped connection there (LODA-11: all 8 council members hit
-      // a 5 s stream limit while the host was busy) is safe to repeat: the model
+      // a timeout or dropped connection there (seen: every council member hit
+      // the stream limit at once on a busy host) is safe to repeat: the model
       // has not seen the prompt and no work can run twice. Deliberate refusals,
       // such as another prompt still running in the session, are not repeated.
       if (

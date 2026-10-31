@@ -968,8 +968,8 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
           return { attempts: attempt, confirmedBy: "not_found_on_retry" };
         if (!isOwnTimeout(error, signal) || attempt >= PERMISSION_REPLY_ATTEMPTS)
           throw error;
-        // OpenCode acts on a reply before it answers it (LODA-11: the approved
-        // command ran 130 ms after the ask, the 204 never came within 5 s), so
+        // OpenCode acts on a reply before it answers it (an approved command has
+        // run 130 ms after the ask while the 204 never came within 5 s), so
         // check whether this one already landed before sending it again.
         if (!(await this.isPermissionPending(sessionId, permissionId, signal)))
           return { attempts: attempt, confirmedBy: "pending_check" };

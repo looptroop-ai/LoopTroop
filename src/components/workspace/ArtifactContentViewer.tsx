@@ -1292,8 +1292,10 @@ function CurrentCoverageReportView({
         <CoverageResultView
           content={content}
           phase={phase}
-          cleanStatusLabel={`No open coverage gaps remain for ${finalCandidateLabel}`}
-          openGapsTitle={`Open Coverage Gaps in ${finalCandidateLabel}`}
+          // Without a version history there is nothing to tell apart, so the
+          // plain default headings stay.
+          cleanStatusLabel={transitions.length > 0 ? `No open coverage gaps remain for ${finalCandidateLabel}` : undefined}
+          openGapsTitle={transitions.length > 0 ? `Open Coverage Gaps in ${finalCandidateLabel}` : undefined}
         />
       )}
     </WithRawTab>

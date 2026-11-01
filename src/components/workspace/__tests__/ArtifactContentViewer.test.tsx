@@ -2220,6 +2220,36 @@ items:
     expect(screen.getByText('Coverage revised candidate')).toBeInTheDocument()
   })
 
+  it('keeps the plain gap headings for a coverage report without version history', () => {
+    const report = {
+      winnerId: 'openai/gpt-5.2',
+      summary: 'Coverage summary.',
+      // Above 1, or the clean banner never reaches the custom label at all.
+      finalCandidateVersion: 2,
+      transitions: [],
+    }
+    const { unmount } = render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="WAITING_PRD_APPROVAL"
+        content={JSON.stringify({ ...report, status: 'gaps', hasRemainingGaps: true, remainingGaps: ['Missing rollback step.'] })}
+      />,
+    )
+    expect(screen.getByText('Open Coverage Gaps')).toBeInTheDocument()
+    expect(screen.queryByText(/Open Coverage Gaps in /)).not.toBeInTheDocument()
+    unmount()
+
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="WAITING_PRD_APPROVAL"
+        content={JSON.stringify({ ...report, status: 'clean', hasRemainingGaps: false, remainingGaps: [] })}
+      />,
+    )
+    expect(screen.getByText('No remaining coverage gaps found')).toBeInTheDocument()
+    expect(screen.queryByText(/No open coverage gaps remain for /)).not.toBeInTheDocument()
+  })
+
   it('switches between audit and resolution notes in a legacy coverage report', () => {
     const revisionContent = JSON.stringify({
       candidateVersion: 2,

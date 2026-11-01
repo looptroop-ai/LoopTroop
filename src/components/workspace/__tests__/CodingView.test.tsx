@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE } from '@/lib/assistantLauncherAnchor'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeTicket, TEST, type RuntimeBeadInput } from '@/test/factories'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
@@ -831,6 +832,7 @@ describe('CodingView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Logged bead/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Log' }))
+    expect(document.querySelector(`[${BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE}]`)).not.toBeNull()
 
     // Should show line count and copy button
     expect(screen.getByText('3 entries')).toBeTruthy()

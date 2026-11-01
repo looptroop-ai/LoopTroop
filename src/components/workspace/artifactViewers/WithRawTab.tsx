@@ -76,6 +76,7 @@ export function WithRawTab({
   header,
   notice,
   rawSources,
+  hideHeaderOnRaw,
 }: {
   content: string
   structuredLabel: string
@@ -83,6 +84,7 @@ export function WithRawTab({
   header?: React.ReactNode
   notice?: React.ReactNode
   rawSources?: RawContentSource[]
+  hideHeaderOnRaw?: boolean
 }) {
   const [activeTab, setActiveTab] = useState<'structured' | 'raw'>('structured')
   const [activeRawSourceId, setActiveRawSourceId] = useState('all')
@@ -97,6 +99,7 @@ export function WithRawTab({
   const activeRawContent = activeRawSource.content ?? ''
   const activeRawDisplayContent = activeRawSource.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
   const shouldShowRawSourceSelector = canShowRawSourceSelector(rawSourceOptions)
+  const shouldShowHeader = Boolean(header) && !(hideHeaderOnRaw && activeTab === 'raw')
 
   useEffect(() => {
     if (!findRawSourceSelection(rawSourceOptions, activeRawSourceId)) {
@@ -106,9 +109,9 @@ export function WithRawTab({
 
   return (
     <div className="min-w-0 max-w-full space-y-3">
-      <div className="flex items-center gap-2">
-        {header && <div className="flex-1 min-w-0">{header}</div>}
-        <div className={`inline-flex items-center gap-1 rounded-md border border-border bg-background p-1 shrink-0 ${!header ? 'ml-auto' : ''}`}>
+      <div data-testid="raw-tab-controls" className="flex items-center gap-2">
+        {shouldShowHeader && <div className="flex-1 min-w-0">{header}</div>}
+        <div className={`inline-flex items-center gap-1 rounded-md border border-border bg-background p-1 shrink-0 ${!shouldShowHeader ? 'ml-auto' : ''}`}>
           <button
             onClick={() => setActiveTab('structured')}
             className={activeTab === 'structured'

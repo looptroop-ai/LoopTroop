@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TEST } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
@@ -1682,6 +1682,39 @@ describe('PhaseArtifactsPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: /Coverage Report/i }))
       expect(screen.getByText('Shows what each coverage pass found, what changed, and why.')).toBeInTheDocument()
     }
+  })
+
+  it('opens artifact dialogs on the dialog itself so copy tooltips stay closed', async () => {
+    const coverageArtifact = makeArtifact({
+      phase: 'VERIFYING_PRD_COVERAGE',
+      artifactType: 'prd_coverage',
+      content: 'Coverage report is still being generated.',
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="VERIFYING_PRD_COVERAGE"
+        isCompleted={false}
+        councilMemberNames={['openai/gpt-5.2']}
+        preloadedArtifacts={[coverageArtifact]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Coverage Report/i }))
+
+    const dialog = await screen.findByRole('dialog')
+    // The raw fallback puts a copy button first in the dialog, and focusing it
+    // would open its tooltip before the user hovered anything.
+    expect(screen.getByRole('button', { name: 'Copy raw output' })).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(dialog))
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    // Backward Tab from the dialog itself wraps to its last control, as Radix
+    // does from the first one, instead of doing nothing.
+    const controls = within(dialog).getAllByRole('button')
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(controls.at(-1))
+    expect(document.activeElement).not.toBe(dialog)
   })
 
   it('shows expanded plan and expansion diff during Beads expansion', () => {

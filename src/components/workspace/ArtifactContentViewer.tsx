@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import * as jsYaml from 'js-yaml'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { isCouncilMemberOutcome, isCouncilVotingControlPhase } from '@shared/councilMembers'
@@ -1191,24 +1191,15 @@ function LegacyCoverageReportView({
   )
 }
 
-function VersionedCoverageReportView({
-  coverageResult,
-  content,
-  phase,
-}: {
-  coverageResult: CoverageArtifactData
-  content: string
-  phase?: string
-}) {
-  const transitions = coverageResult.transitions ?? []
-  const [activeReportTab, setActiveReportTab] = useState('latest')
-  if (transitions.length === 0) {
-    return <CoverageResultView content={content} phase={phase} />
-  }
+interface CoverageReportTab {
+  key: string
+  label: string
+  transition: CoverageTransitionData | null
+}
 
-  const finalCandidateVersion = coverageResult.finalCandidateVersion ?? coverageResult.attempts?.[coverageResult.attempts.length - 1]?.candidateVersion
-  const finalCandidateLabel = getCoverageCandidateLabel(phase, finalCandidateVersion)
-  const primaryTabs = [
+function buildCoverageReportTabs(coverageResult: CoverageArtifactData): CoverageReportTab[] {
+  const transitions = coverageResult.transitions ?? []
+  return [
     ...transitions.map((transition, index) => ({
       key: `transition:${index}`,
       label: transition.label
@@ -1225,41 +1216,95 @@ function VersionedCoverageReportView({
       transition: null,
     },
   ]
-  const resolvedTab = primaryTabs.find((tab) => tab.key === activeReportTab)?.key ?? 'latest'
-  const activeTransition = primaryTabs.find((tab) => tab.key === resolvedTab)?.transition ?? null
+}
+
+/**
+ * The report selector. It sits in the same row as the Summary/Raw switcher so
+ * the artifact opens with one row of controls rather than two stacked ones.
+ */
+function CoverageReportTabStrip({
+  tabs,
+  activeTab,
+  onSelect,
+}: {
+  tabs: CoverageReportTab[]
+  activeTab: string
+  onSelect: (key: string) => void
+}) {
+  const activeTabRef = useRef<HTMLButtonElement>(null)
+  // Latest Check is last and selected on open; when the strip overflows it
+  // would start clipped off the right edge, so bring the selection into view.
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeTab])
 
   return (
-    <div className="space-y-4">
-      <div className="space-y-3">
-        <div className="flex gap-2 border-b border-border">
-          {primaryTabs.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveReportTab(tab.key)}
-              className={cn(
-                'px-4 py-2 text-sm font-semibold transition-colors border-b-2 -mb-px',
-                resolvedTab === tab.key
-                  ? 'border-foreground text-foreground'
-                  : 'border-transparent text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {activeTransition ? (
-          <CoverageTransitionDetailsView key={resolvedTab} transition={activeTransition} phase={phase} />
-        ) : (
-          <CoverageResultView
-            content={content}
-            phase={phase}
-            cleanStatusLabel={`No open coverage gaps remain for ${finalCandidateLabel}`}
-            openGapsTitle={`Open Coverage Gaps in ${finalCandidateLabel}`}
-          />
-        )}
-      </div>
+    // Shares its row with the Summary/Raw switcher, so with many passes it
+    // scrolls instead of running under the switcher. The underline is an inset
+    // shadow because a scrolling box would clip a -mb-px tab overlapping a border.
+    <div className="flex min-w-0 gap-2 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_var(--color-border)]">
+      {tabs.map((tab) => (
+        <button
+          key={tab.key}
+          ref={activeTab === tab.key ? activeTabRef : undefined}
+          onClick={() => onSelect(tab.key)}
+          className={cn(
+            'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-semibold transition-colors border-b-2',
+            activeTab === tab.key
+              ? 'border-foreground text-foreground'
+              : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
     </div>
+  )
+}
+
+function CurrentCoverageReportView({
+  coverageResult,
+  content,
+  phase,
+}: {
+  coverageResult: CoverageArtifactData
+  content: string
+  phase?: string
+}) {
+  const [activeReportTab, setActiveReportTab] = useState('latest')
+  const transitions = coverageResult.transitions ?? []
+  const finalCandidateVersion = coverageResult.finalCandidateVersion ?? coverageResult.attempts?.[coverageResult.attempts.length - 1]?.candidateVersion
+  const finalCandidateLabel = getCoverageCandidateLabel(phase, finalCandidateVersion)
+  const primaryTabs = buildCoverageReportTabs(coverageResult)
+  const resolvedTab = primaryTabs.find((tab) => tab.key === activeReportTab)?.key ?? 'latest'
+  const activeTransition = primaryTabs.find((tab) => tab.key === resolvedTab)?.transition ?? null
+  return (
+    <WithRawTab
+      content={content}
+      structuredLabel="Summary"
+      rawSources={buildCoverageRawSources(coverageResult)}
+      hideHeaderOnRaw
+      header={transitions.length > 0 ? (
+        <CoverageReportTabStrip
+          tabs={primaryTabs}
+          activeTab={resolvedTab}
+          onSelect={setActiveReportTab}
+        />
+      ) : undefined}
+    >
+      {activeTransition ? (
+        <CoverageTransitionDetailsView key={resolvedTab} transition={activeTransition} phase={phase} />
+      ) : (
+        <CoverageResultView
+          content={content}
+          phase={phase}
+          // Without a version history there is nothing to tell apart, so the
+          // plain default headings stay.
+          cleanStatusLabel={transitions.length > 0 ? `No open coverage gaps remain for ${finalCandidateLabel}` : undefined}
+          openGapsTitle={transitions.length > 0 ? `Open Coverage Gaps in ${finalCandidateLabel}` : undefined}
+        />
+      )}
+    </WithRawTab>
   )
 }
 
@@ -1291,15 +1336,7 @@ function CoverageReportView({ content, phase }: { content: string; phase?: strin
     return <RawContentWithCopy content={content} />
   }
 
-  return (
-    <WithRawTab
-      content={content}
-      structuredLabel="Summary"
-      rawSources={buildCoverageRawSources(coverageResult)}
-    >
-      <VersionedCoverageReportView coverageResult={coverageResult} content={content} phase={phase} />
-    </WithRawTab>
-  )
+  return <CurrentCoverageReportView coverageResult={coverageResult} content={content} phase={phase} />
 }
 
 function buildCoverageRawSources(coverageResult: CoverageArtifactData | null): RawContentSource[] | undefined {

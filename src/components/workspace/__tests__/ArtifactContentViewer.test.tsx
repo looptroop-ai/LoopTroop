@@ -2220,6 +2220,36 @@ items:
     expect(screen.getByText('Coverage revised candidate')).toBeInTheDocument()
   })
 
+  it('keeps the plain gap headings for a coverage report without version history', () => {
+    const report = {
+      winnerId: 'openai/gpt-5.2',
+      summary: 'Coverage summary.',
+      // Above 1, or the clean banner never reaches the custom label at all.
+      finalCandidateVersion: 2,
+      transitions: [],
+    }
+    const { unmount } = render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="WAITING_PRD_APPROVAL"
+        content={JSON.stringify({ ...report, status: 'gaps', hasRemainingGaps: true, remainingGaps: ['Missing rollback step.'] })}
+      />,
+    )
+    expect(screen.getByText('Open Coverage Gaps')).toBeInTheDocument()
+    expect(screen.queryByText(/Open Coverage Gaps in /)).not.toBeInTheDocument()
+    unmount()
+
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="WAITING_PRD_APPROVAL"
+        content={JSON.stringify({ ...report, status: 'clean', hasRemainingGaps: false, remainingGaps: [] })}
+      />,
+    )
+    expect(screen.getByText('No remaining coverage gaps found')).toBeInTheDocument()
+    expect(screen.queryByText(/No open coverage gaps remain for /)).not.toBeInTheDocument()
+  })
+
   it('switches between audit and resolution notes in a legacy coverage report', () => {
     const revisionContent = JSON.stringify({
       candidateVersion: 2,
@@ -2688,6 +2718,59 @@ items:
     expect(screen.getByText('GUI verification needs a concrete repo-standard test path before approval.')).toBeInTheDocument()
     expect(screen.queryByText('Stale attempt gap that should not win over remainingGaps.')).not.toBeInTheDocument()
     expect(screen.queryByText('Historical transition gap that should not win over remainingGaps.')).not.toBeInTheDocument()
+  })
+
+  it('keeps the coverage report selector and the Summary/Raw switcher on one row', () => {
+    const scrollIntoView = vi.spyOn(HTMLElement.prototype, 'scrollIntoView')
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="WAITING_PRD_APPROVAL"
+        content={JSON.stringify({
+          winnerId: 'openai/gpt-5.2',
+          status: 'gaps',
+          summary: 'PRD Candidate v2 still has 1 gap.',
+          finalCandidateVersion: 2,
+          hasRemainingGaps: true,
+          remainingGaps: ['Remaining approval gap.'],
+          transitions: [
+            {
+              fromVersion: 1,
+              toVersion: 2,
+              summary: 'Coverage revised PRD Candidate v1 into v2.',
+              gaps: ['The first candidate missed rollback verification.'],
+              auditNotes: 'status: gaps',
+              fromContent: buildPrdDocumentContent(),
+              toContent: buildPrdDocumentContent({ architectureConstraint: 'Keep rollback steps documented.' }),
+              gapResolutions: [],
+              resolutionNotes: [],
+            },
+          ],
+        })}
+      />,
+    )
+
+    // jsdom computes no layout, so this proves the shared row, not that many
+    // pass tabs scroll instead of running under the switcher.
+    const controlsRow = screen.getByTestId('raw-tab-controls')
+    expect(controlsRow).toContainElement(screen.getByRole('button', { name: /Latest Check/i }))
+    expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Summary' }))
+    expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Raw' }))
+    // The selected Latest Check, last in the strip, is scrolled into view on open.
+    expect(scrollIntoView.mock.contexts).toEqual([screen.getByRole('button', { name: /Latest Check/i })])
+
+    // Pick the earlier pass, so returning from Raw has a selection to keep.
+    expect(screen.queryByText('Coverage revised PRD Candidate v1 into v2.')).not.toBeInTheDocument()
+    fireEvent.click(within(controlsRow).getByRole('button', { name: 'v1 > v2' }))
+    expect(screen.getByText('Coverage revised PRD Candidate v1 into v2.')).toBeInTheDocument()
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(within(controlsRow).getByRole('button', { name: 'v1 > v2' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
+    expect(screen.queryByRole('button', { name: /Latest Check/i })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Summary' }))
+    expect(within(screen.getByTestId('raw-tab-controls')).getByRole('button', { name: /Latest Check/i })).toBeInTheDocument()
+    expect(screen.getByText('Coverage revised PRD Candidate v1 into v2.')).toBeInTheDocument()
   })
 
   it('shows standalone transition notes and the candidate diff for a coverage pass', () => {

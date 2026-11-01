@@ -4,7 +4,7 @@ import type { OpenCodePromptRequest, OpenCodeTransport, OpenCodeTransportEventEn
 import type { Message, StreamEvent } from '../types'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from '../v2Transport'
-import { OpenCodePromptReceiptUnavailableError } from '../transport'
+import { markPromptNotSent, OpenCodePromptReceiptUnavailableError } from '../transport'
 import { buildOpenCodeBlockedErrorDiagnostics } from '../blockedErrorDiagnostics'
 import { isContinuableBlockedError } from '../sessionContinuation'
 import { OPENCODE_PROVIDER_AUTH_FAILED, OPENCODE_PROVIDER_ERROR } from '@shared/errorCodes'
@@ -674,7 +674,7 @@ describe('OpenCode adapter transport orchestration', () => {
       { autoApprovePermissions: true },
     )).rejects.toMatchObject({
       name: 'OpenCodePromptReceiptUnavailableError',
-      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('receipt') },
+      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('did not confirm that it received the prompt') },
     })
     expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
     expect(transport.replyPermission).not.toHaveBeenCalled()
@@ -1014,7 +1014,7 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(prompt).rejects.toMatchObject({
       name: 'AbortError',
       openCodePromptReceiptUnavailable: true,
-      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('receipt') },
+      blockedErrorDiagnostics: { kind: 'runtime', summary: expect.stringContaining('did not confirm that it received the prompt') },
     })
     expect(transport.replyPermission).not.toHaveBeenCalled()
   })
@@ -2339,5 +2339,261 @@ describe('OpenCode adapter transport orchestration', () => {
 
     resolveInitialization?.(createV2Transport().transport)
     expect(resolver).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('OpenCode permission reply timing', () => {
+  const askedPermission = (permissionId: string, cursor?: number): OpenCodeTransportEventEnvelope => ({
+    ...(cursor === undefined ? {} : { cursor }),
+    event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId, permission: 'bash', patterns: ['ls'] },
+  })
+  const timingEvents = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
+    .map(([event]) => event as StreamEvent)
+    .filter((event) => event.type === 'debug_event' && event.eventName === 'permission.reply.timing')
+
+  async function withClock<T>(run: (clock: { now: number }) => Promise<T>): Promise<T> {
+    const clock = { now: 1_000 }
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now)
+    try {
+      return await run(clock)
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  it('splits a confirmed reply into LoopTroop hold time and OpenCode reply time', async () => {
+    await withClock(async (clock) => {
+      const onEvent = vi.fn()
+      const { transport, source, markDispatched } = createV2Transport({
+        replyPermission: vi.fn(async () => { clock.now += 700 }),
+        dispatchPrompt: vi.fn(async () => {
+          markDispatched()
+          source.push(
+            inboxEvent('inbox_enqueued', 'inbox-own', 51),
+            executionEvent('execution_started', 52),
+            askedPermission('permission-1', 53),
+          )
+          // let the stream observe the ask before the receipt is known, so LoopTroop must hold it
+          await new Promise<void>((resolve) => realSetTimeout(resolve, 0))
+          clock.now += 300
+          realSetTimeout(() => source.push(
+            inboxEvent('inbox_delivered', 'inbox-own', 54),
+            executionEvent('execution_terminal', 55),
+          ), 0)
+          return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+        }),
+      })
+
+      await expect(createAdapter(transport).promptSession(
+        'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+        { autoApprovePermissions: true, onEvent },
+      )).resolves.toBe('current answer')
+
+      expect(timingEvents(onEvent)).toEqual([expect.objectContaining({
+        sessionId: 'session-1',
+        details: {
+          permissionId: 'permission-1',
+          permission: 'bash',
+          decision: 'once',
+          outcome: 'confirmed',
+          heldMs: 300,
+          checkMs: 0,
+          replyMs: 700,
+          totalMs: 1_000,
+        },
+      })])
+    })
+  })
+
+  it('records a failed reply before the prompt fails', async () => {
+    await withClock(async (clock) => {
+      const onEvent = vi.fn()
+      const { transport, source } = createV2Transport({
+        replyPermission: vi.fn(async () => {
+          clock.now += 5_000
+          throw new Error('OpenCode did not answer POST /api/session/session-1/permission/permission-1/reply within 5 s')
+        }),
+        dispatchPrompt: vi.fn(async () => {
+          source.push(inboxEvent('inbox_enqueued', 'inbox-own', 51), askedPermission('permission-1'))
+          return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+        }),
+      })
+
+      await expect(createAdapter(transport).promptSession(
+        'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+        { autoApprovePermissions: true, onEvent },
+      )).rejects.toThrow('Failed to auto-approve OpenCode permission bash: OpenCode did not answer POST /api/session/session-1/permission/permission-1/reply within 5 s')
+
+      expect(timingEvents(onEvent)).toEqual([expect.objectContaining({
+        details: expect.objectContaining({
+          outcome: 'failed',
+          replyMs: 5_000,
+          totalMs: 5_000,
+          error: 'OpenCode did not answer POST /api/session/session-1/permission/permission-1/reply within 5 s',
+        }),
+      })])
+    })
+  })
+
+  it('records a rejection that a sibling rejection already closed', async () => {
+    const onEvent = vi.fn()
+    const { transport, source, markDispatched } = createV2Transport({
+      replyPermission: vi.fn(async (_sessionId, permissionId) => {
+        if (permissionId === 'sibling') throw Object.assign(new Error('Permission request not found: sibling'), { status: 404 })
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          askedPermission('first', 53),
+          askedPermission('sibling', 54),
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+      { permission: [{ permission: 'bash', pattern: '*', action: 'deny' }], autoApprovePermissions: true, onEvent },
+    )).resolves.toBe('current answer')
+
+    expect(timingEvents(onEvent).map((event) => event.type === 'debug_event' && event.details)).toEqual([
+      expect.objectContaining({ permissionId: 'first', decision: 'reject', outcome: 'confirmed' }),
+      expect.objectContaining({ permissionId: 'sibling', decision: 'reject', outcome: 'already_closed', error: 'Permission request not found: sibling' }),
+    ])
+  })
+})
+
+describe('OpenCode permission reply receipts in the timing line', () => {
+  it('records how many attempts a reply took and how it was confirmed', async () => {
+    const onEvent = vi.fn()
+    const { transport, source } = createV2Transport({
+      replyPermission: vi.fn(async () => ({ attempts: 2, confirmedBy: 'pending_check' as const })),
+      dispatchPrompt: vi.fn(async () => {
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          { event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'permission-1', permission: 'bash' } },
+        )
+        source.fail(new Error('SSE disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: true }
+        if (after === 51) return {
+          events: [executionEvent('execution_started', 52), inboxEvent('inbox_delivered', 'inbox-own', 53), executionEvent('execution_terminal', 54)],
+          cursor: 54,
+          coverageComplete: true,
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+      { autoApprovePermissions: true, onEvent },
+    )
+
+    const timing = onEvent.mock.calls.map(([event]) => event as StreamEvent)
+      .find((event) => event.type === 'debug_event' && event.eventName === 'permission.reply.timing')
+    expect(timing).toMatchObject({ details: { outcome: 'confirmed', attempts: 2, confirmedBy: 'pending_check' } })
+  })
+})
+
+describe('OpenCode prompt preparation retry', () => {
+  const ownTurn = (source: ReturnType<typeof createV2Transport>['source'], markDispatched: () => void) => vi.fn(async () => {
+    markDispatched()
+    source.push(
+      inboxEvent('inbox_enqueued', 'inbox-own', 51),
+      executionEvent('execution_started', 52),
+      inboxEvent('inbox_delivered', 'inbox-own', 53),
+      executionEvent('execution_terminal', 54),
+    )
+    return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+  })
+
+  it('repeats a prompt once when OpenCode timed out before the prompt was sent', async () => {
+    let historyReads = 0
+    const { transport, source, markDispatched } = createV2Transport({
+      readSessionLog: vi.fn(async (_id, after?: number) => {
+        if (after === undefined && ++historyReads === 1) {
+          throw new DOMException('OpenCode v2 event stream connection timed out', 'TimeoutError')
+        }
+        return { events: [], cursor: after ?? 50, coverageComplete: after !== undefined }
+      }),
+    })
+    transport.dispatchPrompt = ownTurn(source, markDispatched)
+    const events: StreamEvent[] = []
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], undefined,
+      { onEvent: (event) => { events.push(event) } },
+    )).resolves.toBe('current answer')
+
+    expect(historyReads).toBe(2)
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'debug_event',
+      eventName: 'prompt.preflight.retry',
+      details: { error: expect.stringContaining('event stream connection timed out') },
+    }))
+  })
+
+  it('does not repeat a deliberate refusal before the prompt was sent', async () => {
+    const { transport } = createV2Transport({
+      readSessionLog: vi.fn(async () => { throw new Error('history unavailable') }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('history unavailable')
+    expect(transport.readSessionLog).toHaveBeenCalledOnce()
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('repeats a prompt once when the model, agent or instruction setup timed out before the prompt POST', async () => {
+    const { transport, markDispatched } = createV2Transport()
+    // One event source per attempt: a source closes for good when its subscriber stops.
+    const sources = [createEventSource(), createEventSource()]
+    let subscriptions = 0
+    transport.subscribeToEvents = vi.fn(async (_sessionId, _directory, signal) => (
+      { events: sources[Math.min(subscriptions++, 1)]!.events(signal), cursor: 50, coverageComplete: true }
+    ))
+    const accepted = ownTurn(sources[1]!, markDispatched)
+    let dispatches = 0
+    transport.dispatchPrompt = vi.fn(async () => {
+      if (++dispatches === 1) throw markPromptNotSent(new DOMException('OpenCode did not answer POST /model within 5 s', 'TimeoutError'))
+      return await accepted()
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not repeat a prompt whose dispatch had started', async () => {
+    const { transport } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => { throw new TypeError('fetch failed') }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow()
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+  })
+
+  it('stops waiting to repeat when the caller cancels', async () => {
+    const controller = new AbortController()
+    const { transport } = createV2Transport({
+      waitForIdle: vi.fn(async () => {
+        realSetTimeout(() => controller.abort(), 10)
+        throw new TypeError('fetch failed')
+      }),
+    })
+
+    await expect(settleWithin(createAdapter(transport).promptSession(
+      'session-1', [{ type: 'text', content: 'prompt' }], controller.signal,
+    ), 'cancelled retry wait')).rejects.toMatchObject({ name: 'AbortError' })
+    expect(transport.waitForIdle).toHaveBeenCalledOnce()
   })
 })

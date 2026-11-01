@@ -9,6 +9,30 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- The Debug log now shows how long each automatic permission approval took, so slow approvals can be traced.
+- Errors from an OpenCode server that answers too slowly now say which request went unanswered and for how long.
+- Tickets no longer stop when OpenCode is slow to confirm a permission approval it already acted on, or when the first prompt waits for OpenCode to start up.
+- The relevant-files scan now explores the repository with read-only file tools instead of shell commands.
+- A council step no longer fails when OpenCode is briefly slow before the prompts go out.
+
+### Added
+
+- **Permission reply timing in the Debug log.** Every automatic permission reply now writes an `opencode.permission.reply.timing` line with the decision, the outcome (`confirmed`, `failed`, or `already_closed`) and the time split three ways: how long LoopTroop held the request before handling it, how long its policy and guard checks took, and how long OpenCode took to accept the reply. A failed reply is logged before the run stops, with the error. The normal log is unchanged.
+
+### Fixed
+
+- **A slow permission confirmation no longer blocks the ticket.** OpenCode acts on LoopTroop's "allow" within about 100 ms but sometimes takes several seconds to confirm it; LoopTroop gave up after 5 s and stopped a healthy run. Each reply now gets 15 s. If that runs out, LoopTroop asks OpenCode whether the request is still waiting: if it is gone, the reply landed and the run continues; if it is still waiting, the reply is sent again, up to three attempts. The check also runs after the last attempt, so a reply that landed on the third try is not reported as failed. The Debug timing line records `attempts` and how the reply was confirmed.
+- **The first prompt after OpenCode starts can wait for it.** OpenCode starts a folder's instance (plugins, model catalog: 6–10 s on a cold server) while the first prompt waits. That prompt now gets the same 180 s allowance as session creation instead of 5 s, which had failed the relevant-files scan and every council vote after a restart.
+- **Saving a file no longer takes the whole dev stack down.** The `npm run dev` watchdog treated the backend as dead after 60 s of silence, but a watch restart can take over two minutes on a loaded machine. Every slow restart then stopped the stack, OpenCode included, and the frontend answered "Backend not ready" until everything came back. The default grace period is now 5 minutes, and `LOOPTROOP_DEV_BACKEND_GRACE_MS` still overrides it.
+- **A briefly slow OpenCode no longer fails a whole council round.** Before sending a prompt, LoopTroop opens the session's event streams, and it gave OpenCode 5 s to start each one. On a busy machine, when 8 council members open their sessions at once, OpenCode has missed that limit while otherwise healthy, so every member failed and the step blocked with "Quorum not met: 0/2". The limit is now 30 s. If OpenCode still times out or drops the connection before the prompt is sent (including while LoopTroop sets the session's model, agent and instructions just before it), LoopTroop waits 2 s and tries that prompt once more. That is safe because the model has not received anything yet. Deliberate refusals, such as another prompt still running in the session, are not repeated, and nothing is repeated once the prompt is on its way. Each retry writes an `opencode.prompt.preflight.retry` line to the Debug log.
+
+### Changed
+
+- **The relevant-files scan is read-only.** It now uses OpenCode's file-reading, search and directory-listing tools, like the other planning steps, instead of shell commands. Its prompt already asked for those tools. With shell commands, each command needed a permission round trip to OpenCode (37 to 65 per scan), and any one of them could stall the scan.
+- **Clearer OpenCode timeout errors.** "OpenCode v2 request timed out" now reads, for example, "OpenCode did not answer POST /api/session/…/prompt within 5 s". A prompt that OpenCode never confirmed now says so in plain words and includes that reason, instead of "OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified." When the relevant-files scan fails and its session cannot be stopped, the error now leads with the scan failure instead of "Could not confirm abort of relevant-files scan session".
+
 ## 0.6.2 (2026-10-30)
 
 

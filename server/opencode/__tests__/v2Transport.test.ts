@@ -432,6 +432,8 @@ describe("OpenCode v2 fetch transport", () => {
       const error = await dispatch;
 
       expect(error).toBeInstanceOf(OpenCodePromptReceiptUnavailableError);
+      // OpenCode may already have the prompt, so it must never count as safe to repeat.
+      expect(isPromptNotSent(error)).toBe(false);
       expect(error.cause).toMatchObject({
         name: "TimeoutError",
         message: "OpenCode did not answer POST /api/session/session%2F1/prompt within 180 s",

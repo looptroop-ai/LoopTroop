@@ -2194,25 +2194,23 @@ describe('PhaseLogPanel', () => {
 
   it('shows near-timeout activity while the viewed phase is the live ticket status', async () => {
     useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false })
-    const logs: LogEntry[] = [
-      makeLog('prompt-live', '[PROMPT] openai/gpt-5-codex prompt #1\nDraft the PRD.', {
-        status: 'DRAFTING_PRD',
-        source: 'model:openai/gpt-5-codex',
-        audience: 'ai',
-        kind: 'prompt',
-        modelId: 'openai/gpt-5-codex',
-        sessionId: 'ses_live_prd',
-        timestamp: new Date(Date.now() - 85_000).toISOString(),
-        timeoutMs: 100_000,
-        deadlineAt: new Date(Date.now() + 15_000).toISOString(),
-        timeoutKind: 'ai_response',
-      }),
-    ]
+    const prompt = makeLog('prompt-live', '[PROMPT] openai/gpt-5-codex prompt #1\nDraft the PRD.', {
+      status: 'DRAFTING_PRD',
+      source: 'model:openai/gpt-5-codex',
+      audience: 'ai',
+      kind: 'prompt',
+      modelId: 'openai/gpt-5-codex',
+      sessionId: 'ses_live_prd',
+      timestamp: new Date(Date.now() - 85_000).toISOString(),
+      timeoutMs: 100_000,
+      deadlineAt: new Date(Date.now() + 15_000).toISOString(),
+      timeoutKind: 'ai_response',
+    })
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
       const url = new URL(String(input), 'http://localhost')
       return createJsonResponse({
-        entries: url.searchParams.get('view') === 'activity' ? [{ ...logs[0], content: logs[0]!.line }] : [],
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
         hasOlder: false,
       })
     })
@@ -2220,7 +2218,7 @@ describe('PhaseLogPanel', () => {
       renderWithTooltipProvider(
         <PhaseLogPanel
           phase="DRAFTING_PRD"
-          logs={logs}
+          logs={[prompt]}
           ticket={{ ...makeTicket(), status: 'DRAFTING_PRD' }}
         />,
       )

@@ -66,9 +66,10 @@ it('reports whether an anchor is on screen', () => {
 
 it('finds the bottom-most visible anchor and ignores hidden or unrelated controls', () => {
   anchorAt(rect(100, 100))
-  const hidden = anchorAt(rect(200, 200))
+  // Lower than every visible anchor, so it would win if zero-size rects counted.
+  const hidden = anchorAt(rect(200, 750))
   hidden.hidden = true
-  hidden.getBoundingClientRect = () => rect(200, 200, 0, 0)
+  hidden.getBoundingClientRect = () => rect(200, 750, 0, 0)
   const lower = anchorAt(rect(300, 600))
   anchorAt(rect(400, 500))
   const unrelated = document.createElement('button')

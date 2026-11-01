@@ -23,6 +23,28 @@ export interface OpenCodePromptRequest {
   tools?: Record<string, boolean>;
 }
 
+const PROMPT_NOT_SENT = Symbol("opencode.promptNotSent");
+
+/**
+ * Marks a dispatch failure that happened before the prompt itself was sent
+ * (v2 model, agent or instruction setup), so the adapter can repeat it.
+ */
+export function markPromptNotSent(error: unknown): unknown {
+  if (error instanceof Object && Object.isExtensible(error)) {
+    Object.defineProperty(error, PROMPT_NOT_SENT, { value: true });
+  }
+  return error;
+}
+
+export function isPromptNotSent(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current instanceof Object && depth < 8; depth++) {
+    if ((current as Record<symbol, unknown>)[PROMPT_NOT_SENT] === true) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export interface PromptReceipt {
   inboxID: string;
 }
@@ -32,12 +54,22 @@ export class OpenCodePromptReceiptUnavailableError extends Error {
     readonly sessionId: string,
     options?: ErrorOptions,
   ) {
+    const cause = options?.cause instanceof Error && options.cause.message
+      ? ` (${options.cause.message})`
+      : "";
     super(
-      "OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.",
+      `OpenCode did not confirm that it received the prompt${cause}, so LoopTroop cannot tell whether the AI started working on it.`,
       options,
     );
     this.name = "OpenCodePromptReceiptUnavailableError";
   }
+}
+
+/** How a v2 permission reply was confirmed, for the Debug log. */
+export interface PermissionReplyReceipt {
+  attempts: number;
+  /** response: OpenCode answered; pending_check / not_found_on_retry: an earlier timed-out attempt had landed. */
+  confirmedBy: "response" | "pending_check" | "not_found_on_retry";
 }
 
 export type PromptDispatch =
@@ -182,7 +214,7 @@ export interface OpenCodeTransport {
     directory?: string,
     signal?: AbortSignal,
     message?: string,
-  ): Promise<void>;
+  ): Promise<PermissionReplyReceipt | void>;
   interruptSession(sessionId: string, directory?: string): Promise<boolean>;
   checkHealth(signal?: AbortSignal): Promise<HealthStatus>;
 }

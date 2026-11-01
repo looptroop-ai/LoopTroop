@@ -17,11 +17,13 @@ import type {
   OpenCodeTransportEvent,
   OpenCodeTransportEventEnvelope,
   OpenCodeSessionLog,
+  PermissionReplyReceipt,
   PromptDispatch,
 } from "./transport";
 import {
   OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS,
   OpenCodePromptReceiptUnavailableError,
+  isPromptNotSent,
 } from "./transport";
 import { OpenCodeV1Transport, type OpenCodeV1Client } from "./v1Transport";
 import { parseModelRef } from "./types";
@@ -33,6 +35,7 @@ import { relative } from "path";
 import { ContainedPathError, resolveContainedPath } from "../lib/containedPath";
 import { readFileNoFollowSync } from "../io/readFile";
 import { pathToFileURL } from "url";
+import { setTimeout as delay } from "node:timers/promises";
 import { logIfVerbose, warnIfVerbose } from "../runtime";
 import { getOpenCodeBaseUrl } from "./runtimeConfig";
 import type { Bead } from "../phases/beads/types";
@@ -235,6 +238,20 @@ function formatBeadContext(bead: Bead): string {
   ].join("\n");
 }
 
+/** Pause before repeating a prompt whose preparation failed, so a busy OpenCode can catch up. */
+export const PROMPT_PREFLIGHT_RETRY_DELAY_MS = 2_000;
+
+/** OpenCode timed out or the connection failed, as opposed to refusing on purpose. */
+function isOpenCodeConnectionFailure(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current instanceof Object && depth < 8; depth++) {
+    if ((current as { name?: unknown }).name === "TimeoutError") return true;
+    if (current instanceof TypeError && current.message === "fetch failed") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export class OpenCodeSDKAdapter implements OpenCodeAdapter {
   private readonly baseUrl: string;
   private readonly injectedV1Client?: OpenCodeV1Client;
@@ -348,6 +365,48 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     parts: PromptPart[],
     signal?: AbortSignal,
     options?: PromptSessionOptions,
+  ): Promise<string> {
+    if (this.activePromptSessions.has(sessionId)) {
+      throw new Error(
+        `OpenCode session ${sessionId} already has a prompt in progress`,
+      );
+    }
+    const promptSignal = options?.signal ?? signal;
+    const firstAttempt = { dispatchStarted: false };
+    try {
+      return await this.promptSessionOnce(sessionId, parts, signal, options, firstAttempt);
+    } catch (error) {
+      // Everything before the dispatch only reads or prepares OpenCode state, so
+      // a timeout or dropped connection there (seen: every council member hit
+      // the stream limit at once on a busy host) is safe to repeat: the model
+      // has not seen the prompt and no work can run twice. Deliberate refusals,
+      // such as another prompt still running in the session, are not repeated.
+      if (
+        (firstAttempt.dispatchStarted && !isPromptNotSent(error)) ||
+        promptSignal?.aborted ||
+        isAbortError(error) ||
+        !isOpenCodeConnectionFailure(error)
+      ) throw error;
+      const reason = getErrorMessage(error);
+      console.warn(`[opencode] Prompt for session ${sessionId} failed before it was sent; trying once more: ${reason}`);
+      options?.onEvent?.({
+        type: "debug_event",
+        sessionId,
+        eventName: "prompt.preflight.retry",
+        summary: `OpenCode failed before the prompt was sent; trying once more: ${reason}`,
+        details: { error: reason },
+      });
+      await delay(PROMPT_PREFLIGHT_RETRY_DELAY_MS, undefined, promptSignal ? { signal: promptSignal } : undefined);
+      return await this.promptSessionOnce(sessionId, parts, signal, options, { dispatchStarted: false });
+    }
+  }
+
+  private async promptSessionOnce(
+    sessionId: string,
+    parts: PromptPart[],
+    signal: AbortSignal | undefined,
+    options: PromptSessionOptions | undefined,
+    attempt: { dispatchStarted: boolean },
   ): Promise<string> {
     if (this.activePromptSessions.has(sessionId)) {
       throw new Error(
@@ -987,7 +1046,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         string,
         { event: StreamEvent; order: number }
       >();
+      // When each permission request first reached LoopTroop, so the debug log can
+      // split a slow auto-approval into LoopTroop's wait and OpenCode's reply time.
+      const permissionObservedAt = new Map<string, number>();
       const replyToPermission = async (streamEvent: StreamEvent) => {
+        const startedAt = Date.now();
         const permissionSessionId = streamEvent.sessionId;
         const permissionKey = streamEvent.type === "permission"
           ? `${permissionSessionId}\u0000${streamEvent.permissionId}`
@@ -1020,6 +1083,34 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const rejectionMessage = guardRejection ?? (deniedByPolicy
           ? `LoopTroop denied the ${streamEvent.permission ?? "tool"} request because this workflow's tool policy does not allow it.`
           : undefined);
+        const decision = rejectionMessage ? "reject" : "once";
+        const observedAt = permissionObservedAt.get(permissionKey) ?? startedAt;
+        permissionObservedAt.delete(permissionKey);
+        const sentAt = Date.now();
+        const reportReplyTiming = (outcome: string, error?: unknown, receipt?: PermissionReplyReceipt) => {
+          const settledAt = Date.now();
+          promptOptions.onEvent?.({
+            type: "debug_event",
+            sessionId: permissionSessionId,
+            eventName: "permission.reply.timing",
+            summary: `Permission ${decision} reply ${outcome} after ${settledAt - observedAt} ms`,
+            details: {
+              permissionId: streamEvent.permissionId,
+              permission: streamEvent.permission,
+              decision,
+              outcome,
+              // waiting before LoopTroop began handling it (v2 holds a request until it can be attributed to this prompt)
+              heldMs: startedAt - observedAt,
+              // LoopTroop's policy and guard checks
+              checkMs: sentAt - startedAt,
+              // OpenCode accepting the reply
+              replyMs: settledAt - sentAt,
+              totalMs: settledAt - observedAt,
+              ...(receipt ? { attempts: receipt.attempts, confirmedBy: receipt.confirmedBy } : {}),
+              ...(error === undefined ? {} : { error: getErrorMessage(error) }),
+            },
+          });
+        };
         const permissionReply = rejectionMessage
           ? transport.replyPermission(
               permissionSessionId,
@@ -1037,7 +1128,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               operationSignal,
             );
         permissionReplyPending = permissionReply
-          .then(() => {
+          .then((receipt) => {
+            reportReplyTiming("confirmed", undefined, receipt ?? undefined);
             if (rejectionMessage) {
               successfullyRejectedPermissionSessions.add(permissionSessionId);
             }
@@ -1047,7 +1139,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
               this.isConfirmedPermissionNotFoundError(error) &&
               Boolean(rejectionMessage) &&
               successfullyRejectedPermissionSessions.has(permissionSessionId)
-            ) return;
+            ) {
+              reportReplyTiming("already_closed", error);
+              return;
+            }
+            reportReplyTiming("failed", error);
             permissionReplyFailure = new Error(
               `Failed to ${rejectionMessage ? "reject" : "auto-approve"} OpenCode permission ${streamEvent.permission ?? streamEvent.permissionId}: ${getErrorMessage(error)}`,
               { cause: error },
@@ -1185,6 +1281,8 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             streamEvent.permissionId &&
             !handledPermissionIds.has(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`)
           ) {
+            const observedKey = `${streamEvent.sessionId}\u0000${streamEvent.permissionId}`;
+            if (!permissionObservedAt.has(observedKey)) permissionObservedAt.set(observedKey, Date.now());
             if (transport.protocol === "v2" || beforeV2Dispatch) {
               pendingPermissionEvents.set(`${streamEvent.sessionId}\u0000${streamEvent.permissionId}`, {
                 event: streamEvent,
@@ -1408,6 +1506,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           ? { tools: promptOptions.tools as Record<string, boolean> }
           : {}),
       };
+      attempt.dispatchStarted = true;
       if (transport.protocol === "v2") v2DispatchStarted = true;
       operation = transport.protocol === "v1"
         ? "sending the prompt or waiting for its response"

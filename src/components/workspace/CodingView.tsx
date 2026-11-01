@@ -43,6 +43,7 @@ import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ExternalFilesBadge } from './ExternalFilesBadge'
+import { BackToBottomAnchor } from './BackToBottomAnchor'
 
 interface CodingViewProps {
   ticket: Ticket
@@ -1635,12 +1636,13 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     <TooltipContent side="left" className="text-xs">Go to top</TooltipContent>
                   </Tooltip>
                 )}
+                <BackToBottomAnchor />
                 {selectedBeadLogEntries.length > 0 && !isAutoScroll && (
                   <Tooltip delayDuration={300}>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        data-lt-back-to-bottom-anchor=""
+                        aria-label="Back to bottom"
                         onClick={() => {
                           enableAutoScroll()
                           scheduleScrollToBottom('smooth')

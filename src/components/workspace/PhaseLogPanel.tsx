@@ -31,6 +31,7 @@ import { AiDetailsSummary } from './AiDetailsSummary'
 import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
 import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
 import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
+import { BackToBottomAnchor } from './BackToBottomAnchor'
 
 interface PhaseLogPanelProps {
   phase: string
@@ -783,12 +784,13 @@ export function PhaseLogPanel({
             <TooltipContent side="left" className="text-xs">Go to top</TooltipContent>
           </Tooltip>
         )}
+        <BackToBottomAnchor />
         {hasLogs && !isAutoScroll && (
           <Tooltip delayDuration={300}>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                data-lt-back-to-bottom-anchor=""
+                aria-label="Back to bottom"
                 onClick={() => {
                   enableAutoScroll()
                   scheduleScrollToBottom('smooth')

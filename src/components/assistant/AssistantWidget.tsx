@@ -204,7 +204,7 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
       aria-controls={panelId}
       onClick={onOpen}
       title="Open assistant"
-      style={launcherPosition ? { left: launcherPosition.left, top: launcherPosition.top } : undefined}
+      style={launcherPosition ? { right: launcherPosition.right, bottom: launcherPosition.bottom } : undefined}
       className={`fixed z-[60] flex items-center justify-center rounded-full border border-border bg-primary-foreground p-2 text-primary shadow-md opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${launcherPosition ? '' : 'bottom-9 right-[72px]'}`}
     >
       <MessageCircle className="h-4 w-4" aria-hidden="true" />

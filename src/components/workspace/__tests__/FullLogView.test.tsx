@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
 import { getLogEntryIdentity } from '@/context/logUtils'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE } from '@/lib/assistantLauncherAnchor'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, TEST, type RuntimeBeadInput } from '@/test/factories'
 import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
@@ -573,6 +574,10 @@ describe('FullLogView', () => {
       makeLog('last', '[SYS] Last', 'CODING'),
     ])
     await renderWithTooltipProvider(<FullLogView />)
+    // The assistant launcher's marker stays mounted whether or not Back to
+    // bottom is showing, so the launcher never moves with the scroll position.
+    const marker = document.querySelector(`[${BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE}]`)
+    expect(marker).not.toBeNull()
 
     const viewport = screen.getByTestId('log-viewport')
     Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 })
@@ -580,9 +585,11 @@ describe('FullLogView', () => {
     viewport.scrollTop = 400
     fireEvent.scroll(viewport)
     scrollTo.mockClear()
+    expect(document.querySelector(`[${BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE}]`)).toBe(marker)
     fireEvent.click(screen.getByRole('button', { name: 'Back to bottom' }))
 
     expect(screen.queryByRole('button', { name: 'Back to bottom' })).not.toBeInTheDocument()
+    expect(document.querySelector(`[${BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE}]`)).toBe(marker)
     expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
     scrollTo.mockRestore()
   })

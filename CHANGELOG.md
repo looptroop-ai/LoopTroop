@@ -12,12 +12,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
-- The assistant button now lines up with the log's **Back to bottom** control and keeps that position across views and window sizes.
+- The assistant button now sits beside the log's **Back to bottom** spot in every log view, stays put whether or not that button is showing, and hides while the chat window is open.
+- Coverage Report pass tabs now share one row with Summary/Raw, and artifact dialogs no longer open with a copy tooltip showing.
 
 ### Fixed
 
-- Keep the assistant launcher immediately left of the visible **Back to bottom** control, centered vertically with a consistent gap, in the phase log, full log, and coding views. It follows the control when the window, log drawer, or navigator resizes, and holds its last position when the control disappears or the reader returns to the dashboard.
-- Keep the Coverage Report's pass selector on the same row as the Summary/Raw switcher instead of stacking two tab rows; when a report has more passes than fit, the selector scrolls sideways rather than running under the switcher. Artifact dialogs also open with focus on the dialog itself, so a contained copy button no longer shows its tooltip before the user hovers anything.
+- Keep the assistant launcher immediately left of where the log's **Back to bottom** button appears, centered vertically with a consistent gap, in the phase log, full log, and coding views. Each view marks that spot with an invisible element that stays mounted, so the launcher does not move when the button appears or disappears with scrolling. It follows the spot when the window, log drawer, or navigator resizes. With no log on screen it keeps its last distance from the window's right and bottom edges, so it stays in its corner when the window grows or shrinks. The launcher hides while the chat window is open and returns, focused, when it closes.
+- Keep the Coverage Report's pass selector on the same row as the Summary/Raw switcher instead of stacking two tab rows; when a report has more passes than fit, the selector scrolls sideways rather than running under the switcher. Artifact dialogs also open with focus on the dialog itself, so a contained copy button no longer shows its tooltip before the user hovers anything, and Shift+Tab from there moves to the dialog's last control.
+- Give the phase-log and bead-log **Back to bottom** buttons an accessible name, as the full log's button already had.
 
 ## 0.6.2 (2026-10-30)
 

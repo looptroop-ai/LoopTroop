@@ -28,6 +28,7 @@ vi.mock('@/components/ui/scroll-area', () => ({
 }))
 
 import { PhaseLogPanel } from '../PhaseLogPanel'
+import { BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE } from '@/lib/assistantLauncherAnchor'
 
 const animationFrames = new Map<number, FrameRequestCallback>()
 let nextAnimationFrameId = 1
@@ -368,6 +369,9 @@ describe('PhaseLogPanel', () => {
 
     expect(screen.getByTestId('virtualized-log-list')).toBeInTheDocument()
     expect(screen.queryAllByText(/Bulk row/).length).toBeLessThan(logs.length)
+    // Following the tail, Back to bottom is hidden but the launcher's marker is not.
+    expect(screen.queryByRole('button', { name: 'Back to bottom' })).not.toBeInTheDocument()
+    expect(document.querySelector(`[${BACK_TO_BOTTOM_ANCHOR_ATTRIBUTE}]`)).not.toBeNull()
   })
 
   it('reveals the initial log page after switching tickets in the same phase', async () => {

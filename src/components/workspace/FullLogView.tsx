@@ -33,6 +33,7 @@ import { useTicketSkips } from '@/hooks/useTicketSkips'
 import { SkipSummary } from './SkipSummary'
 import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
 import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
+import { BackToBottomAnchor } from './BackToBottomAnchor'
 
 type LogTab = 'ALL' | 'SYS' | 'AI' | 'ERROR' | 'DEBUG'
 
@@ -895,13 +896,13 @@ export function FullLogView({ ticket }: FullLogViewProps) {
             </TooltipContent>
           </Tooltip>
         )}
+        <BackToBottomAnchor />
         {hasLogs && !isAutoScroll && (
           <Tooltip delayDuration={300}>
             <TooltipTrigger asChild>
               <button
                 type="button"
                 aria-label="Back to bottom"
-                data-lt-back-to-bottom-anchor=""
                 onClick={handleGoToBottom}
                 className="absolute bottom-4 right-6 p-2 bg-background/30 hover:bg-background/90 backdrop-blur-md border border-border/50 hover:border-border rounded-full shadow-2xs hover:shadow-sm pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-50 hover:opacity-100"
               >

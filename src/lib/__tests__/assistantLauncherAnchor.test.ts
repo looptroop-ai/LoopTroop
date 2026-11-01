@@ -4,14 +4,19 @@ import {
   assistantLauncherPositionForAnchor,
   clampAssistantLauncherPosition,
   findAssistantBackToBottomAnchor,
+  hasBackToBottomAnchors,
   isAssistantBackToBottomAnchorVisible,
+  registerBackToBottomAnchor,
+  subscribeBackToBottomAnchors,
 } from '../assistantLauncherAnchor'
 
+// jsdom's window is 1024 x 768, which findAssistantBackToBottomAnchor reads.
 const viewport = { width: 1024, height: 768 }
 const launcher = { width: 32, height: 32 }
+const unregister: Array<() => void> = []
 
 afterEach(() => {
-  document.body.replaceChildren()
+  unregister.splice(0).forEach(cleanup => cleanup())
   vi.restoreAllMocks()
 })
 
@@ -29,31 +34,31 @@ function rect(left: number, top: number, width = 32, height = 32): DOMRect {
   } as DOMRect
 }
 
-function anchorAt(rectValue: DOMRect): HTMLButtonElement {
-  const button = document.createElement('button')
-  button.setAttribute('data-lt-back-to-bottom-anchor', '')
-  button.getBoundingClientRect = () => rectValue
-  document.body.append(button)
-  return button
+function anchorAt(rectValue: DOMRect): HTMLSpanElement {
+  const marker = document.createElement('span')
+  marker.getBoundingClientRect = () => rectValue
+  unregister.push(registerBackToBottomAnchor(marker)!)
+  return marker
 }
 
 it('places the launcher one gap to the left of the anchor and centers it vertically', () => {
+  // Launcher left edge = 800 - gap - 32, so its right edge sits gap px left of the anchor.
   expect(assistantLauncherPositionForAnchor(rect(800, 700), launcher, viewport)).toEqual({
-    left: 800 - ASSISTANT_LAUNCHER_GAP_PX - launcher.width,
-    top: 700,
+    right: 1024 - 800 + ASSISTANT_LAUNCHER_GAP_PX,
+    bottom: 768 - 700 - 32,
   })
 })
 
 it('centers the launcher against anchors of other sizes', () => {
   expect(assistantLauncherPositionForAnchor(rect(800, 700, 32, 48), launcher, viewport)).toEqual({
-    left: 800 - ASSISTANT_LAUNCHER_GAP_PX - launcher.width,
-    top: 708,
+    right: 1024 - 800 + ASSISTANT_LAUNCHER_GAP_PX,
+    bottom: 768 - 708 - 32,
   })
 })
 
 it('keeps a clamped launcher inside the viewport and its margin', () => {
-  expect(clampAssistantLauncherPosition({ left: -20, top: 900 }, launcher, viewport)).toEqual({ left: 4, top: 732 })
-  expect(clampAssistantLauncherPosition({ left: 2000, top: -40 }, launcher, viewport)).toEqual({ left: 988, top: 4 })
+  expect(clampAssistantLauncherPosition({ right: -20, bottom: 900 }, launcher, viewport)).toEqual({ right: 4, bottom: 732 })
+  expect(clampAssistantLauncherPosition({ right: 2000, bottom: -40 }, launcher, viewport)).toEqual({ right: 988, bottom: 4 })
 })
 
 it('reports whether an anchor is on screen', () => {
@@ -64,19 +69,27 @@ it('reports whether an anchor is on screen', () => {
   expect(isAssistantBackToBottomAnchorVisible(rect(20, 20, 0, 32), viewport)).toBe(false)
 })
 
-it('finds the bottom-most visible anchor and ignores hidden or unrelated controls', () => {
+it('finds the bottom-most visible anchor and ignores hidden or unregistered elements', () => {
   anchorAt(rect(100, 100))
   // Lower than every visible anchor, so it would win if zero-size rects counted.
-  const hidden = anchorAt(rect(200, 750))
-  hidden.hidden = true
-  hidden.getBoundingClientRect = () => rect(200, 750, 0, 0)
+  anchorAt(rect(200, 750, 0, 0))
   const lower = anchorAt(rect(300, 600))
   anchorAt(rect(400, 500))
-  const unrelated = document.createElement('button')
-  unrelated.getBoundingClientRect = () => rect(900, 700)
-  document.body.append(unrelated)
+  const unregistered = document.createElement('span')
+  unregistered.getBoundingClientRect = () => rect(900, 700)
+  document.body.append(unregistered)
 
   expect(findAssistantBackToBottomAnchor()).toBe(lower)
+  unregistered.remove()
+})
+
+it('skips an anchor the browser reports as not visible', () => {
+  const visible = anchorAt(rect(300, 600))
+  // Lower, so it would win if checkVisibility were ignored.
+  const hidden = anchorAt(rect(300, 700))
+  hidden.checkVisibility = () => false
+
+  expect(findAssistantBackToBottomAnchor()).toBe(visible)
 })
 
 it('prefers the right-most control when two share the same bottom edge', () => {
@@ -91,4 +104,23 @@ it('returns null when no anchor is visible', () => {
   expect(findAssistantBackToBottomAnchor()).toBeNull()
   anchorAt(rect(10, -80))
   expect(findAssistantBackToBottomAnchor()).toBeNull()
+})
+
+it('notifies subscribers when a marker mounts and unmounts', () => {
+  const listener = vi.fn()
+  const unsubscribe = subscribeBackToBottomAnchors(listener)
+  expect(registerBackToBottomAnchor(null)).toBeUndefined()
+  expect(listener).not.toHaveBeenCalled()
+
+  const cleanup = registerBackToBottomAnchor(document.createElement('span'))!
+  expect(listener).toHaveBeenCalledTimes(1)
+  expect(hasBackToBottomAnchors()).toBe(true)
+
+  cleanup()
+  expect(listener).toHaveBeenCalledTimes(2)
+  expect(hasBackToBottomAnchors()).toBe(false)
+
+  unsubscribe()
+  registerBackToBottomAnchor(document.createElement('span'))!()
+  expect(listener).toHaveBeenCalledTimes(2)
 })

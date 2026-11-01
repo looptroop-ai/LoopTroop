@@ -38,6 +38,13 @@ function makePrompt(overrides: Partial<LogEntry> = {}): LogEntry {
   })
 }
 
+function makeSessionEvent(id: string, line: string, offsetMs: number, overrides: Partial<LogEntry> = {}): LogEntry {
+  return makeLog(id, line, {
+    source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'session',
+    sessionId: 'ses_waiting', timestamp: timestamp(offsetMs), ...overrides,
+  })
+}
+
 describe('deriveCurrentActivity', () => {
   it('shows waiting elapsed time after a prompt with no later activity', () => {
     const activity = deriveCurrentActivity([makePrompt()], BASE_TIME_MS + 72_000)
@@ -533,7 +540,9 @@ describe('current warning attribution and lifecycle', () => {
     [0, 1, 2], [2, 0, 1], [1, 2, 0], [2, 1, 0], [1, 0, 2], [0, 2, 1],
   ])('sorts mixed restored/live evidence before finding events: %s %s %s', (a, b, c) => {
     const entries = [makePrompt(), result('ses_waiting', 0), result('ses_waiting', 12, { timestamp: timestamp(5_000) })]
-    expect(deriveCurrentActivities([entries[a]!, entries[b]!, entries[c]!])).toEqual([])
+    const [first, second, third] = [entries[a], entries[b], entries[c]]
+    if (!first || !second || !third) throw new Error('Expected all mixed evidence entries')
+    expect(deriveCurrentActivities([first, second, third])).toEqual([])
   })
 
   it.each(['Late narration', '   '])('requires a successful result to resolve empty output, even with late text: %j', content => {
@@ -613,23 +622,14 @@ describe('current warning attribution and lifecycle', () => {
 
   it('clears provider retrying when OpenCode resumes a busy session', () => {
     expect(deriveCurrentActivity([
-      makePrompt(), makeLog('retry', 'Session retry #1: rate limited', {
-        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'session',
-        sessionId: 'ses_waiting', timestamp: timestamp(1_000),
-      }),
-      makeLog('busy', 'Session status: busy', {
-        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'session',
-        sessionId: 'ses_waiting', timestamp: timestamp(2_000),
-      }),
+      makePrompt(), makeSessionEvent('retry', 'Session retry #1: rate limited', 1_000),
+      makeSessionEvent('busy', 'Session status: busy', 2_000),
     ])?.kind).toBe('waiting_first_model_activity')
   })
 
   it('shows a current provider retry even after earlier activity', () => {
     expect(deriveCurrentActivity([
-      makePrompt(), text(), makeLog('retry', 'Session retry #1: rate limited', {
-        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'session',
-        sessionId: 'ses_waiting', timestamp: timestamp(6_000),
-      }),
+      makePrompt(), text(), makeSessionEvent('retry', 'Session retry #1: rate limited', 6_000),
     ])?.label).toBe('Provider retrying')
   })
 
@@ -778,14 +778,8 @@ error: ${message}`, {
 
   it('does not let quoted completion text end a turn before its subsequent provider retry', () => {
     expect(deriveCurrentActivity([
-      makePrompt(), makeLog('quoted', 'AI session completed', {
-        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'text',
-        sessionId: 'ses_waiting', timestamp: timestamp(1_000),
-      }),
-      makeLog('retry', 'Session retry #1: provider unavailable.', {
-        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'error',
-        sessionId: 'ses_waiting', timestamp: timestamp(2_000),
-      }),
+      makePrompt(), makeSessionEvent('quoted', 'AI session completed', 1_000, { kind: 'text' }),
+      makeSessionEvent('retry', 'Session retry #1: provider unavailable.', 2_000, { kind: 'error' }),
     ])?.kind).toBe('provider_retrying')
   })
 

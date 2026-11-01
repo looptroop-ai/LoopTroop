@@ -1209,9 +1209,11 @@ describe('FullLogView', () => {
       const activityRequests = fetchSpy.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
         .filter(url => url.searchParams.get('view') === 'activity')
       expect(activityRequests).toHaveLength(1)
-      expect(activityRequests[0]!.searchParams.get('scope')).toBe('phase')
-      expect(activityRequests[0]!.searchParams.get('phase')).toBe('CODING')
-      expect(activityRequests[0]!.searchParams.get('phaseAttempt')).toBe('2')
+      const [activityRequest] = activityRequests
+      if (!activityRequest) throw new Error('Expected one activity request')
+      expect(activityRequest.searchParams.get('scope')).toBe('phase')
+      expect(activityRequest.searchParams.get('phase')).toBe('CODING')
+      expect(activityRequest.searchParams.get('phaseAttempt')).toBe('2')
     } finally {
       fetchSpy.mockRestore()
     }

@@ -63,8 +63,8 @@ export function useCurrentActivityEvidence({
   }, [activityEnabled, activityLogs.hasOlder, activityLogs.isError, fetchAllOlder])
 
   useEffect(() => {
-    if (!activityEnabled || !activityLogs.isSuccess || activityLogs.isFetching || activityLogs.hasOlder || activityLogs.isError) return
-    setCompleteEvidence({ scopeKey: scopeKey!, entries: activityLogs.entries })
+    if (!activityEnabled || !scopeKey || !activityLogs.isSuccess || activityLogs.isFetching || activityLogs.hasOlder || activityLogs.isError) return
+    setCompleteEvidence({ scopeKey, entries: activityLogs.entries })
   }, [activityEnabled, activityLogs.entries, activityLogs.hasOlder, activityLogs.isError, activityLogs.isFetching, activityLogs.isSuccess, scopeKey])
 
   const readyEvidence = scopeKey && completeEvidence?.scopeKey === scopeKey ? completeEvidence : null

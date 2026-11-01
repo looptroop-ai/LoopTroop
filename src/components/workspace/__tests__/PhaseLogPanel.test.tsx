@@ -72,6 +72,13 @@ function makeLog(id: string, line: string, overrides: Partial<LogEntry> = {}): L
   }
 }
 
+function makeActivityPrompt(phaseAttempt = 2): LogEntry {
+  return makeLog('active-prompt', '[PROMPT] Draft questions.', {
+    kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+    sessionId: 'ses_current', phaseAttempt,
+  })
+}
+
 function makeTicket(runtimeOverrides: Omit<Partial<Ticket['runtime']>, 'beads'> & { beads?: RuntimeBeadInput[] } = {}): Ticket {
   const defaultRuntime: Ticket['runtime'] = {
     baseBranch: 'main',
@@ -1880,10 +1887,7 @@ describe('PhaseLogPanel', () => {
 
   it('restores current activity independently of the selected log filter', async () => {
     useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true })
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 2,
-    })
+    const prompt = makeActivityPrompt()
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
       const url = new URL(String(input), 'http://localhost')
       return createJsonResponse({
@@ -1901,8 +1905,10 @@ describe('PhaseLogPanel', () => {
       const activityRequests = fetchSpy.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
         .filter(url => url.searchParams.get('view') === 'activity')
       expect(activityRequests).toHaveLength(1)
-      expect(activityRequests[0]!.searchParams.get('phaseAttempt')).toBe('2')
-      expect(activityRequests[0]!.searchParams.get('limit')).toBe('200')
+      const [activityRequest] = activityRequests
+      if (!activityRequest) throw new Error('Expected one activity request')
+      expect(activityRequest.searchParams.get('phaseAttempt')).toBe('2')
+      expect(activityRequest.searchParams.get('limit')).toBe('200')
     } finally {
       fetchSpy.mockRestore()
     }
@@ -1931,10 +1937,7 @@ describe('PhaseLogPanel', () => {
   })
 
   it('does not infer a current attempt from an empty or archived-only list', () => {
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 1,
-    })
+    const prompt = makeActivityPrompt(1)
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))
     try {
       useTicketPhaseAttemptsMock.mockReturnValue({ data: [], isSuccess: true, isFetching: false })
@@ -1958,10 +1961,7 @@ describe('PhaseLogPanel', () => {
   })
 
   it('loads current activity for the server-synthesized active attempt 1', async () => {
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 1,
-    })
+    const prompt = makeActivityPrompt(1)
     useTicketPhaseAttemptsMock.mockReturnValue({
       data: [{
         ticketId: 'ticket-1',
@@ -1994,10 +1994,7 @@ describe('PhaseLogPanel', () => {
 
   it('keeps completed activity visible through a same-scope refresh and pagination', async () => {
     useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 2,
-    })
+    const prompt = makeActivityPrompt()
     let activityRequests = 0
     let resolveOlder!: (response: Response) => void
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
@@ -2066,10 +2063,7 @@ describe('PhaseLogPanel', () => {
     useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
     let resolveOlder!: (response: Response) => void
     const olderResponse = new Promise<Response>(resolve => { resolveOlder = resolve })
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 2,
-    })
+    const prompt = makeActivityPrompt()
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
       const url = new URL(String(input), 'http://localhost')
       if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
@@ -2087,61 +2081,36 @@ describe('PhaseLogPanel', () => {
     }
   })
 
-  it('shows a retryable notice when an older activity page fails', async () => {
+  it.each([true, false])('keeps an older activity page failure retryable (retry recovers: %s)', async recovers => {
     useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 2,
-    })
+    const prompt = makeActivityPrompt()
     let olderRequests = 0
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
       const url = new URL(String(input), 'http://localhost')
       if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
       if (url.searchParams.has('before')) {
         olderRequests += 1
-        return olderRequests === 1
-          ? createJsonResponse({ error: 'older page unavailable' }, 503)
-          : createJsonResponse({ entries: [], hasOlder: false })
+        return recovers && olderRequests > 1
+          ? createJsonResponse({ entries: [], hasOlder: false })
+          : createJsonResponse({ error: `older page failure ${olderRequests}` }, 503)
       }
       return createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: true, olderCursor: 'older-activity' })
     })
     try {
       renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
       expect(await screen.findByRole('alert')).toHaveTextContent('Complete current phase activity could not be loaded.')
+      expect(screen.getByRole('alert')).toHaveTextContent('older page failure 1')
       expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
-      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
-      expect(olderRequests).toBeGreaterThanOrEqual(2)
-    } finally {
-      fetchSpy.mockRestore()
-    }
-  })
-
-  it('keeps pagination errors visible and retryable when a retry fails again', async () => {
-    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 2,
-    })
-    let olderRequests = 0
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
-      if (url.searchParams.has('before')) {
-        olderRequests += 1
-        return createJsonResponse({ error: `older page failure ${olderRequests}` }, 503)
-      }
-      return createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: true, olderCursor: 'older-activity' })
-    })
-    try {
-      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
-      expect(await screen.findByRole('alert')).toHaveTextContent('older page failure 1')
       const retry = screen.getByRole('button', { name: 'Retry' })
       fireEvent.click(retry)
       await waitFor(() => expect(olderRequests).toBeGreaterThanOrEqual(2))
-      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('older page failure 2'))
-      expect(retry).toBeEnabled()
-      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      if (recovers) {
+        expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      } else {
+        await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('older page failure 2'))
+        expect(retry).toBeEnabled()
+        expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      }
     } finally {
       fetchSpy.mockRestore()
     }
@@ -2149,10 +2118,7 @@ describe('PhaseLogPanel', () => {
 
   it('shows a retryable notice and suppresses supplied logs when activity evidence fails', async () => {
     useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
-    const prompt = makeLog('active-prompt', '[PROMPT] Draft questions.', {
-      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
-      sessionId: 'ses_current', phaseAttempt: 2,
-    })
+    const prompt = makeActivityPrompt()
     let activityRequests = 0
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
       const url = new URL(String(input), 'http://localhost')

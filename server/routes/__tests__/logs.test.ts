@@ -637,7 +637,8 @@ describe('ticket log projection API', () => {
 
   it('pages compact activity evidence across channels without changing source log content', async () => {
     const { ticket } = createLogTestTicket()
-    const paths = getTicketPaths(ticket.id)!
+    const paths = getTicketPaths(ticket.id)
+    if (!paths) throw new Error('Expected ticket paths for the test ticket')
     const fields = { phaseAttempt: 2, modelId: 'test/model', sessionId: 'session-activity' }
     const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
     const prompt = '[PROMPT] test/model prompt #1\n' + 'prompt body '.repeat(100)
@@ -720,7 +721,9 @@ describe('ticket log projection API', () => {
     expect(entries.filter(entry => entry.entryId !== 'orphan-detail')
       .every(entry => entry.modelId === fields.modelId && entry.sessionId === fields.sessionId)).toBe(true)
     expect(entries.at(-1)?.sessionId).toBeUndefined()
-    expect(entries[0]!.content).toBe(prompt.slice(0, 256))
+    const firstEntry = entries.at(0)
+    if (!firstEntry) throw new Error('Expected activity entries')
+    expect(firstEntry.content).toBe(prompt.slice(0, 256))
     expect(entries.find(entry => entry.entryId === 'activity-continuation')?.content).toBe(continuation.slice(0, 256))
     expect(entries.map(entry => entry.entryId)).not.toContain('failed-command')
     expect(entries.map(entry => entry.entryId)).not.toContain('activity-middle-detail')
@@ -759,7 +762,9 @@ describe('ticket log projection API', () => {
     const newest = await queryLogPage(ticket.id, query)
     expect(newest?.entries.map(entry => entry.content)).toEqual(['next prompt'])
     expect(newest?.hasOlder).toBe(true)
-    const older = await queryLogPage(ticket.id, { ...query, before: newest!.olderCursor! })
+    const cursor = newest?.olderCursor
+    if (!cursor) throw new Error('Expected a cursor for the older activity page')
+    const older = await queryLogPage(ticket.id, { ...query, before: cursor })
     expect(older?.entries.map(entry => entry.content)).toEqual(['prior idle'])
     expect(older?.hasOlder).toBe(false)
   })
@@ -767,7 +772,8 @@ describe('ticket log projection API', () => {
   it('uses the ticket/phase/attempt index for activity candidate scans', async () => {
     const { ticket, repoDir } = createLogTestTicket()
     await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', phaseAttempt: 1, view: 'activity', limit: 1 })
-    const context = getTicketContext(ticket.id)!
+    const context = getTicketContext(ticket.id)
+    if (!context) throw new Error('Expected ticket context')
     const plan = getProjectDatabase(repoDir).sqlite.prepare(`
       EXPLAIN QUERY PLAN
       SELECT p.identity FROM execution_log_projection AS p

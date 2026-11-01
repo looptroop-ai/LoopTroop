@@ -1262,6 +1262,7 @@ export async function draftPRD(
           const result = validatePrdDraft(content, {
             ticketId: options.ticketExternalId ?? options.ticketId ?? '',
             interviewContent: resolvedInterviewContent,
+            repoRoot: projectPath,
           })
           return {
             normalizedContent: result.normalizedContent,

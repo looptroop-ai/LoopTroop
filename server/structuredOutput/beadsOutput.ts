@@ -27,13 +27,29 @@ import { takeRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
 import { isBeadTargetFile } from '@shared/beadTargets'
-import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { z } from 'zod'
+import {
+  commandSpecSchema,
+  renderCommandSpec,
+  repairCommandSpecShape,
+  type CommandSpec,
+  type CommandSpecRepairOptions,
+} from '@shared/commandSpec'
 
-function normalizeCommandSpecs(value: unknown, label: string): CommandSpec[] {
+function normalizeCommandSpecs(
+  value: unknown,
+  label: string,
+  repairWarnings: string[],
+  commandOptions: CommandSpecRepairOptions,
+): CommandSpec[] {
   if (!Array.isArray(value)) throw new Error(`${label} is missing the testCommands list`)
   return value.map((command, index) => {
-    const parsed = commandSpecSchema.safeParse(command)
-    if (!parsed.success) throw new Error(`${label} contains an invalid test command (expected a structured CommandSpec) at index ${index}`)
+    const repaired = repairCommandSpecShape(command, commandOptions)
+    const parsed = commandSpecSchema.safeParse(repaired.value)
+    if (!parsed.success) {
+      throw new Error(`${label} contains an invalid test command (expected a structured CommandSpec) at testCommands[${index}]:\n${z.prettifyError(parsed.error)}`)
+    }
+    for (const warning of repaired.warnings) repairWarnings.push(`${label} testCommands[${index}]: ${warning}`)
     return parsed.data
   })
 }
@@ -184,7 +200,12 @@ function normalizeDependencies(value: unknown): BeadDependencies {
   return { blocked_by: [], blocks: [] }
 }
 
-function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings: string[]): BeadSubset {
+function normalizeBeadSubsetEntry(
+  value: unknown,
+  index: number,
+  repairWarnings: string[],
+  commandOptions: CommandSpecRepairOptions,
+): BeadSubset {
   if (!isRecord(value)) throw new Error(`Bead at index ${index} is not an object`)
 
   const idValue = getValueByAliases(value, ['id', 'beadid', 'bead_id'])
@@ -193,7 +214,7 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
     : `bead-${index + 1}`
 
   const testCommandsValue = getValueByAliases(value, ['testCommands', 'test_commands', 'commands'])
-  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead ${id}`)
+  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead ${id}`, repairWarnings, commandOptions)
   const testCommandReasonValue = getValueByAliases(value, ['testCommandReason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead ${id} contains an invalid testCommandReason`)
@@ -235,6 +256,7 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
 export function normalizeBeadSubsetYamlOutput(
   rawContent: string,
   losingDraftMeta?: Array<{ memberId: string }>,
+  commandOptions: CommandSpecRepairOptions = {},
 ): StructuredOutputResult<BeadSubset[] & { changes?: RefinementChange[] }> {
   const repairWarnings: string[] = []
   const candidates = collectStructuredCandidates(rawContent, {
@@ -276,7 +298,7 @@ export function normalizeBeadSubsetYamlOutput(
         throw new Error('Bead subset output is empty')
       }
 
-      const subsets = entries.map((entry, index) => normalizeBeadSubsetEntry(entry, index, candidateWarnings))
+      const subsets = entries.map((entry, index) => normalizeBeadSubsetEntry(entry, index, candidateWarnings, commandOptions))
 
       // Detect and repair duplicate bead IDs
       const seenIds = new Set<string>()
@@ -427,9 +449,10 @@ export function normalizeBeadRefinementOutput(
   rawContent: string,
   winnerDraftContent: string,
   losingDraftMeta?: Array<{ memberId: string; content?: string }>,
+  commandOptions: CommandSpecRepairOptions = {},
 ): StructuredOutputResult<ValidatedBeadRefinementResult> {
   // Step 1: Parse the refined output using existing normalizer
-  const refinedResult = normalizeBeadSubsetYamlOutput(rawContent, losingDraftMeta)
+  const refinedResult = normalizeBeadSubsetYamlOutput(rawContent, losingDraftMeta, commandOptions)
   if (!refinedResult.ok) {
     return refinedResult as StructuredOutputResult<ValidatedBeadRefinementResult>
   }
@@ -440,7 +463,7 @@ export function normalizeBeadRefinementOutput(
     : []
 
   // Step 2: Parse the winner draft
-  const winnerResult = normalizeBeadSubsetYamlOutput(winnerDraftContent)
+  const winnerResult = normalizeBeadSubsetYamlOutput(winnerDraftContent, undefined, commandOptions)
   if (!winnerResult.ok) {
     // Every consumer cross-validates the refined beads against the winner, so
     // accepting raw changes here published an unchecked change list as valid.
@@ -820,7 +843,12 @@ function normalizeBeadIteration(value: unknown, label: string, repairWarnings: s
   return 1
 }
 
-function normalizeBeadRecord(value: unknown, index: number, repairWarnings: string[]): Bead {
+function normalizeBeadRecord(
+  value: unknown,
+  index: number,
+  repairWarnings: string[],
+  commandOptions: CommandSpecRepairOptions,
+): Bead {
   if (!isRecord(value)) throw new Error(`Bead JSONL entry at index ${index} is not an object`)
 
   const rawTargetFiles = getValueByAliases(value, ['targetFiles', 'target_files'])
@@ -843,7 +871,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
   const status = normalizeBeadStatus(getValueByAliases(value, ['status']), `Bead at index ${index}`, repairWarnings)
 
   const testCommandsValue = getValueByAliases(value, ['testCommands', 'test_commands'])
-  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`)
+  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`, repairWarnings, commandOptions)
   const testCommandReasonValue = getValueByAliases(value, ['testCommandReason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead at index ${index} contains an invalid testCommandReason`)
@@ -897,7 +925,10 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
   return bead
 }
 
-export function normalizeBeadsJsonlOutput(rawContent: string): StructuredOutputResult<Bead[]> {
+export function normalizeBeadsJsonlOutput(
+  rawContent: string,
+  commandOptions: CommandSpecRepairOptions = {},
+): StructuredOutputResult<Bead[]> {
   // One shared array reported the repairs attempted on a rejected candidate
   // against whichever candidate eventually validated, so keep them per candidate
   // and carry only the last one's forward for the failure message.
@@ -913,7 +944,7 @@ export function normalizeBeadsJsonlOutput(rawContent: string): StructuredOutputR
       const parsedEntries = parseJsonLines(candidate)
       if (parsedEntries.length === 0) throw new Error('Beads JSONL output is empty')
 
-      const beads = parsedEntries.map((entry, index) => normalizeBeadRecord(entry, index, candidateWarnings))
+      const beads = parsedEntries.map((entry, index) => normalizeBeadRecord(entry, index, candidateWarnings, commandOptions))
       const beadIds = new Set<string>()
       for (const bead of beads) {
         if (beadIds.has(bead.id)) throw new Error(`Duplicate bead id: ${bead.id}`)

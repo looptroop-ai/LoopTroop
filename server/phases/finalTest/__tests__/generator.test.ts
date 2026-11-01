@@ -367,4 +367,30 @@ describe('generateFinalTests', () => {
       vi.useRealTimers()
     }
   })
+
+  it.each([['initial prompt', 1], ['structured retry', 2]] as const)(
+    'repairs a command cwd written as the absolute worktree path (%s)', async (_stage, acceptedOnPrompt) => {
+      const adapter = new SequencedMockOpenCodeAdapter()
+      if (acceptedOnPrompt === 2) adapter.mockResponses.set('mock-session-1#1', 'I added tests to cover the whole ticket.')
+      adapter.mockResponses.set(`mock-session-1#${acceptedOnPrompt}`, [
+        '<FINAL_TEST_COMMANDS>',
+        JSON.stringify({
+          commands: [{ mode: 'process', program: 'npm', args: ['test'], cwd: '/tmp/test/packages/app', env: {} }],
+          summary: 'verify the ticket',
+        }),
+        '</FINAL_TEST_COMMANDS>',
+      ].join('\n'))
+
+      const result = await generateFinalTests(
+        adapter,
+        [{ type: 'text', content: 'Ticket context' }],
+        '/tmp/test',
+      )
+
+      expect(result.commandPlan.errors).toEqual([])
+      expect(result.commandPlan.commands[0]?.cwd).toBe('packages/app')
+      // Accepted on this prompt itself, not rescued by a later structured retry.
+      expect(result.structuredOutput.autoRetryCount).toBe(acceptedOnPrompt - 1)
+    },
+  )
 })

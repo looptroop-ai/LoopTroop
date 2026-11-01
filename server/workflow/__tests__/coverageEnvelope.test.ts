@@ -39,10 +39,13 @@ function envelope(overrides: Partial<CoverageResultEnvelope> = {}): CoverageResu
 const repoManager = createTestRepoManager('verification-coverage-extra-fix')
 const coverageGap = 'Document the expected behavior when coverage retries are exhausted.'
 
-function buildCoverageRevision(candidateContent: string, gap: string, changed: boolean): string {
+type StoryCommands = Array<{ user_stories: Array<{ verification: { required_commands: Array<{ cwd: string }> } }> }>
+
+function buildCoverageRevision(candidateContent: string, gap: string, changed: boolean, commandCwd?: string): string {
   const document = jsYaml.load(candidateContent) as Record<string, unknown>
   const epics = document.epics as Array<Record<string, unknown>>
   const epic = epics[0]!
+  if (commandCwd) (epics as StoryCommands)[0]!.user_stories[0]!.verification.required_commands[0]!.cwd = commandCwd
   const beforeTitle = String(epic.title)
   const afterTitle = changed ? `${beforeTitle} with retry exhaustion behavior` : beforeTitle
 
@@ -293,12 +296,13 @@ describe('coverage integration recovery paths', () => {
     })
   })
 
-  it('persists a changed candidate when its follow-up audit still finds gaps and honors locked model variants', async () => {
+  it('persists a changed candidate when its follow-up audit still finds gaps and honors locked model variants, repairing an absolute command cwd', async () => {
     const { ticket, context, paths, candidate, winnerId } = await setupPrdCoverage({ lockedMainImplementer: TEST.councilMembers[0] })
     runOpenCodePromptMock
       .mockResolvedValueOnce({
         session: { id: 'prd-extra-fix-still-gaps-revision', projectPath: paths.worktreePath },
-        response: buildCoverageRevision(candidate, coverageGap, true),
+        // Accepted only when the worktree reaches the revision parser as the repair root.
+        response: buildCoverageRevision(candidate, coverageGap, true, `${paths.worktreePath}/packages/app`),
         messages: [],
       })
       .mockResolvedValueOnce({
@@ -332,7 +336,13 @@ describe('coverage integration recovery paths', () => {
       source: 'ai_fix_button',
       extraFixNumber: 1,
     })
-    expect(readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')).toContain('with retry exhaustion behavior')
+    const revisedPrd = readFileSync(`${paths.ticketDir}/prd.yaml`, 'utf-8')
+    expect(revisedPrd).toContain('with retry exhaustion behavior')
+    const revisedEpics = (jsYaml.load(revisedPrd) as { epics: StoryCommands }).epics
+    expect(revisedEpics[0]!.user_stories[0]!.verification.required_commands[0]!.cwd).toBe('packages/app')
+    // Accepted on the first answer: a structured retry must not mask a missing root.
+    expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage_revision', 'WAITING_PRD_APPROVAL')!.content).rawAttempts)
+      .toEqual([expect.objectContaining({ attempt: 1, outcome: 'accepted' })])
     expect(JSON.parse(getLatestPhaseArtifact(ticket.id, 'prd_coverage', 'WAITING_PRD_APPROVAL')!.content)).toMatchObject({
       status: 'gaps',
       finalCandidateVersion: 2,

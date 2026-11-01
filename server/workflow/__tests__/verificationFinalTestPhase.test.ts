@@ -369,7 +369,7 @@ describe("handleFinalTest", () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: "TESTS_PASSED" });
   });
 
-  it("reuses the final-test session once to classify an unknown untracked file", async () => {
+  it("reuses the final-test session once to classify an unknown untracked file, repairing an absolute command cwd", async () => {
     const { ticket, context, paths } = await createInitializedTestTicket(
       repoManager,
       {
@@ -425,10 +425,16 @@ describe("handleFinalTest", () => {
         };
       },
     );
+    // The retry writes its command `cwd` as the absolute worktree path; the
+    // parse only accepts it when the worktree is passed as the repair root.
     runOpenCodeSessionPromptMock.mockResolvedValueOnce({
       session: { id: "final-test-session" },
-      response:
-        '<FINAL_TEST_COMMANDS>{"commands":["true"],"test_files":["diagnostics/final-output.txt"],"modified_files":["diagnostics/final-output.txt"],"file_effects":[{"path":"diagnostics/final-output.txt","intent":"candidate"}]}</FINAL_TEST_COMMANDS>',
+      response: `<FINAL_TEST_COMMANDS>${JSON.stringify({
+        commands: [{ mode: "process", program: "true", args: [], cwd: paths.worktreePath, env: {} }],
+        test_files: ["diagnostics/final-output.txt"],
+        modified_files: ["diagnostics/final-output.txt"],
+        file_effects: [{ path: "diagnostics/final-output.txt", intent: "candidate" }],
+      })}</FINAL_TEST_COMMANDS>`,
       messages: [],
     });
 
@@ -440,6 +446,7 @@ describe("handleFinalTest", () => {
       new AbortController().signal,
     );
 
+    expect(runOpenCodeSessionPromptMock).toHaveBeenCalledTimes(1);
     expect(runOpenCodeSessionPromptMock).toHaveBeenCalledWith(
       expect.objectContaining({
         session: { id: "final-test-session" },

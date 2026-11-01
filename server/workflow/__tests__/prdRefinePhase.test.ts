@@ -519,6 +519,51 @@ describe('handlePrdRefine', () => {
     return { ticket, context, paths, winnerId, interviewContent, fullAnswersContent, winnerDraftContent, refinement }
   }
 
+  it('repairs a refined required command cwd written as the absolute worktree path', async () => {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
+    const winnerId = TEST.councilMembers[0]
+    const interviewContent = makeInterviewYaml({ ticket_id: ticket.externalId })
+    writeFileSync(`${paths.ticketDir}/interview.yaml`, interviewContent, 'utf-8')
+    const refined = jsYaml.load(buildValidRefinementOutput(ticket.externalId)) as {
+      epics: Array<{ user_stories: Array<{ verification: { required_commands: unknown[] } }> }>
+    }
+    refined.epics[0]!.user_stories[0]!.verification.required_commands = [
+      { mode: 'process', program: 'npm', args: ['test'], cwd: `${paths.worktreePath}/packages/app`, env: {} },
+    ]
+    const refinedOutput = jsYaml.dump(refined, { lineWidth: 120, noRefs: true })
+
+    phaseIntermediate.set(`${ticket.id}:prd`, {
+      phase: 'prd',
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [
+        { memberId: winnerId, outcome: 'completed', content: buildPrdContent(ticket.externalId), duration: 1 },
+        {
+          memberId: TEST.councilMembers[1],
+          outcome: 'completed',
+          content: buildPrdContent(ticket.externalId, { includeStoryThree: true, storyThreeId: 'US-8', storyThreeTitle: 'Expose retry telemetry' }),
+          duration: 1,
+        },
+      ],
+      fullAnswers: [
+        { memberId: winnerId, outcome: 'completed', content: interviewContent, duration: 1, questionCount: 1 },
+      ],
+      memberOutcomes: { [winnerId]: 'completed', [TEST.councilMembers[1]]: 'completed' },
+      ticketState: { ticketId: ticket.externalId, title: context.title, description: ticket.description ?? '' },
+    })
+    refineDraftMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const validateResponse = args[12] as (content: string) => { normalizedContent?: string }
+      return { content: validateResponse(refinedOutput).normalizedContent, rawAttempts: [] }
+    })
+
+    await handlePrdRefine(ticket.id, context, vi.fn(), new AbortController().signal)
+
+    const refinedArtifact = getLatestPhaseArtifact(ticket.id, 'prd_refined', 'REFINING_PRD')
+    const refinedContent = parsePrdRefinedArtifact(refinedArtifact!.content).refinedContent
+    expect(refinedContent).toContain('cwd: packages/app')
+    expect(refinedContent).not.toContain(paths.worktreePath)
+  })
+
   it('continues a failed PRD revision using its saved audit without running another audit first', async () => {
     const { ticket, context, paths, winnerId } = await setupCoverageTest()
     const coverageGap = 'Missing retry-cap approval behavior.'

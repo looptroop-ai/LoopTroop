@@ -170,7 +170,7 @@ export async function generateExecutionSetupPlan(
 
   let response = result.response
   let parsed = await applyExecutionSetupPlanValidation(
-    parseExecutionSetupPlanResult(response),
+    parseExecutionSetupPlanResult(response, { repoRoot: projectPath }),
     callbacks?.validatePlan,
   )
   const rawAttempts: RawAttempt[] = []
@@ -303,7 +303,7 @@ export async function generateExecutionSetupPlan(
     }
 
     parsed = await applyExecutionSetupPlanValidation(
-      parseExecutionSetupPlanResult(response),
+      parseExecutionSetupPlanResult(response, { repoRoot: projectPath }),
       callbacks?.validatePlan,
     )
     structuredOutput = buildStructuredOutputMetadata(structuredOutput, {

@@ -194,6 +194,8 @@ export function validateBeadsCoverageRevisionOutput(
   options: {
     currentCandidateContent: string
     coverageGaps: string[]
+    /** The directory the model worked in; see `CommandSpecRepairOptions`. */
+    repoRoot?: string
   },
 ): ValidatedBeadsCoverageRevision {
   // Every alias this function and its helpers resolve is model output, so the
@@ -213,6 +215,8 @@ function validateBeadsCoverageRevisionRecord(
   options: {
     currentCandidateContent: string
     coverageGaps: string[]
+    /** The directory the model worked in; see `CommandSpecRepairOptions`. */
+    repoRoot?: string
   },
   aliasWarnings: string[],
 ): ValidatedBeadsCoverageRevision {
@@ -233,7 +237,7 @@ function validateBeadsCoverageRevisionRecord(
   // anyway: identical result, one spurious warning per declared change. A round
   // of review talked me into forwarding them; the prompt is the reason not to.
   const beadsYaml = buildYamlDocument({ beads: rawBeads })
-  const refinementResult = normalizeBeadRefinementOutput(beadsYaml, options.currentCandidateContent)
+  const refinementResult = normalizeBeadRefinementOutput(beadsYaml, options.currentCandidateContent, undefined, { repoRoot: options.repoRoot })
   if (!refinementResult.ok) {
     throw new Error(refinementResult.error)
   }

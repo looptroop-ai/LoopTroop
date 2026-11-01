@@ -110,10 +110,103 @@ export function renderCommandSpec(command: CommandSpec | string, processShell: C
     .join(' ')
 }
 
-export function normalizeCommandSpec(value: unknown, host: HostContext): NormalizedCommandSpec {
+export interface CommandSpecRepairOptions {
+  /** Absolute directory the command runs from; an absolute `cwd` at or inside it is made relative. */
+  repoRoot?: string
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** A drive-letter (`C:\`) or UNC (`\\server\share`) root. */
+function isWindowsPath(path: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(path) || /^[\\/]{2}/.test(path)
+}
+
+/**
+ * An absolute path as its root (`/`, `C:/`, `//`) and its segments, with empty
+ * and `.` segments dropped. Null for a relative path or one with a `..`
+ * segment: `..` cannot be resolved by text, because after a symbolic link it
+ * names the link target's parent, so such a path is left for validation to
+ * reject. Backslashes are separators only in Windows paths: on POSIX they can
+ * be part of a directory name.
+ */
+function splitAbsolutePath(value: string, windows: boolean): { root: string; segments: string[] } | null {
+  const path = windows ? value.trim().replaceAll('\\', '/') : value.trim()
+  const root = path.startsWith('//') ? '//' : /^[a-zA-Z]:\//.test(path) ? path.slice(0, 3) : path.startsWith('/') ? '/' : ''
+  if (!root) return null
+  const segments: string[] = []
+  for (const segment of path.slice(root.length).split('/')) {
+    if (segment === '..') return null
+    if (segment !== '' && segment !== '.') segments.push(segment)
+  }
+  return { root, segments }
+}
+
+/** `cwd` relative to `root`, or null when it is neither `root` nor a directory inside it. */
+function relativeToRoot(cwd: string, root: string): string | null {
+  // Windows paths compare without case; POSIX paths keep it.
+  const windows = isWindowsPath(root.trim())
+  const same = (a: string, b: string) => (windows ? a.toLowerCase() === b.toLowerCase() : a === b)
+  const base = splitAbsolutePath(root, windows)
+  const target = splitAbsolutePath(cwd, windows)
+  if (!base || !target || !same(base.root, target.root)) return null
+  if (!base.segments.every((segment, index) => target.segments[index] !== undefined && same(segment, target.segments[index]))) return null
+  const inside = target.segments.slice(base.segments.length)
+  return inside.length === 0 ? '.' : inside.join('/')
+}
+
+/**
+ * Formatting-only repairs for a command object a model wrote. Nothing is
+ * invented: the fields already say what to run and where.
+ */
+export function repairCommandSpecShape(
+  value: unknown,
+  options: CommandSpecRepairOptions = {},
+): { value: unknown; warnings: string[] } {
+  if (!isRecordValue(value)) return { value, warnings: [] }
+  let next = value
+  const warnings: string[] = []
+
+  const { program, args } = next
+  if (
+    next.mode === 'shell'
+    && next.shell === undefined
+    && next.script === undefined
+    && typeof program === 'string'
+    // One executable token only: `program: "npm run test"` is a command line,
+    // not a program, and must keep failing validation with its location.
+    && /^\S+$/.test(program.trim())
+    && (args === undefined || (Array.isArray(args) && args.every((arg) => typeof arg === 'string')))
+  ) {
+    next = { ...next, mode: 'process' }
+    warnings.push('Relabelled a command marked mode "shell" as mode "process", because it was written with program and args.')
+  }
+
+  const { cwd } = next
+  if (options.repoRoot && typeof cwd === 'string' && cwd.trim() && !isRepoRelativePath(cwd)) {
+    const relative = relativeToRoot(cwd, options.repoRoot)
+    if (relative !== null) {
+      next = { ...next, cwd: relative }
+      warnings.push(`Rewrote the absolute working directory ${JSON.stringify(cwd)} as ${JSON.stringify(relative)}, relative to the repository root.`)
+    }
+  }
+
+  return { value: next, warnings }
+}
+
+export function normalizeCommandSpec(
+  rawValue: unknown,
+  host: HostContext,
+  options: CommandSpecRepairOptions = {},
+): NormalizedCommandSpec {
+  const { value, warnings } = repairCommandSpecShape(rawValue, options)
   const parsed = commandSpecSchema.safeParse(value)
   if (parsed.success) {
-    return { command: parsed.data, repaired: false }
+    return warnings.length > 0
+      ? { command: parsed.data, repaired: true, warning: warnings.join(' ') }
+      : { command: parsed.data, repaired: false }
   }
   if (typeof value === 'string' && value.trim()) {
     return {

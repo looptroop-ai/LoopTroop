@@ -4,7 +4,7 @@ import { openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import { detectHostContext } from '../lib/hostContext'
 import type { HostContext } from '@shared/hostContext'
 import { hostContextSchema } from '@shared/hostContext'
-import { normalizeCommandSpec, runtimeEnvironmentSchema } from '@shared/commandSpec'
+import { normalizeCommandSpec, runtimeEnvironmentSchema, type CommandSpecRepairOptions } from '@shared/commandSpec'
 import type {
   BeadCompletionPayload,
   ExecutionSetupPlanPayload,
@@ -269,6 +269,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
 export function normalizeFinalTestCommandsOutput(
   rawContent: string,
   hostContext = detectHostContext(),
+  commandOptions: CommandSpecRepairOptions = {},
 ): StructuredOutputResult<FinalTestCommandPayload> {
   const candidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.FINAL_TEST_COMMANDS)
   let lastError = 'No final test command marker found'
@@ -322,7 +323,7 @@ export function normalizeFinalTestCommandsOutput(
         candidateWarnings.push('Coerced commands from string to array')
       }
       const commands = commandValues.map((command) => {
-        const normalized = normalizeCommandSpec(command, hostContext)
+        const normalized = normalizeCommandSpec(command, hostContext, commandOptions)
         if (normalized.warning) candidateWarnings.push(normalized.warning)
         return normalized.command
       })
@@ -458,14 +459,24 @@ function normalizeExecutionSetupPlanReadinessStatus(value: unknown): 'ready' | '
  * came back with POSIX shell quoting, and vice versa. The live host stays as
  * the fallback for a plan that carries none, which is the case when the model's
  * fresh output is being parsed.
+ *
+ * `repoRoot` is set only for fresh model output: it lets a `cwd` written as the
+ * absolute worktree path be repaired to its relative form.
  */
+interface ExecutionSetupCommandContext {
+  host: HostContext
+  repoRoot?: string
+}
+
 function normalizeExecutionSetupCommand(
   value: unknown,
   fieldLabel: string,
   repairWarnings?: string[],
-  hostContext?: HostContext,
+  commandContext?: ExecutionSetupCommandContext,
 ) {
-  const normalized = normalizeCommandSpec(value, hostContext ?? detectHostContext())
+  const normalized = normalizeCommandSpec(value, commandContext?.host ?? detectHostContext(), {
+    repoRoot: commandContext?.repoRoot,
+  })
   if (normalized.warning) repairWarnings?.push(`${fieldLabel}: ${normalized.warning}`)
   return normalized.command
 }
@@ -474,12 +485,12 @@ function normalizeExecutionSetupCommands(
   value: unknown,
   fieldLabel: string,
   repairWarnings?: string[],
-  hostContext?: HostContext,
+  commandContext?: ExecutionSetupCommandContext,
 ) {
   if (value === undefined || value === null) return []
   const entries = Array.isArray(value) ? value : [value]
   return entries.map((entry, index) =>
-    normalizeExecutionSetupCommand(entry, `${fieldLabel}[${index}]`, repairWarnings, hostContext),
+    normalizeExecutionSetupCommand(entry, `${fieldLabel}[${index}]`, repairWarnings, commandContext),
   )
 }
 
@@ -487,14 +498,14 @@ function normalizeExecutionSetupProjectCommands(
   value: unknown,
   fieldLabel: string,
   repairWarnings?: string[],
-  hostContext?: HostContext,
+  commandContext?: ExecutionSetupCommandContext,
 ): ExecutionSetupPlanPayload['projectCommands'] {
   if (!isRecord(value)) throw new Error(`${fieldLabel} missing object`)
   return {
-    prepare: normalizeExecutionSetupCommands(getValueByAliases(value, ['prepare', 'bootstrap', 'setup']), `${fieldLabel}.prepare`, repairWarnings, hostContext),
-    testFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['test_full', 'testfull', 'tests']), `${fieldLabel}.test_full`, repairWarnings, hostContext),
-    lintFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['lint_full', 'lintfull', 'lint']), `${fieldLabel}.lint_full`, repairWarnings, hostContext),
-    typecheckFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['typecheck_full', 'typecheckfull', 'typecheck']), `${fieldLabel}.typecheck_full`, repairWarnings, hostContext),
+    prepare: normalizeExecutionSetupCommands(getValueByAliases(value, ['prepare', 'bootstrap', 'setup']), `${fieldLabel}.prepare`, repairWarnings, commandContext),
+    testFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['test_full', 'testfull', 'tests']), `${fieldLabel}.test_full`, repairWarnings, commandContext),
+    lintFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['lint_full', 'lintfull', 'lint']), `${fieldLabel}.lint_full`, repairWarnings, commandContext),
+    typecheckFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['typecheck_full', 'typecheckfull', 'typecheck']), `${fieldLabel}.typecheck_full`, repairWarnings, commandContext),
   }
 }
 
@@ -502,7 +513,7 @@ function normalizeExecutionSetupCommandProbes(
   value: unknown,
   label: string,
   repairWarnings?: string[],
-  hostContext?: HostContext,
+  commandContext?: ExecutionSetupCommandContext,
 ): ExecutionSetupCommandProbePayload[] {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value)) throw new Error(`${label} must be a list`)
@@ -514,7 +525,7 @@ function normalizeExecutionSetupCommandProbes(
         getValueByAliases(entry, ['command']),
         `${label}[${index}].command`,
         repairWarnings,
-        hostContext,
+        commandContext,
       ),
       purpose: getRequiredString(entry, ['purpose'], `${label}[${index}].purpose`),
     }
@@ -596,7 +607,7 @@ function normalizeExecutionSetupGitHooks(
   value: unknown,
   repairWarnings?: string[],
   preserveBackendFields = false,
-  hostContext?: HostContext,
+  commandContext?: ExecutionSetupCommandContext,
 ): ExecutionSetupGitHooksPayload {
   if (value === undefined || value === null) {
     return { policy: DEFAULT_GIT_HOOK_POLICY, detected: [], validationCommands: [] }
@@ -648,7 +659,7 @@ function normalizeExecutionSetupGitHooks(
               getValueByAliases(entry, ['command']),
               `git_hooks.validation_commands[${index}].command`,
               repairWarnings,
-              hostContext,
+              commandContext,
             ),
             purpose: getRequiredString(entry, ['purpose'], `git_hooks.validation_commands[${index}].purpose`),
           }
@@ -710,7 +721,7 @@ function normalizeExecutionSetupPlanStep(
   entry: Record<string, unknown>,
   index: number,
   repairWarnings?: string[],
-  hostContext?: HostContext,
+  commandContext?: ExecutionSetupCommandContext,
 ): ExecutionSetupPlanPayload['steps'][number] {
   const explicitId = toOptionalString(getValueByAliases(entry, ['id']))
   const derivedOrdinal = index + 1
@@ -740,7 +751,7 @@ function normalizeExecutionSetupPlanStep(
       getValueByAliases(entry, ['commands', 'command']),
       `steps[${index}].commands`,
       repairWarnings,
-      hostContext,
+      commandContext,
     ),
     required: normalizeExecutionSetupPlanStepRequired(
       getValueByAliases(entry, ['required', 'isrequired']),
@@ -756,6 +767,7 @@ function normalizeExecutionSetupPlan(
   repairWarnings?: string[],
   preserveBackendFields = false,
   authoritativeTicketId?: string,
+  repoRoot?: string,
 ): ExecutionSetupPlanPayload {
   if (!isRecord(value)) throw new Error('Execution setup plan is missing')
 
@@ -781,6 +793,7 @@ function normalizeExecutionSetupPlan(
   const hostContext = preserveBackendFields && parsedHostContext.success
     ? parsedHostContext.data
     : detectHostContext()
+  const commandContext: ExecutionSetupCommandContext = { host: hostContext, repoRoot }
 
   const workspaceInputs = normalizeExecutionSetupWorkspaceInputs(
     getValueByAliases(value, ['workspace_inputs', 'workspaceinputs']),
@@ -790,7 +803,7 @@ function normalizeExecutionSetupPlan(
   const rawSteps = getValueByAliases(value, ['steps', 'plan_steps', 'plansteps'])
   const steps = Array.isArray(rawSteps) ? rawSteps.map((entry, index) => {
     if (!isRecord(entry)) throw new Error(`steps[${index}] must be an object`)
-    return normalizeExecutionSetupPlanStep(entry, index, repairWarnings, hostContext)
+    return normalizeExecutionSetupPlanStep(entry, index, repairWarnings, commandContext)
   }) : []
 
   const proposedReadiness = normalizeExecutionSetupPlanReadiness(
@@ -813,7 +826,7 @@ function normalizeExecutionSetupPlan(
     getValueByAliases(value, ['project_commands', 'projectcommands', 'commands']),
     'Execution setup plan project_commands',
     repairWarnings,
-    hostContext,
+    commandContext,
   )
   const rawQualityPolicy = getValueByAliases(value, ['quality_gate_policy', 'qualitygatepolicy', 'qualitypolicy'])
   const qualityGatePolicy = preserveBackendFields && isRecord(rawQualityPolicy)
@@ -834,13 +847,13 @@ function normalizeExecutionSetupPlan(
     getValueByAliases(value, ['workspace_probes', 'workspaceprobes']),
     'workspace_probes',
     repairWarnings,
-    hostContext,
+    commandContext,
   )
   const gitHooks = normalizeExecutionSetupGitHooks(
     getValueByAliases(value, ['git_hooks', 'githooks']),
     repairWarnings,
     preserveBackendFields,
-    hostContext,
+    commandContext,
   )
   const schemaVersion = preserveBackendFields
     ? toInteger(getValueByAliases(value, ['schema_version', 'schemaversion'])) ?? 1
@@ -1198,6 +1211,8 @@ export function normalizeExecutionSetupPlanOutput(
   options: {
     preserveBackendFields?: boolean
     authoritativeTicketId?: string
+    /** The ticket worktree, for repairing an absolute `cwd` in fresh model output. */
+    repoRoot?: string
   } = {},
 ): StructuredOutputResult<ExecutionSetupPlanPayload> {
   const candidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)
@@ -1247,6 +1262,7 @@ export function normalizeExecutionSetupPlanOutput(
         candidateWarnings,
         options.preserveBackendFields ?? false,
         options.authoritativeTicketId,
+        options.repoRoot,
       )
       return {
         ok: true,

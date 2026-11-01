@@ -31,6 +31,7 @@ export function validatePrdDraft(
     ticketId: string
     interviewContent?: string
     losingDraftMeta?: Array<{ memberId: string }>
+    repoRoot?: string
   },
 ): ValidatedPrdDraft {
   const result = normalizePrdYamlOutput(content, options)

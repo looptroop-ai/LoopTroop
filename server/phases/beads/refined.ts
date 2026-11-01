@@ -497,12 +497,15 @@ export function validateBeadsRefinementOutput(
   options: {
     winnerDraftContent: string
     losingDraftMeta?: Array<{ memberId: string; content?: string }>
+    /** The directory the model worked in; see `CommandSpecRepairOptions`. */
+    repoRoot?: string
   },
 ): ValidatedBeadsRefinement {
   const refinementResult = normalizeBeadRefinementOutput(
     rawContent,
     options.winnerDraftContent,
     options.losingDraftMeta,
+    { repoRoot: options.repoRoot },
   )
 
   if (!refinementResult.ok) {

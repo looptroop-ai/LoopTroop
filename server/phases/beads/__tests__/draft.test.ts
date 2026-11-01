@@ -64,6 +64,42 @@ describe('draftBeads', () => {
     expect(result.drafts[0]!.draftMetrics?.beadCount).toBe(1)
   })
 
+  it('repairs a testCommands cwd written as the absolute project path', async () => {
+    adapter.mockResponses.set('mock-session-1', [
+      'beads:',
+      '  - id: bead-1',
+      '    title: Tighten theme typing',
+      '    prdRefs:',
+      '      - EPIC-1 / US-1',
+      '    description: Keep UIState theme values typed and explicit.',
+      '    contextGuidance:',
+      '      patterns:',
+      '        - Keep UIState as the source of truth for theme values.',
+      '      anti_patterns:',
+      '        - Do not widen theme to string.',
+      '    acceptanceCriteria:',
+      '      - Theme values stay typed.',
+      '    tests:',
+      '      - Theme reducer tests cover the typed path.',
+      '    testCommands:',
+      '      - mode: "process"',
+      '        program: "npm"',
+      '        args: ["run", "test:server"]',
+      '        cwd: "/tmp/test/packages/app"',
+      '        env: {}',
+    ].join('\n'))
+
+    const result = await draftBeads(adapter, members, ticketContext, '/tmp/test', {
+      draftTimeoutMs: 300000,
+      minQuorum: 1,
+    })
+
+    expect(result.drafts[0]!.outcome).toBe('completed')
+    expect(result.drafts[0]!.structuredOutput?.autoRetryCount).toBe(0)
+    expect(result.drafts[0]!.content).toContain('cwd: packages/app')
+    expect(result.drafts[0]!.content).not.toContain('/tmp/test')
+  })
+
   it('keeps repaired quoted block-scalar bead drafts as completed after a structured retry', async () => {
     adapter.mockResponses.set('mock-session-1', [
       'beads:',

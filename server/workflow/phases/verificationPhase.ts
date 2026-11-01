@@ -1582,6 +1582,7 @@ async function runPrdCoverageResolutionPrompt(params: {
         interviewContent: params.fullAnswersContent,
         currentCandidateContent: params.currentCandidateContent,
         coverageGaps: params.coverageGaps,
+        repoRoot: params.worktreePath,
       });
 
       structuredMeta = buildStructuredMetadata(structuredMeta, {
@@ -2089,6 +2090,7 @@ async function runBeadsCoverageResolutionPrompt(params: {
       const revision = validateBeadsCoverageRevisionOutput(response, {
         currentCandidateContent: params.currentCandidateContent,
         coverageGaps: params.coverageGaps,
+        repoRoot: params.worktreePath,
       });
 
       structuredMeta = buildStructuredMetadata(structuredMeta, {
@@ -6109,7 +6111,7 @@ export async function handleFinalTest(
             });
             throwIfAborted(signal, ticketId);
 
-            const repairedPlan = parseFinalTestCommands(retryResult.response);
+            const repairedPlan = parseFinalTestCommands(retryResult.response, undefined, { repoRoot: worktreePath });
             if (repairedPlan.errors.length > 0) {
               throw new Error(
                 repairedPlan.validationError ?? repairedPlan.errors.join("; "),

@@ -960,4 +960,65 @@ describe.concurrent('validatePrdDraft', () => {
       interviewContent: 'artifact: interview\nquestions: [',
     })).toThrow('Interview artifact is invalid')
   })
+
+  describe('model-written verification commands', () => {
+    const repoRoot = '/root/repo/.looptroop/worktrees/T-1'
+    const prdWithCommands = (commandLines: string[]) => [
+      'schema_version: 1',
+      `ticket_id: ${TEST.externalId}`,
+      'artifact: prd',
+      'status: draft',
+      'product:',
+      '  problem_statement: Keep PRD drafting resilient.',
+      '  target_users: [LoopTroop maintainers]',
+      'scope:',
+      '  in_scope: [Normalize commands]',
+      '  out_of_scope: []',
+      'epics:',
+      '  - id: EPIC-1',
+      '    title: Commands',
+      '    objective: Run the checks.',
+      '    implementation_steps: []',
+      '    user_stories:',
+      '      - id: US-1-1',
+      '        title: Verify',
+      '        acceptance_criteria: [Checks pass]',
+      '        implementation_steps: []',
+      '        verification:',
+      '          required_commands:',
+      ...commandLines,
+    ].join('\n')
+
+    it('repairs a mislabelled shell command and an absolute worktree cwd, naming the command', () => {
+      const result = validatePrdDraft(prdWithCommands([
+        '            - mode: shell',
+        '              program: bash',
+        '              args: ["-lc", "npm test"]',
+        `              cwd: ${repoRoot}`,
+        '            - mode: process',
+        '              program: npm',
+        `              cwd: ${repoRoot}/packages/app`,
+      ]), { ticketId: TEST.externalId, interviewContent: skippedInterviewYaml, repoRoot })
+
+      expect(result.document.epics[0]!.user_stories[0]!.verification.required_commands).toEqual([
+        { mode: 'process', program: 'bash', args: ['-lc', 'npm test'], cwd: '.', env: {} },
+        { mode: 'process', program: 'npm', args: [], cwd: 'packages/app', env: {} },
+      ])
+      expect(result.repairApplied).toBe(true)
+      const warnings = result.repairWarnings.join('\n')
+      expect(warnings).toContain('User story US-1-1 verification.required_commands[0]: Relabelled')
+      expect(warnings).toContain('User story US-1-1 verification.required_commands[1]: Rewrote the absolute working directory')
+    })
+
+    it('says which command is invalid instead of a bare field name', () => {
+      expect(() => validatePrdDraft(prdWithCommands([
+        '            - mode: process',
+        '              program: npm',
+        '            - mode: shell',
+        '              shell: bash',
+        '              script: npm test',
+      ]), { ticketId: TEST.externalId, interviewContent: skippedInterviewYaml, repoRoot }))
+        .toThrow(/User story US-1-1 verification\.required_commands\[1\] is not a valid command:[\s\S]*shell/)
+    })
+  })
 })

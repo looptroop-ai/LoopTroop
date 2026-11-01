@@ -769,6 +769,33 @@ describe('ticket log projection API', () => {
     expect(older?.hasOlder).toBe(false)
   })
 
+  it('orders an updated session status by its latest activity timestamp', async () => {
+    const { ticket } = createLogTestTicket()
+    const fields = {
+      audience: 'ai', kind: 'session', entryId: 'session-1:status', sessionId: 'session-1',
+      modelId: 'test/model', op: 'upsert', streaming: false,
+    } as const
+    appendLogEvent(ticket.id, 'info', 'CODING', 'Session status: busy.', {
+      ...fields, timestamp: '2026-01-01T00:00:01.000Z',
+    }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'error', 'CODING', 'Session retry #1: rate limited.', {
+      ...fields, entryId: 'session-1:retry:1', op: 'append', timestamp: '2026-01-01T00:00:02.000Z',
+    }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'Session status: busy.', {
+      ...fields, timestamp: '2026-01-01T00:00:03.000Z',
+    }, 'model:test/model', 'CODING')
+
+    const latest = await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', view: 'activity', limit: 1 })
+    expect(latest?.entries.map(entry => entry.content)).toEqual(['Session status: busy.'])
+    expect(latest?.entries[0]?.timestamp).toBe('2026-01-01T00:00:03.000Z')
+    if (!latest?.olderCursor) throw new Error('Expected the retry notice on an older page')
+    const older = await queryLogPage(ticket.id, {
+      scope: 'phase', phase: 'CODING', view: 'activity', limit: 1, before: latest.olderCursor,
+    })
+    expect(older?.entries.map(entry => entry.content)).toEqual(['Session retry #1: rate limited.'])
+    expect(older?.hasOlder).toBe(false)
+  })
+
   it('uses the ticket/phase/attempt index for activity candidate scans', async () => {
     const { ticket, repoDir } = createLogTestTicket()
     await queryLogPage(ticket.id, { scope: 'phase', phase: 'CODING', phaseAttempt: 1, view: 'activity', limit: 1 })

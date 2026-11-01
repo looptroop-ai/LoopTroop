@@ -516,7 +516,10 @@ function activityRowsSql(where: string): string {
     SELECT ticket_id, channel, identity FROM activity_details
     WHERE first_detail_order = 1 OR last_detail_order = 1
   ), activity_selected AS (
-    SELECT p.* FROM activity_selected_keys AS selected
+    SELECT p.*,
+      CASE WHEN json_extract(p.entry_json, '$.kind') = 'session'
+        THEN p.updated_timestamp ELSE p.timestamp END AS activity_timestamp
+    FROM activity_selected_keys AS selected
     JOIN execution_log_projection AS p USING (ticket_id, channel, identity)
   ) `
 }
@@ -1745,8 +1748,8 @@ export async function queryLogPage(
   const pageClauses = query.view === 'activity' ? [] : [...clauses]
   const pageParams = query.view === 'activity' ? [] : [...params]
   const chronologicalView = query.view === 'ai' || query.view === 'activity'
-  const timestamp = query.view === 'ai' ? AI_START_TIMESTAMP : 'timestamp'
-  const timestampRank = query.view === 'ai' ? AI_START_RANK : "(CASE WHEN timestamp = '' THEN 1 ELSE 0 END)"
+  const timestamp = query.view === 'ai' ? AI_START_TIMESTAMP : query.view === 'activity' ? 'activity_timestamp' : 'timestamp'
+  const timestampRank = query.view === 'ai' ? AI_START_RANK : `(CASE WHEN ${timestamp} = '' THEN 1 ELSE 0 END)`
   const activitySortKey = "(p.channel || ':' || printf('%020d', p.ordinal) || ':' || p.identity)"
   const mirrorKey = query.view === 'activity' ? activitySortKey : 'p.mirror_key'
   if (before !== null) {
@@ -1795,8 +1798,10 @@ export async function queryLogPage(
           if (typeof entry[field] === 'string') entry[field] = entry[field].trim().slice(0, 256)
         }
       }
-      if (query.view === 'ai') {
+      if (query.view === 'ai' || query.view === 'activity') {
         if (row.sort_timestamp) entry.timestamp = row.sort_timestamp
+      }
+      if (query.view === 'ai') {
         entry._logMirrorKey = row.mirror_key
         entry._logMirrorOccurrence = row.mirror_occurrence
       }

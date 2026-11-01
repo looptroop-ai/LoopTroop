@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, expect, it, vi } from 'vitest'
 import type { AssistantSession, AssistantSessionSummary } from '@shared/assistant'
 import { UIContext, type UIState } from '@/context/uiContextDef'
+import { registerBackToBottomAnchor } from '@/lib/assistantLauncherAnchor'
 import { AssistantWidget } from '../AssistantWidget'
 
 const mockProfile = vi.hoisted(() => ({ data: { chatModel: 'provider/model' as string | null }, isLoading: false }))
@@ -82,13 +83,69 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, 'clipboard')
 })
 
-it('keeps the launcher in the same fixed position on the dashboard and in a ticket', () => {
+it('starts at the fixed corner while no log has been on screen, on the dashboard and in a ticket', () => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([]))))
   const view = render(widget(baseUiState, false))
   expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toHaveClass('fixed', 'bottom-9', 'right-[72px]')
 
   view.rerender(widget({ ...baseUiState, activeView: 'ticket', selectedTicketId: 'project/17:LT-6' }, false))
   expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toHaveClass('fixed', 'bottom-9', 'right-[72px]')
+})
+
+it('does not render the launcher while it is hidden', () => {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([]))))
+  render(
+    <UIContext.Provider value={{ state: baseUiState, dispatch: vi.fn() }}>
+      <AssistantWidget open={false} launcherVisible={false} onOpen={vi.fn()} onDismiss={vi.fn()} onOpenConfiguration={vi.fn()} />
+    </UIContext.Provider>,
+  )
+  expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
+})
+
+function rectAt(left: number, top: number, size = 32): DOMRect {
+  return { x: left, y: top, left, top, width: size, height: size, right: left + size, bottom: top + size, toJSON: () => ({}) } as DOMRect
+}
+
+it('keeps the launcher immediately left of the log marker and holds that corner offset when it leaves', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([]))))
+  const viewportWidth = window.innerWidth
+  // jsdom's window is 1024 x 768; the launcher measures 32 x 32.
+  const anchor = document.createElement('span')
+  anchor.getBoundingClientRect = () => rectAt(800, 700)
+  let unregisterAnchor = registerBackToBottomAnchor(anchor)
+  const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute('aria-label') === 'Open LoopTroop assistant') return rectAt(0, 0)
+    return originalGetBoundingClientRect.call(this)
+  })
+  try {
+    render(widget(baseUiState, false))
+
+    const launcher = screen.getByRole('button', { name: 'Open LoopTroop assistant' })
+    await waitFor(() => expect(launcher).toHaveStyle({ right: '232px', bottom: '36px' }))
+    expect(launcher).not.toHaveClass('bottom-9')
+    expect(launcher).not.toHaveClass('right-[72px]')
+
+    anchor.getBoundingClientRect = () => rectAt(500, 600)
+    act(() => window.dispatchEvent(new Event('resize')))
+    await waitFor(() => expect(launcher).toHaveStyle({ right: '532px', bottom: '136px' }))
+
+    // The marker unmounts (the reader left the log), then the window widens:
+    // the launcher keeps its distance from the right edge.
+    act(() => unregisterAnchor())
+    window.innerWidth = viewportWidth + 400
+    act(() => window.dispatchEvent(new Event('resize')))
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(() => resolve(null))) })
+    expect(launcher).toHaveStyle({ right: '532px', bottom: '136px' })
+
+    const nextAnchor = document.createElement('span')
+    nextAnchor.getBoundingClientRect = () => rectAt(600, 500)
+    act(() => { unregisterAnchor = registerBackToBottomAnchor(nextAnchor) })
+    await waitFor(() => expect(launcher).toHaveStyle({ right: `${viewportWidth + 400 - 600 + 8}px`, bottom: '236px' }))
+  } finally {
+    unregisterAnchor()
+    window.innerWidth = viewportWidth
+  }
 })
 
 it('disables the composer while the assistant model is missing or loading', async () => {
@@ -1086,9 +1143,8 @@ it('keeps a fixed accessible size and Escape dismisses the window back to its la
   const panel = screen.getByRole('dialog', { name: 'LoopTroop assistant' })
   expect(panel).toHaveClass('h-[min(620px,calc(100dvh-10rem))]', 'w-[min(420px,calc(100vw-2rem))]')
   expect(panel).toHaveClass('bottom-1', 'right-1')
-  const launcher = screen.getByRole('button', { name: 'Open LoopTroop assistant' })
-  expect(launcher).toHaveClass('p-2', 'bottom-9', 'right-[72px]', 'bg-primary-foreground', 'text-primary', 'opacity-70', 'hover:opacity-100')
-  expect(launcher.querySelector('svg')).toHaveClass('h-4', 'w-4')
+  // Hidden while the window is open; it comes back, focused, on dismiss.
+  expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Help' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Tickets' })).not.toBeInTheDocument()
   const composer = screen.getByRole('textbox', { name: 'Message the assistant' })
@@ -1100,6 +1156,12 @@ it('keeps a fixed accessible size and Escape dismisses the window back to its la
   expect(dashboardDismiss).not.toHaveBeenCalled()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toHaveFocus())
   expect(panel).toHaveAttribute('hidden')
+  const launcher = screen.getByRole('button', { name: 'Open LoopTroop assistant' })
+  expect(launcher).toHaveClass('p-2', 'bottom-9', 'right-[72px]', 'bg-primary-foreground', 'text-primary', 'opacity-70', 'hover:opacity-100')
+  expect(launcher.querySelector('svg')).toHaveClass('h-4', 'w-4')
+
+  fireEvent.click(launcher)
+  expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
 })
 
 it('drags the assistant window, clamps it to the viewport, and restores its position for the tab session', async () => {

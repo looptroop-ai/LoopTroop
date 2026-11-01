@@ -34,6 +34,7 @@ import { useCurrentActivityEvidence } from '@/hooks/useCurrentActivityEvidence'
 import { SkipSummary } from './SkipSummary'
 import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
 import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
+import { BackToBottomAnchor } from './BackToBottomAnchor'
 
 type LogTab = 'ALL' | 'SYS' | 'AI' | 'ERROR' | 'DEBUG'
 
@@ -901,6 +902,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
             </TooltipContent>
           </Tooltip>
         )}
+        <BackToBottomAnchor />
         {hasLogs && !isAutoScroll && (
           <Tooltip delayDuration={300}>
             <TooltipTrigger asChild>

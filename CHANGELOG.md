@@ -18,6 +18,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The relevant-files scan now explores the repository with read-only file tools instead of shell commands.
 - A council step no longer fails when OpenCode is briefly slow before the prompts go out.
 - AI-written commands survive two common formatting mistakes in every planning step, and an invalid command now says exactly which one it is.
+- The assistant button now sits beside the log's **Back to bottom** spot in every log view, stays put whether or not that button is showing, and hides while the chat window is open.
+- Coverage Report pass tabs now share one row with Summary/Raw, and artifact dialogs no longer open with a copy tooltip showing.
 
 ### Added
 
@@ -39,6 +41,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - **A command labelled "shell" but written as a program with arguments no longer blocks the ticket.** A model wrote `mode: shell` with `program: bash` and `args`, but no `shell` and no `script`, and two attempts in a row failed validation on a PRD coverage revision. Such a command is now relabelled `mode: process`, which is what its fields describe, and the change is recorded as a repair warning. A `program` holding a whole command line, such as `npm run test`, is not relabelled and still fails validation.
 - **An absolute working directory inside the ticket's worktree is accepted.** A council member wrote `cwd` as the worktree's full path 36 times, and its whole PRD draft was rejected because commands must use repository-relative paths. A path that is the worktree, or inside it, is now rewritten as `.` or the relative subpath, with a repair warning. Repeated separators and `.` segments are dropped first, and Windows drive and network-share paths compare without regard to case. A path containing `..` is not rewritten, because after a symbolic link `..` can point anywhere, and a path anywhere else still fails.
 - **Invalid commands say where they are.** A failing PRD command used to report only a field name such as `shell`. It now names the story and position, for example `User story US-1-1 verification.required_commands[1]`, so the structured retry tells the model which command to fix. Bead commands report `testCommands[n]` together with the problem fields.
+- Keep the assistant launcher immediately left of where the log's **Back to bottom** button appears, centered vertically with a consistent gap, in the phase log, full log, and coding views. Each view marks that spot with an invisible element that stays mounted, so the launcher does not move when the button appears or disappears with scrolling. It follows the spot when the window, log drawer, or navigator resizes. With no log on screen it keeps its last distance from the window's right and bottom edges, so it stays in its corner when the window grows or shrinks. The launcher hides while the chat window is open and returns, focused, when it closes.
+- Keep the Coverage Report's pass selector on the same row as the Summary/Raw switcher instead of stacking two tab rows; when a report has more passes than fit, the selector scrolls sideways rather than running under the switcher, and keeps the selected pass in view. Artifact dialogs also open with focus on the dialog itself, so a contained copy button no longer shows its tooltip before the user hovers anything, and Shift+Tab from there moves to the dialog's last control.
+- Give the phase-log and bead-log **Back to bottom** buttons an accessible name, as the full log's button already had.
 
 ### Changed
 

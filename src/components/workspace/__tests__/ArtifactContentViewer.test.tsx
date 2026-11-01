@@ -2721,6 +2721,7 @@ items:
   })
 
   it('keeps the coverage report selector and the Summary/Raw switcher on one row', () => {
+    const scrollIntoView = vi.spyOn(HTMLElement.prototype, 'scrollIntoView')
     render(
       <ArtifactContent
         artifactId="coverage-report"
@@ -2755,11 +2756,14 @@ items:
     expect(controlsRow).toContainElement(screen.getByRole('button', { name: /Latest Check/i }))
     expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Summary' }))
     expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Raw' }))
+    // The selected Latest Check, last in the strip, is scrolled into view on open.
+    expect(scrollIntoView.mock.contexts).toEqual([screen.getByRole('button', { name: /Latest Check/i })])
 
     // Pick the earlier pass, so returning from Raw has a selection to keep.
     expect(screen.queryByText('Coverage revised PRD Candidate v1 into v2.')).not.toBeInTheDocument()
     fireEvent.click(within(controlsRow).getByRole('button', { name: 'v1 > v2' }))
     expect(screen.getByText('Coverage revised PRD Candidate v1 into v2.')).toBeInTheDocument()
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(within(controlsRow).getByRole('button', { name: 'v1 > v2' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
     expect(screen.queryByRole('button', { name: /Latest Check/i })).not.toBeInTheDocument()

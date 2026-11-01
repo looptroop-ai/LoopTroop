@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import * as jsYaml from 'js-yaml'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { isCouncilMemberOutcome, isCouncilVotingControlPhase } from '@shared/councilMembers'
@@ -1231,6 +1231,13 @@ function CoverageReportTabStrip({
   activeTab: string
   onSelect: (key: string) => void
 }) {
+  const activeTabRef = useRef<HTMLButtonElement>(null)
+  // Latest Check is last and selected on open; when the strip overflows it
+  // would start clipped off the right edge, so bring the selection into view.
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeTab])
+
   return (
     // Shares its row with the Summary/Raw switcher, so with many passes it
     // scrolls instead of running under the switcher. The underline is an inset
@@ -1239,6 +1246,7 @@ function CoverageReportTabStrip({
       {tabs.map((tab) => (
         <button
           key={tab.key}
+          ref={activeTab === tab.key ? activeTabRef : undefined}
           onClick={() => onSelect(tab.key)}
           className={cn(
             'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-semibold transition-colors border-b-2',

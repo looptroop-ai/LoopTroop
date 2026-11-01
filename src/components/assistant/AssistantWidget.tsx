@@ -12,6 +12,7 @@ import { useTickets } from '@/hooks/useTickets'
 import { useProjects } from '@/hooks/useProjects'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { fetchAssistantHistory } from './assistantApi'
+import { useAssistantLauncherPosition } from './useAssistantLauncherPosition'
 
 interface AssistantWidgetProps {
   open: boolean
@@ -77,6 +78,7 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
     ? `Ticket ${tickets.find(ticket => ticket.id === conversationTicket)?.externalId ?? externalTicketId(conversationTicket)}`
     : 'All tickets'
   const chatModelConfigured = Boolean(profile.data?.chatModel?.trim())
+  const launcherPosition = useAssistantLauncherPosition(launcherRef, launcherVisible)
 
   const handleWindowPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, [role="button"]'))) return
@@ -202,7 +204,8 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
       aria-controls={panelId}
       onClick={onOpen}
       title="Open assistant"
-      className="fixed bottom-9 right-[72px] z-[60] flex items-center justify-center rounded-full border border-border bg-primary-foreground p-2 text-primary shadow-md opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      style={launcherPosition ? { left: launcherPosition.left, top: launcherPosition.top } : undefined}
+      className={`fixed z-[60] flex items-center justify-center rounded-full border border-border bg-primary-foreground p-2 text-primary shadow-md opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${launcherPosition ? '' : 'bottom-9 right-[72px]'}`}
     >
       <MessageCircle className="h-4 w-4" aria-hidden="true" />
     </button>

@@ -788,6 +788,7 @@ export function PhaseLogPanel({
             <TooltipTrigger asChild>
               <button
                 type="button"
+                data-lt-back-to-bottom-anchor=""
                 onClick={() => {
                   enableAutoScroll()
                   scheduleScrollToBottom('smooth')

@@ -901,6 +901,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
               <button
                 type="button"
                 aria-label="Back to bottom"
+                data-lt-back-to-bottom-anchor=""
                 onClick={handleGoToBottom}
                 className="absolute bottom-4 right-6 p-2 bg-background/30 hover:bg-background/90 backdrop-blur-md border border-border/50 hover:border-border rounded-full shadow-2xs hover:shadow-sm pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-50 hover:opacity-100"
               >

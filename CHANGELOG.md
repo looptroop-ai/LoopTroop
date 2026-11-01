@@ -9,6 +9,15 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+
+### Summary
+
+- The assistant button now lines up with the log's **Back to bottom** control and keeps that position across views and window sizes.
+
+### Fixed
+
+- Keep the assistant launcher immediately left of the visible **Back to bottom** control, centered vertically with a consistent gap, in the phase log, full log, and coding views. It follows the control when the window, log drawer, or navigator resizes, and holds its last position when the control disappears or the reader returns to the dashboard.
+
 ## 0.6.2 (2026-10-30)
 
 

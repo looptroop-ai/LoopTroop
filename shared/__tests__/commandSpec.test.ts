@@ -4,6 +4,7 @@ import {
   isRepoRelativePath,
   normalizeCommandSpec,
   renderCommandSpec,
+  repairCommandSpecShape,
   runtimeEnvironmentSchema,
 } from '../commandSpec'
 import type { HostContext } from '../hostContext'
@@ -98,8 +99,7 @@ describe('normalizeCommandSpec', () => {
       [`${repoRoot}/`, '.'],
       [`${repoRoot}/packages/app`, 'packages/app'],
       [`${repoRoot}//packages//app/`, 'packages/app'],
-      [`${repoRoot}/./packages/../app`, 'app'],
-      [`/root/repo/.looptroop/worktrees/T-2/../T-1/src`, 'src'],
+      [`${repoRoot}/./packages/./app`, 'packages/app'],
     ])('rewrites %s inside the repository root as %s', (cwd, expected) => {
       const result = normalizeCommandSpec(command(cwd), host, { repoRoot })
       expect(result.command.cwd).toBe(expected)
@@ -116,6 +116,19 @@ describe('normalizeCommandSpec', () => {
       '/tmp/elsewhere',
     ])('still rejects %s, which is outside the repository root', (cwd) => {
       expect(() => normalizeCommandSpec(command(cwd), host, { repoRoot })).toThrow()
+    })
+
+    // After a symbolic link, `..` names the link target's parent, so text
+    // cannot tell where these point; they stay rejected as before.
+    it.each([
+      `${repoRoot}/packages/../app`,
+      '/root/repo/.looptroop/worktrees/T-2/../T-1/src',
+      '\\\\server\\share\\repo\\..\\..\\share\\repo\\src',
+    ])('does not rewrite %s, which contains a ".." segment', (cwd) => {
+      const root = cwd.startsWith('\\') ? '\\\\server\\share\\repo' : repoRoot
+      // Checked at the repair itself: validation would also catch a leftover `..`.
+      expect(repairCommandSpecShape(command(cwd), { repoRoot: root })).toEqual({ value: command(cwd), warnings: [] })
+      expect(() => normalizeCommandSpec(command(cwd), host, { repoRoot: root })).toThrow()
     })
 
     it('still rejects an absolute directory when no repository root is known', () => {

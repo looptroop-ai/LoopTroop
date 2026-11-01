@@ -125,10 +125,12 @@ function isWindowsPath(path: string): boolean {
 }
 
 /**
- * An absolute path as its root (`/`, `C:/`, `//`) and its segments, with empty,
- * `.` and `..` segments resolved. Null for a relative path or a `..` above the
- * root. Backslashes are separators only in Windows paths: on POSIX they can be
- * part of a directory name.
+ * An absolute path as its root (`/`, `C:/`, `//`) and its segments, with empty
+ * and `.` segments dropped. Null for a relative path or one with a `..`
+ * segment: `..` cannot be resolved by text, because after a symbolic link it
+ * names the link target's parent, so such a path is left for validation to
+ * reject. Backslashes are separators only in Windows paths: on POSIX they can
+ * be part of a directory name.
  */
 function splitAbsolutePath(value: string, windows: boolean): { root: string; segments: string[] } | null {
   const path = windows ? value.trim().replaceAll('\\', '/') : value.trim()
@@ -136,9 +138,8 @@ function splitAbsolutePath(value: string, windows: boolean): { root: string; seg
   if (!root) return null
   const segments: string[] = []
   for (const segment of path.slice(root.length).split('/')) {
-    if (segment === '' || segment === '.') continue
-    if (segment !== '..') segments.push(segment)
-    else if (segments.pop() === undefined) return null
+    if (segment === '..') return null
+    if (segment !== '' && segment !== '.') segments.push(segment)
   }
   return { root, segments }
 }
@@ -151,7 +152,6 @@ function relativeToRoot(cwd: string, root: string): string | null {
   const base = splitAbsolutePath(root, windows)
   const target = splitAbsolutePath(cwd, windows)
   if (!base || !target || !same(base.root, target.root)) return null
-  // `..` is resolved first, so a path that climbs out of the root never matches.
   if (!base.segments.every((segment, index) => target.segments[index] !== undefined && same(segment, target.segments[index]))) return null
   const inside = target.segments.slice(base.segments.length)
   return inside.length === 0 ? '.' : inside.join('/')

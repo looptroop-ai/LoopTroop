@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TEST } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
@@ -1708,6 +1708,13 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByRole('button', { name: 'Copy raw output' })).toBeInTheDocument()
     await waitFor(() => expect(document.activeElement).toBe(dialog))
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    // Backward Tab from the dialog itself wraps to its last control, as Radix
+    // does from the first one, instead of doing nothing.
+    const controls = within(dialog).getAllByRole('button')
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(controls.at(-1))
+    expect(document.activeElement).not.toBe(dialog)
   })
 
   it('shows expanded plan and expansion diff during Beads expansion', () => {

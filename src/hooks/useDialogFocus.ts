@@ -41,7 +41,7 @@ const FOCUSABLE_SELECTOR = [
  * the tab order. A hidden input landing first or last would otherwise become the
  * boundary the wrap-around aims at, and focus would leave the dialog.
  */
-function getFocusable(roots: HTMLElement[]): HTMLElement[] {
+export function getFocusable(roots: HTMLElement[]): HTMLElement[] {
   const found: HTMLElement[] = []
   for (const root of roots) {
     for (const element of root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)) {

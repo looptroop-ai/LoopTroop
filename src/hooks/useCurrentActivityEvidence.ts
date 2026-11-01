@@ -68,6 +68,7 @@ export function useCurrentActivityEvidence({
   }, [activityEnabled, activityLogs.entries, activityLogs.hasOlder, activityLogs.isError, activityLogs.isFetching, activityLogs.isSuccess, scopeKey])
 
   const readyEvidence = scopeKey && completeEvidence?.scopeKey === scopeKey ? completeEvidence : null
+  const attemptVerificationFailed = Boolean(attemptScopeKey && phaseAttempts.isError)
   const errorTitle = attemptScopeKey && phaseAttempts.isError
     ? 'The current phase attempt could not be verified.'
     : activityEnabled && activityLogs.isError
@@ -90,10 +91,10 @@ export function useCurrentActivityEvidence({
   }, [attemptScopeKey, attemptsFailed, refetchAttempts, retryHistoricalLogs])
 
   return {
-    entries: readyEvidence?.entries ?? [],
+    entries: attemptVerificationFailed ? [] : readyEvidence?.entries ?? [],
     activePhaseAttempt: ticketId ? activePhaseAttempt : requestedAttempt,
     activeStatus: phase || null,
-    enabled: enabled && (!ticketId || readyEvidence !== null),
+    enabled: enabled && !attemptVerificationFailed && (!ticketId || readyEvidence !== null),
     error,
     errorTitle,
     retry,

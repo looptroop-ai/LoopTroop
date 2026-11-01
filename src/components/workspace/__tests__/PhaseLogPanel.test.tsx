@@ -1936,6 +1936,35 @@ describe('PhaseLogPanel', () => {
     }
   })
 
+  it('hides previously loaded warnings while current-attempt verification fails', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({
+      data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false,
+    })
+    const prompt = makeActivityPrompt(1)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      const rendered = renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+
+      useTicketPhaseAttemptsMock.mockReturnValue({
+        data: undefined, isSuccess: false, isFetching: false, isError: true,
+        error: new Error('attempt service unavailable'), refetch: vi.fn(),
+      })
+      rendered.rerender(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('The current phase attempt could not be verified.')
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('does not infer a current attempt from an empty or archived-only list', () => {
     const prompt = makeActivityPrompt(1)
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))

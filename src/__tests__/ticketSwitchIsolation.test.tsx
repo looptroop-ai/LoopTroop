@@ -514,16 +514,20 @@ describe('cross-ticket state isolation', () => {
 
     renderApp()
     await openTicket(first)
+    await waitFor(() => {
+      expect(queryClient.getQueryState(['ticket-ui-state', first.id, 'manual_qa_draft:v2'])?.status).toBe('success')
+    })
 
     // Fail the one checklist item and describe the failure. Both live in the round draft.
     fireEvent.click((await screen.findAllByRole('button', { name: 'Fail' }))[0]!)
-    const observation = await screen.findByPlaceholderText(QA_OBSERVATION_PLACEHOLDER)
+    const observation = screen.getByPlaceholderText(QA_OBSERVATION_PLACEHOLDER)
     fireEvent.change(observation, { target: { value: QA_OBSERVATION } })
 
     await openTicket(second)
 
     await waitFor(() => {
       expect(screen.getByLabelText('Manual QA version')).toBeInTheDocument()
+      expect(queryClient.getQueryState(['ticket-ui-state', second.id, 'manual_qa_draft:v2'])?.status).toBe('success')
     })
     // Load-bearing: the failure description. `ManualQAView` keys its draft by version and checklist
     // hash, with no ticket id, so both tickets here produce the same key and its restore effect

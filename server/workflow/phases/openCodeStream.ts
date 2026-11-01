@@ -1029,36 +1029,38 @@ export function emitOpenCodeSessionLogs(
     .reverse()
     .find(isAssistantMessage)
     ?.info?.variant
+  const { responseText, responseMeta } = analyzeAssistantMessages(messages)
+  const fallbackContent = response.trim() || responseText.trim()
+  const responseChars = response.trim() ? response.length : fallbackContent.length
   emitModelSystemLog(
     ticketId,
     ticketExternalId,
     phase,
     'info',
-    `OpenCode ${stage}: ${memberId} session=${sessionId}, messages=${messages.length}, responseChars=${response.length}.`,
+    `OpenCode ${stage}: ${memberId} session=${sessionId}, messages=${messages.length}, responseChars=${responseChars}.`,
     memberId,
     {
+      sessionId,
       ...beadFields,
       ...(typeof latestReportedVariant === 'string' && latestReportedVariant.trim()
         ? { variant: latestReportedVariant }
         : {}),
     },
   )
-  if (response.length === 0) {
+  if (!fallbackContent) {
     emitAiMilestone(
       ticketId,
       ticketExternalId,
       phase,
-      `OpenCode session was restarted: no response text was produced (stage: ${stage}, messages: ${messages.length}). A new session will be started to continue.`,
-      `session-restart:${sessionId}`,
-      { source: 'system', modelId: memberId, ...beadFields },
+      `OpenCode returned no response text (stage: ${stage}, messages: ${messages.length}).`,
+      `empty-response:${sessionId}`,
+      { source: 'system', modelId: memberId, sessionId, ...beadFields },
     )
   }
-  const { responseText, responseMeta } = analyzeAssistantMessages(messages)
   const latestAssistantMessageId = responseMeta.latestAssistantMessageId
   const latestTextEntryId = latestAssistantMessageId
     ? getTextMessageEntryId(sessionId, latestAssistantMessageId)
     : undefined
-  const fallbackContent = response.trim() || responseText.trim()
   const hadCanonicalStreamedText = latestTextEntryId
     ? state?.finalizedTextEntryIds.has(latestTextEntryId) ?? false
     : false

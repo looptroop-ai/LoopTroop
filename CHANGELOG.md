@@ -9,10 +9,16 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- AI activity warnings track current work accurately and show retry controls when their evidence cannot load.
 
 ### Fixed
 
-- Keep AI activity warnings tied to the exact model session, phase, and attempt. One council member's empty response can no longer flag every member, and concurrent sessions using the same model stay separate. Restored logs use chronological evidence from a dedicated activity view, so switching log tabs cannot change the banner. Recovered responses, successful retries, completed work, failures, and user stops clear obsolete waiting states. Empty-output checks include available transcript text; their log message no longer claims a restart occurred. Deadline warnings stop using a dispatch snapshot after a question pauses the shared timer, and an expired snapshot says the outcome is still pending instead of declaring a timeout. Stable diagnostic codes and ordinary log history remain available.
+- Keep warnings tied to the exact model session, phase, and attempt. One council member's empty response cannot flag every member, and concurrent sessions using the same model remain separate. OpenCode response summaries include session metadata and available transcript text; an empty response no longer claims a restart occurred.
+- Retire timed-out coding iterations when replacement work starts, using the actual reset milestone. Provider recovery notices and failed tool parts do not end an ongoing prompt. Failed shell-command output cannot create AI timeout warnings or stop the waiting indicator. Confirmed failures and user stops end waiting; unresolved timeout diagnostics remain until success or a new dispatch.
+- Restore complete activity evidence independently of the selected log tab or supplied display rows. Both log views share retryable evidence loading, keep completed evidence visible through refreshes of the same attempt, and discard it when the scope changes. Missing or failed evidence reads show a retry notice instead of silently hiding the warning surface.
+- Keep activity pages compact with the first and last model detail for each prompt turn, plus lifecycle records. Equal-timestamp records preserve append order within each channel, and activity exports retain full selected record bodies. Indexed attribution runs once per evidence update; clock ticks update only elapsed time and deadline labels. Question waits invalidate earlier deadline snapshots, and an expired snapshot waits for a recorded outcome instead of declaring a timeout. Stable diagnostic codes and ordinary log history remain intact.
 
 ## 0.6.2 (2026-10-30)
 
@@ -36,8 +42,6 @@ A major update bringing a new AI assistant, smarter error recovery, and more rel
 - **✨ Overall:** LoopTroop is becoming easier to use and more reliable, with a major new way to interact with your projects: **just ask the AI!**
 
 ### Summary
-
-- AI activity warnings now track the correct session and clear when that work recovers.
 
 - Package installs now require Node.js 24.18.1 or newer, which includes the July security fixes.
 - The development frontend opens through Tailscale Serve (`*.ts.net`) instead of answering "Blocked request".

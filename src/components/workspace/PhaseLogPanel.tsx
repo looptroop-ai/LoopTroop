@@ -19,12 +19,12 @@ import { filterEntries, formatLogLine, getEntryFullModelId, MULTI_MODEL_PHASES, 
 import { LogEntryRow } from './LogLine'
 import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
 import { countLogTextLines } from './logCountUtils'
-import { CurrentActivityStrip } from './CurrentActivityStrip'
+import { CurrentActivityEvidenceStrip } from './CurrentActivityEvidenceStrip'
 import { useCopyLogs } from '@/hooks/useCopyLogs'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
-import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
+import { useCurrentActivityEvidence } from '@/hooks/useCurrentActivityEvidence'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { Virtuoso } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
@@ -151,34 +151,16 @@ export function PhaseLogPanel({
   const isTerminalTicketStatus = isTerminalWorkflowStatus(ticket?.status)
   const isLiveTicketPhase = !ticket || (ticket.status === phase && !isTerminalTicketStatus)
   const currentActivityEnabled = logMode !== 'snapshot' && isLiveTicketPhase
-  const needsActivePhaseAttempt = shouldLoadHistoricalLogs && currentActivityEnabled && phaseAttempt === undefined
-  const phaseAttempts = useTicketPhaseAttempts(
-    needsActivePhaseAttempt ? ticket?.id : undefined,
-    needsActivePhaseAttempt ? phase : undefined,
-  )
-  const activePhaseAttempt = phaseAttempt ?? phaseAttempts.data?.find(attempt => attempt.state === 'active')?.attemptNumber
-  const activePhaseAttemptReady = !needsActivePhaseAttempt || (phaseAttempts.isSuccess && !phaseAttempts.isFetching)
-  const activityQueryEnabled = shouldLoadHistoricalLogs && currentActivityEnabled && activePhaseAttemptReady
-  const activityLogs = useTicketHistoricalLogs(ticket?.id, {
-    scope: 'phase',
+  const activityEvidence = useCurrentActivityEvidence({
+    ticketId: ticket?.id,
     phase,
-    phaseAttempt: activePhaseAttempt,
-    view: 'activity',
-    limit: 200,
-  }, activityQueryEnabled)
-  const currentActivityEntries = useMemo(
-    () => propLogs ?? mergeEntriesBatch(activityLogs.entries, getLogsForPhase?.(phase, liveLogOptions) ?? []),
-    [activityLogs.entries, getLogsForPhase, liveLogOptions, phase, propLogs],
+    enabled: currentActivityEnabled,
+    requestedAttempt: phaseAttempt,
+  })
+  const liveActivityEntries = useMemo(
+    () => mergeEntriesBatch(getLogsForPhase?.(phase, liveLogOptions) ?? [], propLogs ?? []),
+    [getLogsForPhase, phase, liveLogOptions, propLogs],
   )
-  const fetchAllActivityLogs = activityLogs.fetchAllOlder
-  useEffect(() => {
-    if (!activityQueryEnabled || !activityLogs.hasOlder || activityLogs.isError) return
-    let cancelled = false
-    void fetchAllActivityLogs(() => cancelled).catch(() => undefined)
-    return () => { cancelled = true }
-  }, [fetchAllActivityLogs, activityLogs.hasOlder, activityLogs.isError, activityQueryEnabled])
-  const activityEvidenceReady = Boolean(propLogs) || !shouldLoadHistoricalLogs
-    || (activePhaseAttemptReady && activityLogs.isSuccess && !activityLogs.isFetching && !activityLogs.hasOlder && !activityLogs.isError)
 
   useEffect(() => {
     if (propLogs || shouldLoadHistoricalLogs) return
@@ -701,11 +683,9 @@ export function PhaseLogPanel({
           {copyLogsFailed > 0 && <span key={copyLogsFailed} role="alert" className="text-xs text-destructive">Could not copy complete logs. Click to retry.</span>}
         </div>
       </div>
-      <CurrentActivityStrip
-        entries={currentActivityEntries}
-        enabled={currentActivityEnabled && activityEvidenceReady}
-        activeStatus={ticket?.status ?? phase}
-        activePhaseAttempt={activePhaseAttempt}
+      <CurrentActivityEvidenceStrip
+        evidence={activityEvidence}
+        liveEntries={liveActivityEntries}
         suppressNearTimeout={(ticket?.pendingQuestions?.requestCount ?? 0) > 0}
       />
       {shouldLoadHistoricalLogs && historicalLogs.isError && hasLogs ? (

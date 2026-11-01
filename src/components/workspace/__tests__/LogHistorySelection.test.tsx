@@ -23,7 +23,15 @@ function mockHistoryFetch(implementation: typeof fetch) {
   const historyFetch = vi.fn(implementation)
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = new URL(String(input), 'http://localhost')
-    if (url.pathname.endsWith('/attempts')) return createJsonResponse([])
+    if (url.pathname.endsWith('/attempts')) return createJsonResponse([{
+      ticketId: 'first-ticket',
+      phase: 'CODING',
+      attemptNumber: 1,
+      state: 'active',
+      archivedReason: null,
+      createdAt: new Date(0).toISOString(),
+      archivedAt: null,
+    }])
     if (url.searchParams.get('view') === 'activity') {
       return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
     }

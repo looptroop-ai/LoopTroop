@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { buildSessionStatusLogEntries } from '@server/workflow/sessionStatusLogging'
 import type { LogEntry } from '@/context/LogContext'
 import { normalizeLogRecord } from '@/context/logUtils'
-import { deriveCurrentActivity, deriveCurrentActivities, formatElapsedDuration } from '../currentActivity'
+import { analyzeCurrentActivities, resolveCurrentActivities, deriveCurrentActivity, deriveCurrentActivities, formatElapsedDuration } from '../currentActivity'
 
 const BASE_TIME_MS = Date.parse('2026-05-25T10:00:00.000Z')
 
@@ -461,7 +462,7 @@ describe('current warning attribution and lifecycle', () => {
     const activities = deriveCurrentActivities([
       makePrompt(), secondPrompt({ modelId: 'openai/gpt-5-codex', beadId: 'bead-2' }),
     ])
-    expect(activities).toHaveLength(2)
+    expect(activities.map(a => a.sessionId)).toEqual(['ses_waiting', 'ses_other'])
   })
 
   it('does not assign an unscoped failure to every concurrent model', () => {
@@ -562,10 +563,13 @@ describe('current warning attribution and lifecycle', () => {
     ['provider_timeout_preserved', 'OpenCode/provider timeout for session ses_waiting; preserving session for Continue.'],
     ['iteration_timeout', 'Iteration timeout for bead bead-2 attempt 1; resetting for attempt 2 of 3.'],
     ['model_no_activity_timeout', '[ERROR] OpenCode prompt timed out after 120000ms.'],
-  ])('clears %s when a replacement session retries the same work', (_kind, line) => {
+  ])('clears %s when a replacement session retries the same work', (kind, line) => {
     const activities = deriveCurrentActivities([
       makePrompt(), makeLog('failure', line, {
-        source: 'error', kind: 'error', sessionId: 'ses_waiting', timestamp: timestamp(1_000),
+        ...(kind === 'iteration_timeout'
+          ? { source: 'system', kind: 'milestone', modelId: 'openai/gpt-5-codex', beadId: 'bead-2' }
+          : { source: 'error', kind: 'error', sessionId: 'ses_waiting' }),
+        timestamp: timestamp(1_000),
       }),
       secondPrompt({ modelId: 'openai/gpt-5-codex', beadId: 'bead-2', timestamp: timestamp(2_000) }),
     ])
@@ -582,7 +586,6 @@ describe('current warning attribution and lifecycle', () => {
   it.each([
     ['session', 'Session status: idle', 'idle'],
     ['milestone', 'AI session failed (session=ses_waiting).', 'failed'],
-    ['error', 'Provider returned an authentication error.', 'error'],
     ['session', 'Interview draft stopped by the user for model session=ses_waiting.', 'ses_waiting:draft-finished'],
   ])('ends waiting on actual %s state: %s', (kind, line, entryId) => {
     expect(deriveCurrentActivities([
@@ -731,4 +734,112 @@ it.each(['Timeout', 'OpenCode prompt timed out after 120000ms.', 'Workflow deadl
     }),
     makeLog('later-error', `[ERROR] ${message}`, { source: 'error', kind: 'error', timestamp: timestamp(2_000) }),
   ])).toBeNull()
+})
+
+
+describe('review regressions', () => {
+  it.each(['Tool request failed; continuing.', '[SYS] AI session failed (session=ses_waiting).', '[SYS] First AI activity observed'])('does not let recoverable error text end or start a retrying prompt: %s', message => {
+    const status = buildSessionStatusLogEntries('ses_waiting', {
+      type: 'session_status', sessionId: 'ses_waiting', status: 'retry', attempt: 2,
+      action: { reason: 'oauth_expired', title: 'Sign in required' },
+    }).map((entry, index) => normalizeLogRecord({
+      ...entry, source: 'model:openai/gpt-5-codex', audience: 'ai',
+      sessionId: 'ses_waiting', timestamp: timestamp(2_000 + index),
+    }, 'CODING'))
+    const toolError = makeLog('tool-error', message, {
+      source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'error',
+      entryId: 'ses_waiting:failed-tool-part', sessionId: 'ses_waiting', timestamp: timestamp(1_000),
+    })
+    expect(deriveCurrentActivities([makePrompt(), toolError, ...status], BASE_TIME_MS + 3_000))
+      .toMatchObject([{ kind: 'provider_retrying', label: 'Provider retrying before first model activity', sessionId: 'ses_waiting', active: true }])
+    expect(deriveCurrentActivity([makePrompt(), toolError])?.kind).toBe('waiting_first_model_activity')
+  })
+
+  it('ends waiting only when the provider failure is confirmed by a session-ending milestone', () => {
+    expect(deriveCurrentActivities([
+      makePrompt(), makeLog('failure', 'Provider returned an authentication error.', {
+        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'error',
+        sessionId: 'ses_waiting', timestamp: timestamp(1_000),
+      }),
+      makeLog('session-failed', 'AI session failed (session=ses_waiting).', {
+        source: 'model:openai/gpt-5-codex', sessionId: 'ses_waiting', timestamp: timestamp(2_000),
+      }),
+    ])).toEqual([])
+  })
+
+  it.each(['workflow timeout in orchestrator.test.ts', 'deadline exceeded', 'OpenCode retry grace window expired after 60000ms'])('does not interpret failed commands containing %s as AI lifecycle evidence', message => {
+    expect(deriveCurrentActivity([
+      makePrompt(), makeLog('command-error', `[CMD] $ npm test
+error: ${message}`, {
+        kind: 'error', source: 'system', beadId: 'bead-2', timestamp: timestamp(2_000),
+      }),
+    ], BASE_TIME_MS + 3_000)?.kind).toBe('waiting_first_model_activity')
+  })
+
+  it('does not let quoted completion text end a turn before its subsequent provider retry', () => {
+    expect(deriveCurrentActivity([
+      makePrompt(), makeLog('quoted', 'AI session completed', {
+        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'text',
+        sessionId: 'ses_waiting', timestamp: timestamp(1_000),
+      }),
+      makeLog('retry', 'Session retry #1: provider unavailable.', {
+        source: 'model:openai/gpt-5-codex', audience: 'ai', kind: 'error',
+        sessionId: 'ses_waiting', timestamp: timestamp(2_000),
+      }),
+    ])?.kind).toBe('provider_retrying')
+  })
+
+  it('retires a reset attempt without a session-scoped failure row', () => {
+    expect(deriveCurrentActivities([
+      makePrompt(), makeLog('reset', 'Reset bead bead-2 to its start snapshot and appended retry notes for attempt 2.', {
+        beadId: 'bead-2', modelId: 'openai/gpt-5-codex', timestamp: timestamp(1_000),
+      }),
+      makePrompt({ id: 'replacement', entryId: 'replacement', sessionId: 'ses_replacement', timestamp: timestamp(2_000) }),
+    ]).map(a => a.sessionId)).toEqual(['ses_replacement'])
+  })
+
+  it('retains an unresolved timeout when abort cleanup subsequently reports idle', () => {
+    expect(deriveCurrentActivity([
+      makePrompt(), makeLog('timeout', '[ERROR] OpenCode prompt timed out after 120000ms.', {
+        source: 'error', kind: 'error', sessionId: 'ses_waiting', timestamp: timestamp(120_000),
+      }),
+      makeLog('idle', 'Session status: idle.', {
+        source: 'model:openai/gpt-5-codex', kind: 'session', sessionId: 'ses_waiting', timestamp: timestamp(121_000),
+      }),
+    ])?.kind).toBe('model_no_activity_timeout')
+  })
+
+  it('attributes one unscoped end marker to the latest turn rather than superseded prompts', () => {
+    expect(deriveCurrentActivities([
+      makePrompt(), makePrompt({ id: 'continued', entryId: 'continued', timestamp: timestamp(1_000) }),
+      makeLog('completed', 'AI session completed.', { timestamp: timestamp(2_000) }),
+      makePrompt({ id: 'replacement', entryId: 'replacement', sessionId: 'ses_replacement', timestamp: timestamp(3_000) }),
+    ]).map(a => a.sessionId)).toEqual(['ses_replacement'])
+  })
+
+  it('scales attribution linearly and reuses the analysis when only the clock changes', () => {
+    let lineReads = 0
+    const entries: LogEntry[] = []
+    for (let prompt = 0; prompt < 100; prompt++) {
+      const sessionId = `ses_${prompt}`
+      const beadId = `bead-${prompt}`
+      const base = prompt * 100
+      entries.push(makePrompt({ id: sessionId, entryId: sessionId, sessionId, beadId, timestamp: timestamp(base) }))
+      for (let step = 1; step <= 40; step++) {
+        const entry = makeLog(`${sessionId}-${step}`, 'Preparing model context.', { beadId, timestamp: timestamp(base + step) })
+        Object.defineProperty(entry, 'line', { get: () => { lineReads++; return 'Preparing model context.' } })
+        entries.push(entry)
+      }
+      entries.push(makeLog(`${sessionId}-result`, `OpenCode coding_main: model session=${sessionId}, messages=1, responseChars=5.`, {
+        sessionId, timestamp: timestamp(base + 50),
+      }))
+    }
+    entries.push(makePrompt({ id: 'pending', entryId: 'pending', sessionId: 'ses_pending', timestamp: timestamp(20_000) }))
+    const analysis = analyzeCurrentActivities(entries)
+    expect(lineReads).toBeLessThan(entries.length * 50)
+    const analyzedReads = lineReads
+    expect(resolveCurrentActivities(analysis, BASE_TIME_MS + 21_000)).toMatchObject([{ sessionId: 'ses_pending', elapsedMs: 1_000 }])
+    expect(resolveCurrentActivities(analysis, BASE_TIME_MS + 22_000)).toMatchObject([{ sessionId: 'ses_pending', elapsedMs: 2_000 }])
+    expect(lineReads).toBe(analyzedReads)
+  })
 })

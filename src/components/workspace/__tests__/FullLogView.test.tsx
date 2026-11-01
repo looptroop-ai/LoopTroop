@@ -1130,18 +1130,23 @@ describe('FullLogView', () => {
   })
 
   it('shows the current activity strip below the toolbar and above the full log body', async () => {
-    useTicketPhaseAttemptsMock.mockReturnValue({ data: [], isSuccess: true })
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))
-    getAllLogsMock.mockReturnValue([
-      makeLog('prompt-1', '[PROMPT] openai/gpt-5-codex prompt #1\nImplement bead 2.', 'CODING', {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false })
+    const prompt = makeLog('prompt-1', '[PROMPT] openai/gpt-5-codex prompt #1\nImplement bead 2.', 'CODING', {
         source: 'model:openai/gpt-5-codex',
         audience: 'ai',
         kind: 'prompt',
         modelId: 'openai/gpt-5-codex',
         sessionId: 'ses_full_current',
         beadId: 'bead-2',
-      }),
-    ])
+      })
+    getAllLogsMock.mockReturnValue([prompt])
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
 
     await renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
 

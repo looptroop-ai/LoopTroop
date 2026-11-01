@@ -4,7 +4,7 @@ import type { LogEntry } from '@/context/LogContext'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { cn } from '@/lib/utils'
 import { COUNTDOWN_TICK_MS } from '@/lib/constants'
-import { deriveCurrentActivities, formatElapsedDuration, type CurrentActivity } from './currentActivity'
+import { analyzeCurrentActivities, resolveCurrentActivities, formatElapsedDuration, type CurrentActivity } from './currentActivity'
 
 interface CurrentActivityStripProps {
   entries: LogEntry[]
@@ -86,9 +86,13 @@ export function CurrentActivityStrip({ entries, enabled = true, activeStatus, ac
     setNowMs(Date.now())
   }, [entries])
 
+  const analysis = useMemo(
+    () => (enabled ? analyzeCurrentActivities(entries, { activeStatus, activePhaseAttempt }) : []),
+    [activePhaseAttempt, activeStatus, enabled, entries],
+  )
   const activities = useMemo(
-    () => (enabled ? deriveCurrentActivities(entries, nowMs, { activeStatus, activePhaseAttempt, suppressNearTimeout }) : []),
-    [activePhaseAttempt, activeStatus, enabled, entries, nowMs, suppressNearTimeout],
+    () => resolveCurrentActivities(analysis, nowMs, { suppressNearTimeout }),
+    [analysis, nowMs, suppressNearTimeout],
   )
 
   const hasAnyActive = useMemo(() => activities.some((a) => a.active), [activities])

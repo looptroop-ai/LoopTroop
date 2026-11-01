@@ -32,10 +32,20 @@ interface IndexedEntry {
   timeMs: number
 }
 
-interface DiagnosticCandidate {
-  kind: CurrentActivityDiagnostic
-  indexedEntry: IndexedEntry
+interface PromptState {
+  prompt: LogEntry
+  startedAtMs: number
+  questionGeneration: number
+  hasFirstActivity: boolean
+  retrying: boolean
+  ended: boolean
+  successful: boolean
+  diagnostic?: { kind: CurrentActivityDiagnostic; timeMs: number }
 }
+
+type AnalyzedActivity =
+  | { activity: CurrentActivity }
+  | { state: PromptState; deadlineWasSuspended: boolean }
 
 interface CurrentActivityOptions {
   activeStatus?: string | null
@@ -97,7 +107,7 @@ function isPromptEntry(entry: LogEntry): boolean {
 
 function isFirstActivityEntry(entry: LogEntry): boolean {
   if (isPromptEntry(entry)) return false
-  if (isStatusEntry(entry) && /^(?:\[SYS\]\s*)?First AI activity observed\b/i.test(entry.line)) return true
+  if (entry.kind === 'milestone' && isStatusEntry(entry) && /^(?:\[SYS\]\s*)?First AI activity observed\b/i.test(entry.line)) return true
   return entry.audience === 'ai' && FIRST_ACTIVITY_KINDS.has(entry.kind)
 }
 
@@ -106,12 +116,17 @@ function isProviderRetryEntry(entry: LogEntry): boolean {
     && /^(?:\[(?:SYS|ERROR)\]\s*)?Session (?:retry\b|status:\s*retry\b)/i.test(entry.line)
 }
 
+function isCommandEntry(entry: LogEntry): boolean {
+  return entry.audience !== 'ai' && /^\[CMD\]/.test(entry.line.trimStart())
+}
+
 function isStatusEntry(entry: LogEntry): boolean {
-  return ['milestone', 'session', 'error'].includes(entry.kind)
+  return !isCommandEntry(entry) && ['milestone', 'session', 'error'].includes(entry.kind)
     && (TRUSTED_DIAGNOSTIC_SOURCES.has(entry.source) || entry.source.startsWith('model:'))
 }
 
 function isTrustedDiagnosticEntry(entry: LogEntry): boolean {
+  if (isCommandEntry(entry)) return false
   return (entry.audience !== 'ai'
     && TRUSTED_DIAGNOSTIC_SOURCES.has(entry.source)
     && TRUSTED_DIAGNOSTIC_KINDS.has(entry.kind))
@@ -148,8 +163,7 @@ function isPromptCompletionEntry(entry: LogEntry): boolean {
 
 function isPromptFailureEntry(entry: LogEntry): boolean {
   return isStatusEntry(entry) && !isProviderRetryEntry(entry) && (
-    entry.kind === 'error'
-    || /^(?:\[SYS\]\s*)?AI session failed\b/i.test(entry.line)
+    (entry.kind === 'milestone' && /^(?:\[SYS\]\s*)?AI session failed\b/i.test(entry.line))
     || entry.entryId.endsWith(':draft-finished')
   )
 }
@@ -201,24 +215,6 @@ function getBeadId(entry: LogEntry): string | undefined {
   return entry.beadId || (isStatusEntry(entry)
     ? /\bbead(?:\s*[=:]\s*|\s+)([\w.-]+)/i.exec(entry.line)?.[1]
     : undefined)
-}
-
-function entryMatchesPrompt(entry: LogEntry, prompt: LogEntry): boolean {
-  const sessionId = getSessionId(entry)
-  if (sessionId) return sessionId === prompt.sessionId
-  const beadId = getBeadId(entry)
-  if (beadId && beadId !== prompt.beadId) return false
-  const modelId = getModelId(entry)
-  if (modelId && modelId !== getModelId(prompt)) return false
-  return true
-}
-
-function entryRelatesToPrompt(indexed: IndexedEntry, prompt: LogEntry, prompts: IndexedEntry[]): boolean {
-  if (!entryMatchesPrompt(indexed.entry, prompt)) return false
-  if (getSessionId(indexed.entry)) return true
-  // Missing attribution is safe only when exactly one dispatched prompt could own the row.
-  return prompts.filter(candidate => compareIndexedEntries(candidate, indexed) < 0
-    && entryMatchesPrompt(indexed.entry, candidate.entry)).length === 1
 }
 
 function buildDiagnosticActivity(
@@ -318,13 +314,6 @@ function buildDiagnosticActivity(
   }
 }
 
-function pickLatestDiagnostic(candidates: DiagnosticCandidate[]): DiagnosticCandidate | null {
-  if (candidates.length === 0) return null
-  return candidates.reduce((latest, candidate) => (
-    compareIndexedEntries(candidate.indexedEntry, latest.indexedEntry) > 0 ? candidate : latest
-  ))
-}
-
 export function formatElapsedDuration(elapsedMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
   const seconds = totalSeconds % 60
@@ -338,146 +327,171 @@ export function formatElapsedDuration(elapsedMs: number): string {
   return `${hours}h ${minutes}m`
 }
 
-export function deriveCurrentActivities(
-  entries: LogEntry[],
-  nowMs = Date.now(),
-  options: CurrentActivityOptions = {},
-): CurrentActivity[] {
-  let orderedEntries = sortEntries(entries)
+function laneKey(prompt: LogEntry): string {
+  return JSON.stringify([getModelId(prompt) ?? null, prompt.beadId ?? null])
+}
 
-  // Identify the current active status (ignoring BLOCKED_ERROR unless supplied
-  // by the ticket). Phase-only log buckets need the ticket status to avoid
-  // resurrecting stale timeout warnings when reviewing earlier phases.
-  let activeStatus: string | undefined = options.activeStatus ?? undefined
+function addToIndex(index: Map<string, Set<PromptState>>, key: string | undefined, state: PromptState) {
+  if (key === undefined) return
+  let states = index.get(key)
+  if (!states) index.set(key, states = new Set())
+  states.add(state)
+}
+
+function removeFromIndex(index: Map<string, Set<PromptState>>, key: string | undefined, state: PromptState) {
+  if (key === undefined) return
+  const states = index.get(key)
+  states?.delete(state)
+  if (states?.size === 0) index.delete(key)
+}
+
+export function analyzeCurrentActivities(
+  entries: LogEntry[],
+  options: CurrentActivityOptions = {},
+): AnalyzedActivity[] {
+  let activeStatus = options.activeStatus ?? undefined
   if (!activeStatus) {
-    for (let i = orderedEntries.length - 1; i >= 0; i--) {
-      const status = orderedEntries[i]!.entry.status
-      if (status && status !== 'BLOCKED_ERROR') {
-        activeStatus = status
-        break
-      }
+    let latest: IndexedEntry | undefined
+    for (const [index, entry] of entries.entries()) {
+      if (!entry.status || entry.status === 'BLOCKED_ERROR') continue
+      const candidate = { entry, index, timeMs: parseTimeMs(entry.timestamp) }
+      if (!latest || compareIndexedEntries(candidate, latest) > 0) latest = candidate
     }
+    activeStatus = latest?.entry.status
+  }
+  const phaseEntries = entries.filter(entry => !activeStatus || entry.status === activeStatus)
+  const activePhaseAttempt = options.activePhaseAttempt
+    ?? phaseEntries.reduce((latest, entry) => Math.max(latest, entry.phaseAttempt ?? 1), 1)
+  const orderedEntries = sortEntries(phaseEntries.filter(entry => (entry.phaseAttempt ?? 1) === activePhaseAttempt))
+  const states = new Set<PromptState>()
+  const sessions = new Map<string, PromptState>()
+  const models = new Map<string, Set<PromptState>>()
+  const beads = new Map<string, Set<PromptState>>()
+  const lanes = new Map<string, Set<PromptState>>()
+  const endedLanes = new Map<string, Set<PromptState>>()
+  const anonymousLanes = new Map<string, PromptState>()
+  let questionGeneration = 0
+
+  const retire = (state: PromptState) => {
+    states.delete(state)
+    if (state.prompt.sessionId) sessions.delete(state.prompt.sessionId)
+    const key = laneKey(state.prompt)
+    removeFromIndex(models, getModelId(state.prompt), state)
+    removeFromIndex(beads, state.prompt.beadId, state)
+    removeFromIndex(lanes, key, state)
+    removeFromIndex(endedLanes, key, state)
+    if (anonymousLanes.get(key) === state) anonymousLanes.delete(key)
+  }
+  const end = (state: PromptState) => {
+    state.ended = true
+    addToIndex(endedLanes, laneKey(state.prompt), state)
   }
 
-  orderedEntries = orderedEntries.filter(({ entry }) => !activeStatus || entry.status === activeStatus)
-  const activePhaseAttempt = options.activePhaseAttempt
-    ?? orderedEntries.reduce((latest, { entry }) => Math.max(latest, entry.phaseAttempt ?? 1), 1)
-  orderedEntries = orderedEntries.filter(({ entry }) => (entry.phaseAttempt ?? 1) === activePhaseAttempt)
-  const prompts = orderedEntries.filter(({ entry }) => isPromptEntry(entry))
-
-  const currentPrompts = prompts.filter((indexed, index) => {
-    const prompt = indexed.entry
-    return !prompts.slice(index + 1).some(newer => {
-      if (prompt.sessionId && newer.entry.sessionId === prompt.sessionId) return true
-      const sameModel = getModelId(prompt) === getModelId(newer.entry)
-      const sameBead = prompt.beadId === newer.entry.beadId
-      if (!sameModel || !sameBead) return false
-      if (!prompt.sessionId && !newer.entry.sessionId) return true
-      // A replacement session retires an ended attempt, but concurrent sessions stay separate.
-      return orderedEntries.some(candidate => compareIndexedEntries(indexed, candidate) < 0
-        && compareIndexedEntries(candidate, newer) < 0
-        && entryMatchesPrompt(candidate.entry, prompt)
-        && (getSessionId(candidate.entry) === prompt.sessionId
-          || entryRelatesToPrompt(candidate, prompt, prompts))
-        && (isPromptCompletionEntry(candidate.entry) || isPromptFailureEntry(candidate.entry)))
-    })
-  })
-
-  const activities: CurrentActivity[] = []
-
-  for (const promptIndexed of currentPrompts) {
-    const prompt = promptIndexed.entry
-    const promptTimeMs = promptIndexed.timeMs
-
-    const promptIndex = orderedEntries.indexOf(promptIndexed)
-    const entriesAfterPrompt = orderedEntries
-      .slice(promptIndex + 1)
-      .filter(indexed => entryRelatesToPrompt(indexed, prompt, currentPrompts))
-
-    const firstActivityIndex = entriesAfterPrompt.findIndex(({ entry }) => isFirstActivityEntry(entry))
-    const firstActivityEntry = firstActivityIndex >= 0 ? entriesAfterPrompt[firstActivityIndex]! : null
-    const hasFirstActivity = firstActivityEntry !== null
-    const promptCompletionEntry = entriesAfterPrompt.findLast(({ entry }) => isPromptCompletionEntry(entry))
-    const successfulResult = entriesAfterPrompt.find(({ entry }) => isPromptResultEntry(entry) && !isEmptyModelOutputEntry(entry))
-    const diagnosticCandidates: DiagnosticCandidate[] = []
-
-    for (const indexedEntry of entriesAfterPrompt) {
-      const { entry } = indexedEntry
-      if (successfulResult && compareIndexedEntries(indexedEntry, successfulResult) > 0
-        && !getSessionId(entry) && !getBeadId(entry)) continue
-      if (isProviderRetryTimeoutEntry(entry)) {
-        diagnosticCandidates.push({ kind: 'provider_retry_timeout', indexedEntry })
-      } else if (isProviderTimeoutPreservedEntry(entry)) {
-        diagnosticCandidates.push({ kind: 'provider_timeout_preserved', indexedEntry })
-      } else if (isEmptyModelOutputEntry(entry)) {
-        diagnosticCandidates.push({ kind: 'empty_model_output', indexedEntry })
-      } else if (isIterationTimeoutEntry(entry)) {
-        diagnosticCandidates.push({ kind: 'iteration_timeout', indexedEntry })
-      } else if (isTrustedPromptTimeoutEntry(entry)
-        || (isStatusEntry(entry) && entry.entryId.endsWith(':draft-finished') && /\bdraft timed out\b/i.test(entry.line))) {
-        const activityStartedBeforeTimeout = firstActivityEntry
-          ? compareIndexedEntries(firstActivityEntry, indexedEntry) < 0
-          : false
-        diagnosticCandidates.push({
-          kind: activityStartedBeforeTimeout ? 'workflow_timeout' : 'model_no_activity_timeout',
-          indexedEntry,
-        })
+  for (const { entry, timeMs } of orderedEntries) {
+    if (isCommandEntry(entry)) continue
+    if (isPromptEntry(entry)) {
+      const key = laneKey(entry)
+      const previous = entry.sessionId ? sessions.get(entry.sessionId) : anonymousLanes.get(key)
+      if (previous) retire(previous)
+      // An ended turn can be replaced; overlapping sessions in the same lane stay independent.
+      for (const ended of endedLanes.get(key) ?? []) retire(ended)
+      const state: PromptState = {
+        prompt: entry, startedAtMs: timeMs, questionGeneration,
+        hasFirstActivity: false, retrying: false, ended: false, successful: false,
       }
-    }
-
-    const latestDiagnostic = pickLatestDiagnostic(diagnosticCandidates)
-    if (latestDiagnostic) {
-      const recovered = entriesAfterPrompt.some(indexed => (
-        compareIndexedEntries(indexed, latestDiagnostic.indexedEntry) > 0
-        && isPromptResultEntry(indexed.entry) && !isEmptyModelOutputEntry(indexed.entry)
-      ))
-      if (recovered) continue
-      activities.push(buildDiagnosticActivity(latestDiagnostic.kind, prompt, latestDiagnostic.indexedEntry.timeMs))
+      states.add(state)
+      if (entry.sessionId) sessions.set(entry.sessionId, state)
+      else anonymousLanes.set(key, state)
+      addToIndex(models, getModelId(entry), state)
+      addToIndex(beads, entry.beadId, state)
+      addToIndex(lanes, key, state)
       continue
     }
+    if (isStatusEntry(entry) && entry.kind === 'session' && /^\[QUESTION\]/.test(entry.line)) questionGeneration++
 
-    if (promptCompletionEntry || entriesAfterPrompt.some(({ entry }) => isPromptFailureEntry(entry))) continue
+    const sessionId = getSessionId(entry)
+    const modelId = getModelId(entry)
+    const beadId = getBeadId(entry)
+    let state: PromptState | undefined
+    if (sessionId) state = sessions.get(sessionId)
+    else {
+      const candidates = modelId && beadId
+        ? lanes.get(JSON.stringify([modelId, beadId]))
+        : modelId ? models.get(modelId) : beadId ? beads.get(beadId) : states
+      if (candidates?.size === 1) state = candidates.values().next().value
+    }
+    if (!state) continue
+    if (state.successful && !sessionId && !beadId) continue
 
-    const latestRetry = entriesAfterPrompt.findLast(({ entry }) => isProviderRetryEntry(entry))
-    const retryStillActive = latestRetry && !entriesAfterPrompt.some(indexed => (
-      compareIndexedEntries(indexed, latestRetry) > 0 && (
-        isFirstActivityEntry(indexed.entry)
-        || (isStatusEntry(indexed.entry) && /^(?:\[SYS\]\s*)?Session status:\s*busy\b/i.test(indexed.entry.line))
-      )
-    ))
-    if (hasFirstActivity && !retryStillActive) continue
+    const firstActivity = isFirstActivityEntry(entry)
+    let diagnostic: CurrentActivityDiagnostic | undefined
+    if (isProviderRetryTimeoutEntry(entry)) diagnostic = 'provider_retry_timeout'
+    else if (isProviderTimeoutPreservedEntry(entry)) diagnostic = 'provider_timeout_preserved'
+    else if (isEmptyModelOutputEntry(entry)) diagnostic = 'empty_model_output'
+    else if (isIterationTimeoutEntry(entry)) diagnostic = 'iteration_timeout'
+    else if (isTrustedPromptTimeoutEntry(entry)
+      || (isStatusEntry(entry) && entry.entryId.endsWith(':draft-finished') && /\bdraft timed out\b/i.test(entry.line))) {
+      diagnostic = state.hasFirstActivity ? 'workflow_timeout' : 'model_no_activity_timeout'
+    }
+    if (diagnostic) {
+      state.diagnostic = { kind: diagnostic, timeMs }
+      end(state)
+    }
+    if (isPromptResultEntry(entry) && !isEmptyModelOutputEntry(entry)) {
+      state.successful = true
+      state.diagnostic = undefined
+    }
+    if (isProviderRetryEntry(entry)) state.retrying = true
+    else if (firstActivity || (isStatusEntry(entry) && /^(?:\[SYS\]\s*)?Session status:\s*busy\b/i.test(entry.line))) state.retrying = false
+    if (firstActivity) state.hasFirstActivity = true
+    const reset = isTrustedDiagnosticEntry(entry)
+      && /^(?:\[SYS\]\s*)?Reset bead \S+ to its start snapshot\b/i.test(entry.line)
+    if (isPromptCompletionEntry(entry) || isPromptFailureEntry(entry) || reset) end(state)
+  }
 
-    // Question waits suspend every ticket budget, invalidating earlier dispatch deadlines.
-    const deadlineWasSuspended = orderedEntries.slice(promptIndex + 1).some(({ entry }) => (
-      entry.kind === 'session' && /^\[QUESTION\]/.test(entry.line)
-    ))
+  const analysis: AnalyzedActivity[] = []
+  for (const state of states) {
+    if (state.diagnostic) analysis.push({ activity: buildDiagnosticActivity(state.diagnostic.kind, state.prompt, state.diagnostic.timeMs) })
+    else if (!state.ended && (!state.hasFirstActivity || state.retrying)) {
+      analysis.push({ state, deadlineWasSuspended: state.questionGeneration !== questionGeneration })
+    }
+  }
+  return analysis
+}
+
+export function resolveCurrentActivities(
+  analysis: AnalyzedActivity[],
+  nowMs = Date.now(),
+  options: Pick<CurrentActivityOptions, 'suppressNearTimeout'> = {},
+): CurrentActivity[] {
+  return analysis.map(item => {
+    if ('activity' in item) return item.activity
+    const { state, deadlineWasSuspended } = item
+    const prompt = state.prompt
     if (!options.suppressNearTimeout && !deadlineWasSuspended && isNearTimeoutPrompt(prompt, nowMs)) {
       const activity = buildDiagnosticActivity('near_timeout', prompt, nowMs)
       if (nowMs >= parseDeadlineMs(prompt.deadlineAt)) activity.label = 'Prompt deadline reached; awaiting outcome'
-      activities.push(activity)
-      continue
+      return activity
     }
-
-    const elapsedMs = Number.isFinite(promptTimeMs) ? Math.max(0, nowMs - promptTimeMs) : undefined
-    activities.push({
-      kind: retryStillActive ? 'provider_retrying' : 'waiting_first_model_activity',
+    return {
+      kind: state.retrying ? 'provider_retrying' : 'waiting_first_model_activity',
       active: true,
-      severity: retryStillActive ? 'warning' : 'info',
-      label: retryStillActive
-        ? hasFirstActivity ? 'Provider retrying' : 'Provider retrying before first model activity'
+      severity: state.retrying ? 'warning' : 'info',
+      label: state.retrying
+        ? state.hasFirstActivity ? 'Provider retrying' : 'Provider retrying before first model activity'
         : 'Waiting for first model activity',
-      elapsedMs,
-      modelId: getModelId(prompt),
-      sessionId: prompt.sessionId,
-      beadId: prompt.beadId,
-    })
-  }
+      elapsedMs: Number.isFinite(state.startedAtMs) ? Math.max(0, nowMs - state.startedAtMs) : undefined,
+      modelId: getModelId(prompt), sessionId: prompt.sessionId, beadId: prompt.beadId,
+    }
+  })
+}
 
-  return activities
+export function deriveCurrentActivities(
+  entries: LogEntry[], nowMs = Date.now(), options: CurrentActivityOptions = {},
+): CurrentActivity[] {
+  return resolveCurrentActivities(analyzeCurrentActivities(entries, options), nowMs, options)
 }
 
 export function deriveCurrentActivity(entries: LogEntry[], nowMs = Date.now()): CurrentActivity | null {
-  const activities = deriveCurrentActivities(entries, nowMs)
-  if (activities.length === 0) return null
-  return activities[activities.length - 1] || null
+  return deriveCurrentActivities(entries, nowMs).at(-1) ?? null
 }

@@ -1684,6 +1684,32 @@ describe('PhaseArtifactsPanel', () => {
     }
   })
 
+  it('opens artifact dialogs on the dialog itself so copy tooltips stay closed', async () => {
+    const coverageArtifact = makeArtifact({
+      phase: 'VERIFYING_PRD_COVERAGE',
+      artifactType: 'prd_coverage',
+      content: 'Coverage report is still being generated.',
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="VERIFYING_PRD_COVERAGE"
+        isCompleted={false}
+        councilMemberNames={['openai/gpt-5.2']}
+        preloadedArtifacts={[coverageArtifact]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Coverage Report/i }))
+
+    const dialog = await screen.findByRole('dialog')
+    // The raw fallback puts a copy button first in the dialog, and focusing it
+    // would open its tooltip before the user hovered anything.
+    expect(screen.getByRole('button', { name: 'Copy raw output' })).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(dialog))
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
+
   it('shows expanded plan and expansion diff during Beads expansion', () => {
     const semanticPlanContent = buildBeadsDocumentContent([
       { id: 'bead-1', title: 'Inspect the implementation plan under review' },

@@ -2690,6 +2690,44 @@ items:
     expect(screen.queryByText('Historical transition gap that should not win over remainingGaps.')).not.toBeInTheDocument()
   })
 
+  it('keeps the coverage report selector and the Summary/Raw switcher on one row', () => {
+    render(
+      <ArtifactContent
+        artifactId="coverage-report"
+        phase="WAITING_PRD_APPROVAL"
+        content={JSON.stringify({
+          winnerId: 'openai/gpt-5.2',
+          status: 'gaps',
+          summary: 'PRD Candidate v2 still has 1 gap.',
+          finalCandidateVersion: 2,
+          hasRemainingGaps: true,
+          remainingGaps: ['Remaining approval gap.'],
+          transitions: [
+            {
+              fromVersion: 1,
+              toVersion: 2,
+              summary: 'Coverage revised PRD Candidate v1 into v2.',
+              gaps: ['The first candidate missed rollback verification.'],
+              auditNotes: 'status: gaps',
+              fromContent: buildPrdDocumentContent(),
+              toContent: buildPrdDocumentContent({ architectureConstraint: 'Keep rollback steps documented.' }),
+              gapResolutions: [],
+              resolutionNotes: [],
+            },
+          ],
+        })}
+      />,
+    )
+
+    const controlsRow = screen.getByRole('button', { name: /Latest Check/i }).closest('.items-center.gap-2')
+    expect(controlsRow).not.toBeNull()
+    expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Summary' }))
+    expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Raw' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
+    expect(screen.queryByRole('button', { name: /Latest Check/i })).not.toBeInTheDocument()
+  })
+
   it('shows standalone transition notes and the candidate diff for a coverage pass', () => {
     render(
       <ArtifactContent

@@ -105,7 +105,9 @@ interface BeadCommitMetadata {
 /**
  * Puts focus on the dialog itself rather than its first button. With member
  * controls showing, that button is often Stop, and a focused trigger opens its
- * tooltip: a working model's dialog would open with Stop highlighted.
+ * tooltip: a working model's dialog would open with Stop highlighted. Artifact
+ * content has the same trap: a copy button can be the first focusable element,
+ * and focus alone opens its tooltip even though nothing was hovered.
  */
 function focusDialogItself(event: Event) {
   event.preventDefault()
@@ -864,7 +866,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
           // The dialog can hold focus itself (see focusDialogItself): a ring only
           // for keyboard focus, never the browser outline after a click.
           className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onOpenAutoFocus={memberControl ? focusDialogItself : undefined}
+          onOpenAutoFocus={focusDialogItself}
         >
           {/* Padded clear of the member controls, which sit over its top right. */}
           <DialogHeader className={memberControl ? 'pr-28 sm:pr-44' : undefined}>

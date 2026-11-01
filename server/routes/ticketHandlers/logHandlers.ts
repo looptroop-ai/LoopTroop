@@ -14,7 +14,7 @@ import { getTicketByRef, getTicketContext, type PublicTicket } from '../../stora
 import { ticketStatusHistory } from '../../db/schema'
 import { sanitizeDiagnosticText, sanitizeDiagnosticValue } from '@shared/errorDiagnostics'
 
-const LOG_VIEWS = new Set<LogView>(['overview', 'system', 'command', 'ai', 'error', 'debug'])
+const LOG_VIEWS = new Set<LogView>(['overview', 'system', 'command', 'ai', 'error', 'debug', 'activity'])
 
 function parseQuery(c: Context, allowCursor: boolean) {
   const scope = c.req.query('scope') ?? 'phase'

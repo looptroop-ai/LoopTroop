@@ -3,11 +3,16 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
 import type { LogContextValue } from '@/context/logUtils'
+import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, type RuntimeBeadInput } from '@/test/factories'
 import { createJsonResponse, createTestQueryClient, withLogContext } from '@/test/renderHelpers'
 import { QueryClientProvider } from '@tanstack/react-query'
+
+const { useTicketPhaseAttemptsMock } = vi.hoisted(() => ({ useTicketPhaseAttemptsMock: vi.fn() }))
+
+vi.mock('@/hooks/useTicketPhaseAttempts', () => ({ useTicketPhaseAttempts: useTicketPhaseAttemptsMock }))
 
 vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({
@@ -65,6 +70,13 @@ function makeLog(id: string, line: string, overrides: Partial<LogEntry> = {}): L
     op: 'append',
     ...overrides,
   }
+}
+
+function makeActivityPrompt(phaseAttempt = 2): LogEntry {
+  return makeLog('active-prompt', '[PROMPT] Draft questions.', {
+    kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+    sessionId: 'ses_current', phaseAttempt,
+  })
 }
 
 function makeTicket(runtimeOverrides: Omit<Partial<Ticket['runtime']>, 'beads'> & { beads?: RuntimeBeadInput[] } = {}): Ticket {
@@ -242,6 +254,7 @@ afterAll(() => {
 })
 
 beforeEach(() => {
+  useTicketPhaseAttemptsMock.mockReturnValue({ data: undefined, isSuccess: false })
   animationFrames.clear()
   nextAnimationFrameId = 1
   scrollToMock.mockClear()
@@ -710,7 +723,7 @@ describe('PhaseLogPanel', () => {
     expect(errors.filter((message) => String(message).includes('same key'))).toEqual([])
   })
 
-  it('stops the activity strip once the ticket reaches a terminal status', () => {
+  it('stops the activity strip once the ticket reaches a terminal status', async () => {
     // The activity has to belong to the phase on screen, or the strip drops it whatever
     // `enabled` says — which is what makes the terminal case worth its own assertion.
     const makePromptFor = (status: string) => makeLog('prompt-1', '[PROMPT] openai/gpt-5.4 prompt #1', {
@@ -729,13 +742,22 @@ describe('PhaseLogPanel', () => {
     })
 
     const runningPrompt = makePromptFor('CODING')
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...runningPrompt, content: runningPrompt.line, phaseAttempt: 1 }] : [],
+        hasOlder: false,
+      })
+    })
     const running = renderWithTooltipProvider(
       withLogContext(makeValue(runningPrompt), (
         <PhaseLogPanel phase="CODING" logs={[runningPrompt]} ticket={{ ...makeTicket(), status: 'CODING' }} />
       )),
     )
-    expect(screen.queryAllByText(/Waiting for first model activity/).length).toBeGreaterThan(0)
+    expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent(/Waiting for first model activity/)
     running.unmount()
+    fetchSpy.mockRestore()
 
     // Same shape, except the run is over. The phase still equals the ticket's status, so
     // the panel read it as live and kept counting elapsed time against work that stopped.
@@ -1863,6 +1885,315 @@ describe('PhaseLogPanel', () => {
     expect(Boolean(strip.compareDocumentPosition(viewport) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
   })
 
+  it('restores current activity independently of the selected log filter', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true })
+    const prompt = makeActivityPrompt()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      for (const name of ['ERROR', 'SYS', 'AI', 'DEBUG']) {
+        fireEvent.click(screen.getByRole('button', { name }))
+        await waitFor(() => expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current'))
+      }
+      const activityRequests = fetchSpy.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+        .filter(url => url.searchParams.get('view') === 'activity')
+      expect(activityRequests).toHaveLength(1)
+      const [activityRequest] = activityRequests
+      if (!activityRequest) throw new Error('Expected one activity request')
+      expect(activityRequest.searchParams.get('phaseAttempt')).toBe('2')
+      expect(activityRequest.searchParams.get('limit')).toBe('200')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('reports phase-attempt errors and retries the attempt lookup', async () => {
+    const refetch = vi.fn()
+    useTicketPhaseAttemptsMock.mockReturnValue({
+      data: undefined,
+      isSuccess: false,
+      isFetching: false,
+      isError: true,
+      error: new Error('attempt service unavailable'),
+      refetch,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('alert')).toHaveTextContent('The current phase attempt could not be verified.')
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(false)
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(refetch).toHaveBeenCalledOnce()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('hides previously loaded warnings while current-attempt verification fails', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({
+      data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false,
+    })
+    const prompt = makeActivityPrompt(1)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      const rendered = renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+
+      useTicketPhaseAttemptsMock.mockReturnValue({
+        data: undefined, isSuccess: false, isFetching: false, isError: true,
+        error: new Error('attempt service unavailable'), refetch: vi.fn(),
+      })
+      rendered.rerender(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('The current phase attempt could not be verified.')
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('does not infer a current attempt from an empty or archived-only list', () => {
+    const prompt = makeActivityPrompt(1)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse({ entries: [], hasOlder: false }))
+    try {
+      useTicketPhaseAttemptsMock.mockReturnValue({ data: [], isSuccess: true, isFetching: false })
+      const rendered = renderWithTooltipProvider(<PhaseLogPanel phase="CODING" logs={[prompt]} ticket={makeTicket()} />)
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(false)
+
+      rendered.unmount()
+      fetchSpy.mockClear()
+      useTicketPhaseAttemptsMock.mockReturnValue({
+        data: [{ state: 'archived', attemptNumber: 7 }],
+        isSuccess: true,
+        isFetching: false,
+      })
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" logs={[prompt]} ticket={makeTicket()} />)
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(false)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('loads current activity for the server-synthesized active attempt 1', async () => {
+    const prompt = makeActivityPrompt(1)
+    useTicketPhaseAttemptsMock.mockReturnValue({
+      data: [{
+        ticketId: 'ticket-1',
+        phase: 'CODING',
+        attemptNumber: 1,
+        state: 'active',
+        archivedReason: null,
+        createdAt: new Date(0).toISOString(),
+        archivedAt: null,
+      }],
+      isSuccess: true,
+      isFetching: false,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" logs={[prompt]} ticket={makeTicket()} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      const activityRequest = fetchSpy.mock.calls.find(([input]) => String(input).includes('view=activity'))
+      expect(new URL(String(activityRequest?.[0]), 'http://localhost').searchParams.get('phaseAttempt')).toBe('1')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('keeps completed activity visible through a same-scope refresh and pagination', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
+    const prompt = makeActivityPrompt()
+    let activityRequests = 0
+    let resolveOlder!: (response: Response) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
+      activityRequests += 1
+      if (activityRequests === 1) return createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: false })
+      if (url.searchParams.has('before')) return new Promise(resolve => { resolveOlder = resolve })
+      return createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: true, olderCursor: 'older-activity' })
+    })
+    try {
+      const rendered = renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+
+      useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: true })
+      rendered.rerender(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
+      rendered.rerender(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+
+      window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId: 'ticket-1' } }))
+      await waitFor(() => expect(activityRequests).toBeGreaterThanOrEqual(3))
+      expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      resolveOlder(await createJsonResponse({ entries: [], hasOlder: false }))
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('clears completed activity when the confirmed attempt changes', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false })
+    const oldPrompt = makeLog('old-prompt', '[PROMPT] Previous attempt.', {
+      kind: 'prompt', audience: 'ai', source: 'model:provider/old', modelId: 'provider/old',
+      sessionId: 'ses_old', phaseAttempt: 1,
+    })
+    const newPrompt = makeLog('new-prompt', '[PROMPT] Current attempt.', {
+      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+      sessionId: 'ses_current', phaseAttempt: 2,
+    })
+    let resolveCurrent!: (response: Response) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
+      if (url.searchParams.get('phaseAttempt') === '2') return new Promise(resolve => { resolveCurrent = resolve })
+      return createJsonResponse({ entries: [{ ...oldPrompt, content: oldPrompt.line }], hasOlder: false })
+    })
+    try {
+      const rendered = renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_old')
+
+      useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
+      rendered.rerender(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('phaseAttempt=2'))).toBe(true))
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+
+      resolveCurrent(await createJsonResponse({ entries: [{ ...newPrompt, content: newPrompt.line }], hasOlder: false }))
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      expect(screen.getByRole('status', { name: 'Current activity' })).not.toHaveTextContent('ses_old')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('waits for complete activity evidence before showing a current warning', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
+    let resolveOlder!: (response: Response) => void
+    const olderResponse = new Promise<Response>(resolve => { resolveOlder = resolve })
+    const prompt = makeActivityPrompt()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
+      if (url.searchParams.has('before')) return olderResponse
+      return createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: true, olderCursor: 'older-activity' })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" phaseAttempt={2} ticket={makeTicket()} />)
+      await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('before=older-activity'))).toBe(true))
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      resolveOlder(await createJsonResponse({ entries: [], hasOlder: false }))
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each([true, false])('keeps an older activity page failure retryable (retry recovers: %s)', async recovers => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
+    const prompt = makeActivityPrompt()
+    let olderRequests = 0
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
+      if (url.searchParams.has('before')) {
+        olderRequests += 1
+        return recovers && olderRequests > 1
+          ? createJsonResponse({ entries: [], hasOlder: false })
+          : createJsonResponse({ error: `older page failure ${olderRequests}` }, 503)
+      }
+      return createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: true, olderCursor: 'older-activity' })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByRole('alert')).toHaveTextContent('Complete current phase activity could not be loaded.')
+      expect(screen.getByRole('alert')).toHaveTextContent('older page failure 1')
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      const retry = screen.getByRole('button', { name: 'Retry' })
+      fireEvent.click(retry)
+      await waitFor(() => expect(olderRequests).toBeGreaterThanOrEqual(2))
+      if (recovers) {
+        expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      } else {
+        await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('older page failure 2'))
+        expect(retry).toBeEnabled()
+        expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      }
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('shows a retryable notice and suppresses supplied logs when activity evidence fails', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 2 }], isSuccess: true, isFetching: false })
+    const prompt = makeActivityPrompt()
+    let activityRequests = 0
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.searchParams.get('view') !== 'activity') return createJsonResponse({ entries: [], hasOlder: false })
+      activityRequests += 1
+      return activityRequests === 1
+        ? createJsonResponse({ error: 'unavailable' }, 503)
+        : createJsonResponse({ entries: [{ ...prompt, content: prompt.line }], hasOlder: false })
+    })
+    try {
+      renderWithTooltipProvider(withLogContext(makeLogContext({ getLogsForPhase: () => [prompt] }),
+        <PhaseLogPanel phase="CODING" phaseAttempt={2} logs={[prompt]} ticket={makeTicket()} />))
+      await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('view=activity'))).toBe(true))
+      expect(screen.queryByRole('status', { name: 'Current activity' })).not.toBeInTheDocument()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Complete current phase activity could not be loaded.')
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('ses_current')
+      expect(activityRequests).toBe(2)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('does not warn about the original deadline while AI questions pause the ticket', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false })
+    const prompt = makeLog('paused-prompt', '[PROMPT] Draft questions.', {
+      kind: 'prompt', audience: 'ai', source: 'model:provider/current', modelId: 'provider/current',
+      sessionId: 'ses_paused', timeoutMs: 100_000, deadlineAt: '2026-03-10T10:01:40.000Z',
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" logs={[prompt]}
+        ticket={{ ...makeTicket(), pendingQuestions: { requestCount: 1, questionCount: 1, deadlineAt: null, stoppedAt: null } }} />)
+      expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('Waiting for first model activity')
+      expect(screen.queryByText('Approaching timeout')).not.toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('does not show stale near-timeout activity when reviewing a past phase', () => {
     const logs: LogEntry[] = [
       makeLog('prompt-past', '[PROMPT] openai/gpt-5-codex prompt #1\nDraft the PRD.', {
@@ -1890,33 +2221,44 @@ describe('PhaseLogPanel', () => {
     expect(screen.queryByText(/Approaching timeout/i)).not.toBeInTheDocument()
   })
 
-  it('shows near-timeout activity while the viewed phase is the live ticket status', () => {
-    const logs: LogEntry[] = [
-      makeLog('prompt-live', '[PROMPT] openai/gpt-5-codex prompt #1\nDraft the PRD.', {
-        status: 'DRAFTING_PRD',
-        source: 'model:openai/gpt-5-codex',
-        audience: 'ai',
-        kind: 'prompt',
-        modelId: 'openai/gpt-5-codex',
-        sessionId: 'ses_live_prd',
-        timeoutMs: 100_000,
-        deadlineAt: '2026-03-10T10:01:40.000Z',
-        timeoutKind: 'ai_response',
-      }),
-    ]
+  it('shows near-timeout activity while the viewed phase is the live ticket status', async () => {
+    useTicketPhaseAttemptsMock.mockReturnValue({ data: [{ state: 'active', attemptNumber: 1 }], isSuccess: true, isFetching: false })
+    const prompt = makeLog('prompt-live', '[PROMPT] openai/gpt-5-codex prompt #1\nDraft the PRD.', {
+      status: 'DRAFTING_PRD',
+      source: 'model:openai/gpt-5-codex',
+      audience: 'ai',
+      kind: 'prompt',
+      modelId: 'openai/gpt-5-codex',
+      sessionId: 'ses_live_prd',
+      timestamp: new Date(Date.now() - 85_000).toISOString(),
+      timeoutMs: 100_000,
+      deadlineAt: new Date(Date.now() + 15_000).toISOString(),
+      timeoutKind: 'ai_response',
+    })
 
-    renderWithTooltipProvider(
-      <PhaseLogPanel
-        phase="DRAFTING_PRD"
-        logs={logs}
-        ticket={{ ...makeTicket(), status: 'DRAFTING_PRD' }}
-      />,
-    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+      const url = new URL(String(input), 'http://localhost')
+      return createJsonResponse({
+        entries: url.searchParams.get('view') === 'activity' ? [{ ...prompt, content: prompt.line }] : [],
+        hasOlder: false,
+      })
+    })
+    try {
+      renderWithTooltipProvider(
+        <PhaseLogPanel
+          phase="DRAFTING_PRD"
+          logs={[prompt]}
+          ticket={{ ...makeTicket(), status: 'DRAFTING_PRD' }}
+        />,
+      )
 
-    const strip = screen.getByRole('status', { name: 'Current activity' })
+      const strip = await screen.findByRole('status', { name: 'Current activity' })
 
-    expect(strip).toHaveTextContent(/Approaching timeout/i)
-    expect(strip).toHaveTextContent(/session ses_live_prd/i)
+      expect(strip).toHaveTextContent(/Approaching timeout/i)
+      expect(strip).toHaveTextContent(/session ses_live_prd/i)
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 
   it('renders bead delimiters in CODING phase', () => {

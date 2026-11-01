@@ -63,7 +63,7 @@ describe('session continuation eligibility', () => {
     ['receipt ambiguity uses the runtime classification', diagnostics({
       kind: 'runtime',
       source: 'opencode',
-      summary: 'OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.',
+      summary: 'OpenCode did not confirm that it received the prompt, so LoopTroop cannot tell whether the AI started working on it.',
     }), []],
     ['invalid request', diagnostics({ summary: 'invalid_request: payload is invalid', statusCode: 400 }), []],
     ['billing', diagnostics({ summary: 'billing account disabled', isRetryable: true }), []],

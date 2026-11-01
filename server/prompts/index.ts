@@ -172,7 +172,7 @@ export const PROM0: PromptTemplate = {
   ],
   outputFormat: 'YAML inside <RELEVANT_FILES_RESULT> tags with top-level keys: `file_count` (integer), `files` (list). Each file item: `path` (string), `rationale` (string, detailed 3-6 sentences), `relevance` (high|medium|low), `likely_action` (read|modify|create), `content_preview` (string, key symbol signatures only — no implementations). No other top-level keys.',
   contextInputs: ['ticket_details'],
-  toolPolicy: 'default',
+  toolPolicy: 'read_only',
 }
 
 // Interview Phase Prompts

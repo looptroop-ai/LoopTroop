@@ -77,6 +77,7 @@ describe.concurrent('structured prompt hardening', () => {
     }
 
     for (const prompt of [
+      PROM0,
       PROM1,
       PROM3,
       PROM4,
@@ -96,7 +97,7 @@ describe.concurrent('structured prompt hardening', () => {
       expect(buildPromptFromTemplate(prompt, [])).not.toContain('Do not use tools.')
     }
 
-    for (const prompt of [PROM0, PROM_CODING, PROM52, PROM54]) {
+    for (const prompt of [PROM_CODING, PROM52, PROM54]) {
       expect(prompt.toolPolicy).toBe('default')
       expect(buildPromptFromTemplate(prompt, [])).not.toContain('Do not use tools.')
     }

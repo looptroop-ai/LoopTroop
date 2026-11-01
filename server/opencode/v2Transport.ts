@@ -21,6 +21,7 @@ import type {
 import {
   OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS,
   OpenCodePromptReceiptUnavailableError,
+  markPromptNotSent,
 } from "./transport";
 import {
   createV2EventMappingState,
@@ -790,49 +791,55 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         "OpenCode v2 requires a model selection when setting a model variant",
       );
     }
-    if (request.model) {
-      await this.request(
-        `/api/session/${encodeURIComponent(request.sessionId)}/model`,
-        {
-          method: "POST",
-          signal,
-          expectedStatus: 204,
-          body: {
-            model: {
-              id: request.model.modelID,
-              providerID: request.model.providerID,
-              ...(request.variant ? { variant: request.variant } : {}),
+    // Model, agent and instruction setup run before the prompt POST: a failure
+    // here means the prompt was never sent, so the adapter may repeat it.
+    try {
+      if (request.model) {
+        await this.request(
+          `/api/session/${encodeURIComponent(request.sessionId)}/model`,
+          {
+            method: "POST",
+            signal,
+            expectedStatus: 204,
+            body: {
+              model: {
+                id: request.model.modelID,
+                providerID: request.model.providerID,
+                ...(request.variant ? { variant: request.variant } : {}),
+              },
             },
           },
-        },
-      );
-    }
-    if (request.agent) {
-      await this.request(
-        `/api/session/${encodeURIComponent(request.sessionId)}/agent`,
-        {
-          method: "POST",
+        );
+      }
+      if (request.agent) {
+        await this.request(
+          `/api/session/${encodeURIComponent(request.sessionId)}/agent`,
+          {
+            method: "POST",
+            signal,
+            expectedStatus: 204,
+            body: { agent: request.agent },
+          },
+        );
+      }
+
+      const instructionsPath = `/api/experimental/session/${encodeURIComponent(request.sessionId)}/instructions/entries/looptroop`;
+      if (prompt.instructions) {
+        await this.request(instructionsPath, {
+          method: "PUT",
           signal,
           expectedStatus: 204,
-          body: { agent: request.agent },
-        },
-      );
-    }
-
-    const instructionsPath = `/api/experimental/session/${encodeURIComponent(request.sessionId)}/instructions/entries/looptroop`;
-    if (prompt.instructions) {
-      await this.request(instructionsPath, {
-        method: "PUT",
-        signal,
-        expectedStatus: 204,
-        body: { value: prompt.instructions },
-      });
-    } else {
-      await this.request(instructionsPath, {
-        method: "DELETE",
-        signal,
-        expectedStatus: 204,
-      });
+          body: { value: prompt.instructions },
+        });
+      } else {
+        await this.request(instructionsPath, {
+          method: "DELETE",
+          signal,
+          expectedStatus: 204,
+        });
+      }
+    } catch (error) {
+      throw markPromptNotSent(error);
     }
 
     let body: unknown;
@@ -966,13 +973,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         // The request can only have gone away because an earlier attempt landed.
         if (attempt > 1 && isPermissionNotFound(error))
           return { attempts: attempt, confirmedBy: "not_found_on_retry" };
-        if (!isOwnTimeout(error, signal) || attempt >= PERMISSION_REPLY_ATTEMPTS)
-          throw error;
+        if (!isOwnTimeout(error, signal)) throw error;
         // OpenCode acts on a reply before it answers it (an approved command has
         // run 130 ms after the ask while the 204 never came within 5 s), so
-        // check whether this one already landed before sending it again.
+        // check whether this one already landed, including after the last
+        // attempt, before sending it again or giving up.
         if (!(await this.isPermissionPending(sessionId, permissionId, signal)))
           return { attempts: attempt, confirmedBy: "pending_check" };
+        if (attempt >= PERMISSION_REPLY_ATTEMPTS) throw error;
       }
     }
   }

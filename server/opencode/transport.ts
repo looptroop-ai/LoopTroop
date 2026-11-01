@@ -23,6 +23,28 @@ export interface OpenCodePromptRequest {
   tools?: Record<string, boolean>;
 }
 
+const PROMPT_NOT_SENT = Symbol("opencode.promptNotSent");
+
+/**
+ * Marks a dispatch failure that happened before the prompt itself was sent
+ * (v2 model, agent or instruction setup), so the adapter can repeat it.
+ */
+export function markPromptNotSent(error: unknown): unknown {
+  if (error instanceof Object && Object.isExtensible(error)) {
+    Object.defineProperty(error, PROMPT_NOT_SENT, { value: true });
+  }
+  return error;
+}
+
+export function isPromptNotSent(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current instanceof Object && depth < 8; depth++) {
+    if ((current as Record<symbol, unknown>)[PROMPT_NOT_SENT] === true) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export interface PromptReceipt {
   inboxID: string;
 }

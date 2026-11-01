@@ -4,7 +4,7 @@ import type { OpenCodePromptRequest, OpenCodeTransport, OpenCodeTransportEventEn
 import type { Message, StreamEvent } from '../types'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from '../v2Transport'
-import { OpenCodePromptReceiptUnavailableError } from '../transport'
+import { markPromptNotSent, OpenCodePromptReceiptUnavailableError } from '../transport'
 import { buildOpenCodeBlockedErrorDiagnostics } from '../blockedErrorDiagnostics'
 import { isContinuableBlockedError } from '../sessionContinuation'
 import { OPENCODE_PROVIDER_AUTH_FAILED, OPENCODE_PROVIDER_ERROR } from '@shared/errorCodes'
@@ -2550,6 +2550,26 @@ describe('OpenCode prompt preparation retry', () => {
       .rejects.toThrow('history unavailable')
     expect(transport.readSessionLog).toHaveBeenCalledOnce()
     expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it('repeats a prompt once when the model, agent or instruction setup timed out before the prompt POST', async () => {
+    const { transport, markDispatched } = createV2Transport()
+    // One event source per attempt: a source closes for good when its subscriber stops.
+    const sources = [createEventSource(), createEventSource()]
+    let subscriptions = 0
+    transport.subscribeToEvents = vi.fn(async (_sessionId, _directory, signal) => (
+      { events: sources[Math.min(subscriptions++, 1)]!.events(signal), cursor: 50, coverageComplete: true }
+    ))
+    const accepted = ownTurn(sources[1]!, markDispatched)
+    let dispatches = 0
+    transport.dispatchPrompt = vi.fn(async () => {
+      if (++dispatches === 1) throw markPromptNotSent(new DOMException('OpenCode did not answer POST /model within 5 s', 'TimeoutError'))
+      return await accepted()
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+    expect(transport.dispatchPrompt).toHaveBeenCalledTimes(2)
   })
 
   it('does not repeat a prompt whose dispatch had started', async () => {

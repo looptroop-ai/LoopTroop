@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { SESSION_LIST_LIMIT } from "../../lib/constants";
 import {
+  isPromptNotSent,
   OpenCodePromptReceiptUnavailableError,
   type OpenCodePromptRequest,
   type OpenCodeTransportEventEnvelope,
@@ -3738,9 +3739,35 @@ describe("OpenCode v2 slow permission replies and prompts", () => {
   });
 
   it("gives up after three timed-out attempts on a request that stays pending", async () => {
-    const { outcome, calls } = await replyWith(["hang", "hang", "hang"], [true, true]);
+    const { outcome, calls } = await replyWith(["hang", "hang", "hang"], [true, true, true]);
     expect(outcome).toMatchObject({ error: { name: "TimeoutError", message: `OpenCode did not answer POST ${replyPath} within 15 s` } });
     expect(calls.filter((call) => call === `POST ${replyPath}`)).toHaveLength(3);
+    expect(calls.filter((call) => call === `GET ${listPath}`)).toHaveLength(3);
+  });
+
+  it("checks the pending list after the last timed-out attempt before giving up", async () => {
+    const { outcome, calls } = await replyWith(["hang", "hang", "hang"], [true, true, false]);
+    expect(outcome).toEqual({ value: { attempts: 3, confirmedBy: "pending_check" } });
+    expect(calls.filter((call) => call === `POST ${replyPath}`)).toHaveLength(3);
+  });
+
+  it("marks a failed model, agent or instruction setup as not sent, but not a failed prompt POST", async () => {
+    for (const failing of ["/model", "/agent", "/instructions/entries/looptroop"]) {
+      const { transport, requests } = createTransport((request, init) =>
+        request.url.pathname.endsWith(failing) ? hang(init) : emptyResponse());
+      const dispatch = transport.dispatchPrompt(promptRequest()).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const error = await dispatch;
+      expect(error, failing).toMatchObject({ name: "TimeoutError" });
+      expect(isPromptNotSent(error), failing).toBe(true);
+      expect(requests.some((request) => request.url.pathname.endsWith("/prompt")), failing).toBe(false);
+    }
+
+    const { transport } = createTransport((request) =>
+      request.url.pathname.endsWith("/prompt") ? jsonResponse({ message: "boom" }, 500) : emptyResponse());
+    const error = await transport.dispatchPrompt(promptRequest()).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(isPromptNotSent(error)).toBe(false);
   });
 
   it("does not treat a first-attempt not-found or a server error as success, and does not retry them", async () => {

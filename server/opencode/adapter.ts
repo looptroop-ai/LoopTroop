@@ -23,6 +23,7 @@ import type {
 import {
   OPEN_CODE_V2_EVENT_SYNC_TIMEOUT_MS,
   OpenCodePromptReceiptUnavailableError,
+  isPromptNotSent,
 } from "./transport";
 import { OpenCodeV1Transport, type OpenCodeV1Client } from "./v1Transport";
 import { parseModelRef } from "./types";
@@ -381,7 +382,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       // has not seen the prompt and no work can run twice. Deliberate refusals,
       // such as another prompt still running in the session, are not repeated.
       if (
-        firstAttempt.dispatchStarted ||
+        (firstAttempt.dispatchStarted && !isPromptNotSent(error)) ||
         promptSignal?.aborted ||
         isAbortError(error) ||
         !isOpenCodeConnectionFailure(error)

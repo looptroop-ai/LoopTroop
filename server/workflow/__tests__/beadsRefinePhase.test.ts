@@ -469,7 +469,9 @@ describe('handleBeadsRefine', () => {
       memberOutcomes: { [winnerId]: 'completed', [TEST.councilMembers[1]]: 'completed' },
       contextBuilder: () => [],
     })
-    const refinementOutput = buildValidRefinementOutput().replace('cwd: "."', `cwd: "${paths.worktreePath}"`)
+    // Single-quoted: a double-quoted YAML string reads the backslashes of a
+    // Windows path (D:\a\…) as escapes and mangles it before any repair runs.
+    const refinementOutput = buildValidRefinementOutput().replace('cwd: "."', `cwd: '${paths.worktreePath}'`)
     refineDraftMock.mockImplementationOnce(async (...args: unknown[]) => {
       const validateResponse = args[12] as (content: string) => { normalizedContent?: string }
       return { content: validateResponse(refinementOutput).normalizedContent, rawAttempts: [] }
@@ -481,6 +483,8 @@ describe('handleBeadsRefine', () => {
     const refinedContent = (JSON.parse(refinedArtifact!.content) as { refinedContent: string }).refinedContent
     expect(refinedContent).toContain('Surface retry metadata')
     expect(refinedContent).not.toContain(paths.worktreePath)
+    const refinedBeads = (jsYaml.load(refinedContent) as { beads: Array<{ testCommands: Array<{ cwd: string }> }> }).beads
+    expect(refinedBeads[0]!.testCommands[0]!.cwd).toBe('.')
   })
 
   it('refuses to refine against an unparseable winning draft without spending a model call', async () => {

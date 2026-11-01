@@ -1143,9 +1143,8 @@ it('keeps a fixed accessible size and Escape dismisses the window back to its la
   const panel = screen.getByRole('dialog', { name: 'LoopTroop assistant' })
   expect(panel).toHaveClass('h-[min(620px,calc(100dvh-10rem))]', 'w-[min(420px,calc(100vw-2rem))]')
   expect(panel).toHaveClass('bottom-1', 'right-1')
-  const launcher = screen.getByRole('button', { name: 'Open LoopTroop assistant' })
-  expect(launcher).toHaveClass('p-2', 'bottom-9', 'right-[72px]', 'bg-primary-foreground', 'text-primary', 'opacity-70', 'hover:opacity-100')
-  expect(launcher.querySelector('svg')).toHaveClass('h-4', 'w-4')
+  // Hidden while the window is open; it comes back, focused, on dismiss.
+  expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Help' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Tickets' })).not.toBeInTheDocument()
   const composer = screen.getByRole('textbox', { name: 'Message the assistant' })
@@ -1157,6 +1156,12 @@ it('keeps a fixed accessible size and Escape dismisses the window back to its la
   expect(dashboardDismiss).not.toHaveBeenCalled()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Open LoopTroop assistant' })).toHaveFocus())
   expect(panel).toHaveAttribute('hidden')
+  const launcher = screen.getByRole('button', { name: 'Open LoopTroop assistant' })
+  expect(launcher).toHaveClass('p-2', 'bottom-9', 'right-[72px]', 'bg-primary-foreground', 'text-primary', 'opacity-70', 'hover:opacity-100')
+  expect(launcher.querySelector('svg')).toHaveClass('h-4', 'w-4')
+
+  fireEvent.click(launcher)
+  expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
 })
 
 it('drags the assistant window, clamps it to the viewport, and restores its position for the tab session', () => {

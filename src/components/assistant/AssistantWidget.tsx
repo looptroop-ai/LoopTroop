@@ -78,7 +78,10 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
     ? `Ticket ${tickets.find(ticket => ticket.id === conversationTicket)?.externalId ?? externalTicketId(conversationTicket)}`
     : 'All tickets'
   const chatModelConfigured = Boolean(profile.data?.chatModel?.trim())
-  const launcherPosition = useAssistantLauncherPosition(launcherRef, launcherVisible)
+  // Hidden while the window is open: it would sit beside the log doing nothing.
+  // It remounts on close in the same commit, before the effect below focuses it.
+  const showLauncher = launcherVisible && !open
+  const launcherPosition = useAssistantLauncherPosition(launcherRef, showLauncher)
 
   const handleWindowPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, [role="button"]'))) return
@@ -195,7 +198,7 @@ export function AssistantWidget({ open, launcherVisible, onOpen, onDismiss, onOp
     previousOpen.current = open
   }, [open])
 
-  const launcher = launcherVisible && (
+  const launcher = showLauncher && (
     <button
       ref={launcherRef}
       type="button"

@@ -144,18 +144,23 @@ it('uses each conversation scope for send, rename, close and copy while new chat
   ])
   expect(copied?.messages.at(-1)).toMatchObject({ modelId: 'model-id', variant: 'high' })
 
-  expect(await hook.result.current.renameSession(ticketChat.id, 'Renamed')).toBe(true)
+  await act(async () => {
+    expect(await hook.result.current.renameSession(ticketChat.id, 'Renamed')).toBe(true)
+  })
   expect(api.renameAssistantSession).toHaveBeenCalledWith(ticketChat.id, 'Renamed', { ticketId: originalTicketId }, expect.any(AbortSignal))
 
-  const created = await hook.result.current.createSession()
-  expect(created?.id).toBe(currentChat.id)
+  await act(async () => {
+    expect((await hook.result.current.createSession())?.id).toBe(currentChat.id)
+  })
   expect(api.createAssistantSession).toHaveBeenCalledWith({ ticketId: currentTicketId }, expect.any(AbortSignal))
 
   await act(async () => {
     finishStream()
     await expect(send).resolves.toBe(true)
   })
-  expect(await hook.result.current.closeSession(ticketChat.id)).toBe(true)
+  await act(async () => {
+    expect(await hook.result.current.closeSession(ticketChat.id)).toBe(true)
+  })
   expect(api.closeAssistantSession).toHaveBeenCalledWith(ticketChat.id, { ticketId: originalTicketId }, expect.any(AbortSignal))
 })
 

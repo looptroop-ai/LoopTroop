@@ -631,6 +631,32 @@ describe("handleCoding", () => {
     expect(commitBeadChangesMock).not.toHaveBeenCalled();
   });
 
+  it("attributes preserved provider timeouts to the affected session", async () => {
+    const { ticket, context } = createExecutionTestTicket(repoManager, {
+      title: "Preserved provider timeout attribution",
+    });
+    writeTicketBeads(ticket.id, [makePendingBead("bead-1", 1)]);
+    executeBeadMock.mockImplementationOnce(async (...args: Parameters<typeof import("../../phases/execution/executor").executeBead>) => {
+      args[7]?.onContinuableTimeoutPreserved?.({
+        beadId: "bead-1",
+        sessionId: "ses-preserved",
+        iteration: 1,
+        message: "OpenCode/provider timeout for session ses-preserved; preserving session for Continue.",
+      });
+      throw new Error("Preserved timeout");
+    });
+
+    await expect(handleCoding(ticket.id, context, vi.fn(), new AbortController().signal)).rejects.toThrow("Preserved timeout");
+
+    expect(broadcastMock).toHaveBeenCalledWith(ticket.id, "log", expect.objectContaining({
+      message: "OpenCode/provider timeout for session ses-preserved; preserving session for Continue.",
+      modelId: context.lockedMainImplementer,
+      sessionId: "ses-preserved",
+      beadId: "bead-1",
+      beadIteration: 1,
+    }));
+  });
+
   it("invokes resetToBeadStart and persists notes through the fresh-reload when onContextWipe fires", async () => {
     const { ticket, context } = createExecutionTestTicket(repoManager, {
       title: "Notes updated triggers reset",

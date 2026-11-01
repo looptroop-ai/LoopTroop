@@ -19,11 +19,12 @@ import { filterEntries, formatLogLine, getEntryFullModelId, MULTI_MODEL_PHASES, 
 import { LogEntryRow } from './LogLine'
 import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
 import { countLogTextLines } from './logCountUtils'
-import { CurrentActivityStrip } from './CurrentActivityStrip'
+import { CurrentActivityEvidenceStrip } from './CurrentActivityEvidenceStrip'
 import { useCopyLogs } from '@/hooks/useCopyLogs'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
+import { useCurrentActivityEvidence } from '@/hooks/useCurrentActivityEvidence'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { Virtuoso } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
@@ -148,6 +149,20 @@ export function PhaseLogPanel({
     modelId: isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : undefined,
   }, shouldLoadHistoricalLogs)
 
+  const isTerminalTicketStatus = isTerminalWorkflowStatus(ticket?.status)
+  const isLiveTicketPhase = !ticket || (ticket.status === phase && !isTerminalTicketStatus)
+  const currentActivityEnabled = logMode !== 'snapshot' && isLiveTicketPhase
+  const activityEvidence = useCurrentActivityEvidence({
+    ticketId: ticket?.id,
+    phase,
+    enabled: currentActivityEnabled,
+    requestedAttempt: phaseAttempt,
+  })
+  const liveActivityEntries = useMemo(
+    () => mergeEntriesBatch(getLogsForPhase?.(phase, liveLogOptions) ?? [], propLogs ?? []),
+    [getLogsForPhase, phase, liveLogOptions, propLogs],
+  )
+
   useEffect(() => {
     if (propLogs || shouldLoadHistoricalLogs) return
     if (liveLogOptions) {
@@ -199,12 +214,6 @@ export function PhaseLogPanel({
     },
     [activeTab, getLogsForPhase, historicalLogs.entries, historicalView, liveLogOptions, logMode, phase, propLogs, shouldLoadHistoricalLogs],
   )
-  // A ticket that has finished is not running anything, so its last phase is not live
-  // even though the panel's phase still matches its status — otherwise a cancelled or
-  // completed ticket keeps a current-activity strip ticking over a run that ended.
-  const isTerminalTicketStatus = isTerminalWorkflowStatus(ticket?.status)
-  const isLiveTicketPhase = !ticket || (ticket.status === phase && !isTerminalTicketStatus)
-  const currentActivityEnabled = logMode !== 'snapshot' && isLiveTicketPhase
   const hasToolbarPrefix = toolbarPrefix != null
   const [isModelsCollapsed, setIsModelsCollapsed] = useState(true)
   const [isSysCollapsed, setIsSysCollapsed] = useState(true)
@@ -675,10 +684,10 @@ export function PhaseLogPanel({
           {copyLogsFailed > 0 && <span key={copyLogsFailed} role="alert" className="text-xs text-destructive">Could not copy complete logs. Click to retry.</span>}
         </div>
       </div>
-      <CurrentActivityStrip
-        entries={phaseLogs}
-        enabled={currentActivityEnabled}
-        activeStatus={ticket?.status ?? phase}
+      <CurrentActivityEvidenceStrip
+        evidence={activityEvidence}
+        liveEntries={liveActivityEntries}
+        suppressNearTimeout={(ticket?.pendingQuestions?.requestCount ?? 0) > 0}
       />
       {shouldLoadHistoricalLogs && historicalLogs.isError && hasLogs ? (
         <QueryErrorNotice

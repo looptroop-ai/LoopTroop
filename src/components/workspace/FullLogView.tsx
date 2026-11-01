@@ -19,7 +19,7 @@ import { countLogTextLines } from './logCountUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { useCopyLogs } from '@/hooks/useCopyLogs'
-import { CurrentActivityStrip } from './CurrentActivityStrip'
+import { CurrentActivityEvidenceStrip } from './CurrentActivityEvidenceStrip'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections, type RenderedBeadSection } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
@@ -30,6 +30,7 @@ import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
 import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
 import { useTicketSkips } from '@/hooks/useTicketSkips'
+import { useCurrentActivityEvidence } from '@/hooks/useCurrentActivityEvidence'
 import { SkipSummary } from './SkipSummary'
 import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
 import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
@@ -184,6 +185,12 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     () => ticket?.id ? mergeEntriesBatch(historicalLogs.entries, allLogs, historicalView === 'ai') : allLogs,
     [allLogs, historicalLogs.entries, historicalView, ticket?.id],
   )
+  const isTerminalTicket = isTerminalWorkflowStatus(ticket?.status)
+  const activityEvidence = useCurrentActivityEvidence({
+    ticketId: ticket?.id,
+    phase: ticket?.status ?? '',
+    enabled: !isTerminalTicket,
+  })
 
   useEffect(() => {
     if (ticket?.id) return
@@ -315,7 +322,6 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const totalTextLines = ticket?.id
     ? Math.max(loadedTextLines, historicalLogs.totalTextLines ?? loadedTextLines)
     : loadedTextLines
-  const isTerminalTicket = isTerminalWorkflowStatus(ticket?.status)
 
   const beadLabelOptions: StatusLabelOptions | undefined = useMemo(() => {
     if (!ticket) return undefined
@@ -747,10 +753,10 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       </div>
 
       {/* Log content */}
-      <CurrentActivityStrip
-        entries={allLogs}
-        enabled={!isTerminalTicket}
-        activeStatus={ticket?.status ?? null}
+      <CurrentActivityEvidenceStrip
+        evidence={activityEvidence}
+        liveEntries={allLogs}
+        suppressNearTimeout={(ticket?.pendingQuestions?.requestCount ?? 0) > 0}
       />
       {ticket?.id && historicalLogs.isError && hasLogs ? (
         <QueryErrorNotice

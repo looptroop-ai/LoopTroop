@@ -11,6 +11,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
+- AI activity warnings track current work accurately and show retry controls when their evidence cannot load.
 - The Debug log now shows how long each automatic permission approval took, so slow approvals can be traced.
 - Errors from an OpenCode server that answers too slowly now say which request went unanswered and for how long.
 - Tickets no longer stop when OpenCode is slow to confirm a permission approval it already acted on, or when the first prompt waits for OpenCode to start up.
@@ -24,6 +25,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - **Permission reply timing in the Debug log.** Every automatic permission reply now writes an `opencode.permission.reply.timing` line with the decision, the outcome (`confirmed`, `failed`, or `already_closed`) and the time split three ways: how long LoopTroop held the request before handling it, how long its policy and guard checks took, and how long OpenCode took to accept the reply. A failed reply is logged before the run stops, with the error. The normal log is unchanged.
 
 ### Fixed
+
+- Keep warnings tied to the exact model session, phase, and attempt. One council member's empty response cannot flag every member, and concurrent sessions using the same model remain separate. OpenCode response summaries include session metadata and available transcript text; an empty response no longer claims a restart occurred.
+- Retire timed-out coding iterations when replacement work starts, using the actual reset milestone. Provider recovery notices and failed tool parts do not end an ongoing prompt. Failed shell-command output cannot create AI timeout warnings or stop the waiting indicator. Confirmed failures and user stops end waiting; unresolved timeout diagnostics remain until success or a new dispatch.
+- Restore complete activity evidence independently of the selected log tab or supplied display rows. Both log views share retryable evidence loading, keep completed evidence visible through refreshes of the same attempt, and discard it when the scope changes. Missing or failed evidence reads show a retry notice instead of silently hiding the warning surface.
+- Check the evidence scope before retaining a warning snapshot, and hide the previous warning if current-attempt verification fails. Draft-view tests now answer phase-attempt lookups, and shared warning fixtures preserve retry and recovery coverage without duplicated setup.
+- Keep activity pages compact with the first and last model detail for each prompt turn, plus lifecycle records. Equal-timestamp records preserve append order within each channel, and activity exports retain full selected record bodies. Indexed attribution runs once per evidence update; clock ticks update only elapsed time and deadline labels. Question waits invalidate earlier deadline snapshots, and an expired snapshot waits for a recorded outcome instead of declaring a timeout. Stable diagnostic codes and ordinary log history remain intact.
+- Sort updated session status evidence by its latest update so a recovered provider no longer appears to be retrying.
 
 - **A slow permission confirmation no longer blocks the ticket.** OpenCode acts on LoopTroop's "allow" within about 100 ms but sometimes takes several seconds to confirm it; LoopTroop gave up after 5 s and stopped a healthy run. Each reply now gets 15 s. If that runs out, LoopTroop asks OpenCode whether the request is still waiting: if it is gone, the reply landed and the run continues; if it is still waiting, the reply is sent again, up to three attempts. The check also runs after the last attempt, so a reply that landed on the third try is not reported as failed. The Debug timing line records `attempts` and how the reply was confirmed.
 - **The first prompt after OpenCode starts can wait for it.** OpenCode starts a folder's instance (plugins, model catalog: 6–10 s on a cold server) while the first prompt waits. That prompt now gets the same 180 s allowance as session creation instead of 5 s, which had failed the relevant-files scan and every council vote after a restart.

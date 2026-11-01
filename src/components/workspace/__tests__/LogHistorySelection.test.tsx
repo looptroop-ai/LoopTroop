@@ -19,6 +19,27 @@ const page = (modelIds = models, content = 'Overview history.') => ({
 })
 const writeText = vi.fn().mockResolvedValue(undefined)
 
+function mockHistoryFetch(implementation: typeof fetch) {
+  const historyFetch = vi.fn(implementation)
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname.endsWith('/attempts')) return createJsonResponse([{
+      ticketId: 'first-ticket',
+      phase: 'CODING',
+      attemptNumber: 1,
+      state: 'active',
+      archivedReason: null,
+      createdAt: new Date(0).toISOString(),
+      archivedAt: null,
+    }])
+    if (url.searchParams.get('view') === 'activity') {
+      return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+    }
+    return historyFetch(input, init)
+  })
+  return historyFetch
+}
+
 beforeEach(() => {
   live.entries = []
   writeText.mockClear()
@@ -36,7 +57,7 @@ describe.each(['phase', 'lifecycle'] as const)('%s history selection', scope => 
 
   it.each([false, true])('disables a known-empty view only when it has no live rows (live rows: %s)', async hasLiveRows => {
     if (hasLiveRows) live.entries = [normalizeLogRecord({ entryId: 'live', content: 'Live row.' }, 'CODING')]
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => String(input).includes('/logs/export')
+    const fetchSpy = mockHistoryFetch(input => String(input).includes('/logs/export')
       ? Promise.resolve(new Response(''))
       : createJsonResponse({ entries: [], modelIds: [], olderCursor: null, hasOlder: false, totalEntries: 0 }))
     const view = renderWithProviders(panel())
@@ -60,7 +81,7 @@ describe.each(['phase', 'lifecycle'] as const)('%s history selection', scope => 
 
   it.each([200, 503])('keeps selection and exports aligned through loading and a scope response with status %i', async status => {
     let resolveModel!: (response: Response) => void
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+    const fetchSpy = mockHistoryFetch(input => {
       const url = new URL(String(input), 'http://localhost')
       if (url.pathname.includes('/logs/export')) return Promise.resolve(new Response('Selected model history.'))
       if (url.pathname.includes('/second-ticket/') || url.searchParams.get('phaseAttempt') === '2') return createJsonResponse(page([], 'New scope overview.'), status)
@@ -100,7 +121,7 @@ describe.each(['phase', 'lifecycle'] as const)('%s history selection', scope => 
 
   it('keeps a live-only model selected when history metadata does not contain it and the narrowed request fails', async () => {
     live.entries = [normalizeLogRecord({ entryId: 'live', source: 'model:provider/live', content: 'Live answer.', audience: 'ai', kind: 'text' }, 'CODING')]
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+    const fetchSpy = mockHistoryFetch(input => {
       const url = new URL(String(input), 'http://localhost')
       if (url.pathname.includes('/logs/export')) return Promise.resolve(new Response('Live model export.'))
       return url.searchParams.has('modelId') ? createJsonResponse({ error: 'Unavailable' }, 503) : createJsonResponse(page())
@@ -120,7 +141,7 @@ describe.each(['phase', 'lifecycle'] as const)('%s history selection', scope => 
   it('retracts prior success on export failure, announces each retry, and ignores an export from a previous filter', async () => {
     let exports = 0
     let resolveOld!: (response: Response) => void
-    vi.spyOn(globalThis, 'fetch').mockImplementation(input => {
+    mockHistoryFetch(input => {
       if (!String(input).includes('/logs/export')) return createJsonResponse(page())
       exports += 1
       if (exports === 1) return Promise.resolve(new Response('First export.'))

@@ -125,6 +125,8 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
     );
     CREATE INDEX IF NOT EXISTS idx_execution_log_projection_query
       ON execution_log_projection(ticket_id, classification, phase, phase_attempt, model_id, ordinal DESC);
+    CREATE INDEX IF NOT EXISTS idx_execution_log_projection_activity
+      ON execution_log_projection(ticket_id, phase, phase_attempt, timestamp, channel, ordinal);
     CREATE INDEX IF NOT EXISTS idx_execution_log_projection_bead
       ON execution_log_projection(ticket_id, channel, phase, phase_attempt, bead_id, ordinal DESC);
     CREATE INDEX IF NOT EXISTS idx_execution_log_projection_ai
@@ -474,6 +476,53 @@ const DEBUG_VISIBLE_ROWS = `(
   OR (p.channel = 'normal' AND (p.ai_visible = 0 OR ${AI_VISIBLE_ROWS}))
   OR (p.channel = 'ai' AND ${AI_VISIBLE_ROWS})
 )`
+
+function activityRowsSql(where: string): string {
+  // Without session IDs, prompt-turn boundaries cannot be inferred safely.
+  const order = `CASE WHEN timestamp = '' THEN 1 ELSE 0 END, timestamp,
+    channel, ordinal, identity, mirror_occurrence`
+  return `WITH activity_candidates AS (
+    SELECT p.ticket_id, p.channel, p.identity, p.ordinal, p.timestamp, p.phase,
+      p.phase_attempt, p.mirror_occurrence,
+      json_extract(p.entry_json, '$.kind') AS activity_kind,
+      NULLIF(json_extract(p.entry_json, '$.sessionId'), '') AS activity_session
+    FROM execution_log_projection AS p
+    WHERE ${where}
+  ), activity_turns AS (
+    SELECT *, SUM(CASE WHEN activity_kind = 'prompt' THEN 1 ELSE 0 END) OVER (
+      PARTITION BY ticket_id, phase, phase_attempt, activity_session
+      ORDER BY ${order} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS prompt_turn
+    FROM activity_candidates
+  ), activity_details AS (
+    SELECT ticket_id, channel, identity,
+      ROW_NUMBER() OVER (
+        PARTITION BY ticket_id, phase, phase_attempt, activity_session, prompt_turn
+        ORDER BY ${order}
+      ) AS first_detail_order,
+      ROW_NUMBER() OVER (
+        PARTITION BY ticket_id, phase, phase_attempt, activity_session, prompt_turn
+        ORDER BY CASE WHEN timestamp = '' THEN 1 ELSE 0 END DESC,
+          timestamp DESC, channel DESC, ordinal DESC, identity DESC, mirror_occurrence DESC
+      ) AS last_detail_order
+    FROM activity_turns
+    WHERE activity_session IS NOT NULL
+      AND activity_kind NOT IN ('prompt', 'milestone', 'session', 'error')
+  ), activity_selected_keys AS (
+    SELECT ticket_id, channel, identity
+    FROM activity_turns
+    WHERE activity_kind IN ('prompt', 'milestone', 'session', 'error') OR activity_session IS NULL
+    UNION ALL
+    SELECT ticket_id, channel, identity FROM activity_details
+    WHERE first_detail_order = 1 OR last_detail_order = 1
+  ), activity_selected AS (
+    SELECT p.*,
+      CASE WHEN json_extract(p.entry_json, '$.kind') = 'session'
+        THEN p.updated_timestamp ELSE p.timestamp END AS activity_timestamp
+    FROM activity_selected_keys AS selected
+    JOIN execution_log_projection AS p USING (ticket_id, channel, identity)
+  ) `
+}
 
 interface DebugProjectionRow {
   entry: Record<string, unknown>
@@ -1591,7 +1640,11 @@ async function queryDebugPage(
   }
 }
 
-export async function queryLogPage(ticketId: string, query: LogPageQuery) {
+export async function queryLogPage(
+  ticketId: string,
+  query: LogPageQuery,
+  { truncateActivity = true }: { truncateActivity?: boolean } = {},
+) {
   await catchUpLogProjection(ticketId)
   const storage = ensureProjectionSchema(ticketId)
   if (!storage) return null
@@ -1628,7 +1681,21 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     }
     modelIds = (modelStatement.all(...params) as Array<{ model_id: string }>).map(row => row.model_id)
   }
-  if (query.view === 'ai') { clauses.push(AI_VISIBLE_ROWS) }
+  if (query.view === 'activity') {
+    // Keep lifecycle evidence independent of the selected log tab without reading raw/native debug logs.
+    clauses.push(DEBUG_VISIBLE_ROWS)
+    clauses.push(`json_extract(entry_json, '$.kind') IN (
+      'prompt', 'milestone', 'session', 'error', 'text', 'model_output', 'assistant', 'reasoning', 'tool', 'step',
+      'question', 'todo', 'part_summary', 'file_edit', 'file-edited', 'file_edited', 'done'
+    )`)
+    clauses.push("(channel != 'debug' OR json_extract(entry_json, '$.kind') = 'error')")
+    clauses.push(`classification != 'command' AND NOT (
+      classification = 'error'
+      AND json_extract(entry_json, '$.audience') != 'ai'
+      AND substr(COALESCE(json_extract(entry_json, '$.content'), json_extract(entry_json, '$.message'), ''), 1, 5) = '[CMD]'
+    )`)
+  }
+  else if (query.view === 'ai') { clauses.push(AI_VISIBLE_ROWS) }
   else { clauses.push("channel = 'normal'") }
   // The overview backs the ALL tab. Apply its visible-row rules before LIMIT
   // so a page of commands or AI detail-only rows cannot produce an apparently
@@ -1649,7 +1716,7 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
       )
     )`)
   }
-  if (query.view !== 'overview' && query.view !== 'ai') {
+  if (query.view !== 'overview' && query.view !== 'ai' && query.view !== 'activity') {
     clauses.push('classification = ?')
     params.push(query.view)
   }
@@ -1658,13 +1725,16 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     params.push(query.modelId)
   }
   const countWhere = clauses.join(' AND ')
-  const countSql = `
-    SELECT
-      COUNT(*) AS total_entries,
-      COALESCE(SUM(text_lines), 0) AS total_text_lines
-    FROM execution_log_projection AS p
-    WHERE ${countWhere}
-  `
+  const activitySql = query.view === 'activity' ? activityRowsSql(countWhere) : ''
+  const countSql = query.view === 'activity'
+    ? `${activitySql}
+      SELECT COUNT(*) AS total_entries, COALESCE(SUM(text_lines), 0) AS total_text_lines
+      FROM activity_selected AS p`
+    : `
+      SELECT COUNT(*) AS total_entries, COALESCE(SUM(text_lines), 0) AS total_text_lines
+      FROM execution_log_projection AS p
+      WHERE ${countWhere}
+    `
   let counts: { total_entries: number; total_text_lines: number } | null = null
   if (shouldIncludeTotals) {
     let countStatement = storage.statements.queryPages.get(countSql)
@@ -1675,16 +1745,21 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     counts = countStatement.get(...params) as { total_entries: number; total_text_lines: number }
   }
 
-  const pageClauses = [...clauses]
-  const pageParams = [...params]
+  const pageClauses = query.view === 'activity' ? [] : [...clauses]
+  const pageParams = query.view === 'activity' ? [] : [...params]
+  const chronologicalView = query.view === 'ai' || query.view === 'activity'
+  const timestamp = query.view === 'ai' ? AI_START_TIMESTAMP : query.view === 'activity' ? 'activity_timestamp' : 'timestamp'
+  const timestampRank = query.view === 'ai' ? AI_START_RANK : `(CASE WHEN ${timestamp} = '' THEN 1 ELSE 0 END)`
+  const activitySortKey = "(p.channel || ':' || printf('%020d', p.ordinal) || ':' || p.identity)"
+  const mirrorKey = query.view === 'activity' ? activitySortKey : 'p.mirror_key'
   if (before !== null) {
-    if (query.view === 'ai') {
+    if (chronologicalView) {
       const rank = before.timestamp === '' ? 1 : 0
       pageClauses.push(`(
-        ${AI_START_RANK} < ?
-        OR (${AI_START_RANK} = ? AND ${AI_START_TIMESTAMP} < ?)
-        OR (${AI_START_RANK} = ? AND ${AI_START_TIMESTAMP} = ? AND p.mirror_key < ?)
-        OR (${AI_START_RANK} = ? AND ${AI_START_TIMESTAMP} = ? AND p.mirror_key = ? AND p.mirror_occurrence < ?)
+        ${timestampRank} < ?
+        OR (${timestampRank} = ? AND ${timestamp} < ?)
+        OR (${timestampRank} = ? AND ${timestamp} = ? AND ${mirrorKey} < ?)
+        OR (${timestampRank} = ? AND ${timestamp} = ? AND ${mirrorKey} = ? AND p.mirror_occurrence < ?)
       )`)
       pageParams.push(
         rank,
@@ -1697,18 +1772,19 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
       pageParams.push(before.ordinal)
     }
   }
-  const where = pageClauses.join(' AND ')
-  const timestamp = query.view === 'ai' ? AI_START_TIMESTAMP : 'timestamp'
-  const order = query.view === 'ai'
-    ? `${AI_START_RANK} DESC, sort_timestamp DESC, p.mirror_key DESC, p.mirror_occurrence DESC`
+  const where = pageClauses.length > 0 ? pageClauses.join(' AND ') : '1 = 1'
+  const order = chronologicalView
+    ? `${timestampRank} DESC, sort_timestamp DESC, ${mirrorKey} DESC, p.mirror_occurrence DESC`
     : 'ordinal DESC'
-  const sql = `SELECT ordinal, ${timestamp} AS sort_timestamp, mirror_key, mirror_occurrence, entry_json FROM execution_log_projection AS p WHERE ${where} ORDER BY ${order} LIMIT ?`
+  const from = query.view === 'activity' ? 'activity_selected AS p' : 'execution_log_projection AS p'
+  const sql = `${activitySql} SELECT ordinal, ${timestamp} AS sort_timestamp, ${mirrorKey} AS mirror_key, mirror_occurrence, entry_json FROM ${from} WHERE ${where} ORDER BY ${order} LIMIT ?`
   let statement = storage.statements.queryPages.get(sql)
   if (!statement) {
     statement = sqlite.prepare(sql)
     storage.statements.queryPages.set(sql, statement)
   }
-  const rows = statement.all(...pageParams, query.limit + 1) as Array<{
+  const rowParams = query.view === 'activity' ? [...params, ...pageParams] : pageParams
+  const rows = statement.all(...rowParams, query.limit + 1) as Array<{
     ordinal: number; sort_timestamp: string; mirror_key: string; mirror_occurrence: number; entry_json: string
   }>
   const hasOlder = rows.length > query.limit
@@ -1717,8 +1793,15 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   return {
     entries: page.reverse().map(row => {
       const entry = JSON.parse(row.entry_json)
-      if (query.view === 'ai') {
+      if (query.view === 'activity' && truncateActivity && entry.kind !== 'milestone' && entry.kind !== 'session' && entry.kind !== 'error') {
+        for (const field of ['content', 'message']) {
+          if (typeof entry[field] === 'string') entry[field] = entry[field].trim().slice(0, 256)
+        }
+      }
+      if (query.view === 'ai' || query.view === 'activity') {
         if (row.sort_timestamp) entry.timestamp = row.sort_timestamp
+      }
+      if (query.view === 'ai') {
         entry._logMirrorKey = row.mirror_key
         entry._logMirrorOccurrence = row.mirror_occurrence
       }
@@ -1777,7 +1860,7 @@ export async function exportLogEntries(
           limit: pageSize,
           includeTotals: false,
           ...(before ? { before } : {}),
-        })
+        }, { truncateActivity: false })
         // Losing the ticket midway leaves a prefix, not an export. Three call sites read
         // this endpoint as the whole record, so half of one must not come back looking
         // complete — the same reason there is no row cap here.

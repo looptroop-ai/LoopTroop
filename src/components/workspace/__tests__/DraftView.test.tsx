@@ -105,6 +105,17 @@ function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Respons
     if (url.startsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/logs?`)) {
       return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
     }
+    if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/DRAFT/attempts`) {
+      return createJsonResponse([{
+        ticketId: TEST.ticketId,
+        phase: 'DRAFT',
+        attemptNumber: 1,
+        state: 'active',
+        archivedReason: null,
+        createdAt: new Date(0).toISOString(),
+        archivedAt: null,
+      }])
+    }
     return handler(url, init as RequestInit | undefined)
   })
 }

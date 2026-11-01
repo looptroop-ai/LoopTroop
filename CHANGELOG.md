@@ -17,7 +17,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Fixed
 
 - Keep the assistant launcher immediately left of the visible **Back to bottom** control, centered vertically with a consistent gap, in the phase log, full log, and coding views. It follows the control when the window, log drawer, or navigator resizes, and holds its last position when the control disappears or the reader returns to the dashboard.
-- Keep the Coverage Report's pass selector on the same row as the Summary/Raw switcher instead of stacking two tab rows. Artifact dialogs also open with focus on the dialog itself, so a contained copy button no longer shows its tooltip before the user hovers anything.
+- Keep the Coverage Report's pass selector on the same row as the Summary/Raw switcher instead of stacking two tab rows; when a report has more passes than fit, the selector scrolls sideways rather than running under the switcher. Artifact dialogs also open with focus on the dialog itself, so a contained copy button no longer shows its tooltip before the user hovers anything.
 
 ## 0.6.2 (2026-10-30)
 

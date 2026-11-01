@@ -1232,13 +1232,16 @@ function CoverageReportTabStrip({
   onSelect: (key: string) => void
 }) {
   return (
-    <div className="flex gap-2 border-b border-border">
+    // Shares its row with the Summary/Raw switcher, so with many passes it
+    // scrolls instead of running under the switcher. The underline is an inset
+    // shadow because a scrolling box would clip a -mb-px tab overlapping a border.
+    <div className="flex min-w-0 gap-2 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_var(--color-border)]">
       {tabs.map((tab) => (
         <button
           key={tab.key}
           onClick={() => onSelect(tab.key)}
           className={cn(
-            'px-4 py-2 text-sm font-semibold transition-colors border-b-2 -mb-px',
+            'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-semibold transition-colors border-b-2',
             activeTab === tab.key
               ? 'border-foreground text-foreground'
               : 'border-transparent text-muted-foreground hover:text-foreground',

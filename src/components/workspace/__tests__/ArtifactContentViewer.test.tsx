@@ -2719,6 +2719,8 @@ items:
       />,
     )
 
+    // jsdom computes no layout, so this proves the shared row, not that many
+    // pass tabs scroll instead of running under the switcher.
     const controlsRow = screen.getByRole('button', { name: /Latest Check/i }).closest('.items-center.gap-2')
     expect(controlsRow).not.toBeNull()
     expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Summary' }))

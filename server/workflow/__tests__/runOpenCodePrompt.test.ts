@@ -1033,14 +1033,14 @@ describe('runOpenCodePrompt', () => {
   it('keeps receipt-unknown classification when a retry event raced with the prompt POST', async () => {
     const adapter = new TestOpenCodeAdapter([])
     const receiptUnknown = Object.assign(
-      new Error('Failed to prompt OpenCode session: OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.'),
+      new Error('Failed to prompt OpenCode session: OpenCode did not confirm that it received the prompt, so LoopTroop cannot tell whether the AI started working on it.'),
       {
         name: 'OpenCodePromptReceiptUnavailableError',
         openCodePromptReceiptUnavailable: true as const,
         blockedErrorDiagnostics: {
           kind: 'runtime' as const,
           source: 'opencode' as const,
-          summary: 'OpenCode may have accepted the v2 prompt, but its inbox receipt could not be verified.',
+          summary: 'OpenCode did not confirm that it received the prompt, so LoopTroop cannot tell whether the AI started working on it.',
           sessionId: 'ses-receipt-unknown',
         },
         blockedErrorCodes: [],

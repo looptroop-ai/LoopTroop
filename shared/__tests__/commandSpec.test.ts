@@ -84,6 +84,7 @@ describe('normalizeCommandSpec', () => {
     ['it also has a shell', { mode: 'shell', shell: 'posix', program: 'bash' }],
     ['the program is blank', { mode: 'shell', program: '  ', args: [] }],
     ['an argument is not text', { mode: 'shell', program: 'bash', args: ['-c', 1] }],
+    ['the program is a whole command line', { mode: 'shell', program: 'npm run test', args: [] }],
   ])('does not relabel a shell-mode command when %s', (_label, command) => {
     expect(() => normalizeCommandSpec(command, host)).toThrow()
   })
@@ -96,6 +97,9 @@ describe('normalizeCommandSpec', () => {
       [repoRoot, '.'],
       [`${repoRoot}/`, '.'],
       [`${repoRoot}/packages/app`, 'packages/app'],
+      [`${repoRoot}//packages//app/`, 'packages/app'],
+      [`${repoRoot}/./packages/../app`, 'app'],
+      [`/root/repo/.looptroop/worktrees/T-2/../T-1/src`, 'src'],
     ])('rewrites %s inside the repository root as %s', (cwd, expected) => {
       const result = normalizeCommandSpec(command(cwd), host, { repoRoot })
       expect(result.command.cwd).toBe(expected)
@@ -107,6 +111,8 @@ describe('normalizeCommandSpec', () => {
       '/root/repo',
       `${repoRoot}-other`,
       `${repoRoot}/../T-2`,
+      `${repoRoot}/src/../../T-2`,
+      '/../../root/repo',
       '/tmp/elsewhere',
     ])('still rejects %s, which is outside the repository root', (cwd) => {
       expect(() => normalizeCommandSpec(command(cwd), host, { repoRoot })).toThrow()
@@ -123,6 +129,16 @@ describe('normalizeCommandSpec', () => {
 
     it('keeps case on POSIX roots', () => {
       expect(() => normalizeCommandSpec(command('/Root/Repo/.looptroop/worktrees/T-1'), host, { repoRoot })).toThrow()
+    })
+
+    it('matches UNC roots without regard to case or separator', () => {
+      const result = normalizeCommandSpec(command('//SERVER/share/repo/src'), host, { repoRoot: '\\\\server\\share\\repo' })
+      expect(result.command.cwd).toBe('src')
+    })
+
+    it('keeps a backslash inside a POSIX directory name', () => {
+      const result = normalizeCommandSpec(command(`${repoRoot}/pkg\\one`), host, { repoRoot })
+      expect(result.command.cwd).toBe('pkg\\one')
     })
   })
 })

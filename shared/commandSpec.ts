@@ -119,21 +119,42 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function trimPath(value: string): string {
-  return value.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+/** A drive-letter (`C:\`) or UNC (`\\server\share`) root. */
+function isWindowsPath(path: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(path) || /^[\\/]{2}/.test(path)
+}
+
+/**
+ * An absolute path as its root (`/`, `C:/`, `//`) and its segments, with empty,
+ * `.` and `..` segments resolved. Null for a relative path or a `..` above the
+ * root. Backslashes are separators only in Windows paths: on POSIX they can be
+ * part of a directory name.
+ */
+function splitAbsolutePath(value: string, windows: boolean): { root: string; segments: string[] } | null {
+  const path = windows ? value.trim().replaceAll('\\', '/') : value.trim()
+  const root = path.startsWith('//') ? '//' : /^[a-zA-Z]:\//.test(path) ? path.slice(0, 3) : path.startsWith('/') ? '/' : ''
+  if (!root) return null
+  const segments: string[] = []
+  for (const segment of path.slice(root.length).split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment !== '..') segments.push(segment)
+    else if (segments.pop() === undefined) return null
+  }
+  return { root, segments }
 }
 
 /** `cwd` relative to `root`, or null when it is neither `root` nor a directory inside it. */
 function relativeToRoot(cwd: string, root: string): string | null {
-  const normalizedRoot = trimPath(root)
-  const normalizedCwd = trimPath(cwd)
-  if (!normalizedRoot) return null
   // Windows paths compare without case; POSIX paths keep it.
-  const fold = (value: string) => (/^[a-zA-Z]:\//.test(`${normalizedRoot}/`) ? value.toLowerCase() : value)
-  if (fold(normalizedCwd) === fold(normalizedRoot)) return '.'
-  if (!fold(normalizedCwd).startsWith(`${fold(normalizedRoot)}/`)) return null
-  // A `..` that escapes the root survives this and is rejected by the schema.
-  return normalizedCwd.slice(normalizedRoot.length + 1)
+  const windows = isWindowsPath(root.trim())
+  const same = (a: string, b: string) => (windows ? a.toLowerCase() === b.toLowerCase() : a === b)
+  const base = splitAbsolutePath(root, windows)
+  const target = splitAbsolutePath(cwd, windows)
+  if (!base || !target || !same(base.root, target.root)) return null
+  // `..` is resolved first, so a path that climbs out of the root never matches.
+  if (!base.segments.every((segment, index) => target.segments[index] !== undefined && same(segment, target.segments[index]))) return null
+  const inside = target.segments.slice(base.segments.length)
+  return inside.length === 0 ? '.' : inside.join('/')
 }
 
 /**
@@ -154,7 +175,9 @@ export function repairCommandSpecShape(
     && next.shell === undefined
     && next.script === undefined
     && typeof program === 'string'
-    && program.trim()
+    // One executable token only: `program: "npm run test"` is a command line,
+    // not a program, and must keep failing validation with its location.
+    && /^\S+$/.test(program.trim())
     && (args === undefined || (Array.isArray(args) && args.every((arg) => typeof arg === 'string')))
   ) {
     next = { ...next, mode: 'process' }

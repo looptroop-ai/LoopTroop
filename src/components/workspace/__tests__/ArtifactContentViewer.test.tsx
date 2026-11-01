@@ -2758,8 +2758,7 @@ items:
 
     // Pick the earlier pass, so returning from Raw has a selection to keep.
     expect(screen.queryByText('Coverage revised PRD Candidate v1 into v2.')).not.toBeInTheDocument()
-    const [transitionTab] = within(controlsRow).getAllByRole('button')
-    fireEvent.click(transitionTab!)
+    fireEvent.click(within(controlsRow).getByRole('button', { name: 'v1 > v2' }))
     expect(screen.getByText('Coverage revised PRD Candidate v1 into v2.')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Raw' }))

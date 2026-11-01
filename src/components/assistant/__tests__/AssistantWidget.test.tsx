@@ -112,7 +112,7 @@ it('keeps the launcher immediately left of the log marker and holds that corner 
   // jsdom's window is 1024 x 768; the launcher measures 32 x 32.
   const anchor = document.createElement('span')
   anchor.getBoundingClientRect = () => rectAt(800, 700)
-  let unregisterAnchor = registerBackToBottomAnchor(anchor)!
+  let unregisterAnchor = registerBackToBottomAnchor(anchor)
   const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
     if (this.getAttribute('aria-label') === 'Open LoopTroop assistant') return rectAt(0, 0)
@@ -140,7 +140,7 @@ it('keeps the launcher immediately left of the log marker and holds that corner 
 
     const nextAnchor = document.createElement('span')
     nextAnchor.getBoundingClientRect = () => rectAt(600, 500)
-    act(() => { unregisterAnchor = registerBackToBottomAnchor(nextAnchor)! })
+    act(() => { unregisterAnchor = registerBackToBottomAnchor(nextAnchor) })
     await waitFor(() => expect(launcher).toHaveStyle({ right: `${viewportWidth + 400 - 600 + 8}px`, bottom: '236px' }))
   } finally {
     unregisterAnchor()

@@ -44,10 +44,11 @@ function notifyAnchorListeners() {
 
 /**
  * Callback ref for a marker element. React 19 calls the returned function when
- * the element unmounts, so a surface only has to pass this as `ref`.
+ * the element unmounts, so a surface only has to pass this as `ref`. A `null`
+ * element registers nothing and gets a no-op back.
  */
-export function registerBackToBottomAnchor(element: HTMLElement | null): (() => void) | undefined {
-  if (!element) return undefined
+export function registerBackToBottomAnchor(element: HTMLElement | null): () => void {
+  if (!element) return () => {}
   anchors.add(element)
   notifyAnchorListeners()
   return () => {

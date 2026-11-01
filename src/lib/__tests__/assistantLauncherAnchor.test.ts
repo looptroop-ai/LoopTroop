@@ -37,7 +37,7 @@ function rect(left: number, top: number, width = 32, height = 32): DOMRect {
 function anchorAt(rectValue: DOMRect): HTMLSpanElement {
   const marker = document.createElement('span')
   marker.getBoundingClientRect = () => rectValue
-  unregister.push(registerBackToBottomAnchor(marker)!)
+  unregister.push(registerBackToBottomAnchor(marker))
   return marker
 }
 
@@ -109,10 +109,11 @@ it('returns null when no anchor is visible', () => {
 it('notifies subscribers when a marker mounts and unmounts', () => {
   const listener = vi.fn()
   const unsubscribe = subscribeBackToBottomAnchors(listener)
-  expect(registerBackToBottomAnchor(null)).toBeUndefined()
+  registerBackToBottomAnchor(null)()
   expect(listener).not.toHaveBeenCalled()
+  expect(hasBackToBottomAnchors()).toBe(false)
 
-  const cleanup = registerBackToBottomAnchor(document.createElement('span'))!
+  const cleanup = registerBackToBottomAnchor(document.createElement('span'))
   expect(listener).toHaveBeenCalledTimes(1)
   expect(hasBackToBottomAnchors()).toBe(true)
 
@@ -121,6 +122,6 @@ it('notifies subscribers when a marker mounts and unmounts', () => {
   expect(hasBackToBottomAnchors()).toBe(false)
 
   unsubscribe()
-  registerBackToBottomAnchor(document.createElement('span'))!()
+  registerBackToBottomAnchor(document.createElement('span'))()
   expect(listener).toHaveBeenCalledTimes(2)
 })

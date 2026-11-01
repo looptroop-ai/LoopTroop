@@ -2751,13 +2751,23 @@ items:
 
     // jsdom computes no layout, so this proves the shared row, not that many
     // pass tabs scroll instead of running under the switcher.
-    const controlsRow = screen.getByRole('button', { name: /Latest Check/i }).closest('.items-center.gap-2')
-    expect(controlsRow).not.toBeNull()
+    const controlsRow = screen.getByTestId('raw-tab-controls')
+    expect(controlsRow).toContainElement(screen.getByRole('button', { name: /Latest Check/i }))
     expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Summary' }))
     expect(controlsRow).toContainElement(screen.getByRole('button', { name: 'Raw' }))
 
+    // Pick the earlier pass, so returning from Raw has a selection to keep.
+    expect(screen.queryByText('Coverage revised PRD Candidate v1 into v2.')).not.toBeInTheDocument()
+    const [transitionTab] = within(controlsRow).getAllByRole('button')
+    fireEvent.click(transitionTab!)
+    expect(screen.getByText('Coverage revised PRD Candidate v1 into v2.')).toBeInTheDocument()
+
     fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
     expect(screen.queryByRole('button', { name: /Latest Check/i })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Summary' }))
+    expect(within(screen.getByTestId('raw-tab-controls')).getByRole('button', { name: /Latest Check/i })).toBeInTheDocument()
+    expect(screen.getByText('Coverage revised PRD Candidate v1 into v2.')).toBeInTheDocument()
   })
 
   it('shows standalone transition notes and the candidate diff for a coverage pass', () => {

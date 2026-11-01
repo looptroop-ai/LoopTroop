@@ -109,7 +109,7 @@ export function WithRawTab({
 
   return (
     <div className="min-w-0 max-w-full space-y-3">
-      <div className="flex items-center gap-2">
+      <div data-testid="raw-tab-controls" className="flex items-center gap-2">
         {shouldShowHeader && <div className="flex-1 min-w-0">{header}</div>}
         <div className={`inline-flex items-center gap-1 rounded-md border border-border bg-background p-1 shrink-0 ${!shouldShowHeader ? 'ml-auto' : ''}`}>
           <button

@@ -1270,13 +1270,11 @@ function CurrentCoverageReportView({
   const primaryTabs = buildCoverageReportTabs(coverageResult)
   const resolvedTab = primaryTabs.find((tab) => tab.key === activeReportTab)?.key ?? 'latest'
   const activeTransition = primaryTabs.find((tab) => tab.key === resolvedTab)?.transition ?? null
-  const rawSources = useMemo(() => buildCoverageRawSources(coverageResult), [coverageResult])
-
   return (
     <WithRawTab
       content={content}
       structuredLabel="Summary"
-      rawSources={rawSources}
+      rawSources={buildCoverageRawSources(coverageResult)}
       hideHeaderOnRaw
       header={transitions.length > 0 ? (
         <CoverageReportTabStrip

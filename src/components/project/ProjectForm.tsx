@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react'
+import { confirmDiscardChanges, confirmDialog } from '@/lib/confirmDialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCreateProject, useUpdateProject, useDeleteProject, useProjects } from '@/hooks/useProjects'
@@ -285,8 +286,8 @@ export const ProjectForm = ({ onClose, onBack, project, onDirtyChange }: Project
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])
 
-  const handleCloseView = () => {
-    if (isDirty && !window.confirm('Discard your unsaved project changes?')) return
+  const handleCloseView = async () => {
+    if (isDirty && !await confirmDiscardChanges()) return
     closeView()
   }
 
@@ -388,9 +389,15 @@ export const ProjectForm = ({ onClose, onBack, project, onDirtyChange }: Project
     }
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!editingProject) return
-    if (!confirm('Delete this project, its local .looptroop state, and its dedicated ticket assistant conversations? This cannot be undone.')) return
+    if (!await confirmDialog({
+      title: 'Delete this project?',
+      message: 'This removes the project, its local .looptroop state, and its ticket assistant conversations. You cannot undo it.',
+      confirmLabel: 'Delete project',
+      cancelLabel: 'Keep project',
+      tone: 'danger',
+    })) return
     deleteProject.mutate(editingProject.id, {
       onSuccess: () => {
         addToast('success', 'Project deleted and local LoopTroop state removed.')

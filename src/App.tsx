@@ -14,6 +14,8 @@ import { StartupRestorePopup } from '@/components/shared/StartupRestorePopup'
 import { AboutDialog } from '@/components/config/AboutDialog'
 import { AssistantWidget } from '@/components/assistant/AssistantWidget'
 import { ToastProvider } from '@/components/shared/Toast'
+import { ConfirmDialogHost } from '@/components/shared/ConfirmDialog'
+import { cancelConfirmQuestions, confirmDiscardChanges } from '@/lib/confirmDialog'
 import { AIQuestionProvider } from '@/context/AIQuestionContext'
 import {
   WelcomeDisclaimer,
@@ -251,6 +253,8 @@ function App() {
   })
   const [ticketModalEditing, setTicketModalEditing] = useState(false)
   const activeModalRef = useRef(activeModal)
+  const popConfirmIdRef = useRef(0)
+  const popQuestionOpenRef = useRef(false)
   activeModalRef.current = activeModal
   const modalDirtyRef = useRef(modalDirty)
   modalDirtyRef.current = modalDirty
@@ -406,7 +410,7 @@ function App() {
     const closedModal = previousModal !== null && activeModal === null
     const openedModal = previousModal === null && activeModal !== null
 
-    if (awaitingOwnBackRef.current || popPathname !== null) return
+    if (awaitingOwnBackRef.current || popQuestionOpenRef.current || popPathname !== null) return
     previousModalRef.current = activeModal
 
     // With no modal and no settled ticket list the pathname is still the user's
@@ -464,40 +468,7 @@ function App() {
 
   // Handle back/forward navigation
   useEffect(() => {
-    const handlePop = () => {
-      popOccurredRef.current = true
-      const pathname = window.location.pathname
-
-      if (awaitingOwnBackRef.current) {
-        awaitingOwnBackRef.current = false
-        modalWasPushedRef.current = false
-        const target = ownBackTargetRef.current
-        ownBackTargetRef.current = null
-        setPopPathname(null)
-        // The pop can be the only event after the route effect paused. Reuse the
-        // repair token to reconcile any state changes made while Back was queued.
-        setRouteRepairToken(token => token + 1)
-        if (target && window.location.pathname !== target) {
-          window.history.replaceState(null, '', target)
-        }
-        return
-      }
-
-      modalWasPushedRef.current = false
-      const previousModal = activeModalRef.current
-      const nextModal = modalForPathname(pathname)
-      if (previousModal && previousModal !== nextModal && modalDirtyRef.current[previousModal]) {
-        if (!window.confirm('Discard your unsaved changes?')) {
-          // The browser has already moved to the previous entry. Restore the
-          // routed modal as a new app-owned entry so the user's edits remain
-          // visible and closing it can still return to the page behind it.
-          window.history.pushState(null, '', MODAL_ROUTES[previousModal])
-          modalWasPushedRef.current = true
-          setPopPathname(null)
-          return
-        }
-        setModalDirty((current) => ({ ...current, [previousModal]: false }))
-      }
+    const applyPop = (pathname: string, nextModal: ModalRoute | null) => {
       setPopPathname(pathname)
       // About has no route of its own and sits above everything else, so a Back that
       // reconciles the routed overlays would otherwise close Configuration underneath
@@ -533,6 +504,63 @@ function App() {
         setRouteRepairToken(token => token + 1)
       }
     }
+
+    const handlePop = () => {
+      popOccurredRef.current = true
+      const pathname = window.location.pathname
+      // A question belongs to the page that asked it: any Back/Forward answers it
+      // "no" (an unanswered Back question, "Delete this project?" in a window that is
+      // closing) and makes a pending Back answer stale.
+      cancelConfirmQuestions()
+      const popId = ++popConfirmIdRef.current
+      popQuestionOpenRef.current = false
+
+      if (awaitingOwnBackRef.current) {
+        awaitingOwnBackRef.current = false
+        modalWasPushedRef.current = false
+        const target = ownBackTargetRef.current
+        ownBackTargetRef.current = null
+        setPopPathname(null)
+        // The pop can be the only event after the route effect paused. Reuse the
+        // repair token to reconcile any state changes made while Back was queued.
+        setRouteRepairToken(token => token + 1)
+        if (target && window.location.pathname !== target) {
+          window.history.replaceState(null, '', target)
+        }
+        return
+      }
+
+      modalWasPushedRef.current = false
+      const previousModal = activeModalRef.current
+      const nextModal = modalForPathname(pathname)
+      if (previousModal && previousModal !== nextModal && modalDirtyRef.current[previousModal]) {
+        // The browser has already moved to the new entry; the modal stays on screen
+        // until the user answers, and the route effect must not write over the
+        // entry meanwhile.
+        popQuestionOpenRef.current = true
+        void confirmDiscardChanges().then((discard) => {
+          if (popId !== popConfirmIdRef.current) return
+          popQuestionOpenRef.current = false
+          // Let the route effect reconcile whatever changed while it was paused.
+          setRouteRepairToken(token => token + 1)
+          // Nothing left to keep if the window closed while the question was open.
+          if (!discard && activeModalRef.current === previousModal) {
+            // Restore the routed modal as a new app-owned entry so the user's edits
+            // remain visible and closing it can still return to the page behind it.
+            window.history.pushState(null, '', MODAL_ROUTES[previousModal])
+            modalWasPushedRef.current = true
+            setPopPathname(null)
+            return
+          }
+          modalDirtyRef.current = { ...modalDirtyRef.current, [previousModal]: false }
+          setModalDirty((current) => ({ ...current, [previousModal]: false }))
+          applyPop(pathname, nextModal)
+        })
+        return
+      }
+      applyPop(pathname, nextModal)
+    }
+
     window.addEventListener('popstate', handlePop)
     return () => window.removeEventListener('popstate', handlePop)
   }, [dispatch])
@@ -675,6 +703,7 @@ function App() {
         </CenteredModal>
 
         <KeyboardShortcuts />
+        <ConfirmDialogHost />
         <AssistantWidget
           open={isAssistantOpen && !startupOverlayOpen}
           launcherVisible={!startupOverlayOpen}

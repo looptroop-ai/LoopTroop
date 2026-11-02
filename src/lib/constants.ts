@@ -102,6 +102,12 @@ export const DROPDOWN_Z_INDEX = 9999
  */
 export const SHORTCUTS_OVERLAY_Z_INDEX = DROPDOWN_Z_INDEX + 1
 
+/**
+ * The app's confirm/alert dialog, the top layer. It is asked from inside every other
+ * surface, pickers and the shortcuts overlay included, and must never sit under one.
+ */
+export const CONFIRM_DIALOG_Z_INDEX = SHORTCUTS_OVERLAY_Z_INDEX + 1
+
 /** Seconds in one hour — used for time display formatting */
 export const SECONDS_PER_HOUR = 3_600
 /** Seconds in one day — used for time display formatting */

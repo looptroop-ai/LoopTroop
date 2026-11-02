@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CenteredModal } from '../CenteredModal'
 import { DropdownPicker } from '../DropdownPicker'
+import { ConfirmDialogHost } from '../ConfirmDialog'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
 afterEach(cleanup)
@@ -117,44 +118,57 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     expect(backdrop).toHaveClass('z-[70]')
   })
 
-  it('confirms only when the caller reports an unsaved value', () => {
-    const onClose = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  function renderDirtyModal(onClose = vi.fn()) {
     render(
       <TooltipProvider>
         <CenteredModal open onClose={onClose} title="Configuration" isDirty>
           <button type="button">inside</button>
         </CenteredModal>
+        <ConfirmDialogHost />
       </TooltipProvider>,
     )
+    return onClose
+  }
 
-    fireEvent.keyDown(document, { key: 'Escape' })
+  it('asks in a themed dialog, not the browser, before Escape closes a dirty window', async () => {
+    const nativeConfirm = vi.spyOn(window, 'confirm')
+    const onClose = renderDirtyModal()
 
-    expect(confirm).toHaveBeenCalledWith('You have unsaved changes. Close this window anyway?')
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    const question = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
     expect(onClose).not.toHaveBeenCalled()
-    confirm.mockRestore()
+
+    // Escape answers the question with "keep editing"; it must not also close the window.
+    fireEvent.keyDown(question, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(nativeConfirm).not.toHaveBeenCalled()
+    nativeConfirm.mockRestore()
   })
 
-  it('uses the same dirty confirmation for backdrop close', () => {
-    const onClose = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    render(
-      <TooltipProvider>
-        <CenteredModal open onClose={onClose} title="Configuration" isDirty>
-          <button type="button">inside</button>
-        </CenteredModal>
-      </TooltipProvider>,
-    )
+  it('uses the same question for the backdrop and the close button', async () => {
+    const onClose = renderDirtyModal()
     const backdrop = screen.getByRole('dialog', { name: 'Configuration' }).parentElement!
 
     fireEvent.click(backdrop)
-    expect(confirm).toHaveBeenCalledWith('You have unsaved changes. Close this window anyway?')
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep editing' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(onClose).not.toHaveBeenCalled()
 
-    confirm.mockReturnValue(true)
-    fireEvent.click(backdrop)
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('closes a clean window without asking', () => {
+    const { onClose } = renderModal()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
-    confirm.mockRestore()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })
 

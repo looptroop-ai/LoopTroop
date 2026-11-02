@@ -1,7 +1,9 @@
 import React from 'react'
-import { render } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { expect } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { ConfirmDialogHost } from '@/components/shared/ConfirmDialog'
 import { LogActionsContext, LogStateContext } from '@/context/logContextDef'
 import type { LogContextValue } from '@/context/logUtils'
 
@@ -25,7 +27,8 @@ export function renderWithProviders(
   const withTooltip = options?.withTooltip ?? true
 
   const wrap = (element: React.ReactElement) => {
-    let wrapped = element
+    // The app's confirm/alert dialogs render here, as App mounts them in production.
+    let wrapped: React.ReactElement = React.createElement(React.Fragment, null, element, React.createElement(ConfirmDialogHost))
     if (withTooltip) {
       wrapped = React.createElement(TooltipProvider, null, wrapped)
     }
@@ -43,6 +46,19 @@ export function renderWithProviders(
     rerender: (next: React.ReactElement) => { result.rerender(wrap(next)) },
     queryClient,
   }
+}
+
+/**
+ * Waits for the app's confirm/alert dialog asking `title`, clicks `button`, and waits
+ * for it to close. Returns nothing useful; the caller asserts what the answer did.
+ */
+export async function answerConfirmDialog(title: string, button: string) {
+  const dialog = await screen.findByRole('alertdialog', { name: title })
+  fireEvent.click(within(dialog).getByRole('button', { name: button }))
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  // The dialog closes before the caller's code after `await confirmDialog(...)` runs.
+  // One macrotask lets that continuation and its state updates finish.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 }
 
 /**

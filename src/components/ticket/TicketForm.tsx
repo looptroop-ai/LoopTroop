@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { alertDialog, confirmDiscardChanges } from '@/lib/confirmDialog'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCreateTicket, useTicketAction, useUpdateTicket, type Ticket } from '@/hooks/useTickets'
 import { useProjects, type Project } from '@/hooks/useProjects'
@@ -50,9 +51,9 @@ const getStartedTicketStatus = (result?: { status?: string; state?: string }) =>
 
 const reportCreateAndStartFailure = (error: unknown, ticketWasCreated: boolean) => {
   const message = error instanceof Error ? error.message : 'Failed to start ticket'
-  window.alert(ticketWasCreated
-    ? `Ticket created, but it could not start: ${message}`
-    : `Unable to create and start ticket: ${message}`)
+  void alertDialog(ticketWasCreated
+    ? { title: 'Ticket created, but it did not start', message, tone: 'danger' }
+    : { title: 'Could not create and start the ticket', message, tone: 'danger' })
 }
 
 export const TicketForm = ({ onClose, onDirtyChange, onEditingChange }: TicketFormProps) => {
@@ -206,8 +207,8 @@ export const TicketForm = ({ onClose, onDirtyChange, onEditingChange }: TicketFo
     createTicketDraft()
   }
 
-  const handleClose = () => {
-    if (isDirty && !window.confirm('Discard your unsaved ticket changes?')) return
+  const handleClose = async () => {
+    if (isDirty && !await confirmDiscardChanges()) return
     onClose()
   }
 

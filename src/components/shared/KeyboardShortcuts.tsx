@@ -24,6 +24,8 @@ export function KeyboardShortcuts() {
         const target = e.target as HTMLElement
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT'
           || target.isContentEditable || target.closest('[role="textbox"]')) return
+        // A confirm/alert dialog is waiting for an answer; help must not cover it.
+        if (document.querySelector('[role="alertdialog"]')) return
         e.preventDefault()
         setIsOpen(prev => !prev)
       }

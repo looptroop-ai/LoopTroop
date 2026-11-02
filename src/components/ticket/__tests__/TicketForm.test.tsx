@@ -1,7 +1,7 @@
-import { act, fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
-import { renderWithProviders } from '@/test/renderHelpers'
+import { answerConfirmDialog, renderWithProviders } from '@/test/renderHelpers'
 import { TicketForm } from '../TicketForm'
 import type { Ticket } from '@/hooks/useTickets'
 
@@ -493,9 +493,8 @@ describe('TicketForm', () => {
     expect(mutate).toHaveBeenCalledTimes(1)
   })
 
-  it('confirms before Cancel discards a dirty ticket draft', () => {
+  it('confirms before Cancel discards a dirty ticket draft', async () => {
     const onClose = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderWithProviders(
       <UIContext.Provider value={makeUIValue()}>
         <TicketForm onClose={onClose} />
@@ -504,20 +503,18 @@ describe('TicketForm', () => {
 
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Unsaved ticket' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(confirm).toHaveBeenCalledWith('Discard your unsaved ticket changes?')
+    await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
     expect(onClose).not.toHaveBeenCalled()
 
-    confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Discard changes')
     expect(onClose).toHaveBeenCalledTimes(1)
-    confirm.mockRestore()
   })
 
-  it('reports an invalid wait edit as dirty and confirms before Cancel discards it', () => {
+  it('reports an invalid wait edit as dirty and confirms before Cancel discards it', async () => {
     const onClose = vi.fn()
     const dirty = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
+    {
       renderWithProviders(
         <UIContext.Provider value={makeUIValue()}>
           <TicketForm onClose={onClose} onDirtyChange={dirty} />
@@ -536,17 +533,14 @@ describe('TicketForm', () => {
       fireEvent.change(wait, { target: { value: '' } })
       expect(dirty).toHaveBeenLastCalledWith(true)
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(confirm).toHaveBeenCalledWith('Discard your unsaved ticket changes?')
+      await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
       expect(onClose).not.toHaveBeenCalled()
 
       fireEvent.change(wait, { target: { value: '5' } })
       expect(dirty).toHaveBeenLastCalledWith(false)
-      confirm.mockClear()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(confirm).not.toHaveBeenCalled()
-      expect(onClose).toHaveBeenCalledTimes(1)
-    } finally {
-      confirm.mockRestore()
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     }
   })
 
@@ -597,36 +591,40 @@ describe('TicketForm', () => {
     expect(ui.dispatch).not.toHaveBeenCalled()
   })
 
-  it('keeps a created draft editable when create-and-start cannot start it', async () => {
+  /** Both failure branches of Create & Start report in the app's own dialog and keep the form open. */
+  async function failCreateAndStart(create: () => Promise<Ticket>, startError?: Error) {
     const update = vi.fn()
     const onClose = vi.fn()
-    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {})
-    mockUseCreateTicket.mockReturnValue({
-      mutate: vi.fn(),
-      mutateAsync: vi.fn().mockResolvedValue({ id: '1:ACME-4', externalId: 'ACME-4', status: 'DRAFT' } as Ticket),
-      isPending: false,
-    })
+    mockUseCreateTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(create), isPending: false })
     mockUseUpdateTicket.mockReturnValue({ mutate: update, isPending: false })
-    mockUseTicketAction.mockReturnValue({
-      mutateAsync: vi.fn().mockRejectedValue(new Error('model unavailable')),
-      isPending: false,
-    })
-
+    mockUseTicketAction.mockReturnValue({ mutateAsync: vi.fn().mockRejectedValue(startError), isPending: false })
     renderWithProviders(
       <UIContext.Provider value={makeUIValue()}>
         <TicketForm onClose={onClose} />
       </UIContext.Provider>,
     )
-
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Created draft' } })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create & Start' })))
+    return { update, onClose }
+  }
 
-    expect(alert).toHaveBeenCalledWith('Ticket created, but it could not start: model unavailable')
+  it('keeps a created draft editable when create-and-start cannot start it', async () => {
+    const created = () => Promise.resolve({ id: '1:ACME-4', externalId: 'ACME-4', status: 'DRAFT' } as Ticket)
+    const { update, onClose } = await failCreateAndStart(created, new Error('model unavailable'))
+
+    expect(await screen.findByText('model unavailable')).toBeInTheDocument()
+    await answerConfirmDialog('Ticket created, but it did not start', 'OK')
     expect(onClose).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Save Ticket' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Save Ticket' }))
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: '1:ACME-4', title: 'Created draft' }), expect.any(Object))
-    alert.mockRestore()
+  })
+
+  it('says so in a dialog when the ticket could not be created at all', async () => {
+    const { onClose } = await failCreateAndStart(() => Promise.reject(new Error('project is gone')))
+
+    expect(await screen.findByText('project is gone')).toBeInTheDocument()
+    await answerConfirmDialog('Could not create and start the ticket', 'OK')
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it('explains when no project is available', () => {

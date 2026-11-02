@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ToastProvider } from '@/components/shared/Toast'
+import { ConfirmDialogHost } from '@/components/shared/ConfirmDialog'
+import { answerConfirmDialog } from '@/test/renderHelpers'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ProfileSetup } from '../ProfileSetup'
 import { OPENCODE_MODELS_QUERY_KEY, type OpenCodeModel } from '@/hooks/useOpenCodeModels'
@@ -99,6 +101,8 @@ const renderProfileSetup = async (
         </TooltipProvider>
       </QueryClientProvider>,
     )
+    // Its own root, so a test's rerender of the form above leaves it alone.
+    render(<ConfirmDialogHost />)
     await Promise.resolve()
   })
 
@@ -365,28 +369,22 @@ describe('ProfileSetup', () => {
     profileForTest = { ...existingProfile, aiQuestionWindow: 900_000 }
     const onClose = vi.fn()
     const dirty = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await renderProfileSetup(undefined, dirty, onClose)
-      fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
-      const wait = screen.getByLabelText('AI question wait')
-      expect(dirty).toHaveBeenLastCalledWith(false)
+    await renderProfileSetup(undefined, dirty, onClose)
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
+    const wait = screen.getByLabelText('AI question wait')
+    expect(dirty).toHaveBeenLastCalledWith(false)
 
-      fireEvent.change(wait, { target: { value: '' } })
-      expect(dirty).toHaveBeenLastCalledWith(true)
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(confirm).toHaveBeenCalledWith('Discard your unsaved profile changes?')
-      expect(onClose).not.toHaveBeenCalled()
+    fireEvent.change(wait, { target: { value: '' } })
+    expect(dirty).toHaveBeenLastCalledWith(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
+    expect(onClose).not.toHaveBeenCalled()
 
-      fireEvent.change(wait, { target: { value: '15' } })
-      expect(dirty).toHaveBeenLastCalledWith(false)
-      confirm.mockClear()
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(confirm).not.toHaveBeenCalled()
-      expect(onClose).toHaveBeenCalledTimes(1)
-    } finally {
-      confirm.mockRestore()
-    }
+    fireEvent.change(wait, { target: { value: '15' } })
+    expect(dirty).toHaveBeenLastCalledWith(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 
   it('keeps the form open and dirty when edits follow an in-flight save', async () => {
@@ -409,18 +407,17 @@ describe('ProfileSetup', () => {
 
   it('confirms before Cancel discards a dirty profile draft', async () => {
     const onClose = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await renderProfileSetup(undefined, undefined, onClose)
 
     fireEvent.change(openCustomAiQuestionWait(), { target: { value: '6' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(confirm).toHaveBeenCalledWith('Discard your unsaved profile changes?')
+    expect(await screen.findByText(/Your changes have not been saved yet/)).toBeInTheDocument()
+    await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
     expect(onClose).not.toHaveBeenCalled()
 
-    confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Discard changes')
     expect(onClose).toHaveBeenCalledTimes(1)
-    confirm.mockRestore()
   })
 
   it('keeps single-member quorum profiles editable and shows a Save action', async () => {

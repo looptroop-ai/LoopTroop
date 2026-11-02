@@ -591,53 +591,36 @@ describe('TicketForm', () => {
     expect(ui.dispatch).not.toHaveBeenCalled()
   })
 
-  it('keeps a created draft editable when create-and-start cannot start it', async () => {
+  /** Both failure branches of Create & Start report in the app's own dialog and keep the form open. */
+  async function failCreateAndStart(create: () => Promise<Ticket>, startError?: Error) {
     const update = vi.fn()
     const onClose = vi.fn()
-    mockUseCreateTicket.mockReturnValue({
-      mutate: vi.fn(),
-      mutateAsync: vi.fn().mockResolvedValue({ id: '1:ACME-4', externalId: 'ACME-4', status: 'DRAFT' } as Ticket),
-      isPending: false,
-    })
+    mockUseCreateTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(create), isPending: false })
     mockUseUpdateTicket.mockReturnValue({ mutate: update, isPending: false })
-    mockUseTicketAction.mockReturnValue({
-      mutateAsync: vi.fn().mockRejectedValue(new Error('model unavailable')),
-      isPending: false,
-    })
-
+    mockUseTicketAction.mockReturnValue({ mutateAsync: vi.fn().mockRejectedValue(startError), isPending: false })
     renderWithProviders(
       <UIContext.Provider value={makeUIValue()}>
         <TicketForm onClose={onClose} />
       </UIContext.Provider>,
     )
-
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Created draft' } })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create & Start' })))
+    return { update, onClose }
+  }
+
+  it('keeps a created draft editable when create-and-start cannot start it', async () => {
+    const created = () => Promise.resolve({ id: '1:ACME-4', externalId: 'ACME-4', status: 'DRAFT' } as Ticket)
+    const { update, onClose } = await failCreateAndStart(created, new Error('model unavailable'))
 
     expect(await screen.findByText('model unavailable')).toBeInTheDocument()
     await answerConfirmDialog('Ticket created, but it did not start', 'OK')
     expect(onClose).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Save Ticket' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Save Ticket' }))
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: '1:ACME-4', title: 'Created draft' }), expect.any(Object))
   })
 
   it('says so in a dialog when the ticket could not be created at all', async () => {
-    const onClose = vi.fn()
-    mockUseCreateTicket.mockReturnValue({
-      mutate: vi.fn(),
-      mutateAsync: vi.fn().mockRejectedValue(new Error('project is gone')),
-      isPending: false,
-    })
-
-    renderWithProviders(
-      <UIContext.Provider value={makeUIValue()}>
-        <TicketForm onClose={onClose} />
-      </UIContext.Provider>,
-    )
-
-    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Never created' } })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create & Start' })))
+    const { onClose } = await failCreateAndStart(() => Promise.reject(new Error('project is gone')))
 
     expect(await screen.findByText('project is gone')).toBeInTheDocument()
     await answerConfirmDialog('Could not create and start the ticket', 'OK')

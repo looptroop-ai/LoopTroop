@@ -36,7 +36,7 @@
   },
   "homepage": "https://www.looptroop.ovh/",
   "engines": {
-    "node": ">=24.18.1"
+    "node": ">=24.19.0"
   },
   "main": "dist/server/index.js",
   "bin": {
@@ -105,7 +105,7 @@
     "@hono/node-server": "^2.1.5",
     "@opencode-ai/sdk": "^1.19.4",
     "drizzle-orm": "1.0.0-rc.5",
-    "hono": "^4.13.13",
+    "hono": "^4.13.14",
     "js-yaml": "^5.5.0",
     "xstate": "^5.33.3",
     "zod": "^4.6.7"

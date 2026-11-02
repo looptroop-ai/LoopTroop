@@ -677,6 +677,27 @@ describe('App route ownership', () => {
     await waitFor(() => expect(screen.queryByText('Profile Setup') !== null).toBe(profileOpen))
   })
 
+  it('takes a stale Back question off screen when Forward returns to the edited window', async () => {
+    window.history.pushState(null, '', '/config')
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit profile' }))
+
+    window.history.pushState(null, '', '/')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+
+    window.history.pushState(null, '', '/config')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByText('Profile Setup')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/config')
+  })
+
   it('swaps Configuration for Prompts on a Back to the prompts route', async () => {
     window.history.pushState(null, '', '/config')
 

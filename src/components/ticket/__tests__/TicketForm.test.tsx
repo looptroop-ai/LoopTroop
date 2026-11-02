@@ -622,6 +622,28 @@ describe('TicketForm', () => {
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: '1:ACME-4', title: 'Created draft' }), expect.any(Object))
   })
 
+  it('says so in a dialog when the ticket could not be created at all', async () => {
+    const onClose = vi.fn()
+    mockUseCreateTicket.mockReturnValue({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn().mockRejectedValue(new Error('project is gone')),
+      isPending: false,
+    })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={onClose} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Never created' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create & Start' })))
+
+    expect(await screen.findByText('project is gone')).toBeInTheDocument()
+    await answerConfirmDialog('Could not create and start the ticket', 'OK')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('explains when no project is available', () => {
     mockUseProjects.mockReturnValue({ data: [] })
 

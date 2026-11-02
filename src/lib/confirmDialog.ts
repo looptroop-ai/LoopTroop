@@ -19,25 +19,37 @@ export interface ConfirmOptions {
 }
 
 export interface PendingConfirm extends ConfirmOptions {
+  /** Distinct per request, so the host remounts and refocuses for each one. */
+  id: number
   /** An alert has one button and always settles `true`. */
   alert: boolean
   resolve: (confirmed: boolean) => void
 }
 
-let pending: PendingConfirm | null = null
+// The head of the queue is on screen. Only alerts ever wait in it: a message must be
+// read, while a question is only worth answering in the context that asked it.
+let queue: PendingConfirm[] = []
+let nextId = 0
 const listeners = new Set<() => void>()
 
-function setPending(next: PendingConfirm | null) {
-  pending = next
+function setQueue(next: PendingConfirm[]) {
+  queue = next
   for (const listener of listeners) listener()
 }
 
+/** Answers every open question with "no", as dismissing it would. Alerts stay. */
+export function cancelConfirmQuestions() {
+  const questions = queue.filter((entry) => !entry.alert)
+  if (questions.length === 0) return
+  setQueue(queue.filter((entry) => entry.alert))
+  for (const question of questions) question.resolve(false)
+}
+
 function request(options: ConfirmOptions, alert: boolean): Promise<boolean> {
-  // Only one question can be on screen. A newer one answers the older with "no",
-  // which is what dismissing it would have done.
-  pending?.resolve(false)
+  // A newer question replaces an older one, which gets "no".
+  cancelConfirmQuestions()
   return new Promise((resolve) => {
-    setPending({ ...options, alert, resolve })
+    setQueue([...queue, { ...options, id: ++nextId, alert, resolve }])
   })
 }
 
@@ -51,11 +63,12 @@ export async function alertDialog(options: Omit<ConfirmOptions, 'cancelLabel'>):
   await request(options, true)
 }
 
+/** Answers whatever is on screen. */
 export function settleConfirm(confirmed: boolean) {
-  const current = pending
+  const [current, ...rest] = queue
   if (!current) return
-  setPending(null)
-  current.resolve(confirmed)
+  setQueue(rest)
+  current.resolve(current.alert || confirmed)
 }
 
 export function subscribeConfirm(listener: () => void) {
@@ -63,7 +76,7 @@ export function subscribeConfirm(listener: () => void) {
   return () => { listeners.delete(listener) }
 }
 
-export const getPendingConfirm = () => pending
+export const getPendingConfirm = (): PendingConfirm | null => queue[0] ?? null
 
 /** The one "you will lose edits" question, so every window words its buttons alike. */
 export function confirmDiscardChanges(message: string): Promise<boolean> {

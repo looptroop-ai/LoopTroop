@@ -12,9 +12,12 @@ export function ConfirmDialogHost() {
   const Icon = current?.alert ? CircleAlert : AlertTriangle
 
   return (
-    <Dialog open={current !== null} onOpenChange={(open) => { if (!open) settleConfirm(current?.alert ?? false) }}>
+    <Dialog open={current !== null} onOpenChange={(open) => { if (!open) settleConfirm(false) }}>
       {current && (
         <DialogContent
+          // A new request remounts the content, so focus lands on its safe button
+          // instead of staying on the previous request's (maybe destructive) one.
+          key={current.id}
           role="alertdialog"
           closeButtonVariant="dashboard"
           // Above every other overlay: it is always asked from inside one of them.

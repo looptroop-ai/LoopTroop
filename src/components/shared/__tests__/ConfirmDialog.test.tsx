@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfirmDialogHost } from '../ConfirmDialog'
-import { alertDialog, confirmDialog } from '@/lib/confirmDialog'
+import { alertDialog, cancelConfirmQuestions, confirmDialog } from '@/lib/confirmDialog'
 
 afterEach(cleanup)
 
@@ -58,5 +58,36 @@ describe('confirmDialog', () => {
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
     fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' })
     await expect(done).resolves.toBeUndefined()
+  })
+
+  it('moves focus to the safe button when a newer question replaces an open one', async () => {
+    render(<ConfirmDialogHost />)
+
+    void confirmDialog({ title: 'First?', message: 'one', confirmLabel: 'Go' })
+    const go = await screen.findByRole('button', { name: 'Go' })
+    go.focus()
+    void confirmDialog({ ...QUESTION, title: 'Second?' })
+
+    await screen.findByRole('alertdialog', { name: 'Second?' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus())
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+  })
+
+  it('keeps an alert on screen until it is dismissed, then shows the question that came after it', async () => {
+    render(<ConfirmDialogHost />)
+
+    const alerted = alertDialog({ title: 'Could not start', message: 'model unavailable' })
+    await screen.findByRole('alertdialog', { name: 'Could not start' })
+    const asked = confirmDialog(QUESTION)
+    cancelConfirmQuestions()
+    await expect(asked).resolves.toBe(false)
+
+    const askedAgain = confirmDialog(QUESTION)
+    expect(screen.getByRole('alertdialog', { name: 'Could not start' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await expect(alerted).resolves.toBeUndefined()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await expect(askedAgain).resolves.toBe(true)
   })
 })

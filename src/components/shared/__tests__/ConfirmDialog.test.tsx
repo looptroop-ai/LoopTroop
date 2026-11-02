@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfirmDialogHost } from '../ConfirmDialog'
 import { alertDialog, cancelConfirmQuestions, confirmDialog } from '@/lib/confirmDialog'
+import { CONFIRM_DIALOG_Z_INDEX, DROPDOWN_Z_INDEX, SHORTCUTS_OVERLAY_Z_INDEX } from '@/lib/constants'
 
 afterEach(cleanup)
 
@@ -89,5 +90,38 @@ describe('confirmDialog', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
     await expect(askedAgain).resolves.toBe(true)
+  })
+
+  it('returns focus to whatever had it when the question was asked', async () => {
+    render(<><button type="button">Close window</button><ConfirmDialogHost /></>)
+    const opener = screen.getByRole('button', { name: 'Close window' })
+    opener.focus()
+
+    const answer = confirmDialog(QUESTION)
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep editing' }))
+    await expect(answer).resolves.toBe(false)
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it('sits above the pickers and the shortcuts overlay', async () => {
+    render(<ConfirmDialogHost />)
+    void confirmDialog(QUESTION)
+    const dialog = await screen.findByRole('alertdialog')
+
+    expect(CONFIRM_DIALOG_Z_INDEX).toBeGreaterThan(Math.max(DROPDOWN_Z_INDEX, SHORTCUTS_OVERLAY_Z_INDEX))
+    expect(dialog.style.zIndex).toBe(String(CONFIRM_DIALOG_Z_INDEX))
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+  })
+
+  it('settles everything when the host unmounts, so nothing awaits forever or comes back', async () => {
+    const view = render(<ConfirmDialogHost />)
+    const asked = confirmDialog(QUESTION)
+    await screen.findByRole('alertdialog')
+    view.unmount()
+    await expect(asked).resolves.toBe(false)
+
+    render(<ConfirmDialogHost />)
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })

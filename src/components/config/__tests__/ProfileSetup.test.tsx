@@ -411,7 +411,7 @@ describe('ProfileSetup', () => {
 
     fireEvent.change(openCustomAiQuestionWait(), { target: { value: '6' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(await screen.findByText(/Your configuration changes have not been saved/)).toBeInTheDocument()
+    expect(await screen.findByText(/Your changes have not been saved yet/)).toBeInTheDocument()
     await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
     expect(onClose).not.toHaveBeenCalled()
 

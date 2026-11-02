@@ -508,6 +508,12 @@ function App() {
     const handlePop = () => {
       popOccurredRef.current = true
       const pathname = window.location.pathname
+      // A question belongs to the page that asked it: any Back/Forward answers it
+      // "no" (an unanswered Back question, "Delete this project?" in a window that is
+      // closing) and makes a pending Back answer stale.
+      cancelConfirmQuestions()
+      const popId = ++popConfirmIdRef.current
+      popQuestionOpenRef.current = false
 
       if (awaitingOwnBackRef.current) {
         awaitingOwnBackRef.current = false
@@ -525,12 +531,6 @@ function App() {
       }
 
       modalWasPushedRef.current = false
-      // A question belongs to the page that asked it: any Back/Forward answers it
-      // "no" (an unanswered Back question, "Delete this project?" in a window that is
-      // closing) and makes a pending Back answer stale.
-      cancelConfirmQuestions()
-      const popId = ++popConfirmIdRef.current
-      popQuestionOpenRef.current = false
       const previousModal = activeModalRef.current
       const nextModal = modalForPathname(pathname)
       if (previousModal && previousModal !== nextModal && modalDirtyRef.current[previousModal]) {
@@ -538,7 +538,7 @@ function App() {
         // until the user answers, and the route effect must not write over the
         // entry meanwhile.
         popQuestionOpenRef.current = true
-        void confirmDiscardChanges('You have changes in this window that are not saved yet. Leaving it throws them away.').then((discard) => {
+        void confirmDiscardChanges().then((discard) => {
           if (popId !== popConfirmIdRef.current) return
           popQuestionOpenRef.current = false
           // Let the route effect reconcile whatever changed while it was paused.

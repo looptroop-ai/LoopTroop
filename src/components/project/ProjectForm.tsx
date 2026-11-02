@@ -287,7 +287,7 @@ export const ProjectForm = ({ onClose, onBack, project, onDirtyChange }: Project
   }, [isDirty, onDirtyChange])
 
   const handleCloseView = async () => {
-    if (isDirty && !await confirmDiscardChanges('This project has changes that are not saved yet. Leaving now throws them away.')) return
+    if (isDirty && !await confirmDiscardChanges()) return
     closeView()
   }
 

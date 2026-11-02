@@ -112,7 +112,7 @@ export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSet
   }, [isDirty, onDirtyChange])
 
   const handleClose = async () => {
-    if (isDirty && !await confirmDiscardChanges('Your configuration changes have not been saved. Closing now throws them away.')) return
+    if (isDirty && !await confirmDiscardChanges()) return
     onClose()
   }
 

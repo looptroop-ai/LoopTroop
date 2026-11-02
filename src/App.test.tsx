@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { UIProvider } from '@/context/UIContext'
 import { useUI } from '@/context/useUI'
@@ -324,6 +324,17 @@ async function waitForActualHistoryBack() {
  * used to have two owners, and `UIContext`'s mount effect rewrote the pathname
  * of whatever route `App` had just opened.
  */
+// App lazy-loads its windows. The first test to open one otherwise pays the cold
+// module load inside a 1 s `findBy`, and fails under load for no reason of its own.
+beforeAll(async () => {
+  await Promise.all([
+    import('@/components/config/ProfileSetup'),
+    import('@/components/project/ProjectsPanel'),
+    import('@/components/ticket/TicketForm'),
+    import('@/components/prompts/PromptsDialog'),
+  ])
+}, 60_000)
+
 describe('App route ownership', () => {
   beforeEach(() => {
     mockState.tickets = []
@@ -661,7 +672,7 @@ describe('App route ownership', () => {
   ])('asks before Back closes an edited Configuration window ($answer)', async ({ answer, pathname, profileOpen }) => {
     window.history.pushState(null, '', '/config')
     renderApp()
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit profile' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit profile' }, { timeout: 10_000 }))
 
     window.history.pushState(null, '', '/')
     await act(async () => {
@@ -671,16 +682,20 @@ describe('App route ownership', () => {
     // The window stays on screen while the question is open.
     expect(await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
     expect(screen.getByText('Profile Setup')).toBeInTheDocument()
+    const history = watchHistory()
     await answerConfirmDialog('Discard unsaved changes?', answer)
 
     await waitFor(() => expect(window.location.pathname).toBe(pathname))
+    // Keeping the edits stacks the window's entry back on, so Back still reaches the
+    // page behind it; it must not overwrite the entry Back landed on.
+    if (profileOpen) history.expectPushedWith('/config')
     await waitFor(() => expect(screen.queryByText('Profile Setup') !== null).toBe(profileOpen))
   })
 
   it('takes a stale Back question off screen when Forward returns to the edited window', async () => {
     window.history.pushState(null, '', '/config')
     renderApp()
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit profile' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit profile' }, { timeout: 10_000 }))
 
     window.history.pushState(null, '', '/')
     await act(async () => {

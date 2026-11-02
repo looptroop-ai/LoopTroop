@@ -33,7 +33,7 @@ export function CenteredModal({
   // Every way out of a dirty window — Escape, the backdrop, the X — asks the same question.
   const requestClose = useCallback(async () => {
     if (closeDisabled) return
-    if (isDirty && !await confirmDiscardChanges('You have changes in this window that are not saved yet. Closing it throws them away.')) return
+    if (isDirty && !await confirmDiscardChanges()) return
     onClose()
   }, [closeDisabled, isDirty, onClose])
 

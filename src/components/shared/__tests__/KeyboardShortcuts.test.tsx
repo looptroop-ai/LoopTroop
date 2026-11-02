@@ -28,6 +28,12 @@ describe('KeyboardShortcuts', () => {
     expect(keys).toEqual(['?', 'Escape', '/'])
   })
 
+  it('does not open over a confirm dialog that is waiting for an answer', () => {
+    render(<><KeyboardShortcuts /><div role="alertdialog" aria-label="Discard unsaved changes?" /></>)
+    fireEvent.keyDown(document.body, { key: '?' })
+    expect(screen.queryByRole('dialog', { name: 'Keyboard Shortcuts' })).not.toBeInTheDocument()
+  })
+
   it('closes on Escape', () => {
     open()
     fireEvent.keyDown(document.body, { key: 'Escape' })

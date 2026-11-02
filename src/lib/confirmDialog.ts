@@ -1,5 +1,3 @@
-import type { ReactNode } from 'react'
-
 /**
  * The app's replacement for `window.confirm` and `window.alert`: the same one-call,
  * promise-shaped API, drawn in the app's own theme instead of the browser's chrome.
@@ -11,7 +9,8 @@ import type { ReactNode } from 'react'
  */
 export interface ConfirmOptions {
   title: string
-  message: ReactNode
+  /** Plain text: it renders inside the dialog's description paragraph. */
+  message: string
   confirmLabel?: string
   cancelLabel?: string
   /** `danger` paints the confirm button red: discarding work, deleting things. */
@@ -23,6 +22,8 @@ export interface PendingConfirm extends ConfirmOptions {
   id: number
   /** An alert has one button and always settles `true`. */
   alert: boolean
+  /** What had focus when it was asked, so answering can hand focus back. */
+  opener: HTMLElement | null
   resolve: (confirmed: boolean) => void
 }
 
@@ -49,7 +50,9 @@ function request(options: ConfirmOptions, alert: boolean): Promise<boolean> {
   // A newer question replaces an older one, which gets "no".
   cancelConfirmQuestions()
   return new Promise((resolve) => {
-    setQueue([...queue, { ...options, id: ++nextId, alert, resolve }])
+    const focused = typeof document === 'undefined' ? null : document.activeElement
+    const opener = focused instanceof HTMLElement && focused !== document.body ? focused : null
+    setQueue([...queue, { ...options, id: ++nextId, alert, opener, resolve }])
   })
 }
 
@@ -71,6 +74,14 @@ export function settleConfirm(confirmed: boolean) {
   current.resolve(current.alert || confirmed)
 }
 
+/** Settles everything: questions "no", alerts read. Used when the host goes away. */
+export function settleAllConfirms() {
+  const all = queue
+  if (all.length === 0) return
+  setQueue([])
+  for (const entry of all) entry.resolve(entry.alert)
+}
+
 export function subscribeConfirm(listener: () => void) {
   listeners.add(listener)
   return () => { listeners.delete(listener) }
@@ -78,11 +89,14 @@ export function subscribeConfirm(listener: () => void) {
 
 export const getPendingConfirm = (): PendingConfirm | null => queue[0] ?? null
 
-/** The one "you will lose edits" question, so every window words its buttons alike. */
-export function confirmDiscardChanges(message: string): Promise<boolean> {
+/**
+ * The one "you will lose edits" question. One wording everywhere, whichever way out
+ * the user took, so the same decision never reads two ways in one window.
+ */
+export function confirmDiscardChanges(): Promise<boolean> {
   return confirmDialog({
     title: 'Discard unsaved changes?',
-    message,
+    message: 'Your changes have not been saved yet. If you leave now, they are lost.',
     confirmLabel: 'Discard changes',
     cancelLabel: 'Keep editing',
     tone: 'danger',

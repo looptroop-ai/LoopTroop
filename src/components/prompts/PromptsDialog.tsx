@@ -48,7 +48,7 @@ export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boo
 
   const selectPrompt = async (promptId: string) => {
     if (promptId === selectedPromptId) return
-    if (editorDirty && !await confirmDiscardChanges('The prompt you are editing has changes that are not saved yet. Opening another prompt throws them away.')) return
+    if (editorDirty && !await confirmDiscardChanges()) return
     setEditorDirty(false)
     onDirtyChange?.(false)
     setSelectedPromptId(promptId)

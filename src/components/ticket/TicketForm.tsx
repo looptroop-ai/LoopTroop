@@ -52,8 +52,8 @@ const getStartedTicketStatus = (result?: { status?: string; state?: string }) =>
 const reportCreateAndStartFailure = (error: unknown, ticketWasCreated: boolean) => {
   const message = error instanceof Error ? error.message : 'Failed to start ticket'
   void alertDialog(ticketWasCreated
-    ? { title: 'Ticket created, but it did not start', message }
-    : { title: 'Could not create and start the ticket', message })
+    ? { title: 'Ticket created, but it did not start', message, tone: 'danger' }
+    : { title: 'Could not create and start the ticket', message, tone: 'danger' })
 }
 
 export const TicketForm = ({ onClose, onDirtyChange, onEditingChange }: TicketFormProps) => {
@@ -208,7 +208,7 @@ export const TicketForm = ({ onClose, onDirtyChange, onEditingChange }: TicketFo
   }
 
   const handleClose = async () => {
-    if (isDirty && !await confirmDiscardChanges('This ticket has changes that are not saved yet. Closing now throws them away.')) return
+    if (isDirty && !await confirmDiscardChanges()) return
     onClose()
   }
 

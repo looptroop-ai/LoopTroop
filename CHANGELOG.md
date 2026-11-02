@@ -9,6 +9,24 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.6.3 (2026-11-02)
+
+
+### Release Highlights
+
+**🚀 LoopTroop — What's New Since v0.6.2**
+
+A reliability update: tickets keep running when OpenCode is slow, AI mistakes get repaired instead of blocking work, and the app feels more polished.
+
+- **1. ⏳ Patience With a Slow OpenCode** — Slow permission confirmations, a cold start before the first prompt, or a busy moment before a council round no longer stop a healthy ticket.
+- **2. 🔧 AI Command Mistakes Repaired** — Two common formatting mistakes in AI-written commands are now fixed automatically, and an invalid command says exactly which one it is.
+- **3. 🔍 Safer Relevant-Files Scan** — The scan explores your repository with read-only file tools instead of shell commands, so it is faster and can no longer stall on approvals.
+- **4. ⚠️ Accurate AI Activity Warnings** — Warnings stick to the right model, phase and attempt, and show a retry button when their evidence cannot load.
+- **5. ⏱️ Clearer Timeouts & Timing** — Timeout errors name the request OpenCode did not answer and for how long, and the Debug log shows how long each permission approval took.
+- **6. 💬 Themed Confirmation Dialogs** — Questions like "Discard unsaved changes?" now open in a dialog that matches the app, with clear button names and your work safe from a stray Enter.
+- **7. 🎨 Tidier Interface** — The assistant button sits steadily beside **Back to bottom**, and Coverage Report tabs share one row.
+- **✨ Overall:** fewer stopped tickets, clearer errors, and a smoother app.
+
 ### Summary
 
 - AI activity warnings track current work accurately and show retry controls when their evidence cannot load.

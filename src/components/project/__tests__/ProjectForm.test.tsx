@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProjectForm } from '../ProjectForm'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Project } from '@/hooks/useProjects'
-import { createJsonResponse } from '@/test/renderHelpers'
+import { answerConfirmDialog, createJsonResponse } from '@/test/renderHelpers'
+import { ConfirmDialogHost } from '@/components/shared/ConfirmDialog'
 
 const mockProjectMutations = vi.hoisted(() => ({
   create: {
@@ -101,6 +102,7 @@ function Wrapper({ children }: { children: ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         {children}
+        <ConfirmDialogHost />
       </TooltipProvider>
     </QueryClientProvider>
   )
@@ -444,35 +446,29 @@ describe('ProjectForm', () => {
     expect(mockProjectMutations.create.mutate).toHaveBeenCalledTimes(1)
   })
 
-  it('reports an invalid wait edit as dirty and confirms before Cancel or Back discards it', () => {
+  it('reports an invalid wait edit as dirty and confirms before Cancel or Back discards it', async () => {
     const onBack = vi.fn()
     const onClose = vi.fn()
     const dirty = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      render(<ProjectForm onClose={onClose} onBack={onBack} onDirtyChange={dirty} project={makeCreatedProject({ aiQuestionWindowOverride: 900_000 })} />, { wrapper: Wrapper })
-      fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-      const wait = screen.getByLabelText('AI question wait')
-      expect(dirty).toHaveBeenLastCalledWith(false)
+    render(<ProjectForm onClose={onClose} onBack={onBack} onDirtyChange={dirty} project={makeCreatedProject({ aiQuestionWindowOverride: 900_000 })} />, { wrapper: Wrapper })
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    const wait = screen.getByLabelText('AI question wait')
+    expect(dirty).toHaveBeenLastCalledWith(false)
 
-      fireEvent.change(wait, { target: { value: '61' } })
-      expect(dirty).toHaveBeenLastCalledWith(true)
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
-      expect(confirm).toHaveBeenCalledTimes(2)
-      expect(confirm).toHaveBeenCalledWith('Discard your unsaved project changes?')
-      expect(onBack).not.toHaveBeenCalled()
-      expect(onClose).not.toHaveBeenCalled()
+    fireEvent.change(wait, { target: { value: '61' } })
+    expect(dirty).toHaveBeenLastCalledWith(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
+    expect(onBack).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
 
-      fireEvent.change(wait, { target: { value: '15' } })
-      expect(dirty).toHaveBeenLastCalledWith(false)
-      confirm.mockClear()
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(confirm).not.toHaveBeenCalled()
-      expect(onBack).toHaveBeenCalledTimes(1)
-    } finally {
-      confirm.mockRestore()
-    }
+    fireEvent.change(wait, { target: { value: '15' } })
+    expect(dirty).toHaveBeenLastCalledWith(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 
   it('ignores a repository-check failure that arrives after unmount', async () => {
@@ -531,25 +527,25 @@ describe('ProjectForm', () => {
     expect(screen.getByText('Existing LoopTroop project detected')).toBeInTheDocument()
   })
 
-  it('guards Back to list and Cancel while the project form is dirty', () => {
+  it('guards Back to list and Cancel while the project form is dirty', async () => {
     const onBack = vi.fn()
     const onClose = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const view = render(<ProjectForm onClose={onClose} onBack={onBack} />, { wrapper: Wrapper })
 
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Unsaved project' } })
     fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
-    expect(confirm).toHaveBeenCalledWith('Discard your unsaved project changes?')
+    await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
     expect(onBack).not.toHaveBeenCalled()
 
-    confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Back to list' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Discard changes')
     expect(onBack).toHaveBeenCalledTimes(1)
 
     view.unmount()
     render(<ProjectForm onClose={onClose} />, { wrapper: Wrapper })
     fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Another unsaved project' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Discard changes')
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
@@ -1040,20 +1036,17 @@ describe('ProjectForm', () => {
     expect(mockAddToast).toHaveBeenCalledWith('success', 'Fresh project created after removing existing LoopTroop state.')
   })
 
-  it('deletes an edited project only after confirmation and reports mutation outcomes', () => {
+  it('deletes an edited project only after confirmation and reports mutation outcomes', async () => {
     const onClose = vi.fn()
-    const confirm = vi.fn().mockReturnValue(false)
-    vi.stubGlobal('confirm', confirm)
     render(<ProjectForm onClose={onClose} project={makeCreatedProject()} />, { wrapper: Wrapper })
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Project' }))
-    expect(confirm).toHaveBeenCalledWith(
-      'Delete this project, its local .looptroop state, and its dedicated ticket assistant conversations? This cannot be undone.',
-    )
+    expect(await screen.findByText(/its local .looptroop state, and its ticket assistant conversations/)).toBeInTheDocument()
+    await answerConfirmDialog('Delete this project?', 'Keep project')
     expect(mockProjectMutations.remove.mutate).not.toHaveBeenCalled()
 
-    confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Delete Project' }))
+    await answerConfirmDialog('Delete this project?', 'Delete project')
     const failure = mockProjectMutations.remove.mutate.mock.calls[0]?.[1] as {
       onError: (error: Error) => void
     }
@@ -1061,6 +1054,7 @@ describe('ProjectForm', () => {
     expect(mockAddToast).toHaveBeenCalledWith('error', 'Delete failed', 5000)
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Project' }))
+    await answerConfirmDialog('Delete this project?', 'Delete project')
     const success = mockProjectMutations.remove.mutate.mock.calls[1]?.[1] as {
       onSuccess: () => void
     }

@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef } from 'react'
+import { useCallback, useEffect, useId, useRef } from 'react'
 import { X } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useDialogFocus } from '@/hooks/useDialogFocus'
 import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
+import { confirmDiscardChanges } from '@/lib/confirmDialog'
 
 interface CenteredModalProps {
   open: boolean
@@ -29,6 +30,13 @@ export function CenteredModal({
   const titleId = useId()
   const handleTrapKeyDown = useDialogFocus(open, panelRef)
 
+  // Every way out of a dirty window — Escape, the backdrop, the X — asks the same question.
+  const requestClose = useCallback(async () => {
+    if (closeDisabled) return
+    if (isDirty && !await confirmDiscardChanges('You have changes in this window that are not saved yet. Closing it throws them away.')) return
+    onClose()
+  }, [closeDisabled, isDirty, onClose])
+
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
@@ -39,16 +47,12 @@ export function CenteredModal({
         // closed the window behind it as well — the same defect the ticket dashboard
         // has already been taught to avoid.
         if (isEscapeClaimedByNestedOverlay(e, panelRef.current)) return
-        if (isDirty) {
-          const shouldClose = window.confirm('You have unsaved changes. Close this window anyway?')
-          if (!shouldClose) return
-        }
-        onClose()
+        void requestClose()
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [closeDisabled, isDirty, open, onClose])
+  }, [closeDisabled, open, requestClose])
 
   if (!open) return null
 
@@ -57,9 +61,7 @@ export function CenteredModal({
       className={`fixed inset-0 ${zIndexClass} flex items-center justify-center bg-black/50 backdrop-blur-[1px]`}
       onClick={(e) => {
         if (e.target !== e.currentTarget) return
-        if (closeDisabled) return
-        if (isDirty && !window.confirm('You have unsaved changes. Close this window anyway?')) return
-        onClose()
+        void requestClose()
       }}
     >
       <div
@@ -75,14 +77,7 @@ export function CenteredModal({
                 <TooltipTrigger asChild>
                   <button
                         type="button"
-                        onClick={() => {
-                          if (closeDisabled) return
-                          if (isDirty) {
-                            const shouldClose = window.confirm('You have unsaved changes. Close this window anyway?')
-                            if (!shouldClose) return
-                          }
-                          onClose()
-                        }}
+                        onClick={() => { void requestClose() }}
                         aria-label="Close"
                         className="absolute top-3 right-3 z-10 flex items-center justify-center h-8 w-8 rounded-md border border-border bg-muted text-foreground hover:bg-destructive hover:text-white hover:border-destructive transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         disabled={closeDisabled}

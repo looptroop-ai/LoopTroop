@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { confirmDiscardChanges } from '@/lib/confirmDialog'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { useProfile, useCreateProfile, useUpdateProfile } from '@/hooks/useProfile'
@@ -110,8 +111,8 @@ export const ProfileSetup = ({ onClose, onOpenAbout, onDirtyChange }: ProfileSet
     onDirtyChange?.(isDirty)
   }, [isDirty, onDirtyChange])
 
-  const handleClose = () => {
-    if (isDirty && !window.confirm('Discard your unsaved profile changes?')) return
+  const handleClose = async () => {
+    if (isDirty && !await confirmDiscardChanges('Your configuration changes have not been saved. Closing now throws them away.')) return
     onClose()
   }
 

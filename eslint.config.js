@@ -420,6 +420,9 @@ export default tseslint.config(
       'preserve-caught-error': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-restricted-syntax': ['error', ...sharedHelperRedeclarationRules, ...ambientProgramRules],
+      // The browser's own confirm/alert/prompt boxes ignore the app's theme. Use
+      // `confirmDialog`/`alertDialog` from `src/lib/confirmDialog.ts`.
+      'no-alert': 'error',
     },
   },
   {

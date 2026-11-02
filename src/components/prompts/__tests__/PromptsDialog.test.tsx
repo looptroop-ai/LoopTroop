@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PromptResetRequest } from '../PromptEditor'
 import { PromptsDialog } from '../PromptsDialog'
+import { ConfirmDialogHost } from '@/components/shared/ConfirmDialog'
+import { answerConfirmDialog } from '@/test/renderHelpers'
 
 const state = vi.hoisted(() => ({
   data: undefined as unknown,
@@ -101,8 +103,7 @@ describe('PromptsDialog', () => {
     state.data = catalog
     state.isLoading = false
     const onDirtyChange = vi.fn()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    render(<PromptsDialog onDirtyChange={onDirtyChange} />)
+    render(<><PromptsDialog onDirtyChange={onDirtyChange} /><ConfirmDialogHost /></>)
 
     await waitFor(() => expect(screen.getByTestId('selected-prompt')).toHaveTextContent('first'))
     expect(screen.getByText(/This prompt is not in the catalog/)).toBeInTheDocument()
@@ -113,11 +114,11 @@ describe('PromptsDialog', () => {
     expect(screen.getByTestId('selected-prompt')).toHaveTextContent('second')
     fireEvent.click(screen.getByRole('button', { name: 'Make editor dirty' }))
     fireEvent.click(screen.getByRole('button', { name: 'First prompt' }))
-    expect(confirm).toHaveBeenCalledWith('Discard your unsaved prompt changes?')
+    await answerConfirmDialog('Discard unsaved changes?', 'Keep editing')
     expect(screen.getByTestId('selected-prompt')).toHaveTextContent('second')
 
-    confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'First prompt' }))
+    await answerConfirmDialog('Discard unsaved changes?', 'Discard changes')
     expect(screen.getByTestId('selected-prompt')).toHaveTextContent('first')
     expect(onDirtyChange).toHaveBeenLastCalledWith(false)
 

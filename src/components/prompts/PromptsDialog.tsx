@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { confirmDiscardChanges } from '@/lib/confirmDialog'
 import { AlertTriangle, ChevronRight, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -45,9 +46,9 @@ export function PromptsDialog({ onDirtyChange }: { onDirtyChange?: (isDirty: boo
     })
   }
 
-  const selectPrompt = (promptId: string) => {
+  const selectPrompt = async (promptId: string) => {
     if (promptId === selectedPromptId) return
-    if (editorDirty && !window.confirm('Discard your unsaved prompt changes?')) return
+    if (editorDirty && !await confirmDiscardChanges('The prompt you are editing has changes that are not saved yet. Opening another prompt throws them away.')) return
     setEditorDirty(false)
     onDirtyChange?.(false)
     setSelectedPromptId(promptId)

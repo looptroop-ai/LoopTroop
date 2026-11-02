@@ -14,6 +14,8 @@ import { StartupRestorePopup } from '@/components/shared/StartupRestorePopup'
 import { AboutDialog } from '@/components/config/AboutDialog'
 import { AssistantWidget } from '@/components/assistant/AssistantWidget'
 import { ToastProvider } from '@/components/shared/Toast'
+import { ConfirmDialogHost } from '@/components/shared/ConfirmDialog'
+import { confirmDiscardChanges } from '@/lib/confirmDialog'
 import { AIQuestionProvider } from '@/context/AIQuestionContext'
 import {
   WelcomeDisclaimer,
@@ -251,6 +253,7 @@ function App() {
   })
   const [ticketModalEditing, setTicketModalEditing] = useState(false)
   const activeModalRef = useRef(activeModal)
+  const popConfirmIdRef = useRef(0)
   activeModalRef.current = activeModal
   const modalDirtyRef = useRef(modalDirty)
   modalDirtyRef.current = modalDirty
@@ -484,20 +487,33 @@ function App() {
       }
 
       modalWasPushedRef.current = false
+      // Any newer Back/Forward makes an unanswered discard question stale.
+      const popId = ++popConfirmIdRef.current
       const previousModal = activeModalRef.current
       const nextModal = modalForPathname(pathname)
       if (previousModal && previousModal !== nextModal && modalDirtyRef.current[previousModal]) {
-        if (!window.confirm('Discard your unsaved changes?')) {
-          // The browser has already moved to the previous entry. Restore the
-          // routed modal as a new app-owned entry so the user's edits remain
-          // visible and closing it can still return to the page behind it.
-          window.history.pushState(null, '', MODAL_ROUTES[previousModal])
-          modalWasPushedRef.current = true
-          setPopPathname(null)
-          return
-        }
-        setModalDirty((current) => ({ ...current, [previousModal]: false }))
+        // The browser has already moved to the new entry; the modal stays on screen
+        // until the user answers.
+        void confirmDiscardChanges('You have changes in this window that are not saved yet. Leaving it throws them away.').then((discard) => {
+          if (popId !== popConfirmIdRef.current) return
+          if (!discard) {
+            // Restore the routed modal as a new app-owned entry so the user's edits
+            // remain visible and closing it can still return to the page behind it.
+            window.history.pushState(null, '', MODAL_ROUTES[previousModal])
+            modalWasPushedRef.current = true
+            setPopPathname(null)
+            return
+          }
+          modalDirtyRef.current = { ...modalDirtyRef.current, [previousModal]: false }
+          setModalDirty((current) => ({ ...current, [previousModal]: false }))
+          applyPop(pathname, nextModal)
+        })
+        return
       }
+      applyPop(pathname, nextModal)
+    }
+
+    const applyPop = (pathname: string, nextModal: ModalRoute | null) => {
       setPopPathname(pathname)
       // About has no route of its own and sits above everything else, so a Back that
       // reconciles the routed overlays would otherwise close Configuration underneath
@@ -675,6 +691,7 @@ function App() {
         </CenteredModal>
 
         <KeyboardShortcuts />
+        <ConfirmDialogHost />
         <AssistantWidget
           open={isAssistantOpen && !startupOverlayOpen}
           launcherVisible={!startupOverlayOpen}

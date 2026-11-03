@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readPersistedLogEntries } from '../../test/logFiles'
 import { Hono } from 'hono'
-import { readFileSync } from 'node:fs'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, PromptSessionOptions } from '../../opencode/types'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -177,7 +177,7 @@ describe('council member routes', () => {
 
     const paths = getTicketPaths(ticket.id)
     if (!paths) throw new Error('Expected ticket paths')
-    const logs = readFileSync(paths.executionLogPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const logs = readPersistedLogEntries(paths.executionLogPath)
     expect(logs).toContainEqual(expect.objectContaining({
       modelId: MODEL_B,
       phase: 'COUNCIL_DELIBERATING',

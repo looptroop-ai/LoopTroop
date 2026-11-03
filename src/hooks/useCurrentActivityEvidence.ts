@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { useTicketHistoricalLogs } from '@/hooks/useTicketHistoricalLogs'
 
+/** The log route's maximum page size (logHandlers parseQuery accepts 1–500). */
+export const ACTIVITY_EVIDENCE_PAGE_SIZE = 500
+
 interface UseCurrentActivityEvidenceOptions {
   ticketId?: string
   phase: string
@@ -46,7 +49,10 @@ export function useCurrentActivityEvidence({
     phase,
     phaseAttempt: activePhaseAttempt,
     view: 'activity',
-    limit: 200,
+    // The panel always loads the whole phase (fetchAllOlder below), so it asks for
+    // the largest page the server allows: every page re-runs the phase's activity
+    // query, and fewer, bigger pages finish a long phase in about half the time.
+    limit: ACTIVITY_EVIDENCE_PAGE_SIZE,
   }, activityEnabled)
 
   const [completeEvidence, setCompleteEvidence] = useState<{ scopeKey: string; entries: typeof activityLogs.entries } | null>(null)

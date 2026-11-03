@@ -18,6 +18,11 @@ export interface LogEvent {
   source?: LogSource
   status?: string
   data?: Record<string, unknown>
+  /**
+   * Persisted debug lines only: `message` holds just the label and the payload text
+   * is rebuilt from `data` when the line is read (see server/log/storedEntry.ts).
+   */
+  payloadInData?: true
   entryId?: string
   fingerprint?: string
   op?: LogEntryOperation

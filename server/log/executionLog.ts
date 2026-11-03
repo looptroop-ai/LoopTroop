@@ -3,6 +3,7 @@ import { safeAtomicAppendWithin } from '../io/atomicAppend'
 import { getTicketStorageContext } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { queueProjectionAppend, resolveTicketLogPath, type PersistedLogChannel, type TicketLogStorage } from './projection'
+import { compactLogEntryForStorage } from './storedEntry'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { relative } from 'node:path'
 import { resolveContainedPath } from '../lib/containedPath'
@@ -120,9 +121,14 @@ function resolvePhaseAttemptSafely(
  *    to top-level event properties (entryId, sessionId, etc.) and internal
  *    flags (suppressDebugMirror) are removed from `data` before serializing.
  *
- * These optimizations reduce log size by ~80% (38 MB → ~7 MB measured on
- * a real ticket). The real-time log viewer is unaffected because it receives
- * all events via SSE, which is independent of disk persistence.
+ * 4. EACH TEXT IS STORED ONCE. `content` is left out when it equals `message`,
+ *    and a debug line keeps its plain-object payload only in `data` (flagged
+ *    `payloadInData`). Every reader expands lines back to the full shape with
+ *    expandStoredLogEntry (storedEntry.ts). This halves the normal and AI logs
+ *    and cuts the debug log to about a third.
+ *
+ * The real-time log viewer is unaffected because it receives all events via
+ * SSE, which is independent of disk persistence.
  * ─────────────────────────────────────────────────────────────────────────
  */
 export function appendLogEvent(
@@ -202,10 +208,14 @@ function appendEventToChannel(
   }
 
   const logPath = resolveTicketLogPath(storage, channel)
-  const serialized = JSON.stringify(event)
+  // Each text is written once; readers expand the line (server/log/storedEntry.ts).
+  // The projection gets the same compact object, so live indexing and a catch-up
+  // from disk see identical input.
+  const stored = compactLogEntryForStorage(event as unknown as Record<string, unknown>)
+  const serialized = JSON.stringify(stored)
   const canonicalRoot = resolveContainedPath(storage.projectRoot, '.')
   const range = safeAtomicAppendWithin(canonicalRoot, relative(canonicalRoot, logPath), serialized)
-  queueProjectionAppend(ticketId, channel, event as unknown as Record<string, unknown>, range.offset, range.length)
+  queueProjectionAppend(ticketId, channel, stored, range.offset, range.length)
   if (fingerprint) {
     rememberPersistedFingerprint(ticketId, channel, phase, phaseAttempt, fingerprint)
   }

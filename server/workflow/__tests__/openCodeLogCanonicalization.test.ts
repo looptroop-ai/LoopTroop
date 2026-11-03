@@ -23,6 +23,8 @@ vi.mock('../aiQuestionSettings', async (importOriginal) => ({
 
 import * as ticketsModule from '../../storage/tickets'
 import * as atomicAppendModule from '../../io/atomicAppend'
+import * as projectionModule from '../../log/projection'
+import { expandStoredLogEntry } from '../../log/storedEntry'
 import { broadcaster } from '../../sse/broadcaster'
 import * as questionWindowsModule from '../questionWindows'
 import * as aiQuestionSettingsModule from '../aiQuestionSettings'
@@ -48,6 +50,10 @@ vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
   baseBranch: 'main',
   beadsPath: resolve(projectRoot, 'beads.jsonl'),
 })
+// Appends resolve only their own log file: point both lookups at the same temp files.
+vi.spyOn(ticketsModule, 'getTicketStorageContext').mockReturnValue({ projectId: 1, projectRoot, externalId: 'T-1' })
+const logPaths = { normal: executionLogPath, debug: debugLogPath, ai: aiLogPath }
+vi.spyOn(projectionModule, 'resolveTicketLogPath').mockImplementation((_storage, channel) => logPaths[channel])
 
 const mockAppend = vi.fn((_path: string, line: string) => ({
   offset: 0,
@@ -63,20 +69,21 @@ import {
 } from '../phases/helpers'
 import { emitDebugLog } from '../phases/logEmission'
 
+// Lines are stored once on disk (see server/log/storedEntry.ts); assert on the entry readers see.
 function getPersistedEntries() {
-  return mockAppend.mock.calls.map(([, payload]) => JSON.parse(payload))
+  return mockAppend.mock.calls.map(([, payload]) => expandStoredLogEntry(JSON.parse(payload)))
 }
 
 function getNormalPersistedEntries() {
   return mockAppend.mock.calls
     .filter(([logPath]) => logPath === executionLogPath)
-    .map(([, payload]) => JSON.parse(payload))
+    .map(([, payload]) => expandStoredLogEntry(JSON.parse(payload)))
 }
 
 function getAiPersistedEntries() {
   return mockAppend.mock.calls
     .filter(([logPath]) => logPath === aiLogPath)
-    .map(([, payload]) => JSON.parse(payload))
+    .map(([, payload]) => expandStoredLogEntry(JSON.parse(payload)))
 }
 
 function getPersistedTextEntries() {

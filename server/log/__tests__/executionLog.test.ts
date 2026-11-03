@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appendLogEvent, clearTicketFingerprints, createLogEvent, shouldSkipLogEmission } from '../executionLog'
 import * as ticketsModule from '../../storage/tickets'
 import * as projectionModule from '../projection'
+import { expandStoredLogEntry } from '../storedEntry'
 import * as atomicAppendModule from '../../io/atomicAppend'
 import { mkdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -123,7 +124,18 @@ describe('appendLogEvent', () => {
     expect(mockAppend).toHaveBeenCalledOnce()
     const written = JSON.parse(mockAppend.mock.calls[0]![1]!)
     expect(written.op).toBe('finalize')
-    expect(written.content).toBe('final content')
+    // Each text is stored once: `content` equal to `message` is left out on disk.
+    expect(written.message).toBe('final content')
+    expect(written).not.toHaveProperty('content')
+    expect(expandStoredLogEntry(written).content).toBe('final content')
+  })
+
+  it('keeps content on disk when it differs from the message', () => {
+    appendLogEvent('1:T-42', 'info', 'CODING', 'Summary line', { timestamp: '2026-03-13T12:00:00.000Z', content: 'Full output' })
+
+    const written = JSON.parse(mockAppend.mock.calls[0]![1]!)
+    expect(written).toMatchObject({ message: 'Summary line', content: 'Full output' })
+    expect(expandStoredLogEntry(written)).toMatchObject({ message: 'Summary line', content: 'Full output' })
   })
 
   it('persists finalized AI rows to both AI detail and normal logs', () => {

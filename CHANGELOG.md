@@ -13,6 +13,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - The server stays responsive while the board refreshes, ticket pages load and ticket sizes are calculated, so "backend not available" no longer appears during normal use.
 - LoopTroop is ready sooner after a restart.
+- Log panels open several times faster on long tickets, scrolling back through the Debug log no longer freezes the app, and log files take about half the space.
 
 ### Performance
 
@@ -25,6 +26,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Startup asks OpenCode about leftover AI questions for up to eight sessions at a time instead of one after another.
 - Streamed AI text is only sent to the screen, never saved, but every streamed chunk used to look up its ticket and resolve its file paths first. That work now happens only for lines that are saved. Each streaming model cost 15–33% of the server's time; council phases, where several models stream at once, no longer slow the app down.
 - Saving a log line resolves only the log file it writes to, the log cache looks its ticket up once per line, and control characters are removed from log text in one pass. A multi-megabyte AI message is now logged in well under half the time.
+- Log views no longer read every stored entry's full text to decide which rows to show: the fields they filter and sort on are stored as columns when an entry is indexed, with the full entry kept last in the row. On a long ticket, the coding phase's Activity panel loads in about a second instead of 5–6 seconds, and the Overview in a fraction of a second.
+- The Debug log reads each page straight off an index in its own order. Scrolling back used to re-sort the ticket's whole debug history for every page (1–2 s per page, up to 20 s for some); a page now takes a few milliseconds to find.
+- The Activity panel loads 500 entries per request instead of 200, so a long phase needs half as many requests.
+
+### Changed
+
+- Log files store each text once. A line's `content` is left out when it is the same as its `message`, and a debug line keeps its payload only in `data` instead of also writing it out as text. Log views, exports and downloads show exactly the same text as before. The normal and AI logs are about half their previous size and the debug log about a third, and the log cache in the project database shrinks the same way.
 
 ## 0.6.3 (2026-11-02)
 

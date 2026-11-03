@@ -1912,7 +1912,8 @@ describe('PhaseLogPanel', () => {
       const [activityRequest] = activityRequests
       if (!activityRequest) throw new Error('Expected one activity request')
       expect(activityRequest.searchParams.get('phaseAttempt')).toBe('2')
-      expect(activityRequest.searchParams.get('limit')).toBe('200')
+      // The panel loads the whole phase, so it asks for the route's largest page.
+      expect(activityRequest.searchParams.get('limit')).toBe('500')
     } finally {
       fetchSpy.mockRestore()
     }

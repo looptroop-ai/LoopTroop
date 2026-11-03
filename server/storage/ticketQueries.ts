@@ -1,7 +1,7 @@
 import { getExternalTargetFiles } from '../lib/beadTargets'
 import { isBeadTargetFile } from '../../shared/beadTargets'
 import { TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
-import { and, asc, desc, eq, isNull, ne, or } from 'drizzle-orm'
+import { and, asc, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { readFileNoFollowSync } from '../io/readFile'
 import { removeFile } from '../io/removal'
@@ -880,10 +880,12 @@ function readManualQaProjection(
   if (!projectContext) return empty
 
   const artifacts = projectContext.projectDb.select().from(phaseArtifacts)
-    .where(eq(phaseArtifacts.ticketId, localTicketId))
+    // Filter in SQL: loading every artifact's content to keep the few Manual QA
+    // rows made each board refresh read the ticket's whole artifact history.
+    // GLOB is case-sensitive like startsWith, and NULL never matches.
+    .where(and(eq(phaseArtifacts.ticketId, localTicketId), sql`${phaseArtifacts.artifactType} GLOB 'manual_qa_*'`))
     .orderBy(asc(phaseArtifacts.id))
     .all()
-    .filter((artifact) => typeof artifact.artifactType === 'string' && artifact.artifactType.startsWith('manual_qa_'))
   if (artifacts.length === 0) return empty
 
   let latestOutcome: PublicTicket['manualQa']['latestOutcome'] = null
@@ -1628,6 +1630,36 @@ export function getTicketStorageContext(ticketRef: string): { projectId: number;
     projectRoot: project.folderPath,
     externalId: parsed.externalId,
   }
+}
+
+/**
+ * Ticket refs in `listTickets` order without building public projections, which
+ * read every ticket's files and artifacts. For callers that only need ids.
+ */
+function listTicketRefRows(): Array<{ ref: string; status: string; branchName: string | null }> {
+  const rows: Array<{ ref: string; status: string; branchName: string | null; updatedAt: string }> = []
+  for (const project of listProjects()) {
+    const context = getProjectContextById(project.id)
+    if (!context) continue
+    const projectRows = context.projectDb
+      .select({ externalId: tickets.externalId, status: tickets.status, branchName: tickets.branchName, updatedAt: tickets.updatedAt })
+      .from(tickets)
+      .orderBy(desc(tickets.updatedAt))
+      .all()
+    for (const row of projectRows) rows.push({ ...row, ref: buildTicketRef(context.attached.id, row.externalId) })
+  }
+  return rows.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+}
+
+export function listTicketRefs(): string[] {
+  return listTicketRefRows().map((row) => row.ref)
+}
+
+/** Refs of real tickets the workflow can still act on; see `listTicketRefRows`. */
+export function listNonTerminalTicketRefs(): string[] {
+  return listTicketRefRows()
+    .filter((row) => !isTerminalWorkflowStatus(row.status) && !isDisplayOnlyMockTicket(row))
+    .map((row) => row.ref)
 }
 
 export function listNonTerminalTickets(): PublicTicket[] {

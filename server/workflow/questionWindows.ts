@@ -1292,6 +1292,8 @@ export interface RestartSessionOwner {
   active: boolean
 }
 
+const RESTART_QUESTION_LIST_CONCURRENCY = 8
+
 export async function reconcilePendingQuestionsAfterRestart(input: {
   projectRoot: string
   /** Every active session in the project, whichever ticket owns it. */
@@ -1307,11 +1309,23 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
   const owners = new Map(input.owners.map((owner) => [owner.sessionId, owner]))
   const pendingById = new Map<string, Awaited<ReturnType<typeof adapter.listPendingQuestions>>[number]>()
   let unverified = 0
-  for (const owner of owners.values()) {
-    let requests: Awaited<ReturnType<typeof adapter.listPendingQuestions>>
-    try {
-      requests = await adapter.listPendingQuestions(undefined, undefined, owner.sessionId)
-    } catch {
+  // Every recorded session is asked, most long finished; one at a time this held
+  // startup for ~10 ms per session. Results merge in owner order, as before.
+  const ownerList = [...owners.values()]
+  const listed: Array<Awaited<ReturnType<typeof adapter.listPendingQuestions>> | null> = []
+  let nextOwner = 0
+  await Promise.all(Array.from({ length: Math.min(RESTART_QUESTION_LIST_CONCURRENCY, ownerList.length) }, async () => {
+    while (nextOwner < ownerList.length) {
+      const index = nextOwner++
+      try {
+        listed[index] = await adapter.listPendingQuestions(undefined, undefined, ownerList[index]!.sessionId)
+      } catch {
+        listed[index] = null
+      }
+    }
+  }))
+  for (const requests of listed) {
+    if (requests === null) {
       unverified += 1
       continue
     }

@@ -310,12 +310,12 @@ async function assertProviderCatalogCanReload(
 }
 
 async function listPersistedActiveSessionIds(): Promise<string[]> {
-  const [{ listNonTerminalTickets }, { listOpenCodeSessionsForTicket }] = await Promise.all([
+  const [{ listNonTerminalTicketRefs }, { listOpenCodeSessionsForTicket }] = await Promise.all([
     import('../storage/ticketQueries'),
     import('./sessionManager'),
   ])
-  return [...new Set(listNonTerminalTickets().flatMap((ticket) =>
-    listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId),
+  return [...new Set(listNonTerminalTicketRefs().flatMap((ticketId) =>
+    listOpenCodeSessionsForTicket(ticketId, ['active']).map((session) => session.sessionId),
   ))]
 }
 

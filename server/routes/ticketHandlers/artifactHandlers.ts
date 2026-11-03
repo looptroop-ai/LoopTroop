@@ -1,8 +1,9 @@
 import type { Context } from 'hono'
+import type { Dirent } from 'node:fs'
 import { lstat, readdir, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
-  getTicketByRef,
+  getTicketContext,
   getPhaseArtifactById,
   getTicketPaths,
   listArtifactManifest,
@@ -13,10 +14,11 @@ import {
 import { getRequiredRouteParam, getTicketParam } from './routeUtils'
 import { resolveContainedPath } from '../../lib/containedPath'
 
+const SIZE_SCAN_CONCURRENCY = 32
+
 export async function handleGetTicketSize(c: Context) {
   const ticketId = getRequiredRouteParam(c, 'id')
-  const ticket = getTicketByRef(ticketId)
-  if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   const paths = getTicketPaths(ticketId)
   if (!paths || !paths.worktreePath) {
@@ -24,33 +26,6 @@ export async function handleGetTicketSize(c: Context) {
   }
 
   const { projectRoot, worktreePath, ticketDir, executionLogPath, debugLogPath, aiLogPath } = paths
-
-  async function getDirectorySize(dirPath: string): Promise<number> {
-    let size = 0
-    try {
-      const entries = await readdir(resolveContainedPath(projectRoot, dirPath), { withFileTypes: true })
-      const results = await Promise.all(
-        entries.map(async (entry) => {
-          const fullPath = join(dirPath, entry.name)
-          try {
-            const stats = await lstat(fullPath)
-            if (stats.isDirectory()) {
-              return getDirectorySize(fullPath)
-            } else if (stats.isFile()) {
-              return stats.size
-            }
-          } catch {
-            // Ignore individual file errors (permissions, broken symlinks)
-          }
-          return 0
-        })
-      )
-      size = results.reduce((acc, current) => acc + current, 0)
-    } catch {
-      // Ignore directory read errors
-    }
-    return size
-  }
 
   async function getFileSize(filePath: string): Promise<number> {
     try {
@@ -68,44 +43,74 @@ export async function handleGetTicketSize(c: Context) {
     children?: SizeNode[]
   }
 
-  async function getDirectoryChildren(
-    dirPath: string,
-    excludeNames: string[] = []
-  ): Promise<SizeNode[]> {
+  // One pass per tree: each directory is read once and each entry stat'ed once,
+  // SIZE_SCAN_CONCURRENCY at a time. The old recursion re-walked every subtree for
+  // each ancestor and ran a synchronous containment check per directory, which
+  // froze the server for most of a large worktree's scan. Containment is checked
+  // where a walk starts; below that only real directories are entered (lstat).
+  let activeScans = 0
+  const waitingScans: Array<() => void> = []
+  async function limited<T>(task: () => Promise<T>): Promise<T> {
+    if (activeScans < SIZE_SCAN_CONCURRENCY) activeScans++
+    else await new Promise<void>((resolve) => waitingScans.push(resolve))
     try {
-      const entries = await readdir(resolveContainedPath(projectRoot, dirPath), { withFileTypes: true })
-      const children = await Promise.all(
-        entries.map(async (entry) => {
-          if (excludeNames.includes(entry.name)) return null
-          const fullPath = join(dirPath, entry.name)
-          const isDirectory = entry.isDirectory()
-          let size = 0
-          let nestedChildren: SizeNode[] | undefined
-          try {
-            const stats = await lstat(fullPath)
-            if (stats.isDirectory()) {
-              size = await getDirectorySize(fullPath)
-              nestedChildren = await getDirectoryChildren(fullPath)
-            } else if (stats.isFile()) {
-              size = stats.size
-            }
-          } catch {
-            // Ignore error
-          }
-          return {
-            name: entry.name,
-            size,
-            isDirectory,
-            ...(nestedChildren && nestedChildren.length > 0 ? { children: nestedChildren } : {})
-          }
-        })
-      )
-      return children
-        .filter((c): c is SizeNode => c !== null && c.size > 0)
-        .sort((a, b) => b.size - a.size)
-    } catch {
-      return []
+      return await task()
+    } finally {
+      const next = waitingScans.shift()
+      if (next) next()
+      else activeScans--
     }
+  }
+
+  const scans = new Map<string, Promise<{ size: number; children: SizeNode[] }>>()
+  function scanDirectory(dirPath: string, readPath: string): Promise<{ size: number; children: SizeNode[] }> {
+    const known = scans.get(dirPath)
+    if (known) return known
+    const scan = (async () => {
+      let entries: Dirent[]
+      try {
+        entries = await limited(() => readdir(readPath, { withFileTypes: true }))
+      } catch {
+        return { size: 0, children: [] } // Ignore directory read errors
+      }
+      const nodes = await Promise.all(entries.map(async (entry): Promise<SizeNode> => {
+        const fullPath = join(dirPath, entry.name)
+        let size = 0
+        let children: SizeNode[] = []
+        try {
+          const stats = await limited(() => lstat(fullPath))
+          if (stats.isDirectory()) ({ size, children } = await scanDirectory(fullPath, fullPath))
+          else if (stats.isFile()) size = stats.size
+        } catch {
+          // Ignore individual file errors (permissions, broken symlinks)
+        }
+        return { name: entry.name, size, isDirectory: entry.isDirectory(), ...(children.length > 0 ? { children } : {}) }
+      }))
+      return {
+        size: nodes.reduce((acc, node) => acc + node.size, 0),
+        children: nodes.filter((node) => node.size > 0).sort((a, b) => b.size - a.size),
+      }
+    })()
+    scans.set(dirPath, scan)
+    return scan
+  }
+
+  function scanRoot(dirPath: string): Promise<{ size: number; children: SizeNode[] }> {
+    let readPath: string
+    try {
+      readPath = resolveContainedPath(projectRoot, dirPath)
+    } catch {
+      return Promise.resolve({ size: 0, children: [] })
+    }
+    return scanDirectory(dirPath, readPath)
+  }
+
+  async function getDirectorySize(dirPath: string): Promise<number> {
+    return (await scanRoot(dirPath)).size
+  }
+
+  async function getDirectoryChildren(dirPath: string, excludeNames: string[] = []): Promise<SizeNode[]> {
+    return (await scanRoot(dirPath)).children.filter((child) => !excludeNames.includes(child.name))
   }
 
   async function getArtifactsChildren(): Promise<SizeNode[]> {
@@ -223,14 +228,14 @@ export async function handleGetTicketSize(c: Context) {
 export function handleListPhaseAttempts(c: Context) {
   const ticketId = getTicketParam(c)
   const phase = c.req.param('phase')
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   if (!phase) return c.json({ error: 'Phase is required' }, 400)
   return c.json(listPhaseAttempts(ticketId, phase))
 }
 
 export function handleGetArtifacts(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   const phase = c.req.query('phase')
   const rawPhaseAttempt = c.req.query('phaseAttempt')
   const phaseAttempt = rawPhaseAttempt != null ? Number(rawPhaseAttempt) : undefined
@@ -254,7 +259,7 @@ function getArtifactFilters(c: Context): { phase?: string; phaseAttempt?: number
 
 export function handleGetArtifactManifest(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   return c.json({ artifacts: listArtifactManifest(ticketId, getArtifactFilters(c)) })
 }
 
@@ -265,7 +270,7 @@ function parseArtifactId(value: string): number | null {
 
 export function handleGetArtifactContent(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   const artifactId = parseArtifactId(c.req.param('artifactId') ?? '')
   if (artifactId === null) return c.json({ error: 'Artifact id must be a positive integer' }, 400)
   const artifact = getPhaseArtifactById(ticketId, artifactId)
@@ -283,7 +288,7 @@ const MAX_BATCH_CONTENT_BYTES = 2 * 1024 * 1024
 
 export async function handlePostArtifactContentBatch(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   let payload: unknown
   try {
     payload = await c.req.json()

@@ -34,6 +34,7 @@ import {
 import {
   getLatestPhaseArtifact,
   getTicketByRef,
+  getTicketContext,
   resolvePhaseAttempt,
   resolveTicketContainedPath,
 } from '../../storage/tickets'
@@ -1063,6 +1064,6 @@ export async function handlePutInterview(c: Context) {
 
 export function handleGetInterview(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   return c.json(buildInterviewPayload(ticketId))
 }

@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { getOpenCodeConnection } = vi.hoisted(() => ({ getOpenCodeConnection: vi.fn() }))
-const { listNonTerminalTickets, listOpenCodeSessionsForTicket } = vi.hoisted(() => ({
-  listNonTerminalTickets: vi.fn(),
+const { listNonTerminalTicketRefs, listOpenCodeSessionsForTicket } = vi.hoisted(() => ({
+  listNonTerminalTicketRefs: vi.fn(),
   listOpenCodeSessionsForTicket: vi.fn(),
 }))
 vi.mock('../connection', () => ({ getOpenCodeConnection }))
-vi.mock('../../storage/ticketQueries', () => ({ listNonTerminalTickets }))
+vi.mock('../../storage/ticketQueries', () => ({ listNonTerminalTicketRefs }))
 vi.mock('../sessionManager', () => ({ listOpenCodeSessionsForTicket }))
 
 import {
@@ -51,7 +51,7 @@ describe('fetchProviderCatalog', () => {
     delete process.env.OPENCODE_SERVER_USERNAME
     delete process.env.OPENCODE_SERVER_PASSWORD
     getOpenCodeConnection.mockReset().mockResolvedValue({ protocol: 'v1', version: '1.0.0', headers: {} })
-    listNonTerminalTickets.mockReset().mockReturnValue([])
+    listNonTerminalTicketRefs.mockReset().mockReturnValue([])
     listOpenCodeSessionsForTicket.mockReset().mockReturnValue([])
   })
 
@@ -63,7 +63,7 @@ describe('fetchProviderCatalog', () => {
     delete process.env.OPENCODE_SERVER_USERNAME
     delete process.env.OPENCODE_SERVER_PASSWORD
     getOpenCodeConnection.mockReset()
-    listNonTerminalTickets.mockReset()
+    listNonTerminalTicketRefs.mockReset()
     listOpenCodeSessionsForTicket.mockReset()
   })
 
@@ -545,7 +545,7 @@ describe('fetchProviderCatalog', () => {
 
   it('rejects reload for pending forms and permissions in persisted sessions after reconnect', async () => {
     getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
-    listNonTerminalTickets.mockReturnValue([{ id: 'project:ticket' }])
+    listNonTerminalTicketRefs.mockReturnValue(['project:ticket'])
     listOpenCodeSessionsForTicket.mockReturnValue([
       { sessionId: 'session-with-form' },
       { sessionId: 'session-with-permission' },
@@ -590,7 +590,7 @@ describe('fetchProviderCatalog', () => {
     try {
       mockAbortTimeouts()
       getOpenCodeConnection.mockResolvedValue({ protocol: 'v2', version: '2.0.16', headers: {} })
-      listNonTerminalTickets.mockReturnValue([{ id: 'project:ticket' }])
+      listNonTerminalTicketRefs.mockReturnValue(['project:ticket'])
       listOpenCodeSessionsForTicket.mockReturnValue([{ sessionId: 'session-1' }])
       const bodyRead = vi.fn()
       vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

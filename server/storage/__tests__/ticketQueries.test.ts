@@ -1,12 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
-import { createTicket, ensureActivePhaseAttempt, upsertLatestPhaseArtifact, getTicketByRef, getTicketContext, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
+import { createTicket, ensureActivePhaseAttempt, upsertLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, listNonTerminalTicketRefs, listTicketRefs, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
 import { DISPLAY_ONLY_MOCK_BRANCH_NAME, resolveReviewCutoffStatus } from '../ticketQueries'
-import { opencodeSessions, questionWaits, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../../db/schema'
+import { opencodeSessions, phaseArtifacts, questionWaits, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../../db/schema'
 import { canRetryWithExtraNote } from '../../workflow/retryNotes'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
 
@@ -143,6 +143,76 @@ describe('runtime Manual QA bead origin projection', () => {
       expect(projection).not.toHaveBeenCalled()
     } finally {
       projection.mockRestore()
+    }
+  })
+
+  it('lists ticket refs in board order and open refs without projecting tickets', async () => {
+    const first = await createInitializedTestTicket(runtimeRepoManager, { title: 'Refs first', shortname: 'REFA' })
+    const second = await createInitializedTestTicket(runtimeRepoManager, { title: 'Refs second', shortname: 'REFB' })
+    const done = createTicket({ projectId: first.project.id, title: 'Finished' })
+    const mock = createTicket({ projectId: second.project.id, title: 'Display mock' })
+    const stamps: Array<[string, string, Partial<typeof tickets.$inferInsert>]> = [
+      [first.ticket.id, '2026-01-01T00:00:04.000Z', {}],
+      [done.id, '2026-01-01T00:00:03.000Z', { status: 'COMPLETED' }],
+      [second.ticket.id, '2026-01-01T00:00:02.000Z', {}],
+      [mock.id, '2026-01-01T00:00:01.000Z', { branchName: DISPLAY_ONLY_MOCK_BRANCH_NAME }],
+    ]
+    for (const [ref, updatedAt, patch] of stamps) {
+      const context = getTicketContext(ref)!
+      context.projectDb.update(tickets).set({ ...patch, updatedAt }).where(eq(tickets.id, context.localTicketId)).run()
+    }
+    const boardOrder = listTickets().map((ticket) => ticket.id)
+
+    const projection = vi.spyOn(await import('../../ticket/metadata'), 'resolveTicketBaseBranch')
+      .mockImplementation(() => { throw new Error('Ref listing must not project tickets') })
+    try {
+      expect(listTicketRefs()).toEqual(boardOrder)
+      expect(listNonTerminalTicketRefs()).toEqual([first.ticket.id, second.ticket.id])
+      expect(projection).not.toHaveBeenCalled()
+    } finally {
+      projection.mockRestore()
+    }
+  })
+
+  it('projects Manual QA state only from artifacts whose type starts with manual_qa_', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Manual QA projection' })
+    const context = getTicketContext(setup.ticket.id)!
+    const insert = (artifactType: string, version: number) => context.projectDb.insert(phaseArtifacts).values({
+      ticketId: context.localTicketId,
+      phase: 'WAITING_MANUAL_QA',
+      artifactType,
+      content: JSON.stringify({ version }),
+    }).run()
+    insert('manual_qa_checklist', 1)
+    // Decoys a looser filter would count: a companion type and a different case.
+    insert('ui_artifact_companion:manual_qa_checklist', 7)
+    insert('MANUAL_QA_CHECKLIST', 8)
+
+    const manualQa = getTicketByRef(setup.ticket.id)!.manualQa
+    expect(manualQa.activeVersion).toBe(1)
+    expect(manualQa.artifactAvailability.checklist).toBe(true)
+  })
+
+  it('detects the base branch of a ticket without a workspace once per 30 s window', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Workspace ticket', shortname: 'BASE' })
+    // A finished ticket whose worktree was deleted: no folder to store its base branch in.
+    const dirless = createTicket({ projectId: setup.project.id, title: 'Worktree deleted' })
+    rmSync(dirname(getTicketPaths(dirless.id)!.ticketDir), { recursive: true, force: true })
+    const detect = vi.spyOn(await import('../paths'), 'detectGitBaseBranch')
+    const clock = vi.spyOn(Date, 'now')
+    const start = Date.now()
+    clock.mockReturnValue(start)
+    try {
+      getTicketByRef(dirless.id)
+      getTicketByRef(dirless.id)
+      expect(detect).toHaveBeenCalledTimes(1)
+
+      clock.mockReturnValue(start + 30_001)
+      expect(getTicketByRef(dirless.id)?.runtime.baseBranch).toBe(detect.mock.results[0]?.value)
+      expect(detect).toHaveBeenCalledTimes(2)
+    } finally {
+      clock.mockRestore()
+      detect.mockRestore()
     }
   })
 

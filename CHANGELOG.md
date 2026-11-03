@@ -9,6 +9,21 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- The server stays responsive while the board refreshes, ticket pages load and ticket sizes are calculated, so "backend not available" no longer appears during normal use.
+- LoopTroop is ready sooner after a restart.
+
+### Performance
+
+- Board refreshes no longer load every AI artifact of every ticket to find its Manual QA records; the database returns only those records. A 55-ticket board refresh went from about 2.2 s to under 1 s, and every ticket page that builds a ticket summary benefits too.
+- Tickets that have no ticket folder (finished tickets whose worktree was deleted, and display-only demo tickets) no longer run `git` on every refresh to find their base branch. The answer is kept per project for 30 seconds; tickets with a folder still detect and store it as before.
+- The open-questions check that runs every 30 seconds lists open tickets straight from the database instead of building the whole board first, so it no longer stalls the server for seconds at a time.
+- Ticket routes that only need to know a ticket exists (artifacts, artifact manifest and content, saved UI state, interview, AI details, beads, files, execution setup, per-ticket questions) now check that with one database lookup instead of assembling the full ticket.
+- Calculating a ticket's size reads each folder once, with a limited number of file reads at a time, instead of re-reading every folder once per level above it. The server stays responsive while it runs; a 25,000-file worktree went from 24 s to 7 s.
+- Startup checks the end of each log file for a torn last line instead of reading whole logs, skips the package caches kept under `runtime/execution-setup` when it looks for interrupted writes, and lists tickets by ID instead of building them. On a machine with 55 tickets, startup work fell from 41 s to under 20 s.
+- Startup asks OpenCode about leftover AI questions for up to eight sessions at a time instead of one after another.
+
 ## 0.6.3 (2026-11-02)
 
 

@@ -1,5 +1,5 @@
 import type { Context } from 'hono'
-import { getTicketByRef, getTicketPaths } from '../../storage/tickets'
+import { getTicketByRef, getTicketContext, getTicketPaths } from '../../storage/tickets'
 import { ArchivedArtifactWriteError, assertCurrentEditablePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import {
   appendExecutionSetupPlanNotes,
@@ -105,7 +105,7 @@ function assertSetupPlanBaseline(
 
 export function handleGetExecutionSetupPlan(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   const phaseAttemptParam = c.req.query('phaseAttempt')
   const phaseAttempt = phaseAttemptParam ? parseInt(phaseAttemptParam, 10) : undefined

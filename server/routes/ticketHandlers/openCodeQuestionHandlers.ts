@@ -7,7 +7,7 @@ import { appendLogEvent, createLogEvent, shouldSkipLogEmission } from '../../log
 import {
   getTicketByRef,
   getTicketContext,
-  listNonTerminalTickets,
+  listNonTerminalTicketRefs,
 } from '../../storage/tickets'
 import { getErrorMessage } from '@shared/typeGuards'
 import {
@@ -203,7 +203,7 @@ async function findPendingOpenCodeQuestionForTicket(ticketId: string, requestId:
 
 export async function handleListOpenCodeQuestions(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   try {
     const questions = await getTicketPendingOpenCodeQuestions(ticketId)
@@ -233,16 +233,16 @@ export async function handleListAllOpenCodeQuestions(c: Context) {
   const timers: Record<string, AiQuestionTimerState> = {}
   const errors: Array<{ ticketId: string; message: string }> = []
 
-  for (const ticket of listNonTerminalTickets()) {
+  for (const ticketId of listNonTerminalTicketRefs()) {
     try {
-      const ticketQuestions = await getTicketPendingOpenCodeQuestions(ticket.id)
+      const ticketQuestions = await getTicketPendingOpenCodeQuestions(ticketId)
       if (ticketQuestions?.length) {
         questions.push(...ticketQuestions)
-        const timer = getTicketQuestionState(ticket.id).timer
-        if (timer) timers[ticket.id] = timer
+        const timer = getTicketQuestionState(ticketId).timer
+        if (timer) timers[ticketId] = timer
       }
     } catch (err) {
-      errors.push({ ticketId: ticket.id, message: getErrorMessage(err) })
+      errors.push({ ticketId, message: getErrorMessage(err) })
     }
   }
 

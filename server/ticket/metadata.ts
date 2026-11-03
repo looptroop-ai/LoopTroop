@@ -165,7 +165,6 @@ export function resolveTicketBaseBranch(projectRoot: string, externalId: string)
     return meta.baseBranch.trim()
   }
 
-  const detected = detectGitBaseBranch(projectRoot)
   // Read-side enrichment must not recreate a deleted worktree or its .ticket directory.
   let ticketDirExists = false
   try {
@@ -173,15 +172,35 @@ export function resolveTicketBaseBranch(projectRoot: string, externalId: string)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  if (ticketDirExists) {
-    try {
-      updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
-    } catch (error) {
-      // Keep read-only ticket projections available when stored metadata is malformed.
-      if (!(error instanceof TicketMetadataFormatError)) throw error
-    }
+  if (!ticketDirExists) return detectBaseBranchForDirlessTicket(projectRoot)
+
+  // Detected fresh: this value is written back and kept for the ticket's life.
+  const detected = detectGitBaseBranch(projectRoot)
+  try {
+    updateTicketMeta(projectRoot, externalId, { baseBranch: detected })
+  } catch (error) {
+    // Keep read-only ticket projections available when stored metadata is malformed.
+    if (!(error instanceof TicketMetadataFormatError)) throw error
   }
   return detected
+}
+
+const DIRLESS_BASE_BRANCH_TTL_MS = 30_000
+const dirlessBaseBranches = new Map<string, { value: string; expiresAt: number }>()
+
+/**
+ * A ticket without a `.ticket` directory (a display-only demo ticket, or a finished
+ * ticket whose worktree was deleted) can never store its base branch, so every board
+ * refresh used to spawn git again for it. Nothing is written back on this path, so a
+ * value up to 30 s old only labels the board; start and delete detect fresh.
+ */
+function detectBaseBranchForDirlessTicket(projectRoot: string): string {
+  const now = Date.now()
+  const cached = dirlessBaseBranches.get(projectRoot)
+  if (cached && cached.expiresAt > now) return cached.value
+  const value = detectGitBaseBranch(projectRoot)
+  dirlessBaseBranches.set(projectRoot, { value, expiresAt: now + DIRLESS_BASE_BRANCH_TTL_MS })
+  return value
 }
 
 export function getTicketBeadsDir(

@@ -137,4 +137,34 @@ describe('ticketRouter GET /tickets/:id/size', () => {
     expect(payload.breakdown.source.children.length).toBeGreaterThanOrEqual(2)
     expect(payload.breakdown.source.children.some(c => c.name === 'test1.txt')).toBe(true)
   })
+
+  it('sums wide and deep trees exactly when the scan has to queue work', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop Wide Size', shortname: 'WIDE' })
+    const ticket = createTicket({ projectId: project.id, title: 'Wide size route test' })
+    const init = await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+
+    // More entries than the scan runs at once, so queued reads must still be counted.
+    const wideDir = join(init.worktreePath, 'wide')
+    mkdirSync(wideDir)
+    for (let index = 1; index <= 70; index++) writeFileSync(join(wideDir, `file-${index}.txt`), 'x'.repeat(index))
+    const deepDir = join(init.worktreePath, 'deep', 'a', 'b', 'c')
+    mkdirSync(deepDir, { recursive: true })
+    writeFileSync(join(deepDir, 'leaf.txt'), 'leaf!') // 5 bytes
+
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+    const response = await app.request(`/api/tickets/${ticket.id}/size`)
+    expect(response.status).toBe(200)
+
+    interface SizeNode { name: string; size: number; isDirectory: boolean; children?: SizeNode[] }
+    const payload = await response.json() as { breakdown: { source: { children: SizeNode[] } } }
+    const wide = payload.breakdown.source.children.find(child => child.name === 'wide')!
+    expect(wide.size).toBe((70 * 71) / 2)
+    expect(wide.children).toHaveLength(70)
+    expect(wide.children![0]).toMatchObject({ name: 'file-70.txt', size: 70, isDirectory: false })
+    const deep = payload.breakdown.source.children.find(child => child.name === 'deep')!
+    expect(deep).toMatchObject({ size: 5, isDirectory: true })
+    expect(deep.children![0]!.children![0]!.children![0]).toMatchObject({ name: 'c', size: 5 })
+  })
 })

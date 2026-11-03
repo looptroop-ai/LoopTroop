@@ -29,8 +29,14 @@ import { openFileNoFollowSync, readFileNoFollowSync } from './readFile'
 const MAX_DIRECT_READ_BYTES = 256 * 1024 * 1024 // 256 MB
 /** Chunk size used when scanning large files backwards. */
 const SCAN_CHUNK_SIZE = 8 * 1024 // 8 KB
-/** Maximum bytes to scan backwards when looking for the start of the last line. */
+/**
+ * Maximum bytes to scan backwards for the start of the last line in a file larger
+ * than MAX_DIRECT_READ_BYTES. Smaller files are scanned back to their start, so a
+ * torn last line of any length in them is found and repaired.
+ */
 const MAX_LAST_LINE_SCAN = 4 * 1024 * 1024 // 4 MB
+/** Tab, LF, VT, FF, CR and space: the ASCII bytes `String.prototype.trim` removes. */
+const ASCII_WHITESPACE: ReadonlySet<number> = new Set([0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20])
 const LINK_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
   'EPERM', 'EACCES', 'ENOSYS', 'EXDEV', 'EOPNOTSUPP', 'ENOTSUP', 'EMLINK',
 ])
@@ -918,6 +924,13 @@ export function recoverOrphanTmpFiles(
     assertRecoveryPath(canonicalRoot, candidate, allowMissingTail)
   }
 
+  // No known artifact lives under runtime/execution-setup (see isKnownArtifactTarget):
+  // it holds the setup's package caches, thousands of directories that only cost
+  // startup time. Add a known target there and this skip has to go.
+  const executionSetupDir = rootKind === 'ticket' ? join(canonicalRoot, 'runtime', 'execution-setup') : null
+  const isExecutionSetupDir = (path: string): boolean => executionSetupDir !== null
+    && (process.platform === 'win32' ? path.toLowerCase() === executionSetupDir.toLowerCase() : path === executionSetupDir)
+
   function scanDir(dir: string) {
     if (!existsSync(dir)) return
     try {
@@ -926,7 +939,7 @@ export function recoverOrphanTmpFiles(
       for (const entry of entries) {
         const fullPath = join(dir, entry.name)
         if (entry.isDirectory()) {
-          scanDir(fullPath)
+          if (!isExecutionSetupDir(fullPath)) scanDir(fullPath)
           continue
         }
         const name = entry.name.toLowerCase()
@@ -1048,54 +1061,23 @@ export function fixTrailingLineCorruption(filePath: string): boolean {
   try {
     const { size: fileSize } = fstatSync(fd)
     if (fileSize === 0) return false
-
-    if (fileSize > MAX_DIRECT_READ_BYTES) {
-      return fixCorruptionLarge(fd, filePath, fileSize)
-    }
-
-    const content = readFileSync(fd)
-    const lines = content.toString('utf-8').split('\n')
-
-    // Remove empty trailing lines
-    while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
-      lines.pop()
-    }
-
-    // Check last line is valid JSON
-    if (lines.length > 0) {
-      const lastLine = lines[lines.length - 1]
-      if (lastLine) {
-        try {
-          JSON.parse(lastLine)
-        } catch {
-          console.warn(`[recovery] Truncating corrupt last line in ${filePath}`)
-          lines.pop()
-          // Truncate original bytes on the verified descriptor; never reopen by name.
-          let retainedBytes = 0
-          for (let line = 0; line < lines.length; line++) retainedBytes = content.indexOf(0x0a, retainedBytes) + 1
-          ftruncateSync(fd, retainedBytes)
-          fsyncSync(fd)
-          return true
-        }
-      }
-    }
-
-    return false
+    // Only the last line can be torn, so only the tail is read. Reading whole logs
+    // here made startup read every ticket's logs (over a gigabyte) synchronously.
+    return fixCorruptionLarge(fd, filePath, fileSize)
   } finally {
     closeSync(fd)
   }
 }
 
 /**
- * Large-file variant: scans backward in byte chunks to find the last line without
- * loading the whole file into memory. Only truncates — never re-encodes — to avoid
- * UTF-8 boundary issues.
+ * Scans backward in byte chunks to find the last line without loading the whole
+ * file into memory. Only truncates — never re-encodes — to avoid UTF-8 boundary issues.
  */
 function fixCorruptionLarge(fd: number, filePath: string, fileSize: number): boolean {
   const contentEnd = findContentEnd(fd, fileSize)
   if (contentEnd <= 0) return false
 
-  const lineStart = findLineStart(fd, contentEnd)
+  const lineStart = findLineStart(fd, contentEnd, fileSize > MAX_DIRECT_READ_BYTES ? MAX_LAST_LINE_SCAN : fileSize)
   if (lineStart === null) {
     console.warn(
       `[recovery] Skipping large-file corruption check for ${filePath}: ` +
@@ -1120,7 +1102,11 @@ function fixCorruptionLarge(fd: number, filePath: string, fileSize: number): boo
   }
 }
 
-/** Returns the byte offset one past the last non-newline byte, or 0 if the file is all newlines. */
+/**
+ * Returns the byte offset one past the last non-whitespace byte, or 0 if the file is
+ * blank. Trailing whitespace-only lines are skipped, as `trim()` skipped them when
+ * whole files were read; NUL and every other byte count as content.
+ */
 function findContentEnd(fd: number, fileSize: number): number {
   let pos = fileSize
   while (pos > 0) {
@@ -1129,7 +1115,7 @@ function findContentEnd(fd: number, fileSize: number): number {
     const buf = Buffer.allocUnsafe(readSize)
     const bytesRead = readSync(fd, buf, 0, readSize, pos)
     for (let i = bytesRead - 1; i >= 0; i--) {
-      if (buf[i] !== 0x0a && buf[i] !== 0x0d) {
+      if (!ASCII_WHITESPACE.has(buf[i]!)) {
         return pos + i + 1
       }
     }
@@ -1140,10 +1126,10 @@ function findContentEnd(fd: number, fileSize: number): number {
 /**
  * Returns the byte offset of the first byte of the last line (the byte right after
  * its preceding newline), scanning backward from `contentEnd`.
- * Returns `null` if the last line is longer than MAX_LAST_LINE_SCAN (too big to validate safely).
+ * Returns `null` if the last line is longer than `maxScan` (too big to validate safely).
  */
-function findLineStart(fd: number, contentEnd: number): number | null {
-  const scanStart = Math.max(0, contentEnd - MAX_LAST_LINE_SCAN)
+function findLineStart(fd: number, contentEnd: number, maxScan: number): number | null {
+  const scanStart = Math.max(0, contentEnd - maxScan)
   let pos = contentEnd
   while (pos > scanStart) {
     const readSize = Math.min(SCAN_CHUNK_SIZE, pos - scanStart)

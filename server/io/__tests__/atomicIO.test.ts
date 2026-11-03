@@ -768,6 +768,21 @@ describe('recoverOrphanTmpFiles', () => {
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
   })
+
+  it('does not descend into the execution setup package caches', () => {
+    const cached = orphan(join(TEST_DIR, 'runtime', 'execution-setup', 'tool-cache', 'pkg.json'), '{}')
+    const control = orphan(join(TEST_DIR, 'runtime', 'scratch', 'pkg.json'), '{}')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    recoverOrphanTmpFiles(TEST_DIR)
+
+    const warnings = warn.mock.calls.map((call) => String(call[0]))
+    warn.mockRestore()
+    // The control proves an unknown temp file is reported when it is scanned at all.
+    expect(warnings.some((message) => message.includes(control))).toBe(true)
+    expect(warnings.some((message) => message.includes('execution-setup'))).toBe(false)
+    expect(existsSync(cached)).toBe(true)
+  })
 })
 
 describe('fixTrailingLineCorruption', () => {
@@ -790,6 +805,43 @@ describe('fixTrailingLineCorruption', () => {
     expect(fixed).toBe(false)
   })
 
+  it('validates the last real line behind CRLF endings and whitespace-only lines', () => {
+    const filePath = join(TEST_DIR, 'crlf.jsonl')
+    const content = '{"a":1}\r\n{"b":2}\r\n \t\r\n\n'
+    writeFileSync(filePath, content, 'utf-8')
+
+    expect(fixTrailingLineCorruption(filePath)).toBe(false)
+    expect(readFileSync(filePath, 'utf-8')).toBe(content)
+  })
+
+  it('truncates a torn line that is followed by whitespace-only lines', () => {
+    const filePath = join(TEST_DIR, 'torn-then-blank.jsonl')
+    writeFileSync(filePath, '{"a":1}\n{"b":\n  \n\t\n', 'utf-8')
+
+    expect(fixTrailingLineCorruption(filePath)).toBe(true)
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"a":1}\n')
+  })
+
+  it('repairs a torn last line longer than the large-file scan cap in a small file', () => {
+    // Debug log lines reach several MB; a file under the large-file threshold
+    // must still be checked whatever the length of its last line.
+    const filePath = join(TEST_DIR, 'long-last-line.jsonl')
+    writeFileSync(filePath, `{"a":1}\n{"payload":"${'x'.repeat(5 * 1024 * 1024)}`, 'utf-8')
+
+    expect(fixTrailingLineCorruption(filePath)).toBe(true)
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"a":1}\n')
+  })
+
+  it('leaves empty and blank files alone', () => {
+    const empty = join(TEST_DIR, 'empty.jsonl')
+    const blank = join(TEST_DIR, 'blank.jsonl')
+    writeFileSync(empty, '', 'utf-8')
+    writeFileSync(blank, '\n\r\n \n', 'utf-8')
+
+    expect(fixTrailingLineCorruption(empty)).toBe(false)
+    expect(fixTrailingLineCorruption(blank)).toBe(false)
+    expect(readFileSync(blank, 'utf-8')).toBe('\n\r\n \n')
+  })
 })
 
 describe('JSONL read/write/append', () => {

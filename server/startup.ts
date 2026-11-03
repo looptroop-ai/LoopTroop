@@ -9,7 +9,7 @@ import { getOpenCodeBaseUrl } from './opencode/runtimeConfig'
 import { recoverPendingOpenCodeSessionOwnership, SessionManager } from './opencode/sessionManager'
 import { opencodeSessions, tickets } from './db/schema'
 import { getProjectContextById, listProjects } from './storage/projects'
-import { buildTicketRef, getTicketPaths, listTickets } from './storage/tickets'
+import { buildTicketRef, getTicketPaths, listTicketRefs } from './storage/tickets'
 import {
   formatStartupStorageSummary,
   initializeStartupState,
@@ -36,9 +36,9 @@ export function recoverTicketRuntimeArtifacts() {
   // state.
   recoveredTmpFiles += recoverOrphanTmpFiles(resolveAppConfigDir(), 'config').length
 
-  for (const ticket of listTickets()) {
+  for (const ticketId of listTicketRefs()) {
     try {
-      const paths = getTicketPaths(ticket.id)
+      const paths = getTicketPaths(ticketId)
       if (!paths) continue
 
       recoveredTmpFiles += recoverOrphanTmpFiles(paths.ticketDir).length
@@ -64,7 +64,7 @@ export function recoverTicketRuntimeArtifacts() {
       }
     } catch (error) {
       if (error instanceof RecoveryBlockedError) throw error
-      console.warn(`[startup] Skipped artifact recovery for ${ticket.id}: ${getErrorMessage(error)}`)
+      console.warn(`[startup] Skipped artifact recovery for ${ticketId}: ${getErrorMessage(error)}`)
     }
   }
 

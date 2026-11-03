@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import type { Database, Statement } from '../db/sqliteShim'
 import { getProjectDatabase } from '../db/project'
-import { getTicketContext, getTicketPaths } from '../storage/tickets'
+import { getTicketContext, getTicketStorageContext } from '../storage/tickets'
+import { getTicketAiLogPath, getTicketDebugLogPath, getTicketExecutionLogPath } from '../storage/paths'
 import { extractLogFingerprint } from '@shared/logIdentity'
 import { getLogModelId, isAiLogEntry } from '@shared/logClassification'
 import { normalizePersistedLogEntry, classifyPersistedLogEntry, type LogView } from './view'
@@ -280,19 +281,37 @@ function indexEntry(ticketId: string, channel: PersistedLogChannel, raw: unknown
 export function queueProjectionAppend(ticketId: string, channel: PersistedLogChannel, raw: unknown, offset: number, length: number) {
   queueMicrotask(() => {
     try {
-      indexEntry(ticketId, channel, raw, offset, length)
+      // One ticket lookup per append: indexEntry takes the storage it would otherwise resolve again.
       const storage = ensureProjectionSchema(ticketId)
-      if (storage) storage.statements.advanceCursor.run(storage.context.localTicketId, channel, offset + length)
+      if (!storage) return
+      indexEntry(ticketId, channel, raw, offset, length, storage)
+      storage.statements.advanceCursor.run(storage.context.localTicketId, channel, offset + length)
     } catch (error) {
       console.warn(`[logs] projection append deferred for ${ticketId}: ${getErrorMessage(error)}`)
     }
   })
 }
 
+/** Where a ticket's files live; enough to resolve its log paths. */
+export interface TicketLogStorage {
+  projectRoot: string
+  externalId: string
+}
+
+const LOG_FILE_PATHS: Record<PersistedLogChannel, (projectRoot: string, externalId: string) => string> = {
+  normal: getTicketExecutionLogPath,
+  debug: getTicketDebugLogPath,
+  ai: getTicketAiLogPath,
+}
+
+/** One persisted log file of a ticket, without resolving the ticket's other paths or metadata. */
+export function resolveTicketLogPath(storage: TicketLogStorage, channel: PersistedLogChannel): string {
+  return LOG_FILE_PATHS[channel](storage.projectRoot, storage.externalId)
+}
+
 function logPath(ticketId: string, channel: PersistedLogChannel): string | null {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) return null
-  return channel === 'debug' ? paths.debugLogPath : channel === 'ai' ? paths.aiLogPath : paths.executionLogPath
+  const storage = getTicketStorageContext(ticketId)
+  return storage ? resolveTicketLogPath(storage, channel) : null
 }
 
 function yieldToEventLoop(): Promise<void> {

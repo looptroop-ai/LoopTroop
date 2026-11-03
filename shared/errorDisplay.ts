@@ -2,12 +2,15 @@ import { stripAnsiSequences } from './ansi'
 
 const DECORATION_ONLY_LINE = /^[\s\-_=~.*:|/\\()[\]{}<>+─-╿▀-▟■-◿➯⬀-⯿]+$/u
 
+// Every C0 control except tab and newline, plus DEL and the C1 controls. Matched per
+// UTF-16 unit: surrogate halves are outside these ranges, so astral text is kept whole.
+// eslint-disable-next-line no-control-regex -- removing control characters is the point.
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g
+
 function stripControlCharacters(value: string): string {
-  return Array.from(value, (character) => {
-    if (character === '\n' || character === '\t') return character
-    const code = character.codePointAt(0) ?? 0
-    return code < 32 || (code >= 127 && code <= 159) ? '' : character
-  }).join('')
+  // One regex pass: building an array of every character made multi-megabyte log
+  // payloads cost hundreds of milliseconds on the server's only thread.
+  return value.replace(CONTROL_CHARACTERS, '')
 }
 
 /** Removes terminal formatting while preserving structured text and repeated lines. */

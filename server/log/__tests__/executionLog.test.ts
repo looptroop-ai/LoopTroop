@@ -1,24 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appendLogEvent, clearTicketFingerprints, createLogEvent, shouldSkipLogEmission } from '../executionLog'
 import * as ticketsModule from '../../storage/tickets'
+import * as projectionModule from '../projection'
 import * as atomicAppendModule from '../../io/atomicAppend'
 import { mkdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeTempDir } from '../../test/tempDir'
 
-const defaultTicketPaths = {
-  projectRoot: resolve(process.cwd()),
-  executionLogPath: resolve('/tmp/test-execution-log.jsonl'),
-  debugLogPath: resolve('/tmp/test-execution-log.debug.jsonl'),
-  aiLogPath: resolve('/tmp/test-execution-log.ai.jsonl'),
-  worktreePath: resolve('/tmp/test-worktree'),
-  ticketDir: resolve('/tmp/test-ticket-dir'),
-  executionSetupDir: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup'),
-  executionSetupProfilePath: resolve('/tmp/test-ticket-dir/.ticket/runtime/execution-setup-profile.json'),
-  baseBranch: 'main',
-  beadsPath: resolve('/tmp/test-beads.jsonl'),
+const defaultLogStorage = { projectId: 1, projectRoot: resolve(process.cwd()), externalId: 'T-42' }
+const defaultLogPaths = {
+  normal: resolve('/tmp/test-execution-log.jsonl'),
+  debug: resolve('/tmp/test-execution-log.debug.jsonl'),
+  ai: resolve('/tmp/test-execution-log.ai.jsonl'),
 }
-const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue(defaultTicketPaths)
+let logPaths = { ...defaultLogPaths }
+const mockGetTicketStorage = vi.spyOn(ticketsModule, 'getTicketStorageContext').mockReturnValue(defaultLogStorage)
+vi.spyOn(projectionModule, 'resolveTicketLogPath').mockImplementation((_storage, channel) => logPaths[channel])
 
 const mockAppend = vi.fn((_path: string, line: string) => ({
   offset: 0,
@@ -48,13 +45,30 @@ describe('appendLogEvent', () => {
   beforeEach(() => {
     vi.useRealTimers()
     mockAppend.mockClear()
-    mockGetTicketPaths.mockClear()
+    mockGetTicketStorage.mockClear()
     clearTicketFingerprints('1:T-42')
   })
 
   afterEach(() => {
     vi.useRealTimers()
-    if (defaultTicketPaths) mockGetTicketPaths.mockReturnValue(defaultTicketPaths)
+    mockGetTicketStorage.mockReturnValue(defaultLogStorage)
+    logPaths = { ...defaultLogPaths }
+  })
+
+  it('decides a streaming upsert is live-only before looking up the ticket', () => {
+    appendLogEvent('1:T-42', 'model_output', 'CODING', 'partial', {}, undefined, 'CODING',
+      { op: 'upsert', streaming: true, entryId: 'session:part1' })
+
+    expect(mockGetTicketStorage).not.toHaveBeenCalled()
+    expect(mockAppend).not.toHaveBeenCalled()
+  })
+
+  it('refuses to persist an event for a ticket that does not exist', () => {
+    mockGetTicketStorage.mockReturnValue(undefined)
+
+    expect(() => appendLogEvent('1:T-42', 'info', 'CODING', 'orphan', { timestamp: '2026-03-13T12:00:00.000Z' }))
+      .toThrow('Ticket not found for execution log append: 1:T-42')
+    expect(mockAppend).not.toHaveBeenCalled()
   })
 
   it('does not persist streaming upserts to disk', () => {
@@ -215,11 +229,8 @@ describe('appendLogEvent', () => {
     mkdirSync(runtime, { recursive: true })
     symlinkSync(realRoot, aliasRoot, process.platform === 'win32' ? 'junction' : 'dir')
     const logPath = resolve(runtime, 'execution-log.jsonl')
-    mockGetTicketPaths.mockReturnValue({
-      ...defaultTicketPaths!,
-      projectRoot: aliasRoot,
-      executionLogPath: logPath,
-    })
+    mockGetTicketStorage.mockReturnValue({ ...defaultLogStorage, projectRoot: aliasRoot })
+    logPaths = { ...defaultLogPaths, normal: logPath }
 
     try {
       appendLogEvent('1:T-42', 'info', 'CODING', 'canonical root', { timestamp: '2026-03-13T12:00:00.000Z' })

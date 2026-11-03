@@ -23,6 +23,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Calculating a ticket's size reads each folder once, with a limited number of file reads at a time, instead of re-reading every folder once per level above it. The server stays responsive while it runs; a 25,000-file worktree went from 24 s to 7 s.
 - Startup checks the end of each log file for a torn last line instead of reading whole logs, skips the package caches kept under `runtime/execution-setup` when it looks for interrupted writes, and lists tickets by ID instead of building them. On a machine with 55 tickets, startup work fell from 41 s to under 20 s.
 - Startup asks OpenCode about leftover AI questions for up to eight sessions at a time instead of one after another.
+- Streamed AI text is only sent to the screen, never saved, but every streamed chunk used to look up its ticket and resolve its file paths first. That work now happens only for lines that are saved. Each streaming model cost 15–33% of the server's time; council phases, where several models stream at once, no longer slow the app down.
+- Saving a log line resolves only the log file it writes to, the log cache looks its ticket up once per line, and control characters are removed from log text in one pass. A multi-megabyte AI message is now logged in well under half the time.
 
 ## 0.6.3 (2026-11-02)
 

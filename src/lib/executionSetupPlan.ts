@@ -9,7 +9,7 @@ import {
   type HostContext,
 } from '@shared/hostContext'
 import { isRecord } from '@shared/typeGuards'
-import { DEFAULT_GIT_HOOK_POLICY, migrateGitHookPolicy, type GitHookPolicy } from '@shared/gitHookPolicy'
+import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy, type GitHookPolicy } from '@shared/gitHookPolicy'
 import {
   isExecutionSetupWorkspaceInputCategory,
   type ExecutionSetupWorkspaceInputCategory,
@@ -124,8 +124,7 @@ function normalizeReadinessStatus(value: unknown): ExecutionSetupPlanReadiness['
 }
 
 function normalizeGitHookPolicy(value: unknown, warnings: string[]): GitHookPolicy {
-  const migrated = migrateGitHookPolicy(value)
-  if (migrated) return migrated
+  if (isGitHookPolicy(value)) return value
   // A plan that names a policy nobody recognises is a parse problem, not a
   // preference. Coercing it silently is how an unknown value used to read back
   // as advisory validation and look deliberate.

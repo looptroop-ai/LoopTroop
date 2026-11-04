@@ -110,7 +110,8 @@ export type DaemonStartFailure =
       databasePath: string
       found: number
       expected: number
-      migratableFrom: number
+      /** What to delete to start fresh after an older database was refused; empty for a newer one. */
+      resetInstructions: string
     }
   }
   | {
@@ -185,9 +186,11 @@ function isDaemonStartFailure(value: unknown): value is DaemonStartFailure {
     const schema = candidate.schema
     if (typeof schema !== 'object' || schema === null) return false
     const details = schema as Record<string, unknown>
-    return typeof details.databasePath === 'string'
+    return typeof details.databaseLabel === 'string'
+      && typeof details.databasePath === 'string'
       && typeof details.found === 'number'
       && typeof details.expected === 'number'
+      && typeof details.resetInstructions === 'string'
   }
 
   if (candidate.reason !== 'startup-cleanup-incomplete') return false

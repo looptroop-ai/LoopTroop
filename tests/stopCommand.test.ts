@@ -360,7 +360,7 @@ describe('stopping a running daemon', () => {
         databasePath: join(configDir, 'app.sqlite'),
         found: 99,
         expected: 1,
-        migratableFrom: 1,
+        resetInstructions: '',
       },
     }, configDir)
 

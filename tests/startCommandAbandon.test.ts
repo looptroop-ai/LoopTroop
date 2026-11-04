@@ -344,7 +344,7 @@ describe('abandoning a start that never reported ready', () => {
           databasePath: join(configDir, 'app.db'),
           found: 9,
           expected: 7,
-          migratableFrom: 7,
+          resetInstructions: '',
         },
       },
     }

@@ -302,22 +302,6 @@ describe('profileRouter numeric validation', () => {
     }
   })
 
-  it.each([
-    ['validate_explicitly', 'validate_advisory'],
-    ['ignore_internal_only', 'observe_only'],
-    ['use_on_internal_commits', 'use_native_hooks'],
-  ] as const)('migrates persisted profile policy %s to %s', (legacyPolicy, expected) => {
-    db.insert(profiles).values({
-      mainImplementer: 'openai/gpt-5.4',
-      councilMembers: '["openai/gpt-5.4"]',
-      gitHookPolicy: legacyPolicy,
-    }).run()
-
-    initializeDatabase()
-
-    expect(db.select().from(profiles).get()?.gitHookPolicy).toBe(expected)
-  })
-
   it('persists the global Manual QA toggle', async () => {
     db.insert(profiles).values({
       mainImplementer: 'openai/gpt-5.4',

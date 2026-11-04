@@ -124,7 +124,7 @@ describe('CLI daemon status', () => {
       at: '2026-09-27T00:00:00.000Z',
       version: '1.2.3',
       message: 'Database needs an upgrade.',
-      schema: { databaseLabel: 'app', databasePath: '/tmp/app.sqlite', found: 1, expected: 2, migratableFrom: 1 },
+      schema: { databaseLabel: 'app', databasePath: '/tmp/app.sqlite', found: 1, expected: 2, resetInstructions: 'Delete /tmp/app.sqlite.' },
     }, configDir)
 
     expect(await statusCommand(false)).toBe(1)

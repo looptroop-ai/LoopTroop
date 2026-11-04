@@ -119,16 +119,23 @@ describe('doctor command', () => {
         detail: expect.stringContaining(`version ${schemaVersion.APP_SCHEMA_VERSION + 1}`),
       })
 
-      sqlite.pragma('user_version = 1')
+      // LoopTroop does not convert older data, so the version just below is
+      // refused like any other, with what to delete instead of a promised upgrade.
+      sqlite.pragma(`user_version = ${schemaVersion.APP_SCHEMA_VERSION - 1}`)
       const olderSchema = (await runChecks()).find((check) => check.name === 'schema')
       expect(olderSchema).toMatchObject({
-        status: 'warn',
-        detail: expect.stringContaining(`will be upgraded to ${schemaVersion.APP_SCHEMA_VERSION}`),
+        status: 'fail',
+        detail: expect.stringContaining(`version ${schemaVersion.APP_SCHEMA_VERSION - 1}, written by an older LoopTroop`),
+        remedy: schemaVersion.appDatabaseResetInstructions(APP_DB_PATH),
       })
 
       sqlite.pragma('user_version = 0')
       const unversionedSchema = (await runChecks()).find((check) => check.name === 'schema')
-      expect(unversionedSchema).toMatchObject({ status: 'warn', detail: expect.stringContaining('predates LoopTroop') })
+      expect(unversionedSchema).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('carries no version'),
+        remedy: schemaVersion.appDatabaseResetInstructions(APP_DB_PATH),
+      })
 
       sqlite.pragma(`user_version = ${schemaVersion.APP_SCHEMA_VERSION}`)
       const beforeAttach = (await runChecks()).find((check) => check.name === 'project ignores')
@@ -946,7 +953,7 @@ describe('doctor command', () => {
           databasePath: dbPath,
           found: options.found,
           expected: 1,
-          migratableFrom: 1,
+          resetInstructions: '',
         },
       }, configDir)
 
@@ -978,6 +985,37 @@ describe('doctor command', () => {
       const check = parsed.checks.find((entry) => entry.name === 'last start')
       expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: 1 })
       expect(parsed.ok).toBe(false)
+    })
+
+    it('names what to delete when the refused database was older', async () => {
+      const configDir = useConfigDir()
+      const dbPath = join(configDir, 'older.sqlite')
+      const { Database } = await import('../server/db/sqliteShim')
+      const seed = new Database(dbPath)
+      seed.exec('CREATE TABLE marker (id INTEGER PRIMARY KEY)')
+      seed.pragma('user_version = 1')
+      seed.close()
+      const { writeDaemonStartFailure } = await import('../server/lib/daemonPaths')
+      writeDaemonStartFailure({
+        reason: 'schema-incompatible',
+        at: '2026-01-02T03:04:05.000Z',
+        version: '0.0.0-test',
+        message: `The project database at ${dbPath} was created by an older version of LoopTroop.`,
+        schema: {
+          databaseLabel: 'project database',
+          databasePath: dbPath,
+          found: 1,
+          expected: 2,
+          resetInstructions: 'Delete the .looptroop folder of that project.',
+        },
+      }, configDir)
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      expect(check).toMatchObject({
+        status: 'fail',
+        remedy: 'Delete the .looptroop folder of that project.',
+      })
     })
 
     it('stops reporting a refusal the user has already fixed', async () => {

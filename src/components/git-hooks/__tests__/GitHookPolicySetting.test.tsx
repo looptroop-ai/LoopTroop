@@ -44,10 +44,10 @@ describe('GitHookPolicySetting', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(expectedText)
   })
 
-  it('normalizes persisted legacy values and falls back safely', () => {
-    expect(normalizeGitHookPolicySetting('validate_explicitly')).toBe('validate_advisory')
-    expect(normalizeGitHookPolicySetting('ignore_internal_only')).toBe('observe_only')
-    expect(normalizeGitHookPolicySetting('use_on_internal_commits')).toBe('use_native_hooks')
+  it('keeps a known policy and rejects anything else', () => {
+    expect(normalizeGitHookPolicySetting('validate_required')).toBe('validate_required')
+    expect(normalizeGitHookPolicySetting('validate_explicitly')).toBeNull()
+    expect(normalizeGitHookPolicySetting('constructor')).toBeNull()
     expect(normalizeGitHookPolicySetting('unknown')).toBeNull()
   })
 })

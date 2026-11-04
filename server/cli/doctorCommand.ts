@@ -1043,7 +1043,6 @@ type DatabaseInspection =
 async function inspectDatabase(
   databasePath: string,
   expected: number,
-  migratableFrom: number,
 ): Promise<DatabaseInspection> {
   if (!existsSync(databasePath)) return { kind: 'missing' }
 
@@ -1060,7 +1059,6 @@ async function inspectDatabase(
       compatibility: schema.classifySchemaVersion(
         schema.inspectSchemaVersion(store),
         expected,
-        migratableFrom,
       ),
     }
   } catch (error) {
@@ -1084,11 +1082,7 @@ async function checkSchema(): Promise<Check> {
     import('../db/index'),
     import('../db/schemaVersion'),
   ])
-  const inspection = await inspectDatabase(
-    APP_DB_PATH,
-    schema.APP_SCHEMA_VERSION,
-    schema.APP_MIGRATABLE_FROM,
-  )
+  const inspection = await inspectDatabase(APP_DB_PATH, schema.APP_SCHEMA_VERSION)
 
   if (inspection.kind === 'missing') {
     return { name: 'schema', status: 'ok', detail: 'no database yet' }
@@ -1120,28 +1114,14 @@ async function checkSchema(): Promise<Check> {
         remedy: `Upgrade LoopTroop, or point LOOPTROOP_CONFIG_DIR elsewhere. Database: ${APP_DB_PATH}`,
         schema: facts,
       }
-    case 'unsupported':
-      return {
-        name: 'schema',
-        status: 'fail',
-        detail: `database is version ${compatibility.found}, too old to upgrade`,
-        remedy: `Delete ${APP_DB_PATH} to start clean, or run an older LoopTroop first.`,
-        schema: facts,
-      }
     case 'older':
       return {
         name: 'schema',
-        status: 'warn',
-        detail: `database is version ${compatibility.found}; it will be upgraded to ${schema.APP_SCHEMA_VERSION} on next start`,
-        remedy: 'No action needed. The upgrade runs automatically.',
-        schema: facts,
-      }
-    case 'unversioned':
-      return {
-        name: 'schema',
-        status: 'warn',
-        detail: `database predates LoopTroop ${schema.SCHEMA_VERSIONING_SINCE} and carries no version marker`,
-        remedy: `Delete ${APP_DB_PATH} to start clean if LoopTroop misbehaves.`,
+        status: 'fail',
+        detail: compatibility.found === schema.UNVERSIONED_SCHEMA_VERSION
+          ? `database was written by an older LoopTroop and carries no version; this build uses ${schema.APP_SCHEMA_VERSION}`
+          : `database is version ${compatibility.found}, written by an older LoopTroop; this build uses ${schema.APP_SCHEMA_VERSION}`,
+        remedy: schema.appDatabaseResetInstructions(APP_DB_PATH),
         schema: facts,
       }
     case 'fresh':
@@ -1206,13 +1186,9 @@ async function checkLastStart(): Promise<Check> {
     found: failure.schema.found,
     expected: failure.schema.expected,
   }
-  const inspection = await inspectDatabase(
-    failure.schema.databasePath,
-    failure.schema.expected,
-    failure.schema.migratableFrom,
-  )
+  const inspection = await inspectDatabase(failure.schema.databasePath, failure.schema.expected)
   const stillRefused = inspection.kind === 'classified'
-    && (inspection.compatibility.kind === 'newer' || inspection.compatibility.kind === 'unsupported')
+    && (inspection.compatibility.kind === 'newer' || inspection.compatibility.kind === 'older')
 
   if (!stillRefused) {
     return {
@@ -1231,7 +1207,7 @@ async function checkLastStart(): Promise<Check> {
     detail: `refused at ${failure.at}: the ${failure.schema.databaseLabel} reports version ${failure.schema.found}, LoopTroop ${failure.version} supports ${failure.schema.expected}`,
     remedy: failure.schema.found > failure.schema.expected
       ? `Upgrade LoopTroop to the version that wrote ${failure.schema.databasePath}.`
-      : `Delete ${failure.schema.databasePath} to start clean, or run an older LoopTroop first.`,
+      : failure.schema.resetInstructions,
     schema: facts,
   }
 }

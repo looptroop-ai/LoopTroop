@@ -14,6 +14,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The server stays responsive while the board refreshes, ticket pages load and ticket sizes are calculated, so "backend not available" no longer appears during normal use.
 - LoopTroop is ready sooner after a restart.
 - Log panels open several times faster on long tickets, scrolling back through the Debug log no longer freezes the app, and log files take about half the space.
+- **Breaking:** data from earlier versions is no longer upgraded. Start fresh: LoopTroop refuses an older database and says what to delete.
 
 ### Performance
 
@@ -47,6 +48,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - Canceling a ticket deletes its execution setup folder, with the package caches setup downloaded (these can reach gigabytes), once the cancel is confirmed. Completed tickets already lose this folder in Cleaning Up; blocked tickets keep it, so a retry can reuse the cache.
 - Log files store each text once. A line's `content` is left out when it is the same as its `message`, and a debug line keeps its payload only in `data` instead of also writing it out as text. Log views, exports and downloads show exactly the same text as before. The normal and AI logs are about half their previous size and the debug log about a third, and the log cache in the project database shrinks the same way.
+
+### Removed
+
+- **Breaking:** LoopTroop no longer upgrades data from earlier versions. Both databases moved to schema version 3, and a database written by any other version is refused at startup, untouched, with a message that says what to delete to start fresh. `looptroop doctor` reports an older app database as a failure with the same steps, where it used to promise an automatic upgrade.
+- The old git hook policy names (`validate_explicitly`, `ignore_internal_only`, `use_on_internal_commits`) are no longer translated when settings, projects or setup plans are read.
 
 ## 0.6.3 (2026-11-02)
 

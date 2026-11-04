@@ -153,21 +153,6 @@ describe('projectRouter project cleanup', () => {
     expect(columns.map((column) => column.name)).not.toContain('git_hook_policy')
   })
 
-  it.each([
-    ['validate_explicitly', 'validate_advisory'],
-    ['ignore_internal_only', 'observe_only'],
-    ['use_on_internal_commits', 'use_native_hooks'],
-  ] as const)('migrates persisted project policy %s to %s when project state opens', (legacyPolicy, expected) => {
-    const repoDir = repoManager.createRepo()
-    const project = attachProject({ folderPath: repoDir, name: 'Legacy hooks project', shortname: 'LHP' })
-    const context = getProjectContextById(project.id)
-    expect(context).toBeDefined()
-    context!.projectDb.update(projects).set({ gitHookPolicy: legacyPolicy }).run()
-    clearProjectDatabaseCache()
-
-    expect(attachExistingProject(repoDir).gitHookPolicy).toBe(expected)
-  })
-
   beforeEach(() => {
     getGitHubRepoWriteAccessMock.mockReset()
     getGitHubRepoWriteAccessMock.mockReturnValue({ status: 'unknown', permission: null })

@@ -19,7 +19,7 @@ import { restoreInterruptedOpencodeStepsConfig } from './phases/execution/openco
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
 import { resolveAppConfigDir } from './lib/appConfigDir'
-import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
+import { getPendingQuestionSummary, listLiveOpenCodeSessionIds, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
 import { closeQuestionWait, listOpenQuestionWaitTicketIds } from './storage/questionWaits'
 import { resolveAiQuestionSettings } from './workflow/phases/helpers'
 import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
@@ -185,6 +185,8 @@ export async function reconcileOpenCodeQuestions(
 ): Promise<{ reattached: number; rejected: number }> {
   let reattached = 0
   let rejected = 0
+  // One listing for every project: which recorded sessions OpenCode still has.
+  const liveSessionIds = await listLiveOpenCodeSessionIds()
 
   for (const project of attachedProjects) {
     const context = getProjectContextById(project.id)
@@ -253,6 +255,7 @@ export async function reconcileOpenCodeQuestions(
         projectRoot: project.folderPath,
         owners,
         windowMsFor: (ticketId) => resolveAiQuestionSettings(ticketId).windowMs,
+        liveSessionIds,
       })
       reattached += result.reattached
       rejected += result.rejected

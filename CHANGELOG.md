@@ -23,7 +23,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Ticket routes that only need to know a ticket exists (artifacts, artifact manifest and content, saved UI state, interview, AI details, beads, files, execution setup, per-ticket questions) now check that with one database lookup instead of assembling the full ticket.
 - Calculating a ticket's size reads each folder once, with a limited number of file reads at a time, instead of re-reading every folder once per level above it. The server stays responsive while it runs; a 25,000-file worktree went from 24 s to 7 s.
 - Startup checks the end of each log file for a torn last line instead of reading whole logs, skips the package caches kept under `runtime/execution-setup` when it looks for interrupted writes, and lists tickets by ID instead of building them. On a machine with 55 tickets, startup work fell from 41 s to under 20 s.
-- Startup asks OpenCode about leftover AI questions for up to eight sessions at a time instead of one after another.
+- Startup asks OpenCode once which sessions it still has, then checks only those for leftover AI questions, up to eight at a time. It used to ask about every session it ever recorded, one after another; on a machine with 1,144 recorded sessions, 92% no longer existed.
 - Streamed AI text is only sent to the screen, never saved, but every streamed chunk used to look up its ticket and resolve its file paths first. That work now happens only for lines that are saved. Each streaming model cost 15–33% of the server's time; council phases, where several models stream at once, no longer slow the app down.
 - Saving a log line resolves only the log file it writes to, the log cache looks its ticket up once per line, and control characters are removed from log text in one pass. A multi-megabyte AI message is now logged in well under half the time.
 - Log views no longer read every stored entry's full text to decide which rows to show: the fields they filter and sort on are stored as columns when an entry is indexed, with the full entry kept last in the row. On a long ticket, the coding phase's Activity panel loads in about a second instead of 5–6 seconds, and the Overview in a fraction of a second.
@@ -35,6 +35,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Added
 
 - `GET /api/tickets/:id/artifacts` and `GET /api/tickets/:id/artifacts/manifest` accept repeatable exact `type` filters (`?type=prd_votes&type=prd_drafts`), alone or with `phase`.
+
+### Fixed
+
+- Question wait timers left open by a restart are closed at startup again. A session OpenCode no longer had counted as an unverified check, and one such session stopped startup from closing leftover timers for its whole project, so those tickets kept counting the downtime as waiting time in their duration and ETA.
 
 ### Changed
 

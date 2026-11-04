@@ -21,6 +21,7 @@
 
 import type { OpenCodeQuestionInfo, OpenCodeQuestionTool } from '../opencode/types'
 import { getOpenCodeAdapter } from '../opencode/factory'
+import { SESSION_LIST_LIMIT } from '../lib/constants'
 import { onOpenCodeSessionEnded } from '../opencode/sessionEvents'
 import { getTicketContext } from '../storage/ticketQueries'
 import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../storage/ticketArtifacts'
@@ -1294,12 +1295,32 @@ export interface RestartSessionOwner {
 
 const RESTART_QUESTION_LIST_CONCURRENCY = 8
 
+/**
+ * The sessions OpenCode still has, from one listing, or null when that cannot be
+ * known: the listing failed, or it reached the list limit and may be cut short.
+ * A session OpenCode no longer lists cannot hold a question.
+ */
+export async function listLiveOpenCodeSessionIds(): Promise<ReadonlySet<string> | null> {
+  try {
+    const sessions = await getOpenCodeAdapter().listSessions()
+    return sessions.length < SESSION_LIST_LIMIT ? new Set(sessions.map((session) => session.id)) : null
+  } catch {
+    return null
+  }
+}
+
 export async function reconcilePendingQuestionsAfterRestart(input: {
   projectRoot: string
   /** Every active session in the project, whichever ticket owns it. */
   owners: RestartSessionOwner[]
   /** Per-ticket window, for a request whose artifact could not be rebuilt. */
   windowMsFor: (ticketId: string) => number
+  /**
+   * Sessions OpenCode still has (listLiveOpenCodeSessionIds). Owners outside it are
+   * not asked and are not unverified: nothing can be pending for them. Null or
+   * absent asks every owner, as when the listing could not be trusted.
+   */
+  liveSessionIds?: ReadonlySet<string> | null
 }): Promise<{ reattached: number; rejected: number; unverified: number }> {
   const adapter = getOpenCodeAdapter()
 
@@ -1309,9 +1330,11 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
   const owners = new Map(input.owners.map((owner) => [owner.sessionId, owner]))
   const pendingById = new Map<string, Awaited<ReturnType<typeof adapter.listPendingQuestions>>[number]>()
   let unverified = 0
-  // Every recorded session is asked, most long finished; one at a time this held
-  // startup for ~10 ms per session. Results merge in owner order, as before.
-  const ownerList = [...owners.values()]
+  // Only sessions OpenCode still has are asked (most recorded sessions are long
+  // gone, and each failed lookup used to count as unverified, which kept stale
+  // question waits open), up to eight at a time. Results merge in owner order.
+  const liveSessionIds = input.liveSessionIds ?? null
+  const ownerList = [...owners.values()].filter((owner) => !liveSessionIds || liveSessionIds.has(owner.sessionId))
   const listed: Array<Awaited<ReturnType<typeof adapter.listPendingQuestions>> | null> = []
   let nextOwner = 0
   await Promise.all(Array.from({ length: Math.min(RESTART_QUESTION_LIST_CONCURRENCY, ownerList.length) }, async () => {

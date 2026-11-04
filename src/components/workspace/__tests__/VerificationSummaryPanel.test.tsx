@@ -5,14 +5,14 @@ import { makeTicket } from '@/test/factories'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
 const useTicketArtifactsMock = vi.fn<
-  () => {
+  (ticketId?: string, options?: { types?: readonly string[] }) => {
     artifacts: Array<{ id: string; phase: string; artifactType: string; content: string }>
     isLoading: boolean
   }
 >(() => ({ artifacts: [], isLoading: false }))
 
 vi.mock('@/hooks/useTicketArtifacts', () => ({
-  useTicketArtifacts: () => useTicketArtifactsMock(),
+  useTicketArtifacts: (ticketId?: string, options?: { types?: readonly string[] }) => useTicketArtifactsMock(ticketId, options),
 }))
 
 import { VerificationSummaryPanel } from '../VerificationSummaryPanel'
@@ -72,6 +72,11 @@ afterEach(() => {
 })
 
 describe('VerificationSummaryPanel', () => {
+  it('asks only for the two reports it reads', () => {
+    renderPanel()
+    expect(useTicketArtifactsMock).toHaveBeenCalledWith(expect.any(String), { types: ['integration_report', 'final_test_report'] })
+  })
+
   it('renders the verification header', () => {
     renderPanel()
     expect(screen.getByText('Draft PR Review Required')).toBeTruthy()

@@ -29,6 +29,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Log views no longer read every stored entry's full text to decide which rows to show: the fields they filter and sort on are stored as columns when an entry is indexed, with the full entry kept last in the row. On a long ticket, the coding phase's Activity panel loads in about a second instead of 5–6 seconds, and the Overview in a fraction of a second.
 - The Debug log reads each page straight off an index in its own order. Scrolling back used to re-sort the ticket's whole debug history for every page (1–2 s per page, up to 20 s for some); a page now takes a few milliseconds to find.
 - The Activity panel loads 500 entries per request instead of 200, so a long phase needs half as many requests.
+- Ticket screens load only the artifacts they show. The verification summary, the PRD and beads approval panes and the coverage progress title ask for the few artifact types or the one phase they read, and the artifacts panel loads its own source phases, the same ones the review and council views pass it, instead of every artifact the ticket ever produced (11–17 MB on a long ticket).
+- The artifact manifest and the live `artifact_change` events reuse each artifact version's size, hash and preview instead of hashing and parsing every artifact again on each request.
+
+### Added
+
+- `GET /api/tickets/:id/artifacts` and `GET /api/tickets/:id/artifacts/manifest` accept repeatable exact `type` filters (`?type=prd_votes&type=prd_drafts`), alone or with `phase`.
 
 ### Changed
 

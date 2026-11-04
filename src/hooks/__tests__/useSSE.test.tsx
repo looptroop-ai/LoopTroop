@@ -262,6 +262,30 @@ describe('useSSE', () => {
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: historicalKey, exact: true })
   })
 
+  it('refreshes typed artifact scopes that include the changed type, or all of them for an untyped event', async () => {
+    const ticketId = '1:T-42'
+    const reportsKey = getTicketArtifactsQueryKey(ticketId, { types: ['integration_report', 'final_test_report'] })
+    const votesKey = getTicketArtifactsQueryKey(ticketId, { types: ['prd_votes'] })
+    const otherTicketKey = getTicketArtifactsQueryKey('1:T-43', { types: ['final_test_report'] })
+    for (const key of [reportsKey, votesKey, otherTicketKey]) queryClient.setQueryData(key, [])
+
+    renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('artifact_change', { ticketId, phase: 'RUNNING_FINAL_TEST', artifactType: 'final_test_report' }, '1')
+    })
+    expect(queryClient.getQueryState(reportsKey)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(votesKey)?.isInvalidated).toBe(false)
+    expect(queryClient.getQueryState(otherTicketKey)?.isInvalidated).toBe(false)
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('artifact_change', { ticketId, phase: 'COUNCIL_VOTING_PRD' }, '2')
+    })
+    expect(queryClient.getQueryState(votesKey)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(otherTicketKey)?.isInvalidated).toBe(false)
+  })
+
   it('refetches a mounted successful-empty phase cache when its artifact arrives', async () => {
     const ticketId = '1:T-42'
     const createdArtifact = {

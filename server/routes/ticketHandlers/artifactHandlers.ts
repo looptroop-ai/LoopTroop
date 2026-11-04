@@ -11,6 +11,7 @@ import {
   listPhaseAttempts,
   toArtifactManifestEntry,
 } from '../../storage/tickets'
+import type { ArtifactListOptions } from '../../storage/ticketArtifacts'
 import { getRequiredRouteParam, getTicketParam } from './routeUtils'
 import { resolveContainedPath } from '../../lib/containedPath'
 
@@ -236,31 +237,36 @@ export function handleListPhaseAttempts(c: Context) {
 export function handleGetArtifacts(c: Context) {
   const ticketId = getTicketParam(c)
   if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
-  const phase = c.req.query('phase')
-  const rawPhaseAttempt = c.req.query('phaseAttempt')
-  const phaseAttempt = rawPhaseAttempt != null ? Number(rawPhaseAttempt) : undefined
-  return c.json(listPhaseArtifacts(ticketId, {
-    ...(phase ? { phase } : {}),
-    ...(typeof phaseAttempt === 'number' && Number.isFinite(phaseAttempt) && phaseAttempt > 0
-      ? { phaseAttempt }
-      : {}),
-  }))
+  const filters = getArtifactFilters(c)
+  if ('error' in filters) return c.json({ error: filters.error }, 400)
+  return c.json(listPhaseArtifacts(ticketId, filters))
 }
 
-function getArtifactFilters(c: Context): { phase?: string; phaseAttempt?: number } {
+const MAX_ARTIFACT_TYPE_FILTERS = 50
+const MAX_ARTIFACT_TYPE_LENGTH = 200
+
+/** `phase`, `phaseAttempt` and any number of exact `type` filters (`?type=a&type=b`). */
+function getArtifactFilters(c: Context): ArtifactListOptions | { error: string } {
   const phase = c.req.query('phase')
   const rawPhaseAttempt = c.req.query('phaseAttempt')
   const phaseAttempt = rawPhaseAttempt != null ? Number(rawPhaseAttempt) : undefined
+  const types = c.req.queries('type')
+  if (types && (types.length > MAX_ARTIFACT_TYPE_FILTERS || types.some((type) => !type || type.length > MAX_ARTIFACT_TYPE_LENGTH))) {
+    return { error: `type must be at most ${MAX_ARTIFACT_TYPE_FILTERS} non-empty artifact types of at most ${MAX_ARTIFACT_TYPE_LENGTH} characters` }
+  }
   return {
     ...(phase ? { phase } : {}),
     ...(typeof phaseAttempt === 'number' && Number.isFinite(phaseAttempt) && phaseAttempt > 0 ? { phaseAttempt } : {}),
+    ...(types ? { types } : {}),
   }
 }
 
 export function handleGetArtifactManifest(c: Context) {
   const ticketId = getTicketParam(c)
   if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
-  return c.json({ artifacts: listArtifactManifest(ticketId, getArtifactFilters(c)) })
+  const filters = getArtifactFilters(c)
+  if ('error' in filters) return c.json({ error: filters.error }, 400)
+  return c.json({ artifacts: listArtifactManifest(ticketId, filters) })
 }
 
 function parseArtifactId(value: string): number | null {

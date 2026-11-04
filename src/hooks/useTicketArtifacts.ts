@@ -17,7 +17,20 @@ export interface TicketArtifact {
 export interface TicketArtifactQueryScope {
   phase?: string
   phaseAttempt?: number
+  /**
+   * Only these exact artifact types. A screen that reads a few known artifacts asks
+   * for just those, so it does not download every artifact of a long ticket.
+   */
+  types?: readonly string[]
 }
+
+/** The type filter in one stable order, or null when every type is wanted. */
+function normalizedArtifactTypes(options?: TicketArtifactQueryScope): string[] | null {
+  return options?.types ? [...new Set(options.types)].sort() : null
+}
+
+/** The query-key slot of a scope's type filter; untyped scopes use '__any__'. */
+export const ANY_ARTIFACT_TYPE_KEY = '__any__'
 
 export interface TicketArtifactCollectionState {
   artifacts: TicketArtifact[] | undefined
@@ -79,6 +92,7 @@ async function fetchTicketArtifacts(
   if (typeof options?.phaseAttempt === 'number' && Number.isFinite(options.phaseAttempt) && options.phaseAttempt > 0) {
     params.set('phaseAttempt', String(options.phaseAttempt))
   }
+  for (const type of normalizedArtifactTypes(options) ?? []) params.append('type', type)
   const suffix = params.size > 0 ? `?${params.toString()}` : ''
   const res = await fetch(`${apiTicketPath(ticketId, 'artifacts')}${suffix}`, { signal })
   await throwIfNotOk(res, 'Failed to load ticket artifacts')
@@ -101,6 +115,7 @@ export function getTicketArtifactsQueryKey(ticketId: string, options?: TicketArt
     typeof options?.phaseAttempt === 'number' && Number.isFinite(options.phaseAttempt) && options.phaseAttempt > 0
       ? options.phaseAttempt
       : 'active',
+    normalizedArtifactTypes(options)?.join('\n') ?? ANY_ARTIFACT_TYPE_KEY,
   ] as const
 }
 
@@ -133,7 +148,7 @@ export function useTicketArtifacts(
   opts?: TicketArtifactQueryScope & { skipFetch?: boolean },
 ): TicketArtifactCollectionState {
   const enabled = Boolean(ticketId && !opts?.skipFetch)
-  const scope = { phase: opts?.phase, phaseAttempt: opts?.phaseAttempt }
+  const scope = { phase: opts?.phase, phaseAttempt: opts?.phaseAttempt, types: opts?.types }
   const query = useQuery({
     queryKey: ticketId
       ? getTicketArtifactsQueryKey(ticketId, scope)
@@ -156,7 +171,7 @@ export function useTicketArtifacts(
 function uniqueScopes(scopes: readonly TicketArtifactQueryScope[]): TicketArtifactQueryScope[] {
   const seen = new Set<string>()
   return scopes.filter((scope) => {
-    const key = `${scope.phase ?? '__all__'}:${scope.phaseAttempt ?? 'active'}`
+    const key = `${scope.phase ?? '__all__'}:${scope.phaseAttempt ?? 'active'}:${normalizedArtifactTypes(scope)?.join('\n') ?? ANY_ARTIFACT_TYPE_KEY}`
     if (seen.has(key)) return false
     seen.add(key)
     return true

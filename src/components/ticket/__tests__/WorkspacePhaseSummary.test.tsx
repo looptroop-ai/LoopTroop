@@ -41,9 +41,7 @@ function mockWorkspacePhaseQueries(
   vi.mocked(globalThis.fetch).mockImplementation((input) => {
     const url = String(input);
     if (
-      url.endsWith(
-        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
-      )
+      url.split("?")[0]?.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)
     )
       return createJsonResponse(artifacts);
     if (
@@ -130,9 +128,7 @@ beforeEach(() => {
       ]);
     }
     if (
-      url.endsWith(
-        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`,
-      )
+      url.split("?")[0]?.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)
     ) {
       return createJsonResponse([]);
     }
@@ -570,6 +566,12 @@ describe("WorkspacePhaseSummary", () => {
         }),
       ).toBeInTheDocument();
     });
+    // Coverage progress asks for its own phase only, not every artifact of the ticket.
+    const artifactRequests = vi.mocked(globalThis.fetch).mock.calls
+      .map(([input]) => String(input))
+      .filter((url) => url.split("?")[0]?.endsWith("/artifacts"));
+    expect(artifactRequests.length).toBeGreaterThan(0);
+    expect(artifactRequests.every((url) => url.endsWith("/artifacts?phase=VERIFYING_BEADS_COVERAGE"))).toBe(true);
   });
 
   it.each([
@@ -910,7 +912,7 @@ describe("WorkspacePhaseSummary", () => {
   it("ignores stale coverage artifacts from before the current coverage activation", async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input);
-      if (url.endsWith("/artifacts")) {
+      if (url.split("?")[0]?.endsWith("/artifacts")) {
         return createJsonResponse([
           {
             id: 1,
@@ -957,7 +959,7 @@ describe("WorkspacePhaseSummary", () => {
 
     await waitFor(() => {
       expect(
-        queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id)),
+        queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id, { phase: "VERIFYING_PRD_COVERAGE" })),
       ).toHaveLength(1);
       expect(
         screen.getByRole("button", {
@@ -1013,7 +1015,7 @@ describe("WorkspacePhaseSummary", () => {
   it("falls back safely when stored coverage artifacts contain malformed JSON", async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input);
-      if (url.endsWith("/artifacts")) {
+      if (url.split("?")[0]?.endsWith("/artifacts")) {
         return createJsonResponse([
           {
             id: 1,
@@ -1050,7 +1052,7 @@ describe("WorkspacePhaseSummary", () => {
 
     await waitFor(() => {
       expect(
-        queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id)),
+        queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id, { phase: "VERIFYING_PRD_COVERAGE" })),
       ).toHaveLength(2);
       expect(
         screen.getByRole("button", {

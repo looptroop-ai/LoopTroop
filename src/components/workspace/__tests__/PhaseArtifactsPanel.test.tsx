@@ -15,6 +15,7 @@ import {
 } from '@/test/workspaceArtifactBuilders'
 import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { PhaseArtifactsPanel } from '../PhaseArtifactsPanel'
+import { getArtifactSourcePhases } from '../phaseArtifactTypes'
 import { buildCouncilMemberArtifacts, getCouncilStatusLabel } from '../councilArtifacts'
 import type { TicketArtifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
 
@@ -155,6 +156,19 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent(message)
     expect(screen.queryByText(/will be generated during this phase/i)).not.toBeInTheDocument()
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('loads only its source phases when the parent passes no artifacts', async () => {
+    const fetchMock = vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderWithProviders(<PhaseArtifactsPanel phase="COUNCIL_VOTING_PRD" isCompleted={false} ticketId={TEST.ticketId} />)
+
+    const expectedPhases = getArtifactSourcePhases('COUNCIL_VOTING_PRD')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(expectedPhases.length))
+    const requests = fetchMock.mock.calls.map((call) => new URL(String((call as unknown[])[0]), 'http://localhost'))
+    expect(requests.every((url) => url.pathname.endsWith('/artifacts'))).toBe(true)
+    expect(requests.map((url) => url.searchParams.get('phase')).sort()).toEqual([...expectedPhases].sort())
+    expect(expectedPhases).toEqual(expect.arrayContaining(['COUNCIL_VOTING_PRD', 'DRAFTING_PRD']))
   })
 
   it('keeps loaded content visible when a background refresh fails', () => {

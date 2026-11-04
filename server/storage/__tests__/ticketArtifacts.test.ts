@@ -6,6 +6,7 @@ import {
   getLatestPhaseArtifact,
   insertPhaseArtifact,
   listPhaseArtifacts,
+  toArtifactManifestEntry,
   upsertLatestPhaseArtifact,
 } from '../ticketArtifacts'
 import { archiveActivePhaseAttempts, ensureActivePhaseAttempt } from '../ticketPhaseAttempts'
@@ -95,5 +96,46 @@ describe('ticket artifact compare-and-set', () => {
     }).map((artifact) => artifact.content)).toEqual([historical, current])
     expect(broadcast).not.toHaveBeenCalled()
     broadcast.mockRestore()
+  })
+})
+
+describe('artifact manifest entries', () => {
+  const row = {
+    id: 7,
+    ticketId: 1,
+    phase: 'WAITING_PRD_APPROVAL',
+    phaseAttempt: 1,
+    artifactType: 'prd',
+    content: '{"title":"First"}',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }
+
+  it('hashes and previews an unchanged artifact version once', () => {
+    const parse = vi.spyOn(JSON, 'parse')
+    try {
+      const first = toArtifactManifestEntry('1:CACHE-1', row)
+      const second = toArtifactManifestEntry('1:CACHE-1', row)
+      expect(second).toEqual(first)
+      expect(first).toMatchObject({ contentByteCount: 17, preview: { title: 'First' } })
+      expect(parse.mock.calls.filter(([text]) => text === row.content)).toHaveLength(1)
+    } finally {
+      parse.mockRestore()
+    }
+  })
+
+  it('computes a new version again, including two writes inside one millisecond', () => {
+    const first = toArtifactManifestEntry('1:CACHE-2', row)
+    const updated = toArtifactManifestEntry('1:CACHE-2', { ...row, content: '{"title":"Second"}', updatedAt: '2026-01-01T00:00:01.000Z' })
+    expect(updated.preview).toEqual({ title: 'Second' })
+    expect(updated.contentSha256).not.toBe(first.contentSha256)
+    const sameMillisecond = toArtifactManifestEntry('1:CACHE-2', { ...row, content: '{"title":"Firsts"}' })
+    expect(sameMillisecond.preview).toEqual({ title: 'Firsts' })
+  })
+
+  it('gives every caller its own preview object', () => {
+    const first = toArtifactManifestEntry('1:CACHE-3', row)
+    first.preview.title = 'changed by a caller'
+    expect(toArtifactManifestEntry('1:CACHE-3', row).preview).toEqual({ title: 'First' })
   })
 })

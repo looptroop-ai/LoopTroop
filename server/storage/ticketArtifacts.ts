@@ -1,4 +1,4 @@
-import { and, desc, eq, type SQL } from 'drizzle-orm'
+import { and, desc, eq, inArray, type SQL } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { phaseArtifacts, ticketPhaseAttempts } from '../db/schema'
 import { broadcaster } from '../sse/broadcaster'
@@ -45,7 +45,44 @@ function compactPreview(content: string): Record<string, string | number | boole
   }
 }
 
+interface ManifestContentFields {
+  contentByteCount: number
+  contentSha256: string
+  preview: Record<string, string | number | boolean | null>
+}
+
+const MANIFEST_CONTENT_CACHE_LIMIT = 2000
+const manifestContentCache = new Map<string, ManifestContentFields>()
+
+/**
+ * The size, hash and preview of one artifact version. Hashing and parsing every
+ * artifact again on each manifest request and each `artifact_change` event cost
+ * about a third of a second per call on a large ticket. Every content write sets
+ * `updated_at` (a rollback restores both), so the row version keys the cache; the
+ * length guards two writes inside the same millisecond.
+ */
+function manifestContentFields(ticketRef: string, artifact: LocalPhaseArtifactRow): ManifestContentFields {
+  const key = `${ticketRef}\0${artifact.id}\0${artifact.updatedAt ?? ''}\0${artifact.content.length}`
+  let fields = manifestContentCache.get(key)
+  if (fields) {
+    manifestContentCache.delete(key)
+  } else {
+    fields = {
+      contentByteCount: Buffer.byteLength(artifact.content, 'utf8'),
+      contentSha256: createHash('sha256').update(artifact.content).digest('hex'),
+      preview: compactPreview(artifact.content),
+    }
+    if (manifestContentCache.size >= MANIFEST_CONTENT_CACHE_LIMIT) {
+      const oldest = manifestContentCache.keys().next().value
+      if (oldest !== undefined) manifestContentCache.delete(oldest)
+    }
+  }
+  manifestContentCache.set(key, fields)
+  return fields
+}
+
 export function toArtifactManifestEntry(ticketRef: string, artifact: LocalPhaseArtifactRow): PublicArtifactManifestEntry {
+  const fields = manifestContentFields(ticketRef, artifact)
   return {
     id: artifact.id,
     ticketId: ticketRef,
@@ -54,10 +91,10 @@ export function toArtifactManifestEntry(ticketRef: string, artifact: LocalPhaseA
     artifactType: artifact.artifactType ?? UNKNOWN_ARTIFACT_TYPE,
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
-    contentByteCount: Buffer.byteLength(artifact.content, 'utf8'),
-    contentSha256: createHash('sha256').update(artifact.content).digest('hex'),
+    contentByteCount: fields.contentByteCount,
+    contentSha256: fields.contentSha256,
     available: true,
-    preview: compactPreview(artifact.content),
+    preview: { ...fields.preview },
   }
 }
 
@@ -75,25 +112,30 @@ function broadcastArtifactChange(
   })
 }
 
-export function listPhaseArtifacts(
-  ticketRef: string,
-  options?: {
-    phase?: string
-    phaseAttempt?: number
-  },
-): PublicPhaseArtifactRow[] {
+export interface ArtifactListOptions {
+  phase?: string
+  phaseAttempt?: number
+  /**
+   * Only these exact artifact types. A screen that reads a few known artifacts asks
+   * for just those instead of every artifact's content (tens of MB on a long ticket).
+   */
+  types?: readonly string[]
+}
+
+export function listPhaseArtifacts(ticketRef: string, options?: ArtifactListOptions): PublicPhaseArtifactRow[] {
   const context = getTicketContext(ticketRef)
   if (!context) return []
   return selectVisibleArtifacts(ticketRef, options).map((artifact) => toPublicPhaseArtifact(ticketRef, artifact))
 }
 
-function selectVisibleArtifacts(
-  ticketRef: string,
-  options?: { phase?: string; phaseAttempt?: number },
-): LocalPhaseArtifactRow[] {
+function selectVisibleArtifacts(ticketRef: string, options?: ArtifactListOptions): LocalPhaseArtifactRow[] {
   const context = getTicketContext(ticketRef)
   if (!context) return []
   const conditions = [eq(phaseArtifacts.ticketId, context.localTicketId)]
+  if (options?.types) {
+    if (options.types.length === 0) return []
+    conditions.push(inArray(phaseArtifacts.artifactType, [...options.types]))
+  }
   if (options?.phase) {
     conditions.push(eq(phaseArtifacts.phase, options.phase))
     conditions.push(eq(phaseArtifacts.phaseAttempt, resolvePhaseAttempt(ticketRef, options.phase, options.phaseAttempt)))
@@ -101,7 +143,7 @@ function selectVisibleArtifacts(
   }
 
   const artifacts = context.projectDb.select().from(phaseArtifacts)
-    .where(eq(phaseArtifacts.ticketId, context.localTicketId)).all()
+    .where(and(...conditions)).all()
   const activeAttempts = new Map<string, number>()
   for (const attempt of context.projectDb.select().from(ticketPhaseAttempts)
     .where(eq(ticketPhaseAttempts.ticketId, context.localTicketId)).all()) {
@@ -115,7 +157,7 @@ function selectVisibleArtifacts(
 }
 
 /** Lists lightweight metadata. Bodies are deliberately excluded from this API shape. */
-export function listArtifactManifest(ticketRef: string, options?: { phase?: string; phaseAttempt?: number }): PublicArtifactManifestEntry[] {
+export function listArtifactManifest(ticketRef: string, options?: ArtifactListOptions): PublicArtifactManifestEntry[] {
   return selectVisibleArtifacts(ticketRef, options).map((artifact) => toArtifactManifestEntry(ticketRef, artifact))
 }
 

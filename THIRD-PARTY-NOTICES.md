@@ -29,7 +29,7 @@ frontend packages inlined into the client bundle.
 | `@lezer/lr` | 1.4.11 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/yaml` | 1.0.4 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijnh@gmail.com> and others |
 | `@marijn/find-cluster-break` | 1.0.4 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin> |
-| `@opencode-ai/sdk` | 1.19.4 | MIT | - |
+| `@opencode-ai/sdk` | 1.19.5 | MIT | - |
 | `@radix-ui/number` | 1.1.3 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/primitive` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-collection` | 1.2.0 | MIT | Copyright (c) 2022 WorkOS |
@@ -84,7 +84,7 @@ frontend packages inlined into the client bundle.
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.5.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.62.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.63.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `mdast-util-from-markdown` | 2.1.0 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-hast` | 13.2.1 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-string` | 4.0.0 | MIT | Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com> |
@@ -1187,7 +1187,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.62.0`
+Applies to: `lucide-react@1.63.0`
 
 ```text
 ISC License

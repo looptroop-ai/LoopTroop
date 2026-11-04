@@ -476,6 +476,37 @@ function gitWorkingDirectory(projectPath: string): { path: string; failure?: und
  * log and the error text keep showing `git -C <dir> …`, so nothing a person
  * reads changes.
  */
+/**
+ * How long a repository's "configures its own core.sshCommand" answer is reused.
+ * Every git command used to start a second `git config` process first, which costs
+ * a large daemon about 45 ms of its only thread for each synchronous call. A few
+ * seconds keeps a config change effective almost at once, unlike a cache for the
+ * daemon's lifetime, which would turn a later change into a silent transport failure.
+ */
+const CORE_SSH_COMMAND_PROBE_TTL_MS = 5_000
+const MAX_CORE_SSH_COMMAND_PROBES = 256
+const coreSshCommandProbes = new Map<string, { configured: boolean; expiresAt: number }>()
+
+/** The directory plus the caller environment that decides which config files git reads. */
+function coreSshCommandProbeKey(directory: string, env: NodeJS.ProcessEnv | undefined): string {
+  const scoped = Object.entries(env ?? {})
+    .filter(([key, value]) => value !== undefined && (key === 'HOME' || key === 'XDG_CONFIG_HOME' || key.startsWith('GIT_')))
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+  return `${directory}\0${JSON.stringify(scoped)}`
+}
+
+function cachedCoreSshCommandProbe(key: string): boolean | undefined {
+  const probe = coreSshCommandProbes.get(key)
+  return probe && probe.expiresAt > Date.now() ? probe.configured : undefined
+}
+
+/** Keeps only a definite answer: status 0 (set) or 1 (not set). A failed probe is asked again. */
+function rememberCoreSshCommandProbe(key: string, status: number | null, configured: boolean): void {
+  if (status !== 0 && status !== 1) return
+  if (coreSshCommandProbes.size >= MAX_CORE_SSH_COMMAND_PROBES) coreSshCommandProbes.clear()
+  coreSshCommandProbes.set(key, { configured, expiresAt: Date.now() + CORE_SSH_COMMAND_PROBE_TTL_MS })
+}
+
 function gitInvocation(directory: string, args: string[], options: RunCommandOptions | undefined): {
   args: string[]
   displayArgs: string[]
@@ -486,14 +517,21 @@ function gitInvocation(directory: string, args: string[], options: RunCommandOpt
     // GIT_SSH_COMMAND takes precedence over every Git config scope. Inspect
     // the effective config before adding our non-interactive fallback so a
     // repository's configured key, wrapper, or agent remains authoritative.
-    const configured = runSyncRaw('git', ['config', '--get', 'core.sshCommand'], {
-      ...options,
-      cwd: directory,
-      log: false,
-      timeoutMs: Math.min(options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS, COMMAND_AVAILABILITY_TIMEOUT_MS),
-      preserveCoreSshCommand: false,
-    })
-    preserveCoreSshCommand = configured.status === 0 && configured.stdout.toString('utf8').trim().length > 0
+    const key = coreSshCommandProbeKey(directory, options?.env)
+    const cached = cachedCoreSshCommandProbe(key)
+    if (cached !== undefined) {
+      preserveCoreSshCommand = cached
+    } else {
+      const configured = runSyncRaw('git', ['config', '--get', 'core.sshCommand'], {
+        ...options,
+        cwd: directory,
+        log: false,
+        timeoutMs: Math.min(options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS, COMMAND_AVAILABILITY_TIMEOUT_MS),
+        preserveCoreSshCommand: false,
+      })
+      preserveCoreSshCommand = configured.status === 0 && configured.stdout.toString('utf8').trim().length > 0
+      rememberCoreSshCommandProbe(key, configured.status, preserveCoreSshCommand)
+    }
   }
   return {
     args,
@@ -513,17 +551,22 @@ async function gitInvocationAsync(directory: string, args: string[], options: Ru
     // GIT_SSH_COMMAND takes precedence over every Git config scope. Inspect
     // the effective config before adding our non-interactive fallback so a
     // repository's configured key, wrapper, or agent remains authoritative.
-    // This is intentionally a fresh probe for every async invocation: config
-    // can change while the daemon is running and a forever cache would turn a
-    // later update into a silent transport failure.
-    const configured = await runAsyncRaw('git', ['config', '--get', 'core.sshCommand'], {
-      env: options?.env,
-      cwd: directory,
-      log: false,
-      timeoutMs: Math.min(options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS, COMMAND_AVAILABILITY_TIMEOUT_MS),
-      preserveCoreSshCommand: false,
-    })
-    preserveCoreSshCommand = configured.status === 0 && configured.stdout.trim().length > 0
+    // The answer is reused for a few seconds only (CORE_SSH_COMMAND_PROBE_TTL_MS).
+    const key = coreSshCommandProbeKey(directory, options?.env)
+    const cached = cachedCoreSshCommandProbe(key)
+    if (cached !== undefined) {
+      preserveCoreSshCommand = cached
+    } else {
+      const configured = await runAsyncRaw('git', ['config', '--get', 'core.sshCommand'], {
+        env: options?.env,
+        cwd: directory,
+        log: false,
+        timeoutMs: Math.min(options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS, COMMAND_AVAILABILITY_TIMEOUT_MS),
+        preserveCoreSshCommand: false,
+      })
+      preserveCoreSshCommand = configured.status === 0 && configured.stdout.trim().length > 0
+      rememberCoreSshCommandProbe(key, configured.status, preserveCoreSshCommand)
+    }
   }
   return {
     args,

@@ -8,6 +8,7 @@ import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tem
 import {
   createExecutionSetupPathSnapshot,
   clearExecutionSetupRuntimeArtifacts,
+  removeCanceledExecutionSetupFolder,
   removeExecutionSetupPathViolations,
   validateExecutionSetupPaths,
 } from '../storage'
@@ -125,5 +126,27 @@ describe('execution setup storage tracking', () => {
     expect(readFileSync(join(dir, '.ticket', 'runtime', 'execution-log.jsonl'), 'utf8')).toContain('"keep"')
     expect(readFileSync(join(dir, '.ticket', 'runtime', 'execution-setup-profile.json'), 'utf8')).toContain('"ready"')
     expect(readFileSync(join(dir, '.ticket', 'runtime', 'execution-setup', 'cache.txt'), 'utf8')).toBe('warm\n')
+  })
+
+  it('removes a canceled ticket\'s setup folder and caches but keeps its setup profile', () => {
+    const root = makeFreshRepo()
+    const runtime = join(root, '.looptroop/worktrees/TEST-1/.ticket/runtime')
+    mkdirSync(join(runtime, 'execution-setup', 'tool-cache', 'deps'), { recursive: true })
+    writeFileSync(join(runtime, 'execution-setup', 'tool-cache', 'deps', 'package.tgz'), 'cached\n')
+    writeFileSync(join(runtime, 'execution-setup', 'launcher.sh'), '#!/bin/sh\n')
+    writeFileSync(join(runtime, 'execution-setup-profile.json'), '{"status":"ready"}\n')
+    vi.spyOn(tickets, 'resolveTicketContainedPath').mockImplementation((_id, path, kind) =>
+      resolveProjectTicketContainedPath(root, 'TEST-1', path, kind),
+    )
+
+    expect(removeCanceledExecutionSetupFolder('1:TEST-1')).toBe(true)
+    expect(existsSync(join(runtime, 'execution-setup'))).toBe(false)
+    expect(readFileSync(join(runtime, 'execution-setup-profile.json'), 'utf8')).toContain('"ready"')
+    expect(removeCanceledExecutionSetupFolder('1:TEST-1')).toBe(false)
+  })
+
+  it('does nothing for a ticket it cannot resolve', () => {
+    vi.spyOn(tickets, 'resolveTicketContainedPath').mockReturnValue(undefined)
+    expect(removeCanceledExecutionSetupFolder('1:GONE-1')).toBe(false)
   })
 })

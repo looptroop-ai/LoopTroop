@@ -253,7 +253,9 @@ function initializeProjectSqlite(sqlite: Database) {
 
     CREATE INDEX IF NOT EXISTS idx_project_tickets_status ON tickets(status);
     CREATE INDEX IF NOT EXISTS idx_project_tickets_external_id ON tickets(external_id);
-    CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket ON phase_artifacts(ticket_id);
+    -- "Latest artifact of this type for this ticket" is the common lookup (several
+    -- per ticket on every board refresh); ticket-only reads use the same prefix.
+    CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket_type ON phase_artifacts(ticket_id, artifact_type, id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_artifacts_ticket_skip_receipt
       ON phase_artifacts(ticket_id, CASE WHEN json_valid(content) THEN json_extract(content, '$.receipt_id') END)
       WHERE artifact_type GLOB 'skip_receipt:*';

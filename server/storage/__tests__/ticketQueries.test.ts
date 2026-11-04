@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
@@ -171,6 +171,26 @@ describe('runtime Manual QA bead origin projection', () => {
       expect(projection).not.toHaveBeenCalled()
     } finally {
       projection.mockRestore()
+    }
+  })
+
+  it('looks each project up once per board refresh however many tickets it has', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Board lookups', shortname: 'LOOK' })
+    createTicket({ projectId: setup.project.id, title: 'Second' })
+    const projects = await import('../projects')
+    const byId = vi.spyOn(projects, 'getProjectById')
+    const context = vi.spyOn(projects, 'getProjectContextById')
+    try {
+      listTickets()
+      const before = [byId.mock.calls.length, context.mock.calls.length]
+      for (const title of ['Third', 'Fourth', 'Fifth']) createTicket({ projectId: setup.project.id, title })
+      byId.mockClear()
+      context.mockClear()
+      listTickets()
+      expect([byId.mock.calls.length, context.mock.calls.length]).toEqual(before)
+    } finally {
+      byId.mockRestore()
+      context.mockRestore()
     }
   })
 
@@ -379,6 +399,28 @@ describe('runtime Manual QA bead origin projection', () => {
     const runtime = getTicketByRef(setup.ticket.id)?.runtime
     expect(runtime?.beads.map((bead) => bead.id)).toEqual(['valid-bead'])
     expect(runtime?.beadsDiagnostics).toEqual({ malformedLines: [2], unrepresentableLines: [] })
+  })
+
+  it('parses an unchanged bead file once across refreshes and again when it changes', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Runtime bead cache' })
+    // A wrong-typed field is skipped with a warning (an unparseable line is only counted).
+    writeFileSync(setup.paths.beadsPath, '{"id":"first-bead","status":"pending"}\n{"id":"bad-bead","status":"pending","testCommands":"npm test"}\n')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const malformedWarnings = () => warn.mock.calls.filter(([message]) => String(message).includes(setup.paths.beadsPath)).length
+    try {
+      expect(getTicketByRef(setup.ticket.id)?.runtime.beads.map((bead) => bead.id)).toEqual(['first-bead'])
+      getTicketByRef(setup.ticket.id)
+      listTickets()
+      expect(malformedWarnings()).toBe(1)
+
+      appendFileSync(setup.paths.beadsPath, '{"id":"second-bead","status":"pending"}\n')
+      const runtime = getTicketByRef(setup.ticket.id)?.runtime
+      expect(runtime?.beads.map((bead) => bead.id)).toEqual(['first-bead', 'second-bead'])
+      expect(runtime?.beadsDiagnostics).toEqual({ malformedLines: [], unrepresentableLines: [2] })
+      expect(malformedWarnings()).toBe(2)
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('isolates an unreadable tracker and keeps a healthy ticket visible', async () => {

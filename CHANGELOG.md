@@ -31,6 +31,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The Activity panel loads 500 entries per request instead of 200, so a long phase needs half as many requests.
 - Ticket screens load only the artifacts they show. The verification summary, the PRD and beads approval panes and the coverage progress title ask for the few artifact types or the one phase they read, and the artifacts panel loads its own source phases, the same ones the review and council views pass it, instead of every artifact the ticket ever produced (11–17 MB on a long ticket).
 - The artifact manifest and the live `artifact_change` events reuse each artifact version's size, hash and preview instead of hashing and parsing every artifact again on each request.
+- A board refresh looks each project and the settings profile up once instead of once per ticket, and finds a ticket's latest artifact of a given type through an index on ticket and artifact type.
+- Every git command used to start a second `git config` process first, to check for a custom `core.sshCommand`. That answer is now reused for five seconds per repository, which halves the git processes LoopTroop starts; a changed setting still takes effect within those seconds.
+- The board parses a ticket's bead file again only when the file changes, so a bead file with entries it cannot use is reported once per change instead of on every refresh.
 
 ### Added
 
@@ -42,6 +45,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Changed
 
+- Canceling a ticket deletes its execution setup folder, with the package caches setup downloaded (these can reach gigabytes), once the cancel is confirmed. Completed tickets already lose this folder in Cleaning Up; blocked tickets keep it, so a retry can reuse the cache.
 - Log files store each text once. A line's `content` is left out when it is the same as its `message`, and a debug line keeps its payload only in `data` instead of also writing it out as text. Log views, exports and downloads show exactly the same text as before. The normal and AI logs are about half their previous size and the debug log about a third, and the log cache in the project database shrinks the same way.
 
 ## 0.6.3 (2026-11-02)

@@ -1,4 +1,5 @@
 import { createActor } from 'xstate'
+import { removeCanceledExecutionSetupFolder } from '../phases/executionSetup/storage'
 import { ticketMachine } from '../machines/ticketMachine'
 import type { TicketContext, TicketEvent } from '../machines/types'
 import { isCancellationError } from '../lib/abort'
@@ -242,6 +243,19 @@ function clearCancellationCleanupRetry(ticketId: string) {
 
 type WorkflowActor = ReturnType<typeof createActor<typeof ticketMachine>>
 
+/**
+ * Once a cancel is confirmed (OpenCode work stopped, so no setup command can still
+ * be writing), drop the ticket's setup folder with its package caches. A failure
+ * here never undoes the cancel; the folder is only disk space.
+ */
+function releaseCanceledTicketSetupFolder(ticketId: string): void {
+  try {
+    removeCanceledExecutionSetupFolder(ticketId)
+  } catch (error) {
+    console.warn(`[workflow] Could not remove the execution setup folder of canceled ticket ${ticketId}:`, error)
+  }
+}
+
 async function attemptCancellationCleanup(
   ticketId: string,
   actor: WorkflowActor,
@@ -296,6 +310,7 @@ async function attemptCancellationCleanup(
     if (cleanupState === 'CANCELED') {
       clearCancellationCleanupRetry(ticketId)
       cleanupTicketState(ticketId)
+      releaseCanceledTicketSetupFolder(ticketId)
       return
     }
     if (!isTicketCancellationPending(ticketId)) {
@@ -317,6 +332,7 @@ async function attemptCancellationCleanup(
       if (dispatchState === 'CANCELED') {
         clearCancellationCleanupRetry(ticketId)
         cleanupTicketState(ticketId)
+        releaseCanceledTicketSetupFolder(ticketId)
         return
       }
       if (!isTicketCancellationPending(ticketId)) {

@@ -3,6 +3,7 @@ import { isBeadTargetFile } from '../../shared/beadTargets'
 import { TicketWorkspaceNotInitializedError } from '../lib/workflowErrors'
 import { and, asc, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
+import { lstatSync } from 'node:fs'
 import { readFileNoFollowSync } from '../io/readFile'
 import { removeFile } from '../io/removal'
 import { ContainedPathError } from '../lib/containedPath'
@@ -983,10 +984,23 @@ function readReviewCutoffStatus(
 }
 
 /** Converts a raw database ticket row into a fully enriched public ticket with runtime data, actions, and error history. */
-export function toPublicTicket(projectId: number, ticket: LocalTicketRow): PublicTicket {
-  const project = getProjectById(projectId)
-  const profile = appDb.select().from(profiles).get()
-  const projectContext = getProjectContextById(projectId)
+/** What building a public ticket reads per project; a board refresh reads it once per project. */
+interface ProjectLookups {
+  project: ReturnType<typeof getProjectById>
+  profile: typeof profiles.$inferSelect | undefined
+  projectContext: ReturnType<typeof getProjectContextById>
+}
+
+function readProjectLookups(projectId: number): ProjectLookups {
+  return {
+    project: getProjectById(projectId),
+    profile: appDb.select().from(profiles).get(),
+    projectContext: getProjectContextById(projectId),
+  }
+}
+
+export function toPublicTicket(projectId: number, ticket: LocalTicketRow, lookups: ProjectLookups = readProjectLookups(projectId)): PublicTicket {
+  const { project, profile, projectContext } = lookups
   const isMockTicket = isDisplayOnlyMockTicket(ticket)
   let baseBranch = 'unknown'
   let artifactRoot = ''
@@ -1023,7 +1037,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     errorOccurrences,
     activeErrorOccurrenceId,
   )
-  const runtime = project ? buildRuntime(projectId, project.folderPath, ticket, baseBranch, previousStatus, artifactRoot) : {
+  const runtime = project ? buildRuntime(lookups, project.folderPath, ticket, baseBranch, previousStatus, artifactRoot) : {
     baseBranch,
     currentBead: ticket.currentBead ?? 0,
     completedBeads: 0,
@@ -1263,15 +1277,13 @@ function readCompletionDisposition(
 }
 
 function buildRuntime(
-  projectId: number,
+  { projectContext, profile }: ProjectLookups,
   projectRoot: string,
   ticket: LocalTicketRow,
   baseBranch: string,
   previousStatus: string | null,
   artifactRoot: string,
 ): PublicTicket['runtime'] {
-  const projectContext = getProjectContextById(projectId)
-  const profile = appDb.select().from(profiles).get()
   const snapshot = parseJsonObject<{ context?: { maxIterations?: unknown } }>(ticket.xstateSnapshot)
   const maxIterations = typeof snapshot?.context?.maxIterations === 'number'
     ? snapshot.context.maxIterations
@@ -1410,6 +1422,33 @@ function buildRuntime(
   }
 }
 
+const MAX_CACHED_RUNTIME_BEAD_FILES = 500
+const runtimeBeadFiles = new Map<string, { version: string; result: ReturnType<typeof readBeadsFileWithDiagnostics> }>()
+
+/**
+ * The board's read of a bead file, parsed once per file version. Every refresh
+ * used to parse each ticket's bead file again and repeat the same malformed-line
+ * warnings. The version is read without following links; anything that is not a
+ * plain file goes straight to the reader, which reports it exactly as before.
+ */
+function readRuntimeBeadsFile(beadsPath: string): ReturnType<typeof readBeadsFileWithDiagnostics> {
+  let version: string | null = null
+  try {
+    const stats = lstatSync(beadsPath)
+    if (stats.isFile()) version = `${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`
+  } catch {
+    version = null
+  }
+  const cached = version === null ? undefined : runtimeBeadFiles.get(beadsPath)
+  if (cached && cached.version === version) return cached.result
+  const result = readBeadsFileWithDiagnostics(beadsPath, { malformedEntries: 'skip' })
+  if (version !== null) {
+    if (runtimeBeadFiles.size >= MAX_CACHED_RUNTIME_BEAD_FILES) runtimeBeadFiles.clear()
+    runtimeBeadFiles.set(beadsPath, { version, result })
+  }
+  return result
+}
+
 function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: string) {
   // This is a read-only board projection, so it may keep the valid rows while
   // warning about a damaged tracker. Authoritative execution reads use the
@@ -1436,7 +1475,7 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
     throw error
   }
   try {
-    const result = readBeadsFileWithDiagnostics(beadsPath, { malformedEntries: 'skip' })
+    const result = readRuntimeBeadsFile(beadsPath)
     let worktreePath: string | null
     try {
       worktreePath = getTicketWorktreePath(projectRoot, externalId)
@@ -1535,7 +1574,8 @@ export function listTickets(projectId?: number): PublicTicket[] {
   for (const project of projectsToRead) {
     if (!project) continue
     const projectTickets = project.projectDb.select().from(tickets).orderBy(desc(tickets.updatedAt)).all()
-    aggregated.push(...projectTickets.map(ticket => toPublicTicket(project.attached.id, ticket)))
+    const lookups = readProjectLookups(project.attached.id)
+    aggregated.push(...projectTickets.map(ticket => toPublicTicket(project.attached.id, ticket, lookups)))
   }
   return aggregated.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
 }

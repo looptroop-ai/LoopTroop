@@ -117,6 +117,25 @@ export function clearExecutionSetupRuntimeArtifacts(ticketId: string, options: {
   return removed
 }
 
+/**
+ * A canceled ticket never runs again, so its setup folder (package caches that can
+ * reach gigabytes, plus the launcher) only costs disk space and startup scans. The
+ * small setup profile stays as the record of what ran. Completed tickets lose this
+ * folder in Cleaning Up; blocked tickets keep it, because a retry reuses the cache.
+ */
+export function removeCanceledExecutionSetupFolder(ticketId: string): boolean {
+  const executionSetupDir = resolveTicketContainedPath(ticketId, 'runtime/execution-setup', 'remove')
+  if (!executionSetupDir) return false
+  try {
+    lstatSync(executionSetupDir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  rmSync(executionSetupDir, { recursive: true, force: true })
+  return true
+}
+
 export function clearExecutionSetupState(ticketId: string): {
   removedArtifacts: number
   removedFiles: string[]

@@ -980,10 +980,11 @@ describe('doctor command', () => {
 
       const parsed = JSON.parse(stdout.text()) as {
         ok: boolean
-        checks: { name: string; schema?: { databasePath: string; found: number; expected: number } }[]
+        checks: { name: string; schema?: Record<string, unknown> }[]
       }
       const check = parsed.checks.find((entry) => entry.name === 'last start')
-      expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: 1 })
+      // The recorded event's numbers, and which database it was.
+      expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: 1, databaseLabel: 'project database' })
       expect(parsed.ok).toBe(false)
     })
 
@@ -1015,20 +1016,32 @@ describe('doctor command', () => {
       expect(check).toMatchObject({
         status: 'fail',
         remedy: 'Delete the .looptroop folder of that project.',
+        schema: { databaseLabel: 'project database', resetInstructions: 'Delete the .looptroop folder of that project.' },
       })
     })
 
-    it('stops reporting a refusal the user has already fixed', async () => {
+    it('stops reporting a refusal the user fixed by upgrading LoopTroop', async () => {
       const configDir = useConfigDir()
-      // Version 1 is what this build expects: whoever hit the refusal has since
-      // upgraded LoopTroop or replaced the file.
-      await recordRefusal(configDir, { found: 1 })
+      const { PROJECT_SCHEMA_VERSION } = await import('../server/db/schemaVersion')
+      // An older build (expecting version 1) refused this file as newer; this
+      // build writes exactly that version, so it opens fine now.
+      await recordRefusal(configDir, { found: PROJECT_SCHEMA_VERSION })
 
       const check = (await runChecks()).find((entry) => entry.name === 'last start')
 
       // A week-old refusal reported as a live failure sends someone hunting for
       // a problem that is no longer there.
       expect(check?.status).toBe('ok')
+    })
+
+    it('keeps failing when the refused database cannot be read now', async () => {
+      const configDir = useConfigDir()
+      const dbPath = await recordRefusal(configDir, { found: 99 })
+      writeFileSync(dbPath, 'not a SQLite database')
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      expect(check).toMatchObject({ status: 'fail', detail: expect.stringContaining('cannot be read now') })
     })
 
     it('says nothing when no start has been refused', async () => {

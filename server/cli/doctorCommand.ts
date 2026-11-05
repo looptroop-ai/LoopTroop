@@ -33,6 +33,10 @@ interface SchemaFacts {
   databasePath: string
   found: number
   expected: number
+  /** Which database: `app database` or `project database`. */
+  databaseLabel: string
+  /** What to delete to start fresh, when the database is older than this build. */
+  resetInstructions?: string
 }
 
 /**
@@ -1103,7 +1107,13 @@ async function checkSchema(): Promise<Check> {
     : compatibility.kind === 'current'
       ? schema.APP_SCHEMA_VERSION
       : schema.UNVERSIONED_SCHEMA_VERSION
-  const facts: SchemaFacts = { databasePath: APP_DB_PATH, found, expected: schema.APP_SCHEMA_VERSION }
+  const facts: SchemaFacts = {
+    databasePath: APP_DB_PATH,
+    found,
+    expected: schema.APP_SCHEMA_VERSION,
+    databaseLabel: schema.APP_DATABASE_LABEL,
+    ...(compatibility.kind === 'older' ? { resetInstructions: schema.appDatabaseResetInstructions(APP_DB_PATH) } : {}),
+  }
 
   switch (compatibility.kind) {
     case 'newer':
@@ -1185,8 +1195,27 @@ async function checkLastStart(): Promise<Check> {
     databasePath: failure.schema.databasePath,
     found: failure.schema.found,
     expected: failure.schema.expected,
+    databaseLabel: failure.schema.databaseLabel,
+    ...(failure.schema.resetInstructions ? { resetInstructions: failure.schema.resetInstructions } : {}),
   }
-  const inspection = await inspectDatabase(failure.schema.databasePath, failure.schema.expected)
+  // Whether it is still refused is this build's question, not the recording
+  // build's: after an upgrade to the version that wrote the file it opens fine.
+  const schema = await import('../db/schemaVersion')
+  const expectedNow = failure.schema.databaseLabel === schema.APP_DATABASE_LABEL
+    ? schema.APP_SCHEMA_VERSION
+    : failure.schema.databaseLabel === schema.PROJECT_DATABASE_LABEL
+      ? schema.PROJECT_SCHEMA_VERSION
+      : failure.schema.expected
+  const inspection = await inspectDatabase(failure.schema.databasePath, expectedNow)
+  if (inspection.kind === 'unreadable') {
+    return {
+      name: 'last start',
+      status: 'fail',
+      detail: `refused at ${failure.at}; ${failure.schema.databasePath} cannot be read now: ${inspection.message}`,
+      remedy: 'Check the file permissions, or delete the database to start clean.',
+      schema: facts,
+    }
+  }
   const stillRefused = inspection.kind === 'classified'
     && (inspection.compatibility.kind === 'newer' || inspection.compatibility.kind === 'older')
 
@@ -1196,7 +1225,7 @@ async function checkLastStart(): Promise<Check> {
       status: 'ok',
       detail: inspection.kind === 'missing'
         ? `refused at ${failure.at}; ${failure.schema.databasePath} is gone, so the next start will proceed`
-        : `refused at ${failure.at}; the ${failure.schema.databaseLabel} is readable again`,
+        : `refused at ${failure.at}; this LoopTroop can open the ${failure.schema.databaseLabel} now`,
       schema: facts,
     }
   }
@@ -1205,9 +1234,9 @@ async function checkLastStart(): Promise<Check> {
     name: 'last start',
     status: 'fail',
     detail: `refused at ${failure.at}: the ${failure.schema.databaseLabel} reports version ${failure.schema.found}, LoopTroop ${failure.version} supports ${failure.schema.expected}`,
-    remedy: failure.schema.found > failure.schema.expected
+    remedy: inspection.compatibility.kind === 'newer'
       ? `Upgrade LoopTroop to the version that wrote ${failure.schema.databasePath}.`
-      : failure.schema.resetInstructions,
+      : failure.schema.resetInstructions || `Delete ${failure.schema.databasePath} to start fresh.`,
     schema: facts,
   }
 }

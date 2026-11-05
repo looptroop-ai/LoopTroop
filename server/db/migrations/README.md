@@ -9,7 +9,8 @@ Do not use `drizzle-kit push`, `drizzle-kit migrate`, `npm run db:push`, or `npm
 For schema changes:
 
 - Schema changes should be made in `server/db/schema.ts`.
-- Change the `CREATE TABLE` statements in `server/db/init.ts` (app database) or `server/db/project.ts` (project database) to match. They are the whole schema: nothing adds columns to an existing database.
+- Change the `CREATE TABLE` statements in `server/db/init.ts` (app database) or `server/db/project.ts` (project database) to match. They are the whole schema: nothing adds columns to an existing database. The project database also holds the log cache tables, created in `server/log/projection.ts`; a change there counts as a project schema change too.
+- `server/db/__tests__/projectDatabase.test.ts` fails when a column declared in `schema.ts` is missing from the `CREATE TABLE` statements. It does not cover the log cache tables, which are not in `schema.ts`.
 - Bump `APP_SCHEMA_VERSION` or `PROJECT_SCHEMA_VERSION` in `server/db/schemaVersion.ts`. LoopTroop is in alpha and does not upgrade data, so a database written with any other version is refused at startup with instructions to start fresh.
 - If you need to regenerate migration artifacts for external tooling, use:
   ```bash

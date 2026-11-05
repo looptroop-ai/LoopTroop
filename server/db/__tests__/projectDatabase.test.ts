@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { mkdirSync } from 'node:fs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { getTableConfig, type SQLiteTable } from 'drizzle-orm/sqlite-core'
 import { Database } from '../sqliteShim'
@@ -7,6 +7,7 @@ import { sqlite as appSqlite } from '../index'
 import { initializeDatabase } from '../init'
 import { clearProjectDatabaseCache, getProjectDatabase } from '../project'
 import * as schema from '../schema'
+import * as schemaVersion from '../schemaVersion'
 import { IncompatibleSchemaVersionError, PROJECT_SCHEMA_VERSION, readUserVersion } from '../schemaVersion'
 import { getProjectDbPath } from '../../storage/paths'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
@@ -102,8 +103,28 @@ describe('project database', () => {
       expect(readUserVersion(reopened)).toBe(PROJECT_SCHEMA_VERSION - 1)
       expect(createdColumns(reopened, 'tickets')).toEqual(['id'])
       expect(reopened.prepare("SELECT name FROM sqlite_master WHERE name = 'phase_artifacts'").all()).toEqual([])
+      // Not even switched to WAL, which would rewrite the file header.
+      expect(reopened.pragma('journal_mode')).toEqual([{ journal_mode: 'delete' }])
     } finally {
       reopened.close()
     }
+    expect(existsSync(`${dbPath}-wal`)).toBe(false)
+  })
+
+  it('leaves a first start that failed before its version stamp retryable, not refused as older', () => {
+    const root = makeRoot()
+    const stamp = vi.spyOn(schemaVersion, 'writeUserVersion').mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    try {
+      expect(() => getProjectDatabase(root)).toThrow('disk full')
+    } finally {
+      stamp.mockRestore()
+    }
+
+    // The tables were rolled back with the stamp, so the file is still fresh.
+    const { sqlite } = getProjectDatabase(root)
+    expect(readUserVersion(sqlite)).toBe(PROJECT_SCHEMA_VERSION)
+    expect(createdColumns(sqlite, 'tickets')).toContain('external_id')
   })
 })

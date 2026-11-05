@@ -98,7 +98,7 @@ export function buildOlderSchemaMessage(
   const written = found === UNVERSIONED_SCHEMA_VERSION ? 'carries no schema version' : `reports schema version ${found}`
   return [
     `The ${databaseLabel} at ${databasePath} was created by an older version of LoopTroop: it ${written}, and this build uses version ${expected}.`,
-    'LoopTroop is in alpha and does not convert data from older versions, so it stopped without changing anything.',
+    'LoopTroop is in alpha and does not convert data from older versions, so it stopped without changing its tables or data.',
     resetInstructions,
   ].join('\n')
 }

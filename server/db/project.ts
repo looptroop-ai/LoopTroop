@@ -363,37 +363,38 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   ensureProjectStorageDirs(projectRoot)
   const sqlite = new Database(dbPath)
-  // Carries OpenCode session ownership and ticket state, so restrict it even
-  // though it lives inside the user's own repository.
-  secureFile(dbPath)
-  sqlite.pragma('journal_mode=WAL')
-  sqlite.pragma('locking_mode=NORMAL')
-  sqlite.pragma('synchronous=NORMAL')
-  sqlite.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
-
-  // Classify before any DDL: cleanupProjectForeignKeyOrphans below deletes
-  // rows, so a database from another version must be refused before we reach it.
-  let compatibility: SchemaCompatibility
   try {
-    compatibility = assertSchemaCompatible({
+    // Connection-level only; it changes nothing in the file.
+    sqlite.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
+    // Classify before anything writes to the file: a database from another
+    // version is refused with its tables, data, mode and journal as they were.
+    const compatibility: SchemaCompatibility = assertSchemaCompatible({
       store: sqlite,
       databaseLabel: PROJECT_DATABASE_LABEL,
       databasePath: dbPath,
       expected: PROJECT_SCHEMA_VERSION,
       resetInstructions: projectDatabaseResetInstructions(projectRoot),
     })
+    // Carries OpenCode session ownership and ticket state, so restrict it even
+    // though it lives inside the user's own repository.
+    secureFile(dbPath)
+    sqlite.pragma('journal_mode=WAL')
+    sqlite.pragma('locking_mode=NORMAL')
+    sqlite.pragma('synchronous=NORMAL')
+    // One transaction: a first start interrupted between the tables and the
+    // version stamp would otherwise leave tables with no version, which the next
+    // start refuses as an older database. Rolled back, the file is still fresh.
+    sqlite.transaction(() => {
+      initializeProjectSqlite(sqlite)
+      cleanupProjectForeignKeyOrphans(sqlite)
+      if (shouldStampAfterInit(compatibility)) writeUserVersion(sqlite, PROJECT_SCHEMA_VERSION)
+    })()
+    // A no-op inside a transaction, so only once the schema is committed.
+    sqlite.pragma('foreign_keys=ON')
   } catch (error) {
+    // Not cached yet, so nothing else could ever close this handle.
     sqlite.close()
     throw error
-  }
-
-  initializeProjectSqlite(sqlite)
-  cleanupProjectForeignKeyOrphans(sqlite)
-  sqlite.pragma('foreign_keys=ON')
-
-  // Stamp after DDL: project DBs use PRAGMA user_version (no new table needed).
-  if (shouldStampAfterInit(compatibility)) {
-    writeUserVersion(sqlite, PROJECT_SCHEMA_VERSION)
   }
 
   const projectDb: ProjectDatabase = {

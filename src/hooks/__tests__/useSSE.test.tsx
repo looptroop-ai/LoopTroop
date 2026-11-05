@@ -286,6 +286,26 @@ describe('useSSE', () => {
     expect(queryClient.getQueryState(otherTicketKey)?.isInvalidated).toBe(false)
   })
 
+  it('refreshes every artifact scope of the ticket when an edit invalidated downstream artifacts', async () => {
+    const ticketId = '1:T-42'
+    const phaseKey = getTicketArtifactsQueryKey(ticketId, { phase: 'EXECUTION_SETUP' })
+    const typedKey = getTicketArtifactsQueryKey(ticketId, { types: ['prd_votes'] })
+    const otherTicketKey = getTicketArtifactsQueryKey('1:T-43', { phase: 'EXECUTION_SETUP' })
+    for (const key of [phaseKey, typedKey, otherTicketKey]) queryClient.setQueryData(key, [])
+
+    renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('artifact_change', {
+        ticketId, invalidated: true, reason: 'interview_edit', removedArtifacts: 3, removedFiles: [],
+      }, '1')
+    })
+    expect(queryClient.getQueryState(phaseKey)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(typedKey)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(otherTicketKey)?.isInvalidated).toBe(false)
+  })
+
   it('refetches a mounted successful-empty phase cache when its artifact arrives', async () => {
     const ticketId = '1:T-42'
     const createdArtifact = {

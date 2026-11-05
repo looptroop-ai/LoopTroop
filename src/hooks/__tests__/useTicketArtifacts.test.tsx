@@ -227,6 +227,8 @@ describe('ticket artifact query helpers', () => {
     expect(getTicketArtifactsQueryKey(ticketId, { types: ['b_report', 'a_report', 'b_report'] })).toEqual([
       'ticket-artifacts', ticketId, '__all__', 'active', 'a_report\nb_report',
     ])
+    // No types means no filter, the same query the request makes for it.
+    expect(getTicketArtifactsQueryKey(ticketId, { types: [] })).toEqual(getTicketArtifactsQueryKey(ticketId))
 
     const client = new QueryClient()
     client.setQueryData(getTicketArtifactsQueryKey(ticketId), [artifact()])

@@ -24,9 +24,12 @@ export interface TicketArtifactQueryScope {
   types?: readonly string[]
 }
 
-/** The type filter in one stable order, or null when every type is wanted. */
+/**
+ * The type filter in one stable order, or null when every type is wanted. An
+ * empty list counts as no filter, which is also what the request sends for it.
+ */
 function normalizedArtifactTypes(options?: TicketArtifactQueryScope): string[] | null {
-  return options?.types ? [...new Set(options.types)].sort() : null
+  return options?.types?.length ? [...new Set(options.types)].sort((left, right) => left.localeCompare(right)) : null
 }
 
 /** The query-key slot of a scope's type filter; untyped scopes use '__any__'. */

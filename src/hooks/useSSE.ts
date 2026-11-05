@@ -415,6 +415,12 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
               queryKey: getTicketArtifactsQueryKey(ticketId),
               exact: true,
             })
+            // An edit that removed downstream artifacts names no phase or type,
+            // and screens keep their own phase and type scopes, so refresh every
+            // artifact query of this ticket.
+            if (data.invalidated === true) {
+              void queryClient.invalidateQueries({ queryKey: getTicketArtifactsQueryKey(ticketId).slice(0, 2) })
+            }
 
             const phases = new Set<string>()
             if (typeof data.phase === 'string') phases.add(data.phase)

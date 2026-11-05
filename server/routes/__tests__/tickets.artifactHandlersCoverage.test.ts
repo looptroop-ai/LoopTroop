@@ -120,8 +120,16 @@ describe('ticketRouter artifact handler routes', () => {
     expect(await untyped.json()).toHaveLength(3)
   })
 
+  it('counts a repeated type once against the filter limit', async () => {
+    const ticket = createArtifactTicket()
+    const repeated = Array.from({ length: 60 }, () => 'type=prd_votes').join('&')
+    const response = await app.request(`/api/tickets/${ticket.id}/artifacts?${repeated}`)
+    expect(response.status).toBe(200)
+  })
+
   it.each([
     ['an empty type', 'type='],
+    ['a blank type', 'type=%20%20'],
     ['an overlong type', `type=${'x'.repeat(201)}`],
     ['too many types', Array.from({ length: 51 }, (_, index) => `type=t${index}`).join('&')],
   ])('rejects %s filter', async (_label, query) => {

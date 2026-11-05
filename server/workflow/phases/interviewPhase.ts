@@ -38,7 +38,7 @@ import { randomUUID } from 'node:crypto'
 import { and, eq, exists, gt, lte } from 'drizzle-orm'
 import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
-import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
+import { compareAndSetLatestPhaseArtifact, forgetArtifactManifestFields } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { credentialsWereSent, openCodeAuthAdvice } from '../../opencode/connection'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
@@ -1081,6 +1081,9 @@ export function skipAllInterviewQuestionsToApproval(
             }
             continue
           }
+          // The restored row keeps its old id and timestamp, which the manifest
+          // cache may still hold for the content being rolled back.
+          forgetArtifactManifestFields(ticketId, before.id)
           if (!current || current.id !== before.id) {
             if (current) context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, current.id)).run()
             context.projectDb.insert(phaseArtifacts).values({ ...before }).run()

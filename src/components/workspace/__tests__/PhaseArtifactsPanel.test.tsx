@@ -171,6 +171,35 @@ describe('PhaseArtifactsPanel', () => {
     expect(expectedPhases).toEqual(expect.arrayContaining(['COUNCIL_VOTING_PRD', 'DRAFTING_PRD']))
   })
 
+  it('loads the PR candidate diff for a completed coding phase when the parent passes no artifacts', async () => {
+    const candidateDiffArtifact = makeArtifact({
+      phase: 'CREATING_PULL_REQUEST',
+      artifactType: 'candidate_diff',
+      content: JSON.stringify({
+        status: 'passed',
+        patch: [
+          'diff --git a/src/final.ts b/src/final.ts',
+          '--- a/src/final.ts',
+          '+++ b/src/final.ts',
+          '@@ -1 +1 @@',
+          '-draft',
+          '+final candidate behavior',
+        ].join('\n'),
+      }),
+    })
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost')
+      const body = url.searchParams.get('phase') === 'CREATING_PULL_REQUEST' ? [candidateDiffArtifact] : []
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderWithProviders(<PhaseArtifactsPanel phase="CODING" isCompleted ticketId={TEST.ticketId} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Bead Commits/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /src\/final\.ts/i }))
+    expect(screen.getByText(hasExactTextContent('+final candidate behavior'))).toBeInTheDocument()
+  })
+
   it('keeps loaded content visible when a background refresh fails', () => {
     const retry = vi.fn(async () => undefined)
     const checklistArtifact = makeArtifact({

@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import type { Dirent } from 'node:fs'
-import { lstat, readdir, stat } from 'node:fs/promises'
+import { lstat, readdir, realpath, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
   getTicketContext,
@@ -13,7 +13,7 @@ import {
 } from '../../storage/tickets'
 import type { ArtifactListOptions } from '../../storage/ticketArtifacts'
 import { getRequiredRouteParam, getTicketParam } from './routeUtils'
-import { resolveContainedPath } from '../../lib/containedPath'
+import { escapesRoot, resolveContainedPath } from '../../lib/containedPath'
 
 const SIZE_SCAN_CONCURRENCY = 32
 
@@ -47,8 +47,9 @@ export async function handleGetTicketSize(c: Context) {
   // One pass per tree: each directory is read once and each entry stat'ed once,
   // SIZE_SCAN_CONCURRENCY at a time. The old recursion re-walked every subtree for
   // each ancestor and ran a synchronous containment check per directory, which
-  // froze the server for most of a large worktree's scan. Containment is checked
-  // where a walk starts; below that only real directories are entered (lstat).
+  // froze the server for most of a large worktree's scan. Containment is still
+  // checked for every directory, asynchronously: only real directories are
+  // entered (lstat), and each one's real path must stay inside the project.
   let activeScans = 0
   const waitingScans: Array<() => void> = []
   async function limited<T>(task: () => Promise<T>): Promise<T> {
@@ -63,6 +64,9 @@ export async function handleGetTicketSize(c: Context) {
     }
   }
 
+  let canonicalProjectRoot: Promise<string> | null = null
+  const projectRealPath = () => (canonicalProjectRoot ??= realpath(projectRoot))
+
   const scans = new Map<string, Promise<{ size: number; children: SizeNode[] }>>()
   function scanDirectory(dirPath: string, readPath: string): Promise<{ size: number; children: SizeNode[] }> {
     const known = scans.get(dirPath)
@@ -76,12 +80,19 @@ export async function handleGetTicketSize(c: Context) {
       }
       const nodes = await Promise.all(entries.map(async (entry): Promise<SizeNode> => {
         const fullPath = join(dirPath, entry.name)
+        // Stat through the directory's checked real path, never the logical one.
+        const entryPath = join(readPath, entry.name)
         let size = 0
         let children: SizeNode[] = []
         try {
-          const stats = await limited(() => lstat(fullPath))
-          if (stats.isDirectory()) ({ size, children } = await scanDirectory(fullPath, fullPath))
-          else if (stats.isFile()) size = stats.size
+          const stats = await limited(() => lstat(entryPath))
+          if (stats.isDirectory()) {
+            // A directory swapped for a link after the lstat must not lead outside.
+            const realDir = await limited(() => realpath(entryPath))
+            if (!escapesRoot(await projectRealPath(), realDir)) ({ size, children } = await scanDirectory(fullPath, realDir))
+          } else if (stats.isFile()) {
+            size = stats.size
+          }
         } catch {
           // Ignore individual file errors (permissions, broken symlinks)
         }
@@ -250,9 +261,11 @@ function getArtifactFilters(c: Context): ArtifactListOptions | { error: string }
   const phase = c.req.query('phase')
   const rawPhaseAttempt = c.req.query('phaseAttempt')
   const phaseAttempt = rawPhaseAttempt != null ? Number(rawPhaseAttempt) : undefined
-  const types = c.req.queries('type')
-  if (types && (types.length > MAX_ARTIFACT_TYPE_FILTERS || types.some((type) => !type || type.length > MAX_ARTIFACT_TYPE_LENGTH))) {
-    return { error: `type must be at most ${MAX_ARTIFACT_TYPE_FILTERS} non-empty artifact types of at most ${MAX_ARTIFACT_TYPE_LENGTH} characters` }
+  // Repeats count once, so the cap applies to distinct types.
+  const repeated = c.req.queries('type')
+  const types = repeated ? [...new Set(repeated)] : undefined
+  if (types && (types.length > MAX_ARTIFACT_TYPE_FILTERS || types.some((type) => !type.trim() || type.length > MAX_ARTIFACT_TYPE_LENGTH))) {
+    return { error: `type must be at most ${MAX_ARTIFACT_TYPE_FILTERS} non-blank artifact types of at most ${MAX_ARTIFACT_TYPE_LENGTH} characters` }
   }
   return {
     ...(phase ? { phase } : {}),

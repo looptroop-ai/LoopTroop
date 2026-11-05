@@ -9,6 +9,7 @@ import { attachProject } from '../../storage/projects'
 import { createTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
+import * as containedPath from '../../lib/containedPath'
 
 vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
@@ -55,6 +56,36 @@ describe('ticketRouter GET /tickets/:id/size', () => {
 
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({ error: expect.any(String) })
+  })
+
+  it('skips a nested directory whose real path leaves the project', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'Size containment', shortname: 'SIZE' })
+    const ticket = createTicket({ projectId: project.id, title: 'Swapped directory', description: '' })
+    const init = await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+    mkdirSync(join(init.worktreePath, 'swapped'), { recursive: true })
+    writeFileSync(join(init.worktreePath, 'swapped', 'outside.bin'), 'x'.repeat(4096))
+    writeFileSync(join(init.worktreePath, 'kept.txt'), 'kept')
+    // Stands in for a directory replaced by a link between the lstat and the read,
+    // which a test cannot time: its real path is reported outside the project.
+    const realEscapesRoot = containedPath.escapesRoot
+    const escapes = vi.spyOn(containedPath, 'escapesRoot').mockImplementation((root, candidate) => (
+      candidate.endsWith('swapped') || realEscapesRoot(root, candidate)
+    ))
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    try {
+      const response = await app.request(`/api/tickets/${ticket.id}/size`)
+      expect(response.status).toBe(200)
+      const payload = await response.json() as { breakdown: { source: { children: Array<{ name: string }> } } }
+      const names = payload.breakdown.source.children.map((child) => child.name)
+      expect(names).toContain('kept.txt')
+      expect(names).not.toContain('swapped')
+      expect(escapes).toHaveBeenCalledWith(expect.any(String), expect.stringMatching(/swapped$/))
+    } finally {
+      escapes.mockRestore()
+    }
   })
 
   it('calculates the size of a ticket worktree path recursively', async () => {

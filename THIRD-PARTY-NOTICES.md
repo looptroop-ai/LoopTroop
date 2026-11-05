@@ -84,7 +84,7 @@ frontend packages inlined into the client bundle.
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.5.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.63.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.64.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `mdast-util-from-markdown` | 2.1.0 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-hast` | 13.2.1 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-string` | 4.0.0 | MIT | Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com> |
@@ -115,7 +115,7 @@ frontend packages inlined into the client bundle.
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.19 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.20 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `remark-parse` | 11.0.0 | MIT | Copyright (c) 2014 Titus Wormer <tituswormer@gmail.com> |
 | `remark-rehype` | 11.1.2 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `scheduler` | 0.28.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
@@ -1187,7 +1187,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.63.0`
+Applies to: `lucide-react@1.64.0`
 
 ```text
 ISC License
@@ -1294,7 +1294,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.19`
+Applies to: `react-virtuoso@4.18.20`
 
 ```text
 MIT License

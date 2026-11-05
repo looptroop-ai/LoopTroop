@@ -74,6 +74,8 @@ export interface OpenCodeAdapter {
   ): Promise<string>;
   getSession(sessionId: string, signal?: AbortSignal): Promise<Session | null>;
   listSessions(signal?: AbortSignal): Promise<Session[]>;
+  /** Every session id in every project, or null when the transport cannot prove that complete. */
+  listAllSessionIds?(signal?: AbortSignal): Promise<ReadonlySet<string> | null>;
   getSessionMessages(
     sessionId: string,
     signal?: AbortSignal,
@@ -1822,6 +1824,17 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
   async listSessions(signal?: AbortSignal): Promise<Session[]> {
     return await (await this.getTransport(signal)).listSessions(signal);
+  }
+
+  async listAllSessionIds(
+    signal?: AbortSignal,
+  ): Promise<ReadonlySet<string> | null> {
+    const transport = await this.getTransport(signal);
+    // v1 lists only the server's own project and does not page, so it cannot
+    // say which sessions are gone.
+    return transport.listAllSessionIds
+      ? await transport.listAllSessionIds(signal)
+      : null;
   }
 
   async getSession(

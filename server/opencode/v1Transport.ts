@@ -188,13 +188,14 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
   }
 
   async listSessions(signal?: AbortSignal): Promise<Session[]> {
-    const res = await this.client.session.list(
+    // The SDK resolves an HTTP error instead of rejecting it, and an empty list
+    // read from that would look like a server with no sessions.
+    const res = this.rejectHttpError(await this.client.session.list(
       { limit: SESSION_LIST_LIMIT },
       this.requestOptions(this.withSdkOperationTimeout(signal)),
-    )
-    return Array.isArray(res.data)
-      ? res.data.map(session => this.mapSession(session as Record<string, unknown>))
-      : []
+    ))
+    if (!Array.isArray(res.data)) throw new Error('OpenCode returned a session list that is not a list')
+    return res.data.map(session => this.mapSession(session as Record<string, unknown>))
   }
 
   async getSessionMessages(sessionId: string, directory?: string, signal?: AbortSignal): Promise<Message[]> {

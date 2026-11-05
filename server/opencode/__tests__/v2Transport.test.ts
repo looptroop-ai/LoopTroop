@@ -2503,6 +2503,33 @@ describe("OpenCode v2 fetch transport", () => {
     },
   );
 
+  it("lists every session id only when the server ends the paging itself", async () => {
+    const pages = (handler: (cursor: string | null) => unknown) => createTransport((request) => {
+      if (request.url.pathname === "/api/session" && request.method === "GET") {
+        return jsonResponse(handler(request.url.searchParams.get("cursor")));
+      }
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }).transport;
+
+    const complete = pages((cursor) => cursor
+      ? { data: [{ id: "session-2" }], cursor: {} }
+      : { data: [{ id: "session-1" }], cursor: { next: "page-2" } });
+    await expect(complete.listAllSessionIds()).resolves.toEqual(new Set(["session-1", "session-2"]));
+
+    // A cursor the server already gave, or a page that is not a list, could hide
+    // sessions; so could stopping at the cap.
+    const looping = pages(() => ({ data: [{ id: "session-1" }], cursor: { next: "page-2" } }));
+    await expect(looping.listAllSessionIds()).resolves.toBeNull();
+    const malformed = pages(() => ({ data: { id: "session-1" }, cursor: {} }));
+    await expect(malformed.listAllSessionIds()).resolves.toBeNull();
+    let served = 0;
+    const endless = pages(() => ({
+      data: Array.from({ length: 100 }, () => ({ id: `session-${served++}` })),
+      cursor: { next: `page-${served}` },
+    }));
+    await expect(endless.listAllSessionIds()).resolves.toBeNull();
+  });
+
   it("maps session, message pages, and health responses from v2 envelopes", async () => {
     const { transport, requests } = createTransport((request) => {
       if (

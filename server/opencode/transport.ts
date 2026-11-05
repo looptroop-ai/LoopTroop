@@ -157,6 +157,12 @@ export interface OpenCodeTransport {
   ): Promise<void>;
   getSession(sessionId: string, signal?: AbortSignal): Promise<Session | null>;
   listSessions(signal?: AbortSignal): Promise<Session[]>;
+  /**
+   * Every session id the server has, in every project, or null when this
+   * transport cannot prove the listing complete (cut short, malformed, or a
+   * protocol that lists one project only).
+   */
+  listAllSessionIds?(signal?: AbortSignal): Promise<ReadonlySet<string> | null>;
   getSessionMessages(
     sessionId: string,
     directory?: string,

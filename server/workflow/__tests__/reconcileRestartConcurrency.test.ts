@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { SESSION_LIST_LIMIT } from '../../lib/constants'
 
 const listing = vi.hoisted(() => ({
   inFlight: 0,
   maxInFlight: 0,
   started: [] as string[],
-  sessions: [] as Array<{ id: string }>,
+  /** What the adapter's complete listing answers; undefined = no such method (v1). */
+  live: undefined as ReadonlySet<string> | null | undefined,
   listError: null as Error | null,
 }))
 
@@ -22,18 +22,20 @@ vi.mock('../../opencode/factory', () => ({
       if (index % 5 === 0) throw new Error('ECONNREFUSED')
       return []
     },
-    listSessions: async () => {
-      if (listing.listError) throw listing.listError
-      return listing.sessions
-    },
+    ...(listing.live === undefined ? {} : {
+      listAllSessionIds: async () => {
+        if (listing.listError) throw listing.listError
+        return listing.live
+      },
+    }),
   }),
 }))
 
 const { listLiveOpenCodeSessionIds, reconcilePendingQuestionsAfterRestart } = await import('../questionWindows')
 
-function owners(count: number) {
+function owners(count: number, active = false) {
   return Array.from({ length: count }, (_, index) => ({
-    sessionId: `ses_${index}`, ticketId: '1:T-1', memberId: null, phase: 'CODING' as const, phaseAttempt: 1, active: false,
+    sessionId: `ses_${index}`, ticketId: '1:T-1', memberId: null, phase: 'CODING' as const, phaseAttempt: 1, active,
   }))
 }
 
@@ -42,7 +44,7 @@ describe('restart question reconciliation', () => {
     listing.inFlight = 0
     listing.maxInFlight = 0
     listing.started = []
-    listing.sessions = []
+    listing.live = undefined
     listing.listError = null
   })
 
@@ -64,28 +66,35 @@ describe('restart question reconciliation', () => {
     // ses_5 is the only asked session that fails; the 17 gone sessions count for nothing.
     expect(result).toEqual({ reattached: 0, rejected: 0, unverified: 1 })
   })
+
+  it('always asks a session that reconnected, whatever the listing says', async () => {
+    // Reconnection found these by exact lookup, so a listing that omits them is
+    // wrong about them, and skipping them would let startup close live waits.
+    const result = await reconcilePendingQuestionsAfterRestart({
+      projectRoot: '/unused', owners: owners(3, true), windowMsFor: () => 60_000, liveSessionIds: new Set(),
+    })
+    expect(listing.started).toEqual(['ses_0', 'ses_1', 'ses_2'])
+    expect(result.unverified).toBe(1)
+  })
 })
 
 describe('listLiveOpenCodeSessionIds', () => {
   beforeEach(() => {
-    listing.sessions = []
+    listing.live = undefined
     listing.listError = null
   })
 
-  it('returns the listed session ids', async () => {
-    listing.sessions = [{ id: 'ses_a' }, { id: 'ses_b' }]
+  it('returns what a complete listing found', async () => {
+    listing.live = new Set(['ses_a', 'ses_b'])
     expect(await listLiveOpenCodeSessionIds()).toEqual(new Set(['ses_a', 'ses_b']))
   })
 
-  it('treats an empty listing as no live sessions', async () => {
-    expect(await listLiveOpenCodeSessionIds()).toEqual(new Set())
-  })
-
-  it('cannot say when the listing fails or may have been cut at the limit', async () => {
-    listing.listError = new Error('ECONNREFUSED')
+  it('cannot say when the transport cannot list every project, or the listing fails or is incomplete', async () => {
     expect(await listLiveOpenCodeSessionIds()).toBeNull()
-    listing.listError = null
-    listing.sessions = Array.from({ length: SESSION_LIST_LIMIT }, (_, index) => ({ id: `ses_${index}` }))
+    listing.live = null
+    expect(await listLiveOpenCodeSessionIds()).toBeNull()
+    listing.live = new Set(['ses_a'])
+    listing.listError = new Error('ECONNREFUSED')
     expect(await listLiveOpenCodeSessionIds()).toBeNull()
   })
 })

@@ -73,6 +73,7 @@ describe('OpenCode v1 transport direct behavior', () => {
     const list = vi.fn()
       .mockResolvedValueOnce({ data: [{ id: 'session-1', directory: '/workspace' }] })
       .mockResolvedValueOnce({ data: null })
+      .mockResolvedValueOnce({ error: {}, response: { status: 503 } })
     const messages = vi.fn()
       .mockResolvedValueOnce({ data: [{ info: { id: 'message-1', role: 'assistant', time: { created: 1_700_000_000_000 } }, parts: [{ type: 'text', text: 'Hello' }] }] })
       .mockResolvedValueOnce({ data: {} })
@@ -102,7 +103,9 @@ describe('OpenCode v1 transport direct behavior', () => {
     await expect(sdk.getSession('wrapped-missing')).resolves.toBeNull()
     await expect(sdk.getSession('empty')).rejects.toThrow('no session payload')
     await expect(sdk.listSessions()).resolves.toMatchObject([{ id: 'session-1', projectPath: '/workspace' }])
-    await expect(sdk.listSessions()).resolves.toEqual([])
+    // Neither is a server with no sessions: an empty list read from them would be.
+    await expect(sdk.listSessions()).rejects.toThrow('not a list')
+    await expect(sdk.listSessions()).rejects.toThrow('HTTP 503')
     await expect(sdk.getSessionMessages('session-1', '/workspace')).resolves.toMatchObject([
       { id: 'message-1', role: 'assistant', content: 'Hello', timestamp: '2023-11-14T22:13:20.000Z' },
     ])

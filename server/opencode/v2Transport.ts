@@ -408,6 +408,36 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     return sessions;
   }
 
+  /**
+   * Like `listSessions`, but only an answer the server proves complete: paging
+   * ended because the server said there was no next page. A repeated cursor, a
+   * page that is not a list, or reaching the cap means more may exist.
+   */
+  async listAllSessionIds(signal?: AbortSignal): Promise<ReadonlySet<string> | null> {
+    const ids = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+
+    while (ids.size < SESSION_LIST_LIMIT) {
+      const query = new URLSearchParams({
+        limit: String(Math.min(LIST_PAGE_SIZE, SESSION_LIST_LIMIT - ids.size)),
+        ...(!cursor ? { order: "desc" } : {}),
+      });
+      if (cursor) query.set("cursor", cursor);
+      const page = asRecord(
+        await this.request(`/api/session?${query}`, { signal }),
+      );
+      if (!Array.isArray(page?.data)) return null;
+      for (const session of page.data) ids.add(mapV2Session(session).id);
+      const next = stringValue(asRecord(page?.cursor)?.next);
+      if (!next) return ids;
+      if (seenCursors.has(next)) return null;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return null;
+  }
+
   private async hydrateRelatedSessions(
     rootSessionId: string,
     state: RelatedSessionRoutingState,

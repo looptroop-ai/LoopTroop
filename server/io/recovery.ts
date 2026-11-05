@@ -201,15 +201,6 @@ function judgeTmpContent(fd: number, tmpPath: string, targetPath: string): TmpVe
   return PROMOTE
 }
 
-/**
- * `${target}.tmp-${pid}-${milliseconds}`, written by the private Manual QA
- * checkpoint writer that now goes through `safeAtomicWrite`. It does not end in
- * `.tmp`, so nothing has ever swept it — a pre-upgrade crash leaves one sitting
- * in `.ticket/` unmentioned. Reported for the same reason as the plain
- * `${target}.tmp` family: neither name says what the file was becoming.
- */
-const LEGACY_TMP_NAME = /\.tmp-\d+-\d+$/
-
 type FileIdentity = Pick<ReturnType<typeof fstatSync>, 'dev' | 'ino' | 'size' | 'mtimeMs' | 'birthtimeMs'>
 
 type RecoveryPathGuard = (path: string, allowMissingTail?: boolean) => void
@@ -410,20 +401,6 @@ function sameEntryIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
     && sameOptionalTimestamp(left.birthtimeMs, right.birthtimeMs)
-}
-
-function reportLegacyTmpFile(tmpPath: string): void {
-  // Left in place: the pre-upgrade crash that produced it is exactly the case
-  // someone would want to look at, and vaulting it silently is worse than
-  // either promoting it or saying so.
-  let modified = 'an unknown time'
-  try {
-    modified = lstatSync(tmpPath).mtime.toISOString()
-  } catch { /* reported without it */ }
-  console.warn(
-    `[recovery] Ignoring ${tmpPath} (last modified ${modified}): its name predates the current ` +
-      'atomic-write suffix, so the file it was meant to become cannot be derived',
-  )
 }
 
 function discardTmpFile(tmpPath: string, reason: string, opened?: FileIdentity, deps = defaultRecoveryDeps): void {
@@ -961,18 +938,16 @@ export function recoverOrphanTmpFiles(
           }
           continue
         }
-        if (!name.endsWith('.tmp') && !LEGACY_TMP_NAME.test(name)) continue
+        if (!name.endsWith('.tmp')) continue
         if (entry.isSymbolicLink()) {
           console.warn(`[recovery] Ignoring symbolic-link temp file ${fullPath}`)
           continue
         }
         if (!entry.isFile()) continue
 
+        // Not a name safeAtomicWrite produces, so its target cannot be derived.
         const targetPath = parseAtomicTmpPath(fullPath)
-        if (targetPath === null) {
-          reportLegacyTmpFile(fullPath)
-          continue
-        }
+        if (targetPath === null) continue
 
         if (!isKnownArtifactTarget(canonicalRoot, targetPath, rootKind)) {
           console.warn(`[recovery] Leaving ${fullPath}: target is not a known LoopTroop artifact`)

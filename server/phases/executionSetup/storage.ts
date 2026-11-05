@@ -64,14 +64,6 @@ export function validateExecutionSetupPaths(
   }
 }
 
-export function removeExecutionSetupPathViolations(
-  _worktreePath: string,
-  _baseline?: ExecutionSetupPathSnapshot,
-): string[] {
-  // Compatibility no-op: repository-local setup outputs are no longer policy violations.
-  return []
-}
-
 export function writeExecutionSetupProfileMirror(ticketId: string, profile: ExecutionSetupProfile): string | null {
   const path = resolveTicketContainedPath(ticketId, 'runtime/execution-setup-profile.json')
   if (!path) return null

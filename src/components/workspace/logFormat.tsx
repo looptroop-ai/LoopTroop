@@ -19,45 +19,6 @@ interface FormattedLogLine {
  */
 export const getEntryFullModelId = getLogModelId
 
-function getModelKey(entry: LogEntry): string | null {
-  return getEntryFullModelId(entry)
-}
-
-function getPhaseModelKey(entry: LogEntry): string | null {
-  const modelKey = getModelKey(entry)
-  return modelKey ? `${entry.status}:${modelKey}` : null
-}
-
-function isLegacyTranscriptSummary(entry: LogEntry): boolean {
-  return entry.entryId.endsWith(':transcript-summary')
-}
-
-function isLegacyDerivedSummary(entry: LogEntry): boolean {
-  if (entry.kind !== 'text') return false
-
-  if (
-    entry.entryId.endsWith(':questions-preview')
-    || entry.entryId.startsWith('compiled-questions:')
-    || entry.entryId.startsWith('draft-summary:')
-    || entry.entryId.startsWith('prd-draft-summary:')
-    || entry.entryId.startsWith('prd-full-answers-summary:')
-    || entry.entryId.startsWith('beads-draft-summary:')
-    || entry.entryId.startsWith('refined-prd:')
-  ) {
-    return true
-  }
-
-  return entry.line.includes('Questions received from')
-    || entry.line.includes('Compiled interview questions from')
-}
-
-function isCanonicalAiTextEntry(entry: LogEntry): boolean {
-  return entry.audience === 'ai'
-    && entry.kind === 'text'
-    && !isLegacyTranscriptSummary(entry)
-    && !isLegacyDerivedSummary(entry)
-}
-
 const AI_DETAIL_OUTPUT_KINDS = new Set(['text', 'assistant', 'prompt', 'reasoning', 'tool', 'step', 'session'])
 const AI_DETAIL_SESSION_KINDS = new Set([...AI_DETAIL_OUTPUT_KINDS, 'error'])
 
@@ -73,28 +34,6 @@ function isSystemShapedAiDetail(entry: LogEntry): boolean {
   if (entry.audience !== 'all' || entry.source !== 'system') return false
   if (entry.sessionId && AI_DETAIL_SESSION_KINDS.has(entry.kind)) return true
   return Boolean(entry.modelId) && AI_DETAIL_OUTPUT_KINDS.has(entry.kind)
-}
-
-function getCanonicalLogEntries(entries: LogEntry[]): LogEntry[] {
-  const canonicalSessions = new Set<string>()
-  const canonicalPhaseModels = new Set<string>()
-
-  for (const entry of entries) {
-    if (!isCanonicalAiTextEntry(entry)) continue
-    if (entry.sessionId) canonicalSessions.add(entry.sessionId)
-    const phaseModelKey = getPhaseModelKey(entry)
-    if (phaseModelKey) canonicalPhaseModels.add(phaseModelKey)
-  }
-
-  return entries.filter((entry) => {
-    if (isLegacyTranscriptSummary(entry)) {
-      return entry.sessionId ? !canonicalSessions.has(entry.sessionId) : true
-    }
-
-    if (!isLegacyDerivedSummary(entry)) return true
-    const phaseModelKey = getPhaseModelKey(entry)
-    return phaseModelKey ? !canonicalPhaseModels.has(phaseModelKey) : true
-  })
 }
 
 export function getEntryColor(entry: LogEntry): string {
@@ -248,35 +187,33 @@ export const isCommand = (entry: LogEntry) => hasLeadingLogTag(entry, 'CMD')
 export const isSystem = (entry: LogEntry) => entry.audience === 'all' && entry.source === 'system' && !isSystemShapedAiDetail(entry)
 
 export function filterEntries(entries: LogEntry[], tab: string): LogEntry[] {
-  const canonicalEntries = getCanonicalLogEntries(entries)
   const isDebug = isDebugLogEntry
   const isError = (entry: LogEntry) => (entry.kind === 'error' || entry.source === 'error' || (hasLeadingLogTag(entry, 'ERROR') && !isAiDetailOutput(entry))) && !isBenignGitProbeErrorLine(entry.line)
   const isPrompt = (entry: LogEntry) => entry.kind === 'prompt'
   const isOverviewAiEntry = (entry: LogEntry) =>
     entry.audience === 'ai'
-    && ((entry.kind === 'text' && (!entry.streaming || entry.op === 'append')) || isLegacyTranscriptSummary(entry))
+    && entry.kind === 'text' && (!entry.streaming || entry.op === 'append')
 
   switch (tab) {
     case 'ALL':
-      return canonicalEntries.filter(entry => (((entry.audience === 'all' && !isCommand(entry)) || isError(entry) || isPrompt(entry) || isOverviewAiEntry(entry)) && !isDebug(entry)))
+      return entries.filter(entry => (((entry.audience === 'all' && !isCommand(entry)) || isError(entry) || isPrompt(entry) || isOverviewAiEntry(entry)) && !isDebug(entry)))
     case 'SYS':
-      return canonicalEntries.filter(e => isSystem(e) && !isDebug(e))
+      return entries.filter(e => isSystem(e) && !isDebug(e))
     case 'CMD':
-      return canonicalEntries.filter(e => isSystem(e) && isCommand(e) && !isDebug(e))
+      return entries.filter(e => isSystem(e) && isCommand(e) && !isDebug(e))
     case 'AI':
-      return canonicalEntries.filter(isAiLogEntry)
+      return entries.filter(isAiLogEntry)
     case 'ERROR':
-      return canonicalEntries.filter(isError)
+      return entries.filter(isError)
     case 'DEBUG':
-      return canonicalEntries
+      return entries
     default:
-      return canonicalEntries.filter(entry => !isDebug(entry) && getEntryFullModelId(entry) === tab)
+      return entries.filter(entry => !isDebug(entry) && getEntryFullModelId(entry) === tab)
   }
 }
 
 export function filterBeadLogEntries(entries: LogEntry[]): LogEntry[] {
-  const canonicalEntries = getCanonicalLogEntries(entries)
-  return canonicalEntries.filter(entry => !isDebugLogEntry(entry))
+  return entries.filter(entry => !isDebugLogEntry(entry))
 }
 
 export const MULTI_MODEL_PHASES = new Set([

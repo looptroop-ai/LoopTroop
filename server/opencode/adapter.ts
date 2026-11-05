@@ -2190,7 +2190,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
       if (beadId) {
         // The raw file text above is what the prompt shows; the bead itself is
-        // read through the reconciler, so a legacy stored status does not reach
+        // read through the reconciler, so an aliased status does not reach
         // `formatBeadContext` unrecognised and a malformed line does not abort
         // the whole read.
         const bead = readBeadsFile(containedBeadsPath, {

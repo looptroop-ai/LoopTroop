@@ -963,7 +963,7 @@ describe('PhaseLogPanel', () => {
     expect(screen.queryByText(/quoted error token/i)).not.toBeInTheDocument()
   })
 
-  it('shows canonical raw AI output in ALL while suppressing transcript and summary duplicates', () => {
+  it('shows raw AI output in ALL and session status only in AI', () => {
     const logs: LogEntry[] = [
       {
         id: 'sys-1',
@@ -984,34 +984,6 @@ describe('PhaseLogPanel', () => {
         source: 'model:openai/gpt-5-mini',
         status: 'COUNCIL_DELIBERATING',
         timestamp: '2026-03-10T10:00:01.000Z',
-        audience: 'ai',
-        kind: 'text',
-        modelId: 'openai/gpt-5-mini',
-        sessionId: 'ses-1',
-        streaming: false,
-        op: 'append',
-      },
-      {
-        id: 'ai-2',
-        entryId: 'ses-1:transcript-summary',
-        line: '[MODEL] [assistant] [2026-03-10T10:00:01.000Z] questions:\n  - id: Q01\n    phase: foundation\n    question: "Confidence in timing?"',
-        source: 'model:openai/gpt-5-mini',
-        status: 'COUNCIL_DELIBERATING',
-        timestamp: '2026-03-10T10:00:01.100Z',
-        audience: 'ai',
-        kind: 'session',
-        modelId: 'openai/gpt-5-mini',
-        sessionId: 'ses-1',
-        streaming: false,
-        op: 'append',
-      },
-      {
-        id: 'ai-3',
-        entryId: 'ses-1:questions-preview',
-        line: '[MODEL] Questions received from openai/gpt-5-mini (1 total):\n- [foundation] Timing confidence first?',
-        source: 'model:openai/gpt-5-mini',
-        status: 'COUNCIL_DELIBERATING',
-        timestamp: '2026-03-10T10:00:01.200Z',
         audience: 'ai',
         kind: 'text',
         modelId: 'openai/gpt-5-mini',
@@ -1051,8 +1023,6 @@ describe('PhaseLogPanel', () => {
 
     expect(screen.getByText(/Interview council drafting started/i)).toBeInTheDocument()
     expect(screen.getAllByText(/Confidence in timing\?/i)).toHaveLength(1)
-    expect(screen.queryByText(/\[assistant\]/i)).not.toBeInTheDocument()
-    expect(screen.queryByText(/Questions received from openai\/gpt-5-mini/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/Session status: running/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/raw provider payload/i)).not.toBeInTheDocument()
 
@@ -1060,15 +1030,13 @@ describe('PhaseLogPanel', () => {
 
     expect(screen.getByText(/Session status: running/i)).toBeInTheDocument()
     expect(screen.getAllByText(/Confidence in timing\?/i)).toHaveLength(1)
-    expect(screen.queryByText(/\[assistant\]/i)).not.toBeInTheDocument()
-    expect(screen.queryByText(/Questions received from openai\/gpt-5-mini/i)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'DEBUG' }))
 
     expect(screen.getByText(/raw provider payload/i)).toBeInTheDocument()
   })
 
-  it('keeps AI error rows visible when legacy summary entry ids are reused for failures', () => {
+  it('keeps a model failure row visible next to that model\'s output', () => {
     const logs: LogEntry[] = [
       {
         id: 'ai-text',

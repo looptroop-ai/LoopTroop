@@ -159,10 +159,10 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
         sessionId: request.sessionID,
         requestId: request.id,
         memberId: session?.memberId ?? null,
-        // A session row stores its phase as free text, so one written by an
-        // older build can name a status that no longer exists. The ticket's own
-        // status is the fallback rather than dropping the question: an unclocked
-        // question waits forever, which is the failure this path exists to stop.
+        // A session row stores its phase as free text, so it is checked against
+        // the known statuses. The ticket's own status is the fallback rather than
+        // dropping the question: an unclocked question waits forever, which is
+        // the failure this path exists to stop.
         phase: resolveStoredWorkflowPhase(session?.phase, ticketContext.localTicket.status),
         phaseAttempt: session?.phaseAttempt ?? 1,
         windowMs: resolveAiQuestionSettings(ticketId).windowMs,

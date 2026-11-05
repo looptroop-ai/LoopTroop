@@ -198,7 +198,7 @@ export function buildCombinedDiffFromBeads(beads: BeadCommitDiffEntry[]): string
 }
 
 /**
- * Execution priority is the canonical bead order. Keep legacy entries without
+ * Execution priority is the canonical bead order. Keep entries without
  * a priority after planned beads while preserving their source order.
  */
 export function sortBeadCommitsByPriority(beads: BeadCommitDiffEntry[]): BeadCommitDiffEntry[] {

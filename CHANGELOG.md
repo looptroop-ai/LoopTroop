@@ -53,6 +53,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - **Breaking:** LoopTroop no longer upgrades data from earlier versions. Both databases moved to schema version 3, and a database written by any other version is refused at startup, untouched, with a message that says what to delete to start fresh. `looptroop doctor` reports an older app database as a failure with the same steps, where it used to promise an automatic upgrade.
 - The old git hook policy names (`validate_explicitly`, `ignore_internal_only`, `use_on_internal_commits`) are no longer translated when settings, projects or setup plans are read.
+- Other readers of data written by earlier versions are gone too: version 1 skip receipts and Manual QA fix-bead files, interview claims without a boot ID, `daemon.json` records without an OpenCode status, temp files named by the old atomic writer, the `.cache/project-tooling` setup cache that bead commits used to skip, the browser's old per-project preset keys, `onlyErrors` filter and `logs-` log keys, and the log viewer's filtering of summary lines older versions wrote.
 
 ## 0.6.3 (2026-11-02)
 

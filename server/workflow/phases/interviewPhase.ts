@@ -463,10 +463,9 @@ function isClaimOwnerProvablyDead(token: string): boolean {
     ? (parts[1] === 'recovery' ? parts[3] : undefined)
     : parts[1]
   if (ownerPid === process.pid) {
-    // PID reuse is possible after a daemon restart. New claims carry this
-    // process boot id; legacy two-part claims remain protected because they
-    // provide no evidence either way.
-    return parts.length >= 3 && ownerBootId !== undefined && ownerBootId !== PROCESS_BOOT_ID
+    // PID reuse is possible after a daemon restart, so the claim's boot id
+    // decides whether this process is the one that took it.
+    return ownerBootId !== undefined && ownerBootId !== PROCESS_BOOT_ID
   }
   try {
     process.kill(ownerPid, 0)

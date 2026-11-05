@@ -9,7 +9,6 @@ import {
   createExecutionSetupPathSnapshot,
   clearExecutionSetupRuntimeArtifacts,
   removeCanceledExecutionSetupFolder,
-  removeExecutionSetupPathViolations,
   validateExecutionSetupPaths,
 } from '../storage'
 
@@ -103,29 +102,6 @@ describe('execution setup storage tracking', () => {
     const validation = validateExecutionSetupPaths(dir, baseline)
 
     expect(validation.changedPaths).toEqual(expect.arrayContaining(names))
-  })
-
-  it('does not remove repository-local setup outputs when cleanup is requested', () => {
-    const dir = makeFreshRepo()
-    writeFileSync(join(dir, '.gitignore'), 'tool-cache/\n')
-    execFileSync('git', ['-C', dir, 'add', '.gitignore'], { stdio: 'pipe' })
-    execFileSync('git', ['-C', dir, 'commit', '-m', 'ignore tool cache'], { stdio: 'pipe' })
-    const baseline = createExecutionSetupPathSnapshot(dir)
-
-    mkdirSync(join(dir, '.ticket', 'runtime', 'execution-setup'), { recursive: true })
-    writeFileSync(join(dir, '.ticket', 'runtime', 'execution-log.jsonl'), '{"message":"keep"}\n')
-    writeFileSync(join(dir, '.ticket', 'runtime', 'execution-setup-profile.json'), '{"status":"ready"}\n')
-    writeFileSync(join(dir, '.ticket', 'runtime', 'execution-setup', 'cache.txt'), 'warm\n')
-    mkdirSync(join(dir, 'tool-cache', 'deps'), { recursive: true })
-    writeFileSync(join(dir, 'tool-cache', 'deps', 'state.txt'), 'warm\n')
-
-    const removed = removeExecutionSetupPathViolations(dir, baseline)
-
-    expect(removed).toEqual([])
-    expect(existsSync(join(dir, 'tool-cache', 'deps', 'state.txt'))).toBe(true)
-    expect(readFileSync(join(dir, '.ticket', 'runtime', 'execution-log.jsonl'), 'utf8')).toContain('"keep"')
-    expect(readFileSync(join(dir, '.ticket', 'runtime', 'execution-setup-profile.json'), 'utf8')).toContain('"ready"')
-    expect(readFileSync(join(dir, '.ticket', 'runtime', 'execution-setup', 'cache.txt'), 'utf8')).toBe('warm\n')
   })
 
   it('removes a canceled ticket\'s setup folder and caches but keeps its setup profile', () => {

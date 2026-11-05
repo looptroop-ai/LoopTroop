@@ -210,12 +210,7 @@ export interface SkipEvent {
   /** True when a prompt reading this reason will see a shortened copy. */
   truncatedForPrompt: boolean
   skippedAt: string
-  /**
-   * Who decided.
-   *
-   * Rows written before this field existed report `user`, which is what they
-   * meant: a person was the only actor there was.
-   */
+  /** Who decided. */
   skippedBy: SkipActor
   reason: string | null
   supersedes: string | null

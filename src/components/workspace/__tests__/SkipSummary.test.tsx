@@ -72,20 +72,6 @@ function rowContaining(text: string): HTMLElement {
 }
 
 describe('SkipSummary actors', () => {
-  it('reads a receipt written before the actor existed as a person', () => {
-    // v1 receipts carry no `skipped_by` at all. A person was the only thing
-    // that could skip then, so that is what the row means.
-    const legacy: Partial<SkipEvent> = makeEvent({ reason: 'Skipped in the old world.' })
-    delete legacy.skippedBy
-
-    renderSkips([legacy as SkipEvent])
-
-    const row = rowContaining('Skipped in the old world.')
-    expect(within(row).getByText('You')).toBeInTheDocument()
-    expect(row.querySelector('[data-actor="user"]')).not.toBeNull()
-    expect(screen.queryByText(/unknown/i)).toBeNull()
-  })
-
   it('says the wait ran out, and what the clock did, on a timed-out question', () => {
     renderSkips([
       makeEvent({

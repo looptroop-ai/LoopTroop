@@ -830,9 +830,9 @@ function loadLatestCoverageSnapshot(
       typeof merged.finalCandidateVersion === "number"
         ? merged.finalCandidateVersion
         : undefined,
-    // Both artifact rows store their phase as free text, so one written by an
-    // older build can name a status that no longer exists. The coverage state
-    // label for this flow is the correct answer in that case.
+    // Both artifact rows store their phase as free text, so it is checked
+    // against the known statuses, with this flow's coverage state label as the
+    // fallback.
     sourcePhase: resolveStoredWorkflowPhase(
       companionArtifact?.phase,
       coverageArtifact?.phase,

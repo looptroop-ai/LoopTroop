@@ -49,10 +49,9 @@ export interface DaemonState {
      * `owned` alone collapsed "someone else's server, running fine" and "ours,
      * dead, and we gave up restarting it" into the same record — so `status`
      * reported a healthy adopted server for a daemon that could not run a
-     * single coding operation. Absent in a record written by an older build,
-     * which is why every reader treats it as unknown rather than as `adopted`.
+     * single coding operation.
      */
-    status?: 'adopted' | 'managed' | 'degraded'
+    status: 'adopted' | 'managed' | 'degraded'
     /** Why it is degraded, already written for a person. Never set otherwise. */
     detail?: string
     pid?: number

@@ -1103,10 +1103,6 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
         + `)${opencode.movedFrom === undefined ? '' : `. ${describeMoveReason(opencode.movedFrom)}`}`
     case 'adopted':
       return `${opencode.baseUrl} (started elsewhere)`
-    default:
-      // A record from a build that predates the status field. `owned` is all it
-      // said, and guessing beyond that would be inventing the answer.
-      return `${opencode.baseUrl}${opencode.owned ? ' (started by LoopTroop)' : ''}`
   }
 }
 

@@ -197,6 +197,3 @@ export function getVotingRubricForPhase(phase: string) {
   if (phase.startsWith('beads')) return VOTING_RUBRIC_BEADS
   return VOTING_RUBRIC_INTERVIEW // default fallback
 }
-
-// Keep backward compat alias
-export const VOTING_RUBRIC = VOTING_RUBRIC_INTERVIEW

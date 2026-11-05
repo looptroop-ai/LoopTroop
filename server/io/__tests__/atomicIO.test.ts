@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync, realpathSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { atomicProofPath, makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
@@ -526,20 +526,18 @@ describe('recoverOrphanTmpFiles', () => {
   })
 
   /**
-   * The pre-upgrade writer used a plain `${target}.tmp`, whose target cannot be
-   * derived from the name: `report.json.tmp` is as consistent with a crashed
-   * write of `report.json` as with a file someone named that on purpose. The
-   * old recovery guessed, and stripping four characters from the current suffix
-   * is what produced `ticket.meta.json.4821.a1b2c3` — never anything's target.
+   * A plain `${target}.tmp` is not a name `safeAtomicWrite` produces, and its
+   * target cannot be derived: `report.json.tmp` is as consistent with a crashed
+   * write of `report.json` as with a file someone named that on purpose.
    */
-  it('leaves a legacy-suffix temp file alone rather than guessing its target', () => {
-    const legacy = join(TEST_DIR, 'data.json.tmp')
-    writeFileSync(legacy, '{"key": "value"}', 'utf-8')
+  it('leaves a temp file it did not name alone rather than guessing its target', () => {
+    const foreign = join(TEST_DIR, 'data.json.tmp')
+    writeFileSync(foreign, '{"key": "value"}', 'utf-8')
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
 
     expect(recovered).toEqual([])
-    expect(existsSync(legacy)).toBe(true)
+    expect(existsSync(foreign)).toBe(true)
     expect(existsSync(join(TEST_DIR, 'data.json'))).toBe(false)
   })
 
@@ -665,27 +663,6 @@ describe('recoverOrphanTmpFiles', () => {
     expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
     expect(existsSync(target)).toBe(false)
     expect(existsSync(tmpFile)).toBe(true)
-  })
-
-  /**
-   * The Manual QA checkpoint writer that `safeAtomicWrite` replaced produced
-   * these. They do not end in `.tmp`, so nothing has ever swept them.
-   */
-  it('reports the Manual QA writer\'s old temp names instead of ignoring them', () => {
-    const legacy = join(TEST_DIR, 'workspace-baseline-v1.json.tmp-4821-1700000000000')
-    writeFileSync(legacy, '{"schemaVersion": 1}', 'utf-8')
-    const warnings: string[] = []
-    const warn = console.warn
-    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')) }
-
-    try {
-      expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
-    } finally {
-      console.warn = warn
-    }
-
-    expect(existsSync(legacy)).toBe(true)
-    expect(warnings.join(' ')).toContain(realpathSync.native(legacy))
   })
 
   /**

@@ -189,7 +189,7 @@ function normalizeDependencies(value: unknown): BeadDependencies {
     }
   }
 
-  // Legacy flat array format — treat as blocked_by
+  // A flat array (some models emit one) lists what this bead is blocked by.
   if (Array.isArray(value)) {
     return {
       blocked_by: toStringArray(value),
@@ -797,7 +797,7 @@ function normalizeNoteHistory(value: unknown): Bead['failedIterationNotes'] {
 }
 
 /**
- * The legacy aliases are kept, but anything else used to be cast straight to
+ * The status aliases are kept, but anything else used to be cast straight to
  * `Bead['status']`. A stored `complete` or `todo` then stalled the scheduler,
  * which only runs `pending` and only finishes on `done`, with no validation error
  * anywhere.

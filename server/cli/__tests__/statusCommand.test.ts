@@ -94,7 +94,7 @@ describe('CLI daemon status', () => {
 
   it('prints human status for a running daemon, including long uptime', async () => {
     const configDir = useConfigDir()
-    writeDaemonState(makeState({ opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true } }), configDir)
+    writeDaemonState(makeState({ opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: 4242 } }), configDir)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ instanceId: 'status-instance' }), { status: 200 }),
     ))
@@ -103,7 +103,7 @@ describe('CLI daemon status', () => {
     expect(await statusCommand(false)).toBe(0)
     expect(stdout.text()).toContain('LoopTroop is running.')
     expect(stdout.text()).toContain('1h 30m')
-    expect(stdout.text()).toContain('http://127.0.0.1:4096 (started by LoopTroop)')
+    expect(stdout.text()).toContain('http://127.0.0.1:4096 (started by LoopTroop, pid 4242)')
   })
 
   it('explains a retained shutdown when its daemon process is gone', async () => {

@@ -96,8 +96,8 @@ export function isRenderableManualQaOrigin(value: unknown): boolean {
   return value.sourceItems.every((item) => (
     isRecord(item)
     // `evidence` and `links` are both read with `.length` and mapped, so
-    // neither may be absent — the producer defaults them to `[]`, and
-    // `undefined` is precisely the stored legacy shape this guard exists for.
+    // neither may be absent — the producer defaults them to `[]`, and a
+    // record without them is exactly the malformed shape this guard exists for.
     && isArrayOf(item.evidence, (entry) => hasStringFields(entry, ['id', 'mediaType', 'originalName']))
     && isArrayOf(item.links, (entry) => hasStringFields(entry, ['id', 'url', 'label']))
     && hasStringFields(item, ['itemId', 'lineageId', 'behavior', 'observation', 'expectedResult'])

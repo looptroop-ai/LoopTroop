@@ -115,6 +115,22 @@ describe('ticketRouter OpenCode questions', () => {
     expect(isTicketWorkSuspended(ticket.id)).toBe(false)
   })
 
+  it('lists an open ticket\'s question and its countdown on the aggregate route', async () => {
+    const { ticket } = await createTicketWithQuestion('req_aggregate')
+
+    const res = await app.request('/api/opencode/questions')
+
+    expect(res.status).toBe(200)
+    const payload = await res.json() as {
+      questions: Array<{ ticketId: string; requestId: string }>
+      timers: Record<string, unknown>
+      errors?: unknown
+    }
+    expect(payload.questions).toEqual([expect.objectContaining({ ticketId: ticket.id, requestId: 'req_aggregate' })])
+    expect(payload.timers).toHaveProperty(ticket.id)
+    expect(payload.errors).toBeUndefined()
+  })
+
   it('keeps a local question when a later session listing fails', async () => {
     const { ticket } = await createTicketWithQuestion('req_partial_listing')
     const questionsPath = `/api/tickets/${encodeURIComponent(ticket.id)}/opencode/questions`

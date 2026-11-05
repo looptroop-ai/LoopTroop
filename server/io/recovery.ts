@@ -868,11 +868,10 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
 /**
  * Puts back writes that a crash interrupted, and clears away the ones it cannot.
  *
- * Only names `safeAtomicWrite` produced are recognised. The pre-upgrade writer
- * used a plain `${target}.tmp`, whose target cannot be derived — a
- * `report.json.tmp` is as consistent with `report.json` as with a file someone
- * named `report.json.tmp` on purpose — so those are reported and left alone
- * rather than guessed at.
+ * Only names `safeAtomicWrite` produces are recognised. Any other `.tmp` file
+ * is reported and left alone rather than guessed at: its target cannot be
+ * derived, and `report.json.tmp` is as consistent with `report.json` as with a
+ * file someone named `report.json.tmp` on purpose.
  */
 export function recoverOrphanTmpFiles(
   rootDir: string,
@@ -901,14 +900,15 @@ export function recoverOrphanTmpFiles(
     assertRecoveryPath(canonicalRoot, candidate, allowMissingTail)
   }
 
-  // No known artifact lives under runtime/execution-setup (see isKnownArtifactTarget):
-  // it holds the setup's package caches, thousands of directories that only cost
-  // startup time. Add a known target there and this skip has to go.
+  // LoopTroop writes only its launcher at the top of runtime/execution-setup.
+  // Everything below holds the setup's package caches, thousands of directories
+  // that only cost startup time, so only that top level is scanned. No known
+  // artifact lives there (see isKnownArtifactTarget); add one and this has to change.
   const executionSetupDir = rootKind === 'ticket' ? join(canonicalRoot, 'runtime', 'execution-setup') : null
   const isExecutionSetupDir = (path: string): boolean => executionSetupDir !== null
     && (process.platform === 'win32' ? path.toLowerCase() === executionSetupDir.toLowerCase() : path === executionSetupDir)
 
-  function scanDir(dir: string) {
+  function scanDir(dir: string, recurse = true) {
     if (!existsSync(dir)) return
     try {
       guard(dir)
@@ -916,7 +916,7 @@ export function recoverOrphanTmpFiles(
       for (const entry of entries) {
         const fullPath = join(dir, entry.name)
         if (entry.isDirectory()) {
-          if (!isExecutionSetupDir(fullPath)) scanDir(fullPath)
+          if (recurse) scanDir(fullPath, !isExecutionSetupDir(fullPath))
           continue
         }
         const name = entry.name.toLowerCase()
@@ -945,9 +945,11 @@ export function recoverOrphanTmpFiles(
         }
         if (!entry.isFile()) continue
 
-        // Not a name safeAtomicWrite produces, so its target cannot be derived.
         const targetPath = parseAtomicTmpPath(fullPath)
-        if (targetPath === null) continue
+        if (targetPath === null) {
+          console.warn(`[recovery] Leaving ${fullPath}: not a temp name LoopTroop writes, so the file it was meant to become is unknown`)
+          continue
+        }
 
         if (!isKnownArtifactTarget(canonicalRoot, targetPath, rootKind)) {
           console.warn(`[recovery] Leaving ${fullPath}: target is not a known LoopTroop artifact`)

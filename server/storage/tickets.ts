@@ -20,6 +20,7 @@ export {
   resolveTicketContinuationCandidate,
   getTicketStorageContext,
   listNonTerminalTickets,
+  listCanceledTicketRefs,
   listNonTerminalTicketRefs,
   listTicketRefs,
   getTicketPaths,

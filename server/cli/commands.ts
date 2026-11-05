@@ -1103,6 +1103,10 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
         + `)${opencode.movedFrom === undefined ? '' : `. ${describeMoveReason(opencode.movedFrom)}`}`
     case 'adopted':
       return `${opencode.baseUrl} (started elsewhere)`
+    default:
+      // Rejecting the record instead would hide a running daemon from `stop`
+      // after an upgrade. `owned` is all it says; guessing more would invent it.
+      return `${opencode.baseUrl}${opencode.owned ? ' (started by LoopTroop)' : ''}`
   }
 }
 

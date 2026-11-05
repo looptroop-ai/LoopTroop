@@ -226,10 +226,15 @@ describe('runtime Manual QA bead origin projection', () => {
       getTicketByRef(dirless.id)
       getTicketByRef(dirless.id)
       expect(detect).toHaveBeenCalledTimes(1)
+      // Deleting a ticket decides about `git branch -D` with this, so it asks git.
+      const { resolveTicketBaseBranch } = await import('../../ticket/metadata')
+      resolveTicketBaseBranch(setup.project.folderPath, dirless.externalId, { fresh: true })
+      expect(detect).toHaveBeenCalledTimes(2)
+      detect.mockClear()
 
       clock.mockReturnValue(start + 30_001)
       expect(getTicketByRef(dirless.id)?.runtime.baseBranch).toBe(detect.mock.results[0]?.value)
-      expect(detect).toHaveBeenCalledTimes(2)
+      expect(detect).toHaveBeenCalledTimes(1)
     } finally {
       clock.mockRestore()
       detect.mockRestore()

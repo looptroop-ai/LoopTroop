@@ -373,7 +373,8 @@ async function removeTicketFilesystem(projectRoot: string, externalId: string, b
   const worktreePath = resolve(worktreesRoot, externalId)
   let baseBranch: string
   try {
-    baseBranch = resolveTicketBaseBranch(projectRoot, externalId)
+    // Fresh: this decides whether `git branch -D` may run.
+    baseBranch = resolveTicketBaseBranch(projectRoot, externalId, { fresh: true })
   } catch {
     // Unsafe/missing ticket metadata must not prevent unlinking its worktree entry.
     baseBranch = detectGitBaseBranch(projectRoot)

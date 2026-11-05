@@ -51,6 +51,11 @@ describe('status output for OpenCode', () => {
     expect(degraded).not.toBe(adopted)
   })
 
+  it('still describes a record that carries no status', () => {
+    expect(describeOpenCodeForStatus({ baseUrl, owned: true })).toBe(`${baseUrl} (started by LoopTroop)`)
+    expect(describeOpenCodeForStatus({ baseUrl, owned: false })).toBe(baseUrl)
+  })
+
   it('names mock mode rather than reporting a server that does not exist', () => {
     expect(describeOpenCodeForStatus(undefined)).toContain('mock mode')
   })

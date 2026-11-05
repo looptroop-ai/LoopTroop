@@ -368,15 +368,16 @@ export interface TicketLogStorage {
   externalId: string
 }
 
-const LOG_FILE_PATHS: Record<PersistedLogChannel, (projectRoot: string, externalId: string) => string> = {
-  normal: getTicketExecutionLogPath,
-  debug: getTicketDebugLogPath,
-  ai: getTicketAiLogPath,
-}
-
 /** One persisted log file of a ticket, without resolving the ticket's other paths or metadata. */
 export function resolveTicketLogPath(storage: TicketLogStorage, channel: PersistedLogChannel): string {
-  return LOG_FILE_PATHS[channel](storage.projectRoot, storage.externalId)
+  switch (channel) {
+    case 'normal':
+      return getTicketExecutionLogPath(storage.projectRoot, storage.externalId)
+    case 'debug':
+      return getTicketDebugLogPath(storage.projectRoot, storage.externalId)
+    case 'ai':
+      return getTicketAiLogPath(storage.projectRoot, storage.externalId)
+  }
 }
 
 function logPath(ticketId: string, channel: PersistedLogChannel): string | null {

@@ -466,17 +466,6 @@ function gitWorkingDirectory(projectPath: string): { path: string; failure?: und
 }
 
 /**
- * How a `runGit*` call reaches git: the directory as the working directory,
- * and the familiar `-C <dir>` form only in what is shown.
- *
- * The directory is not put in git's argument vector at all. `git -C <dir>` and
- * running git *in* `<dir>` are the same to git, and a caller's path that never
- * enters argv cannot be read as an option or an argument by anything — which is
- * what SonarCloud's S6350 was tracing from a request into `git -C`. The command
- * log and the error text keep showing `git -C <dir> …`, so nothing a person
- * reads changes.
- */
-/**
  * How long a repository's "configures its own core.sshCommand" answer is reused.
  * Every git command used to start a second `git config` process first, which costs
  * a large daemon about 45 ms of its only thread for each synchronous call. A few
@@ -487,26 +476,52 @@ const CORE_SSH_COMMAND_PROBE_TTL_MS = 5_000
 const MAX_CORE_SSH_COMMAND_PROBES = 256
 const coreSshCommandProbes = new Map<string, { configured: boolean; expiresAt: number }>()
 
-/** The directory plus the caller environment that decides which config files git reads. */
+/** Home-directory variables git reads its global config through (the last three on Windows). */
+const CONFIG_LOCATION_ENV = new Set(['HOME', 'XDG_CONFIG_HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'])
+
+/**
+ * The directory plus the environment git will run with, as far as it decides
+ * which config files git reads: the caller's values over the process's.
+ */
 function coreSshCommandProbeKey(directory: string, env: NodeJS.ProcessEnv | undefined): string {
-  const scoped = Object.entries(env ?? {})
-    .filter(([key, value]) => value !== undefined && (key === 'HOME' || key === 'XDG_CONFIG_HOME' || key.startsWith('GIT_')))
+  const scoped = Object.entries({ ...process.env, ...env })
+    .filter(([key, value]) => value !== undefined
+      && (CONFIG_LOCATION_ENV.has(key.toUpperCase()) || key.toUpperCase().startsWith('GIT_')))
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
   return `${directory}\0${JSON.stringify(scoped)}`
 }
 
 function cachedCoreSshCommandProbe(key: string): boolean | undefined {
   const probe = coreSshCommandProbes.get(key)
-  return probe && probe.expiresAt > Date.now() ? probe.configured : undefined
+  if (!probe) return undefined
+  if (probe.expiresAt > Date.now()) return probe.configured
+  coreSshCommandProbes.delete(key)
+  return undefined
 }
 
 /** Keeps only a definite answer: status 0 (set) or 1 (not set). A failed probe is asked again. */
 function rememberCoreSshCommandProbe(key: string, status: number | null, configured: boolean): void {
   if (status !== 0 && status !== 1) return
-  if (coreSshCommandProbes.size >= MAX_CORE_SSH_COMMAND_PROBES) coreSshCommandProbes.clear()
+  coreSshCommandProbes.delete(key)
+  if (coreSshCommandProbes.size >= MAX_CORE_SSH_COMMAND_PROBES) {
+    // The oldest answer goes, not every repository's at once.
+    const oldest = coreSshCommandProbes.keys().next().value
+    if (oldest !== undefined) coreSshCommandProbes.delete(oldest)
+  }
   coreSshCommandProbes.set(key, { configured, expiresAt: Date.now() + CORE_SSH_COMMAND_PROBE_TTL_MS })
 }
 
+/**
+ * How a `runGit*` call reaches git: the directory as the working directory,
+ * and the familiar `-C <dir>` form only in what is shown.
+ *
+ * The directory is not put in git's argument vector at all. `git -C <dir>` and
+ * running git *in* `<dir>` are the same to git, and a caller's path that never
+ * enters argv cannot be read as an option or an argument by anything — which is
+ * what SonarCloud's S6350 was tracing from a request into `git -C`. The command
+ * log and the error text keep showing `git -C <dir> …`, so nothing a person
+ * reads changes.
+ */
 function gitInvocation(directory: string, args: string[], options: RunCommandOptions | undefined): {
   args: string[]
   displayArgs: string[]

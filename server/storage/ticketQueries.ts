@@ -983,7 +983,6 @@ function readReviewCutoffStatus(
   return resolveReviewCutoffStatus(ticket.status, previousStatus, latestBlockedErrorPreviousStatus)
 }
 
-/** Converts a raw database ticket row into a fully enriched public ticket with runtime data, actions, and error history. */
 /** What building a public ticket reads per project; a board refresh reads it once per project. */
 interface ProjectLookups {
   project: ReturnType<typeof getProjectById>
@@ -999,6 +998,7 @@ function readProjectLookups(projectId: number): ProjectLookups {
   }
 }
 
+/** Converts a raw database ticket row into a fully enriched public ticket with runtime data, actions, and error history. */
 export function toPublicTicket(projectId: number, ticket: LocalTicketRow, lookups: ProjectLookups = readProjectLookups(projectId)): PublicTicket {
   const { project, profile, projectContext } = lookups
   const isMockTicket = isDisplayOnlyMockTicket(ticket)
@@ -1443,7 +1443,11 @@ function readRuntimeBeadsFile(beadsPath: string): ReturnType<typeof readBeadsFil
   if (cached && cached.version === version) return cached.result
   const result = readBeadsFileWithDiagnostics(beadsPath, { malformedEntries: 'skip' })
   if (version !== null) {
-    if (runtimeBeadFiles.size >= MAX_CACHED_RUNTIME_BEAD_FILES) runtimeBeadFiles.clear()
+    runtimeBeadFiles.delete(beadsPath)
+    if (runtimeBeadFiles.size >= MAX_CACHED_RUNTIME_BEAD_FILES) {
+      const oldest = runtimeBeadFiles.keys().next().value
+      if (oldest !== undefined) runtimeBeadFiles.delete(oldest)
+    }
     runtimeBeadFiles.set(beadsPath, { version, result })
   }
   return result
@@ -1699,6 +1703,13 @@ export function listTicketRefs(): string[] {
 export function listNonTerminalTicketRefs(): string[] {
   return listTicketRefRows()
     .filter((row) => !isTerminalWorkflowStatus(row.status) && !isDisplayOnlyMockTicket(row))
+    .map((row) => row.ref)
+}
+
+/** Refs of real tickets that were canceled; see `listTicketRefRows`. */
+export function listCanceledTicketRefs(): string[] {
+  return listTicketRefRows()
+    .filter((row) => row.status === 'CANCELED' && !isDisplayOnlyMockTicket(row))
     .map((row) => row.ref)
 }
 

@@ -42,18 +42,22 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
-- Question wait timers left open by a restart are closed at startup again. A session OpenCode no longer had counted as an unverified check, and one such session stopped startup from closing leftover timers for its whole project, so those tickets kept counting the downtime as waiting time in their duration and ETA.
+- Question wait timers left open by a restart are closed at startup again. A session OpenCode no longer had counted as an unverified check, and one such session stopped startup from closing leftover timers for its whole project, so those tickets kept counting the downtime as waiting time in their duration and ETA. Sessions that reconnected are always checked, and the list of sessions OpenCode still has is trusted only when it is complete for every project (OpenCode v2); with OpenCode v1, or when the list fails or is cut short, every recorded session is checked as before.
+- With OpenCode v1, an HTTP error from the session list is reported as an error instead of being read as a server with no sessions.
+- `looptroop doctor` no longer reports a refused database as fixed when it cannot be read, and it stops reporting a refusal once the installed LoopTroop can open that database (it used to compare against the version that recorded the refusal).
+- The Bead Commits view of a finished Coding phase shows its Net Diff (the final candidate diff), which the Coding phase review left empty.
 
 ### Changed
 
-- Canceling a ticket deletes its execution setup folder, with the package caches setup downloaded (these can reach gigabytes), once the cancel is confirmed. Completed tickets already lose this folder in Cleaning Up; blocked tickets keep it, so a retry can reuse the cache.
-- Log files store each text once. A line's `content` is left out when it is the same as its `message`, and a debug line keeps its payload only in `data` instead of also writing it out as text. Log views, exports and downloads show exactly the same text as before. The normal and AI logs are about half their previous size and the debug log about a third, and the log cache in the project database shrinks the same way.
+- Canceling a ticket deletes its execution setup folder, with the package caches setup downloaded (these can reach gigabytes), once the cancel is confirmed. The delete runs without blocking the server, and the next start retries any folder a canceled ticket left behind. Completed tickets already lose this folder in Cleaning Up; blocked tickets keep it, so a retry can reuse the cache.
+- Log files store each text once. A line's `content` is left out when it is the same as its `message`, and a debug line keeps its payload only in `data` instead of also writing it out as text. Log views, exports and downloads show exactly the same text as before. The normal and AI logs are about half their previous size and the debug log about a third, and the log cache in the project database shrinks the same way. Tools that read the log files directly should use `message` when `content` is absent, and for a line marked `payloadInData` the text is its `message` followed by `data` (without `timestamp`) as JSON.
+- `daemon.json`, which `looptroop status --json` reports, records a refused start with `schema.resetInstructions` (what to delete) in place of `schema.migratableFrom`, and `schema.databaseLabel` is now required. `looptroop doctor --json` adds `databaseLabel` and, for an older database, `resetInstructions` to its `schema` facts.
 
 ### Removed
 
 - **Breaking:** LoopTroop no longer upgrades data from earlier versions. Both databases moved to schema version 3, and a database written by any other version is refused at startup, untouched, with a message that says what to delete to start fresh. `looptroop doctor` reports an older app database as a failure with the same steps, where it used to promise an automatic upgrade.
 - The old git hook policy names (`validate_explicitly`, `ignore_internal_only`, `use_on_internal_commits`) are no longer translated when settings, projects or setup plans are read.
-- Other readers of data written by earlier versions are gone too: version 1 skip receipts and Manual QA fix-bead files, interview claims without a boot ID, `daemon.json` records without an OpenCode status, temp files named by the old atomic writer, the `.cache/project-tooling` setup cache that bead commits used to skip, the browser's old per-project preset keys, `onlyErrors` filter and `logs-` log keys, and the log viewer's filtering of summary lines older versions wrote.
+- Other readers of data written by earlier versions are gone too: version 1 skip receipts and Manual QA fix-bead files, interview claims without a boot ID, temp files named by the old atomic writer, the `.cache/project-tooling` setup cache that bead commits used to skip, the browser's old per-project preset keys, `onlyErrors` filter and `logs-` log keys, and the log viewer's filtering of summary lines older versions wrote.
 
 ## 0.6.3 (2026-11-02)
 

@@ -353,7 +353,8 @@ const RAW_FILE_SYSTEM_BOUNDARY_OPERATIONS = {
   'server/phases/cleanup/cleaner.ts': ['rmSync'],
   'server/phases/prd/document.ts': ['rmSync'],
   'server/phases/executionSetup/workspaceInputs.ts': ['copyFileSync', 'mkdirSync', 'readdirSync'],
-  'server/phases/executionSetup/storage.ts': ['readdirSync', 'rmSync'],
+  // The canceled-ticket cache removal is asynchronous (multi-GB trees).
+  'server/phases/executionSetup/storage.ts': ['readdirSync', 'rm', 'rmSync'],
   // Exact Git-index snapshots read a no-follow descriptor and write only owned
   // temporary files before a validated index replacement.
   'server/phases/executionSetup/hookValidation.ts': ['mkdtempSync', 'readFileSync', 'renameSync', 'rmSync', 'unlinkSync', 'writeFileSync'],

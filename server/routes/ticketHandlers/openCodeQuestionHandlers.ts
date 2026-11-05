@@ -5,7 +5,6 @@ import { getOpenCodeAdapter } from '../../opencode/factory'
 import { broadcaster } from '../../sse/broadcaster'
 import { appendLogEvent, createLogEvent, shouldSkipLogEmission } from '../../log/executionLog'
 import {
-  getTicketByRef,
   getTicketContext,
   listNonTerminalTicketRefs,
 } from '../../storage/tickets'
@@ -211,9 +210,10 @@ export async function handleListOpenCodeQuestions(c: Context) {
     return c.json({ questions, timer: getTicketQuestionState(ticketId).timer })
   } catch (err) {
     const message = getErrorMessage(err)
-    // The ticket may have gone, or hold a status this build no longer declares.
-    // The failure still has to be logged against something real.
-    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(getTicketByRef(ticketId)?.status), 'error', `Failed to list OpenCode questions: ${message}`)
+    // The ticket may have gone, or hold a status that is not a declared one.
+    // The failure still has to be logged against something real, and reading the
+    // row (not building the whole ticket) cannot fail in turn and hide this error.
+    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(getTicketContext(ticketId)?.localTicket.status), 'error', `Failed to list OpenCode questions: ${message}`)
     return c.json({ error: 'Failed to list OpenCode questions', details: message }, 500)
   }
 }

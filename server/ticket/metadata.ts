@@ -159,7 +159,15 @@ export function clearTicketModelSelectionLock(projectRoot: string, externalId: s
   return writeTicketMeta(projectRoot, externalId, unlocked)
 }
 
-export function resolveTicketBaseBranch(projectRoot: string, externalId: string): string {
+/**
+ * `fresh` skips the short-lived cache used for tickets without a `.ticket`
+ * directory; a decision that deletes a branch must not act on a stale answer.
+ */
+export function resolveTicketBaseBranch(
+  projectRoot: string,
+  externalId: string,
+  options: { fresh?: boolean } = {},
+): string {
   const meta = readTicketMeta(projectRoot, externalId)
   if (typeof meta.baseBranch === 'string' && meta.baseBranch.trim().length > 0) {
     return meta.baseBranch.trim()
@@ -172,7 +180,9 @@ export function resolveTicketBaseBranch(projectRoot: string, externalId: string)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  if (!ticketDirExists) return detectBaseBranchForDirlessTicket(projectRoot)
+  if (!ticketDirExists) {
+    return options.fresh ? detectGitBaseBranch(projectRoot) : detectBaseBranchForDirlessTicket(projectRoot)
+  }
 
   // Detected fresh: this value is written back and kept for the ticket's life.
   const detected = detectGitBaseBranch(projectRoot)
@@ -192,7 +202,7 @@ const dirlessBaseBranches = new Map<string, { value: string; expiresAt: number }
  * A ticket without a `.ticket` directory (a display-only demo ticket, or a finished
  * ticket whose worktree was deleted) can never store its base branch, so every board
  * refresh used to spawn git again for it. Nothing is written back on this path, so a
- * value up to 30 s old only labels the board; start and delete detect fresh.
+ * value up to 30 s old only labels the board; deleting a ticket passes `fresh`.
  */
 function detectBaseBranchForDirlessTicket(projectRoot: string): string {
   const now = Date.now()

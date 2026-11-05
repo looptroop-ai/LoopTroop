@@ -9,6 +9,7 @@ import {
   createExecutionSetupPathSnapshot,
   clearExecutionSetupRuntimeArtifacts,
   removeCanceledExecutionSetupFolder,
+  sweepCanceledExecutionSetupFolders,
   validateExecutionSetupPaths,
 } from '../storage'
 
@@ -104,7 +105,7 @@ describe('execution setup storage tracking', () => {
     expect(validation.changedPaths).toEqual(expect.arrayContaining(names))
   })
 
-  it('removes a canceled ticket\'s setup folder and caches but keeps its setup profile', () => {
+  it('removes a canceled ticket\'s setup folder and caches but keeps its setup profile', async () => {
     const root = makeFreshRepo()
     const runtime = join(root, '.looptroop/worktrees/TEST-1/.ticket/runtime')
     mkdirSync(join(runtime, 'execution-setup', 'tool-cache', 'deps'), { recursive: true })
@@ -115,14 +116,31 @@ describe('execution setup storage tracking', () => {
       resolveProjectTicketContainedPath(root, 'TEST-1', path, kind),
     )
 
-    expect(removeCanceledExecutionSetupFolder('1:TEST-1')).toBe(true)
+    await expect(removeCanceledExecutionSetupFolder('1:TEST-1')).resolves.toBe(true)
     expect(existsSync(join(runtime, 'execution-setup'))).toBe(false)
     expect(readFileSync(join(runtime, 'execution-setup-profile.json'), 'utf8')).toContain('"ready"')
-    expect(removeCanceledExecutionSetupFolder('1:TEST-1')).toBe(false)
+    await expect(removeCanceledExecutionSetupFolder('1:TEST-1')).resolves.toBe(false)
   })
 
-  it('does nothing for a ticket it cannot resolve', () => {
+  it('does nothing for a ticket it cannot resolve', async () => {
     vi.spyOn(tickets, 'resolveTicketContainedPath').mockReturnValue(undefined)
-    expect(removeCanceledExecutionSetupFolder('1:GONE-1')).toBe(false)
+    await expect(removeCanceledExecutionSetupFolder('1:GONE-1')).resolves.toBe(false)
+  })
+
+  it('retries leftover setup folders of canceled tickets and keeps going past one it cannot reach', async () => {
+    const root = makeFreshRepo()
+    const leftover = join(root, '.looptroop/worktrees/TEST-2/.ticket/runtime/execution-setup')
+    mkdirSync(join(leftover, 'tool-cache'), { recursive: true })
+    writeFileSync(join(leftover, 'tool-cache', 'package.tgz'), 'cached\n')
+    vi.spyOn(tickets, 'resolveTicketContainedPath').mockImplementation((ticketId, path, kind) => {
+      if (ticketId === '1:BROKEN-1') throw new Error('Path escapes root')
+      return resolveProjectTicketContainedPath(root, ticketId.split(':')[1]!, path, kind)
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    await expect(sweepCanceledExecutionSetupFolders(['1:BROKEN-1', '1:TEST-2', '1:TEST-3'])).resolves.toBe(1)
+
+    expect(existsSync(leftover)).toBe(false)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('1:BROKEN-1'), expect.any(Error))
   })
 })

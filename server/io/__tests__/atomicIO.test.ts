@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, lstatSync, truncateSync, symlinkSync, unlinkSync, writeSync, realpathSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { atomicProofPath, makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite, safeAtomicWriteWithin } from '../atomicWrite'
@@ -530,15 +530,20 @@ describe('recoverOrphanTmpFiles', () => {
    * target cannot be derived: `report.json.tmp` is as consistent with a crashed
    * write of `report.json` as with a file someone named that on purpose.
    */
-  it('leaves a temp file it did not name alone rather than guessing its target', () => {
+  it('reports a temp file it did not name and leaves it alone rather than guessing its target', () => {
     const foreign = join(TEST_DIR, 'data.json.tmp')
     writeFileSync(foreign, '{"key": "value"}', 'utf-8')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
 
+    const warnings = warn.mock.calls.map((call) => String(call[0]))
+    warn.mockRestore()
     expect(recovered).toEqual([])
     expect(existsSync(foreign)).toBe(true)
     expect(existsSync(join(TEST_DIR, 'data.json'))).toBe(false)
+    // Reported in the canonical spelling recovery scans, as every other warning is.
+    expect(warnings.some((message) => message.includes(realpathSync.native(foreign)) && message.includes('not a temp name'))).toBe(true)
   })
 
   it('never replaces a target that already exists', () => {
@@ -746,18 +751,24 @@ describe('recoverOrphanTmpFiles', () => {
     expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
   })
 
-  it('does not descend into the execution setup package caches', () => {
+  it('checks the top of the execution setup folder but not its package caches', () => {
     const cached = orphan(join(TEST_DIR, 'runtime', 'execution-setup', 'tool-cache', 'pkg.json'), '{}')
+    // LoopTroop writes its launcher atomically at the top of the setup folder.
+    const launcher = orphan(join(TEST_DIR, 'runtime', 'execution-setup', 'run'), '#!/bin/sh\n')
     const control = orphan(join(TEST_DIR, 'runtime', 'scratch', 'pkg.json'), '{}')
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
     recoverOrphanTmpFiles(TEST_DIR)
 
     const warnings = warn.mock.calls.map((call) => String(call[0]))
     warn.mockRestore()
+    // Warnings name the canonical path recovery scans (Windows expands 8.3 short
+    // names, macOS adds /private), so compare against that spelling.
+    const reported = (path: string) => warnings.some((message) => message.includes(realpathSync.native(path)))
     // The control proves an unknown temp file is reported when it is scanned at all.
-    expect(warnings.some((message) => message.includes(control))).toBe(true)
-    expect(warnings.some((message) => message.includes('execution-setup'))).toBe(false)
+    expect(reported(control)).toBe(true)
+    expect(reported(launcher)).toBe(true)
+    expect(warnings.some((message) => message.includes('tool-cache'))).toBe(false)
     expect(existsSync(cached)).toBe(true)
   })
 })

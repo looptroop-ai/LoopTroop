@@ -1,6 +1,7 @@
 import { runGitSync } from '../../git/runCommand'
 import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { lstatSync, readdirSync, rmSync } from 'node:fs'
+import { lstat, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { phaseArtifacts } from '../../db/schema'
@@ -114,18 +115,38 @@ export function clearExecutionSetupRuntimeArtifacts(ticketId: string, options: {
  * reach gigabytes, plus the launcher) only costs disk space and startup scans. The
  * small setup profile stays as the record of what ran. Completed tickets lose this
  * folder in Cleaning Up; blocked tickets keep it, because a retry reuses the cache.
+ *
+ * Asynchronous: deleting thousands of cache files synchronously would stall every
+ * request and live update until it finished.
  */
-export function removeCanceledExecutionSetupFolder(ticketId: string): boolean {
+export async function removeCanceledExecutionSetupFolder(ticketId: string): Promise<boolean> {
   const executionSetupDir = resolveTicketContainedPath(ticketId, 'runtime/execution-setup', 'remove')
   if (!executionSetupDir) return false
   try {
-    lstatSync(executionSetupDir)
+    await lstat(executionSetupDir)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
   }
-  rmSync(executionSetupDir, { recursive: true, force: true })
+  // Retries cover a just-stopped Windows child still holding a handle.
+  await rm(executionSetupDir, { recursive: true, force: true, maxRetries: 3 })
   return true
+}
+
+/**
+ * Retries the removal for canceled tickets, one at a time. A cancel whose delete
+ * failed, or a crash in the middle of one, leaves a folder nothing else removes.
+ */
+export async function sweepCanceledExecutionSetupFolders(ticketRefs: readonly string[]): Promise<number> {
+  let removed = 0
+  for (const ticketRef of ticketRefs) {
+    try {
+      if (await removeCanceledExecutionSetupFolder(ticketRef)) removed += 1
+    } catch (error) {
+      console.warn(`[startup] Could not remove the execution setup folder of canceled ticket ${ticketRef}:`, error)
+    }
+  }
+  return removed
 }
 
 export function clearExecutionSetupState(ticketId: string): {

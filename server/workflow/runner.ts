@@ -248,10 +248,11 @@ type WorkflowActor = ReturnType<typeof createActor<typeof ticketMachine>>
  * be writing), drop the ticket's setup folder with its package caches. A failure
  * here never undoes the cancel; the folder is only disk space.
  */
-function releaseCanceledTicketSetupFolder(ticketId: string): void {
+async function releaseCanceledTicketSetupFolder(ticketId: string): Promise<void> {
   try {
-    removeCanceledExecutionSetupFolder(ticketId)
+    await removeCanceledExecutionSetupFolder(ticketId)
   } catch (error) {
+    // Startup retries leftovers of canceled tickets (`sweepCanceledExecutionSetupFolders`).
     console.warn(`[workflow] Could not remove the execution setup folder of canceled ticket ${ticketId}:`, error)
   }
 }
@@ -310,7 +311,7 @@ async function attemptCancellationCleanup(
     if (cleanupState === 'CANCELED') {
       clearCancellationCleanupRetry(ticketId)
       cleanupTicketState(ticketId)
-      releaseCanceledTicketSetupFolder(ticketId)
+      await releaseCanceledTicketSetupFolder(ticketId)
       return
     }
     if (!isTicketCancellationPending(ticketId)) {
@@ -332,7 +333,7 @@ async function attemptCancellationCleanup(
       if (dispatchState === 'CANCELED') {
         clearCancellationCleanupRetry(ticketId)
         cleanupTicketState(ticketId)
-        releaseCanceledTicketSetupFolder(ticketId)
+        await releaseCanceledTicketSetupFolder(ticketId)
         return
       }
       if (!isTicketCancellationPending(ticketId)) {

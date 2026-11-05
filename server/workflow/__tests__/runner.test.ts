@@ -746,7 +746,7 @@ describe('attachWorkflowRunner', () => {
   })
 
   it('removes the setup folder of a canceled ticket only after the stop is confirmed', async () => {
-    const removeFolder = vi.spyOn(executionSetupStorage, 'removeCanceledExecutionSetupFolder').mockReturnValue(true)
+    const removeFolder = vi.spyOn(executionSetupStorage, 'removeCanceledExecutionSetupFolder').mockResolvedValue(true)
     try {
       abortTicketSessionsMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
       const actor = createSnapshotActor('CANCELED', { title: 'Canceled setup folder', status: 'CANCELED', previousStatus: 'PREPARING_EXECUTION_ENV' })
@@ -764,9 +764,7 @@ describe('attachWorkflowRunner', () => {
   })
 
   it('finishes a cancel even when the setup folder cannot be removed', async () => {
-    const removeFolder = vi.spyOn(executionSetupStorage, 'removeCanceledExecutionSetupFolder').mockImplementation(() => {
-      throw new Error('EACCES')
-    })
+    const removeFolder = vi.spyOn(executionSetupStorage, 'removeCanceledExecutionSetupFolder').mockRejectedValue(new Error('EACCES'))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       abortTicketSessionsMock.mockResolvedValueOnce(true)

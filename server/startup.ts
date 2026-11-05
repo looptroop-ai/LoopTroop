@@ -9,7 +9,8 @@ import { getOpenCodeBaseUrl } from './opencode/runtimeConfig'
 import { recoverPendingOpenCodeSessionOwnership, SessionManager } from './opencode/sessionManager'
 import { opencodeSessions, tickets } from './db/schema'
 import { getProjectContextById, listProjects } from './storage/projects'
-import { buildTicketRef, getTicketPaths, listTicketRefs } from './storage/tickets'
+import { buildTicketRef, getTicketPaths, listCanceledTicketRefs, listTicketRefs } from './storage/tickets'
+import { sweepCanceledExecutionSetupFolders } from './phases/executionSetup/storage'
 import {
   formatStartupStorageSummary,
   initializeStartupState,
@@ -300,6 +301,11 @@ export async function startupSequence(): Promise<void> {
   console.log('[startup] Step 2: Recover ticket runtime artifacts')
   const recovery = recoverTicketRuntimeArtifacts()
   console.log(`[startup] Recovered ${recovery.recoveredTmpFiles} orphan temp files, repaired ${recovery.repairedExecutionLogs} execution logs, settled ${recovery.settledOpencodeStepCaps} interrupted OpenCode step caps, rebuilt ${recovery.rebuiltProjections} state projections`)
+
+  // In the background: deleting package caches can take a while, and nothing waits on it.
+  void sweepCanceledExecutionSetupFolders(listCanceledTicketRefs()).then((removed) => {
+    if (removed > 0) console.log(`[startup] Removed ${removed} execution setup folders left by canceled tickets`)
+  })
 
   console.log('[startup] Step 3: Start WAL checkpoint timer')
   startWalCheckpoint()

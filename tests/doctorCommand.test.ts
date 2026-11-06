@@ -570,6 +570,11 @@ describe('doctor command', () => {
 
   it('treats a missing database as healthy rather than a fault', async () => {
     useConfigDir()
+    // APP_DB_PATH is fixed at first import, and Windows may keep an earlier
+    // test's database there when its temp folder could not be removed.
+    const { APP_DB_PATH, closeDatabase } = await import('../server/db/index')
+    closeDatabase()
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${APP_DB_PATH}${suffix}`, { force: true })
 
     const schema = (await runChecks()).find((check) => check.name === 'schema')
 

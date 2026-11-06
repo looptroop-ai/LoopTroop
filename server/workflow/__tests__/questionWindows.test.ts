@@ -714,6 +714,8 @@ describe('question windows', () => {
   it('reports an unverified owner when restart listing fails', async () => {
     const ticket = makeTicket()
     vi.spyOn(adapter as OpenCodeAdapter, 'listPendingQuestions').mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    // OpenCode is unreachable, so it cannot confirm the session is gone either.
+    vi.spyOn(adapter as OpenCodeAdapter, 'getSession').mockRejectedValueOnce(new Error('ECONNREFUSED'))
 
     const result = await reconcilePendingQuestionsAfterRestart({
       projectRoot: getTicketContext(ticket.id)!.projectRoot,

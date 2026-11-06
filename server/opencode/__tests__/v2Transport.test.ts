@@ -2528,6 +2528,20 @@ describe("OpenCode v2 fetch transport", () => {
       cursor: { next: `page-${served}` },
     }));
     await expect(endless.listAllSessionIds()).resolves.toBeNull();
+
+    // A server that rotates cursors but serves nothing new would otherwise be
+    // followed forever while startup waits.
+    let rotated = 0;
+    const stuck = pages(() => ({ data: [{ id: "session-1" }], cursor: { next: `page-${rotated++}` } }));
+    await expect(stuck.listAllSessionIds()).resolves.toBeNull();
+    expect(rotated).toBe(2);
+    const emptyPages = pages(() => ({ data: [], cursor: { next: `page-${rotated++}` } }));
+    await expect(emptyPages.listAllSessionIds()).resolves.toBeNull();
+    // A cursor that is not a string, or no cursor object at all, cannot end paging.
+    const numericCursor = pages(() => ({ data: [{ id: "session-1" }], cursor: { next: 2 } }));
+    await expect(numericCursor.listAllSessionIds()).resolves.toBeNull();
+    const noCursor = pages(() => ({ data: [{ id: "session-1" }] }));
+    await expect(noCursor.listAllSessionIds()).resolves.toBeNull();
   });
 
   it("maps session, message pages, and health responses from v2 envelopes", async () => {

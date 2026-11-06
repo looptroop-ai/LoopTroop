@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { Hono } from 'hono'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache, getProjectDatabase } from '../../db/project'
@@ -384,6 +384,31 @@ describe('projectRouter project cleanup', () => {
       error: 'Project already added',
       code: 'PROJECT_ALREADY_ATTACHED',
     })
+  })
+
+  it('attaches a folder again after its LoopTroop state was deleted to start fresh', async () => {
+    const repoDir = repoManager.createRepo()
+    addGithubOrigin(repoDir)
+    const app = new Hono()
+    app.route('/api', projectRouter)
+    const attach = (name: string, shortname: string) => app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, shortname, folderPath: repoDir }),
+    })
+    expect((await attach('Old Project', 'OLD')).status).toBe(201)
+
+    // The reset steps: delete the project's .looptroop folder, keep the app database.
+    clearProjectDatabaseCache()
+    rmSync(join(repoDir, '.looptroop'), { recursive: true, force: true })
+
+    const check = await app.request(`/api/projects/check-git?path=${encodeURIComponent(repoDir)}`)
+    expect(await check.json()).toMatchObject({ alreadyAttached: false })
+    const again = await attach('Fresh Project', 'NEW')
+    expect(again.status).toBe(201)
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM attached_projects').get()).toEqual({ count: 1 })
+    const listed = await (await app.request('/api/projects')).json() as Array<{ name: string }>
+    expect(listed.map((project) => project.name)).toEqual(['Fresh Project'])
   })
 
   it('rejects a duplicate project name or short name across attached repositories', async () => {

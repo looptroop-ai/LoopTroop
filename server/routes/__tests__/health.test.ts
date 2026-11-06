@@ -1,6 +1,6 @@
 import { Database } from '../../db/sqliteShim'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
@@ -290,6 +290,54 @@ describe('health startup routes', () => {
 
     expect(afterDismissPayload.ui.restoreNotice.shouldShow).toBe(false)
     expect(afterDismissPayload.ui.restoreNotice.dismissedAt).toBe(dismissPayload.dismissedAt)
+  })
+
+  it('refuses an older app database without changing its file', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'looptroop-health-older-app-'))
+    tempRoots.add(tempRoot)
+    const configDir = join(tempRoot, 'config')
+    mkdirSync(configDir, { recursive: true })
+    const appDbPath = join(configDir, 'app.sqlite')
+    const seed = new Database(appDbPath)
+    seed.exec('CREATE TABLE profiles (id INTEGER PRIMARY KEY)')
+    seed.pragma('user_version = 2')
+    seed.close()
+    if (process.platform !== 'win32') chmodSync(appDbPath, 0o644)
+
+    activeApp = await loadHealthApp(configDir)
+    expect(() => activeApp!.initializeDatabase()).toThrow(/created by an older version of LoopTroop/)
+
+    const reopened = new Database(appDbPath, { readonly: true })
+    try {
+      // Neither switched to WAL (a header write) nor stamped.
+      expect(reopened.pragma('journal_mode')).toEqual([{ journal_mode: 'delete' }])
+      expect(reopened.pragma('user_version')).toEqual([{ user_version: 2 }])
+    } finally {
+      reopened.close()
+    }
+    expect(existsSync(`${appDbPath}-wal`)).toBe(false)
+    if (process.platform !== 'win32') expect(statSync(appDbPath).mode & 0o777).toBe(0o644)
+  })
+
+  it('leaves an app database whose first start failed before the stamp retryable', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'looptroop-health-fresh-app-'))
+    tempRoots.add(tempRoot)
+    const configDir = join(tempRoot, 'config')
+
+    activeApp = await loadHealthApp(configDir)
+    const schemaVersion = await import('../../db/schemaVersion')
+    const stamp = vi.spyOn(schemaVersion, 'writeUserVersion').mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    try {
+      expect(() => activeApp!.initializeDatabase()).toThrow('disk full')
+    } finally {
+      stamp.mockRestore()
+    }
+
+    // Rolled back with the tables: the next start sees a fresh file and stamps it.
+    activeApp!.initializeDatabase()
+    expect(activeApp!.sqlite.pragma('user_version')).toEqual([{ user_version: schemaVersion.APP_SCHEMA_VERSION }])
   })
 
   it('stops startup with reset steps when an attached project database is from an older version', async () => {

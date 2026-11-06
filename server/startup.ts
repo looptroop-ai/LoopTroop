@@ -9,7 +9,8 @@ import { getOpenCodeBaseUrl } from './opencode/runtimeConfig'
 import { recoverPendingOpenCodeSessionOwnership, SessionManager } from './opencode/sessionManager'
 import { opencodeSessions, tickets } from './db/schema'
 import { getProjectContextById, listProjects } from './storage/projects'
-import { buildTicketRef, getTicketPaths, listCanceledTicketRefs, listTicketRefs } from './storage/tickets'
+import { buildTicketRef, getTicketContext, getTicketPaths, listCanceledTicketRefs, listTicketRefs } from './storage/tickets'
+import { isTicketCancellationPending } from './workflow/phases/state'
 import { sweepCanceledExecutionSetupFolders } from './phases/executionSetup/storage'
 import {
   formatStartupStorageSummary,
@@ -302,10 +303,18 @@ export async function startupSequence(): Promise<void> {
   const recovery = recoverTicketRuntimeArtifacts()
   console.log(`[startup] Recovered ${recovery.recoveredTmpFiles} orphan temp files, repaired ${recovery.repairedExecutionLogs} execution logs, settled ${recovery.settledOpencodeStepCaps} interrupted OpenCode step caps, rebuilt ${recovery.rebuiltProjections} state projections`)
 
-  // In the background: deleting package caches can take a while, and nothing waits on it.
-  void sweepCanceledExecutionSetupFolders(listCanceledTicketRefs()).then((removed) => {
-    if (removed > 0) console.log(`[startup] Removed ${removed} execution setup folders left by canceled tickets`)
-  })
+  // In the background: deleting package caches can take a while, and nothing waits
+  // on it. Only tickets still canceled, whose cancel was confirmed: until then a
+  // stopped session may still be writing there.
+  void Promise.resolve()
+    .then(() => sweepCanceledExecutionSetupFolders(
+      listCanceledTicketRefs(),
+      (ticketRef) => getTicketContext(ticketRef)?.localTicket.status === 'CANCELED' && !isTicketCancellationPending(ticketRef),
+    ))
+    .then((removed) => {
+      if (removed > 0) console.log(`[startup] Removed ${removed} execution setup folders left by canceled tickets`)
+    })
+    .catch((error) => console.warn(`[startup] Could not sweep execution setup folders of canceled tickets: ${getErrorMessage(error)}`))
 
   console.log('[startup] Step 3: Start WAL checkpoint timer')
   startWalCheckpoint()

@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, chmodSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, chmodSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
@@ -983,14 +983,17 @@ describe('doctor command', () => {
         checks: { name: string; schema?: Record<string, unknown> }[]
       }
       const check = parsed.checks.find((entry) => entry.name === 'last start')
-      // The recorded event's numbers, and which database it was.
-      expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: 1, databaseLabel: 'project database' })
+      // The file as this build sees it: what it reports, and what this build expects.
+      const { PROJECT_SCHEMA_VERSION } = await import('../server/db/schemaVersion')
+      expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: PROJECT_SCHEMA_VERSION, databaseLabel: 'project database' })
       expect(parsed.ok).toBe(false)
     })
 
     it('names what to delete when the refused database was older', async () => {
       const configDir = useConfigDir()
-      const dbPath = join(configDir, 'older.sqlite')
+      const projectRoot = join(configDir, 'repo')
+      const dbPath = join(projectRoot, '.looptroop', 'db.sqlite')
+      mkdirSync(dirname(dbPath), { recursive: true })
       const { Database } = await import('../server/db/sqliteShim')
       const seed = new Database(dbPath)
       seed.exec('CREATE TABLE marker (id INTEGER PRIMARY KEY)')
@@ -1013,10 +1016,12 @@ describe('doctor command', () => {
 
       const check = (await runChecks()).find((entry) => entry.name === 'last start')
 
+      // The steps for a project database, worked out now: the whole .looptroop folder.
+      const { projectDatabaseResetInstructions } = await import('../server/db/schemaVersion')
       expect(check).toMatchObject({
         status: 'fail',
-        remedy: 'Delete the .looptroop folder of that project.',
-        schema: { databaseLabel: 'project database', resetInstructions: 'Delete the .looptroop folder of that project.' },
+        remedy: projectDatabaseResetInstructions(projectRoot),
+        schema: { databaseLabel: 'project database', resetInstructions: projectDatabaseResetInstructions(projectRoot) },
       })
     })
 
@@ -1030,8 +1035,9 @@ describe('doctor command', () => {
       const check = (await runChecks()).find((entry) => entry.name === 'last start')
 
       // A week-old refusal reported as a live failure sends someone hunting for
-      // a problem that is no longer there.
+      // a problem that is no longer there, and nothing tells a tool to delete it.
       expect(check?.status).toBe('ok')
+      expect(check?.schema).not.toHaveProperty('resetInstructions')
     })
 
     it('keeps failing when the refused database cannot be read now', async () => {

@@ -13,22 +13,28 @@ import {
 export function initializeDatabase() {
   // Classify before any DDL runs: a database from another version is refused
   // with its tables and data as they were.
-  let compatibility: ReturnType<typeof assertSchemaCompatible>
   try {
-    compatibility = assertSchemaCompatible({
+    const compatibility = assertSchemaCompatible({
       store: sqlite,
       databaseLabel: APP_DATABASE_LABEL,
       databasePath: APP_STORAGE_BOOT_FACTS.dbPath,
       expected: APP_SCHEMA_VERSION,
       resetInstructions: appDatabaseResetInstructions(APP_STORAGE_BOOT_FACTS.dbPath),
     })
+    createAppSchema(compatibility)
   } catch (error) {
     closeDatabase()
     throw error
   }
 
-  // One transaction with the stamp, as in project.ts: an interrupted first start
-  // must leave a fresh database, not tables with no version.
+  logIfVerbose('[db] App database initialized')
+}
+
+/**
+ * One transaction with the stamp, as in project.ts: an interrupted first start
+ * must leave a fresh database, not tables with no version.
+ */
+function createAppSchema(compatibility: ReturnType<typeof assertSchemaCompatible>): void {
   sqlite.transaction(() => {
     sqlite.exec(`
       CREATE TABLE IF NOT EXISTS profiles (
@@ -81,6 +87,4 @@ export function initializeDatabase() {
     `)
     if (shouldStampAfterInit(compatibility)) writeUserVersion(sqlite, APP_SCHEMA_VERSION)
   })()
-
-  logIfVerbose('[db] App database initialized')
 }

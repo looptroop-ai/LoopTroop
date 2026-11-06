@@ -157,7 +157,10 @@ interface ProjectIdentityConflictInput {
 /**
  * Finds conflicts against the app-level attached-project registry. Local
  * project state without an attached row is intentionally ignored: that is the
- * state the attachment flow exists to recover.
+ * state the attachment flow exists to recover. So is the reverse, an attached
+ * row whose project folder no longer has LoopTroop state (its `.looptroop`
+ * folder was deleted to start fresh): the project list cannot show it, so it
+ * could never be removed, and attaching the folder again reuses the row.
  */
 export function findProjectIdentityConflicts(input: ProjectIdentityConflictInput): ProjectIdentityConflict[] {
   const normalizedFolder = input.folderPath ? normalizeFolderPath(input.folderPath) : null
@@ -176,7 +179,7 @@ export function findProjectIdentityConflicts(input: ProjectIdentityConflictInput
       folderPath: attached.folderPath,
     }
 
-    if (normalizedFolder && normalizeFolderPath(attached.folderPath) === normalizedFolder) {
+    if (project && normalizedFolder && normalizeFolderPath(attached.folderPath) === normalizedFolder) {
       conflicts.push({ kind: 'folder', ...base })
     }
     if (project && normalizedName && normalizeProjectName(project.name) === normalizedName) {

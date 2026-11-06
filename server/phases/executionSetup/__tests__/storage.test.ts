@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as tickets from '../../../storage/tickets'
 import { resolveProjectTicketContainedPath } from '../../../ticket/containedPath'
 import { join } from 'node:path'
@@ -127,20 +127,57 @@ describe('execution setup storage tracking', () => {
     await expect(removeCanceledExecutionSetupFolder('1:GONE-1')).resolves.toBe(false)
   })
 
-  it('retries leftover setup folders of canceled tickets and keeps going past one it cannot reach', async () => {
-    const root = makeFreshRepo()
-    const leftover = join(root, '.looptroop/worktrees/TEST-2/.ticket/runtime/execution-setup')
-    mkdirSync(join(leftover, 'tool-cache'), { recursive: true })
-    writeFileSync(join(leftover, 'tool-cache', 'package.tgz'), 'cached\n')
+  function canceledLeftovers(root: string, externalIds: string[]): Record<string, string> {
+    const folders: Record<string, string> = {}
+    for (const externalId of externalIds) {
+      const folder = join(root, `.looptroop/worktrees/${externalId}/.ticket/runtime/execution-setup`)
+      mkdirSync(join(folder, 'tool-cache'), { recursive: true })
+      writeFileSync(join(folder, 'tool-cache', 'package.tgz'), 'cached\n')
+      folders[externalId] = folder
+    }
+    vi.spyOn(tickets, 'getTicketStorageContext').mockImplementation((ticketRef) => (
+      { projectRoot: root, externalId: ticketRef.split(':')[1]! } as ReturnType<typeof tickets.getTicketStorageContext>
+    ))
     vi.spyOn(tickets, 'resolveTicketContainedPath').mockImplementation((ticketId, path, kind) => {
       if (ticketId === '1:BROKEN-1') throw new Error('Path escapes root')
       return resolveProjectTicketContainedPath(root, ticketId.split(':')[1]!, path, kind)
     })
+    return folders
+  }
+
+  it('retries leftover setup folders of canceled tickets and keeps going past one it cannot reach', async () => {
+    const root = makeFreshRepo()
+    const folders = canceledLeftovers(root, ['BROKEN-1', 'TEST-2'])
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const asked: string[] = []
 
-    await expect(sweepCanceledExecutionSetupFolders(['1:BROKEN-1', '1:TEST-2', '1:TEST-3'])).resolves.toBe(1)
+    await expect(sweepCanceledExecutionSetupFolders(['1:BROKEN-1', '1:TEST-2', '1:TEST-3'], (ref) => {
+      asked.push(ref)
+      return true
+    })).resolves.toBe(1)
 
-    expect(existsSync(leftover)).toBe(false)
+    expect(existsSync(folders['TEST-2']!)).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('1:BROKEN-1'), expect.any(Error))
+    // TEST-3 has no folder, so it is never asked about (no synchronous checks).
+    expect(asked).toEqual(['1:BROKEN-1', '1:TEST-2'])
+  })
+
+  it('leaves the folder of a ticket whose cancel is not confirmed, or that is no longer canceled', async () => {
+    const root = makeFreshRepo()
+    const folders = canceledLeftovers(root, ['TEST-4'])
+
+    await expect(sweepCanceledExecutionSetupFolders(['1:TEST-4'], () => false)).resolves.toBe(0)
+
+    expect(existsSync(folders['TEST-4']!)).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)('removes a read-only package cache by making it writable first', async () => {
+    const root = makeFreshRepo()
+    const folders = canceledLeftovers(root, ['TEST-5'])
+    chmodSync(join(folders['TEST-5']!, 'tool-cache'), 0o555)
+
+    await expect(removeCanceledExecutionSetupFolder('1:TEST-5')).resolves.toBe(true)
+
+    expect(existsSync(folders['TEST-5']!)).toBe(false)
   })
 })

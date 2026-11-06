@@ -7,6 +7,9 @@ const listing = vi.hoisted(() => ({
   /** What the adapter's complete listing answers; undefined = no such method (v1). */
   live: undefined as ReadonlySet<string> | null | undefined,
   listError: null as Error | null,
+  /** Sessions an exact lookup reports as gone, and ones whose lookup fails. */
+  gone: new Set<string>(),
+  lookupFails: new Set<string>(),
 }))
 
 vi.mock('../../opencode/factory', () => ({
@@ -21,6 +24,10 @@ vi.mock('../../opencode/factory', () => ({
       listing.inFlight--
       if (index % 5 === 0) throw new Error('ECONNREFUSED')
       return []
+    },
+    getSession: async (sessionId: string) => {
+      if (listing.lookupFails.has(sessionId)) throw new Error('ECONNRESET')
+      return listing.gone.has(sessionId) ? null : { id: sessionId }
     },
     ...(listing.live === undefined ? {} : {
       listAllSessionIds: async () => {
@@ -46,6 +53,8 @@ describe('restart question reconciliation', () => {
     listing.started = []
     listing.live = undefined
     listing.listError = null
+    listing.gone = new Set()
+    listing.lookupFails = new Set()
   })
 
   it('asks at most eight sessions at once, in owner order, and still counts every failure', async () => {
@@ -65,6 +74,15 @@ describe('restart question reconciliation', () => {
     expect(listing.started).toEqual(['ses_1', 'ses_5', 'ses_7'])
     // ses_5 is the only asked session that fails; the 17 gone sessions count for nothing.
     expect(result).toEqual({ reattached: 0, rejected: 0, unverified: 1 })
+  })
+
+  it('does not count a session OpenCode confirms gone as unverified, but does one it cannot look up', async () => {
+    // ses_0, ses_5, ses_10 and ses_15 fail to list. Of those, OpenCode answers
+    // that ses_0 and ses_10 do not exist, and the lookup of ses_5 fails.
+    listing.gone = new Set(['ses_0', 'ses_10'])
+    listing.lookupFails = new Set(['ses_5'])
+    const result = await reconcilePendingQuestionsAfterRestart({ projectRoot: '/unused', owners: owners(20), windowMsFor: () => 60_000 })
+    expect(result).toEqual({ reattached: 0, rejected: 0, unverified: 2 })
   })
 
   it('always asks a session that reconnected, whatever the listing says', async () => {

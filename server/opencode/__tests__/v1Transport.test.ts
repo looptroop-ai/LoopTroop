@@ -331,10 +331,11 @@ describe('OpenCode v1 transport direct behavior', () => {
       },
       { id: 'question-2', sessionID: 'session-2', questions: [] },
     ]
-    const questions = vi.fn(async (): Promise<{ data: unknown[] | null }> => ({ data: [] }))
+    const questions = vi.fn(async (): Promise<{ data: unknown[] | null; response?: { status: number } }> => ({ data: [] }))
       .mockResolvedValueOnce({ data: questionRows })
       .mockResolvedValueOnce({ data: questionRows })
       .mockResolvedValueOnce({ data: null })
+      .mockResolvedValueOnce({ data: null, response: { status: 500 } })
     const reply = vi.fn()
       .mockResolvedValueOnce({ data: true })
       .mockResolvedValueOnce({ data: false })
@@ -359,7 +360,10 @@ describe('OpenCode v1 transport direct behavior', () => {
       { id: 'question-1', sessionID: 'session-1', tool: { messageID: 'assistant-1', callID: 'call-1' }, questions: [{ header: 'Question', options: [] }, { question: 'Choose', multiple: true, options: [{ label: 'valid', value: 'v', description: 'description' }, { label: 'no value' }] }] },
     ])
     await expect(sdk.listPendingQuestions('/project')).resolves.toHaveLength(2)
-    await expect(sdk.listPendingQuestions()).resolves.toEqual([])
+    // Neither means "no pending questions"; reading them that way let startup
+    // close the waits of questions OpenCode still held.
+    await expect(sdk.listPendingQuestions()).rejects.toThrow('not a list')
+    await expect(sdk.listPendingQuestions()).rejects.toThrow('HTTP 500')
     expect(questions).toHaveBeenNthCalledWith(1, undefined, expect.any(Object))
     expect(questions).toHaveBeenNthCalledWith(2, { directory: '/project' }, expect.any(Object))
     await expect(sdk.replyQuestion('session-1', 'question-1', [['v']], '/workspace')).resolves.toBeUndefined()

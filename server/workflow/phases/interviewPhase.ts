@@ -1243,9 +1243,10 @@ export async function restoreInterviewQASession(ticketId: string, signal?: Abort
 
   throwIfAborted(signal, ticketId)
   // After server restart the in-memory map is empty. Reload from DB and trust
-  // the persisted session ID — adapter.listSessions() silently returns [] on
-  // transient errors, causing valid sessions to be abandoned. The actual
-  // OpenCode prompt call will surface a real error if the session is gone.
+  // the persisted session ID rather than a session listing, which can be
+  // incomplete (one project only on v1, capped, or failing) and would abandon
+  // valid sessions. The actual OpenCode prompt call surfaces a real error if
+  // the session is gone.
   interviewQASessions.set(ticketId, persisted)
   return persisted
 }

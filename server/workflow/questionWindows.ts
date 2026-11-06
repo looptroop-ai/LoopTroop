@@ -1311,6 +1311,23 @@ export async function listLiveOpenCodeSessionIds(): Promise<ReadonlySet<string> 
   }
 }
 
+/**
+ * Whether OpenCode answered that a session does not exist. A session it no
+ * longer has cannot hold a question, so failing to list its questions is not
+ * an unverified check; a lookup that fails (transport, timeout) proves nothing.
+ */
+async function isSessionConfirmedGone(
+  adapter: ReturnType<typeof getOpenCodeAdapter>,
+  sessionId: string,
+): Promise<boolean> {
+  if (typeof adapter.getSession !== 'function') return false
+  try {
+    return (await adapter.getSession(sessionId)) === null
+  } catch {
+    return false
+  }
+}
+
 export async function reconcilePendingQuestionsAfterRestart(input: {
   projectRoot: string
   /** Every active session in the project, whichever ticket owns it. */
@@ -1344,10 +1361,14 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
   await Promise.all(Array.from({ length: Math.min(RESTART_QUESTION_LIST_CONCURRENCY, ownerList.length) }, async () => {
     while (nextOwner < ownerList.length) {
       const index = nextOwner++
+      const sessionId = ownerList[index]!.sessionId
       try {
-        listed[index] = await adapter.listPendingQuestions(undefined, undefined, ownerList[index]!.sessionId)
+        listed[index] = await adapter.listPendingQuestions(undefined, undefined, sessionId)
       } catch {
-        listed[index] = null
+        // Without a complete listing (v1, or a list that failed) gone sessions
+        // are asked too, and asking a gone session fails. Only a failure for a
+        // session that may still exist leaves the project unverified.
+        listed[index] = await isSessionConfirmedGone(adapter, sessionId) ? [] : null
       }
     }
   }))

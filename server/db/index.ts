@@ -6,6 +6,7 @@ import { SQLITE_BUSY_TIMEOUT_MS, WAL_CHECKPOINT_INTERVAL_MS } from '../lib/const
 import { ensureSecureDir, resolveAppConfigDir, secureFile } from '../lib/appConfigDir'
 import { resolveAppDbPath } from './appDbPath'
 import { getErrorMessage } from '@shared/typeGuards'
+import { APP_SCHEMA_VERSION, classifySchemaVersion, inspectSchemaVersion } from './schemaVersion'
 
 type AppStorageConfigSource = 'default' | 'LOOPTROOP_CONFIG_DIR' | 'LOOPTROOP_APP_DB_PATH'
 
@@ -57,16 +58,24 @@ let dbInstance: DrizzleDatabase | null = null
 function getOrCreateSqlite(): Database {
   if (!sqliteInstance) {
     ensureStorageDirs()
-    sqliteInstance = new Database(DB_PATH)
-    // The database carries project paths and session state, so restrict it as
-    // soon as SQLite has created the file.
-    secureFile(DB_PATH)
-    sqliteInstance.pragma('journal_mode=WAL')
-    sqliteInstance.pragma('locking_mode=NORMAL')
-    sqliteInstance.pragma('synchronous=NORMAL')
-    sqliteInstance.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
-    sqliteInstance.pragma('wal_autocheckpoint=1000')
-    sqliteInstance.pragma('foreign_keys=ON')
+    const instance = new Database(DB_PATH)
+    // Connection-level settings first; they change nothing in the file.
+    instance.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
+    instance.pragma('foreign_keys=ON')
+    // Writes to the file (permissions, journal mode) only for a database this
+    // build may use: `initializeDatabase` refuses any other, and it must find
+    // the file as it was.
+    const { kind } = classifySchemaVersion(inspectSchemaVersion(instance), APP_SCHEMA_VERSION)
+    if (kind === 'fresh' || kind === 'current') {
+      // The database carries project paths and session state, so restrict it as
+      // soon as SQLite has created the file.
+      secureFile(DB_PATH)
+      instance.pragma('journal_mode=WAL')
+      instance.pragma('locking_mode=NORMAL')
+      instance.pragma('synchronous=NORMAL')
+      instance.pragma('wal_autocheckpoint=1000')
+    }
+    sqliteInstance = instance
   }
   return sqliteInstance
 }

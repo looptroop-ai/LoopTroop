@@ -1,4 +1,5 @@
 import type { RefinementChange, RefinementChangeItem } from '@shared/refinementChanges'
+import { PRD_ITEM_CHANGES_CONTRACT } from '../../prompts/index'
 import {
   buildPrdUiRefinementDiffArtifact,
   buildPrdUiRefinementDiffArtifactFromChanges,
@@ -386,10 +387,11 @@ export function buildPrdCoverageRevisionRetryPrompt(
         '',
         'Return only one corrected YAML artifact.',
         'Requirements:',
-        '- Use the exact PRD schema.',
-        '- Include a top-level `changes` list that fully accounts for the diff between the current PRD candidate and the revised PRD candidate.',
+        '- Use the PRD schema from the original prompt. Fix each field or structure named by the validation error; preserve valid content and do not omit required fields or invent requirements to pass validation.',
+        `- ${PRD_ITEM_CHANGES_CONTRACT}`,
         '- Include a top-level `gap_resolutions` list with exactly one entry per provided coverage gap.',
         '- Preserve epic IDs and user story IDs unless the revised candidate contains a genuinely new item.',
+        '- Account for a gap that updates PRD sections in its `gap_resolutions` entry with `affected_items: []`; do not use section or `prd` references.',
         '- If a gap was already covered, keep the PRD unchanged for that gap and record `action: already_covered`.',
         '- If a gap describes internally contradictory source artifacts, do not choose a side or invent a requirement. Record `action: left_unresolved`, explain the contradiction in `rationale`, and use `affected_items: []`.',
         '- Use `affected_items` only for epic or user_story references. Leave it empty when no epic/story mapping applies.',

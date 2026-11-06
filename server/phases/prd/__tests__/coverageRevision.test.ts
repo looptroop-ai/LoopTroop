@@ -354,13 +354,22 @@ describe.concurrent('PRD coverage revision diffs', () => {
   })
 
   it('keeps the retry prompt strict about unresolved source-artifact contradictions', () => {
+    const validationError = 'changes[0] has invalid before/after shape'
     const prompt = buildPrdCoverageRevisionRetryPrompt([], {
-      validationError: 'missing gap_resolutions',
+      validationError,
       rawResponse: 'schema_version: 1',
     })
+    const retryPrompt = prompt.at(-1)?.content ?? ''
 
-    expect(prompt.at(-1)?.content).toContain('internally contradictory source artifacts')
-    expect(prompt.at(-1)?.content).toContain('action: left_unresolved')
-    expect(prompt.at(-1)?.content).toContain('affected_items: []')
+    expect(retryPrompt).toContain(`Your previous response failed validation: ${validationError}`)
+    expect(retryPrompt).toContain('preserve valid content and do not omit required fields or invent requirements')
+    expect(retryPrompt).toContain('For `added`, use `before: null` and a populated `after`')
+    expect(retryPrompt).toContain('for `removed`, use a populated `before` and `after: null`')
+    expect(retryPrompt).toContain('for `modified`, populate both records with the same `id`')
+    expect(retryPrompt).toContain('Account for a gap that updates PRD sections in its `gap_resolutions` entry with `affected_items: []`')
+    expect(retryPrompt).toContain('internally contradictory source artifacts')
+    expect(retryPrompt).toContain('action: left_unresolved')
+    expect(retryPrompt).toContain('affected_items: []')
+    expect(retryPrompt).not.toContain('PROM12')
   })
 })

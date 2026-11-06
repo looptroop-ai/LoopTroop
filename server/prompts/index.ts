@@ -112,6 +112,7 @@ const PRD_OUTPUT_FORMAT = [
   '  approved_at: ""',
   '```',
 ].join('\n')
+export const PRD_ITEM_CHANGES_CONTRACT = 'Include a top-level `changes` list containing only changed epic and user_story items. Each entry must include `type`, `item_type`, `before`, and `after`. `type` must be `modified`, `added`, or `removed`; `item_type` must be `epic` or `user_story`. A populated `before` or `after` record uses `{id, label, detail?}`, where `label` is the item title. For `added`, use `before: null` and a populated `after`; for `removed`, use a populated `before` and `after: null`; for `modified`, populate both records with the same `id`. Include each changed epic or user story exactly once. Do not put PRD section edits in `changes`.'
 const INTERVIEW_PHASE_ORDER_RULE = 'Phase Order Is Mandatory: all `foundation` questions first, then all `structure` questions, then all `assembly` questions. Never go backwards to an earlier phase once you have entered a later phase.'
 const BEADS_ORDER_PRESERVATION_RULE = 'Order Is Mandatory: Preserve the bead list order from the winning draft exactly. When adding new beads, insert them at a logical position that respects dependency ordering, but do not reorder, merge, or split existing beads. The app executes beads sequentially and derives `priority` from this list order.'
 const BEAD_VERIFICATION_RESTRAINT_RULE = 'Verification Restraint: Only when genuinely necessary for the bead\'s core implementation and unsuitable for Final Testing or Manual QA should the plan add, retain, or expand commands; derive automated verification from risks, alternatives, or manual behavior; introduce server/process/cookie/port/temp-directory orchestration; or create a verification-only bead. Detailed tests and acceptance criteria do not each require a matching command. Prefer the smallest existing repository-native test or build command, with no numerical command target or cap. When no appropriate automated command exists, use `testCommands: []` and a concise `testCommandReason`; include `testCommandReason` only in that case.'
@@ -482,7 +483,7 @@ export const PROM12: PromptTemplate = {
     'ID Stability: Preserve existing epic IDs and user story IDs from the winning draft unless you are adding a genuinely new epic or story.',
     STRUCTURED_SELF_CHECK,
   ],
-  outputFormat: `${PRD_OUTPUT_FORMAT}\nAlso include a top-level \`changes\` list. Each change item: {type, item_type, before, after, inspiration?}. \`type\` must be one of {modified, added, removed}. \`item_type\` must be \`epic\` or \`user_story\`. \`before\` and \`after\` use {id, label, detail?} or null when appropriate. Optional \`inspiration\` uses {alternative_draft, item}. Keep everything in one YAML artifact.`,
+  outputFormat: `${PRD_OUTPUT_FORMAT}\n${PRD_ITEM_CHANGES_CONTRACT} Optional \`inspiration\` uses {alternative_draft, item}. Keep everything in one YAML artifact.`,
   contextInputs: ['relevant_files', 'ticket_details', 'full_answers', 'drafts'],
   toolPolicy: 'read_only',
 }
@@ -532,15 +533,17 @@ export const PROM13b: PromptTemplate = {
     'Specificity Rule: When a provided gap says coverage is vague or hard to verify, resolve it by making the affected acceptance criteria, scope language, or verification guidance more concrete and testable instead of adding generic filler prose.',
     CONDITIONAL_REPOSITORY_INSPECTION,
     'Repository Claim Revision: Before adding or revising repository-specific commands, paths, tooling, or implementation details, confirm unsupported details with focused repository inspection.',
-    'Change Accounting: Include a top-level `changes` list that fully and exactly accounts for the diff between the current PRD candidate and the revised PRD candidate.',
+    'Change Accounting: The top-level `changes` list must fully and exactly account for every changed epic and user story between the current and revised PRDs, with each changed item listed exactly once.',
+    'Change Schema: Each `changes` entry must include `type`, `item_type`, `before`, and `after`. Use only `epic` or `user_story` for `item_type`; use `modified`, `added`, or `removed` for `type`.',
+    'Change Semantics: For `added`, `before` is null and `after` is a populated record. For `removed`, `before` is populated and `after` is null. For `modified`, both records are populated and share the same ID.',
     'Gap Resolution Accounting: Include a top-level `gap_resolutions` list with exactly one entry per provided gap.',
     'Gap Resolution Actions: Each `gap_resolutions` entry must include `gap`, `action`, `rationale`, and `affected_items`. `action` must be one of `updated_prd`, `already_covered`, or `left_unresolved`.',
     'Affected Items: `affected_items` must be a YAML list of `{ item_type, id, label }` entries referencing epic or user_story items. Use an empty list when no epic/story reference applies.',
-    'Section-Level Changes: If a gap updates top-level PRD sections such as `product`, `scope`, `technical_requirements`, or `api_contracts`, keep `affected_items: []`. Never emit `item_type: prd`, `section`, or similar section references in `affected_items`.',
+    'Section-Level Changes: The `changes` list is only for epic and user_story items. Account for a gap that updates top-level PRD sections such as `product`, `scope`, `technical_requirements`, or `api_contracts` in its `gap_resolutions` entry with `affected_items: []`. Never emit `item_type: prd`, `section`, or similar section references in `affected_items`.',
     'Output Discipline: Return only one PRD YAML artifact using the normal PRD schema, plus top-level `changes` and `gap_resolutions`. Do not add wrappers or prose.',
     STRUCTURED_SELF_CHECK,
   ],
-  outputFormat: `${PRD_OUTPUT_FORMAT}\nAlso include top-level \`changes\` and \`gap_resolutions\` lists. \`changes\` uses the same shape as PROM12 refinement output. Each \`gap_resolutions\` item: {gap, action, rationale, affected_items}. \`action\` must be one of {updated_prd, already_covered, left_unresolved}. Each \`affected_items\` entry: {item_type, id, label}.`,
+  outputFormat: `${PRD_OUTPUT_FORMAT}\n${PRD_ITEM_CHANGES_CONTRACT}\nAlso include a top-level \`gap_resolutions\` list. Each entry: {gap, action, rationale, affected_items}. \`action\` must be one of {updated_prd, already_covered, left_unresolved}. Each \`affected_items\` entry: {item_type, id, label}; use \`[]\` when the gap changes PRD sections or has no epic/story mapping.`,
   contextInputs: ['full_answers', 'prd', 'coverage_gaps'],
   toolPolicy: 'read_only',
 }

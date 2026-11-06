@@ -526,21 +526,24 @@ describe('recoverOrphanTmpFiles', () => {
   })
 
   /**
-   * The pre-upgrade writer used a plain `${target}.tmp`, whose target cannot be
-   * derived from the name: `report.json.tmp` is as consistent with a crashed
-   * write of `report.json` as with a file someone named that on purpose. The
-   * old recovery guessed, and stripping four characters from the current suffix
-   * is what produced `ticket.meta.json.4821.a1b2c3` — never anything's target.
+   * A plain `${target}.tmp` is not a name `safeAtomicWrite` produces, and its
+   * target cannot be derived: `report.json.tmp` is as consistent with a crashed
+   * write of `report.json` as with a file someone named that on purpose.
    */
-  it('leaves a legacy-suffix temp file alone rather than guessing its target', () => {
-    const legacy = join(TEST_DIR, 'data.json.tmp')
-    writeFileSync(legacy, '{"key": "value"}', 'utf-8')
+  it('reports a temp file it did not name and leaves it alone rather than guessing its target', () => {
+    const foreign = join(TEST_DIR, 'data.json.tmp')
+    writeFileSync(foreign, '{"key": "value"}', 'utf-8')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
 
+    const warnings = warn.mock.calls.map((call) => String(call[0]))
+    warn.mockRestore()
     expect(recovered).toEqual([])
-    expect(existsSync(legacy)).toBe(true)
+    expect(existsSync(foreign)).toBe(true)
     expect(existsSync(join(TEST_DIR, 'data.json'))).toBe(false)
+    // Reported in the canonical spelling recovery scans, as every other warning is.
+    expect(warnings.some((message) => message.includes(realpathSync.native(foreign)) && message.includes('not a temp name'))).toBe(true)
   })
 
   it('never replaces a target that already exists', () => {
@@ -668,27 +671,6 @@ describe('recoverOrphanTmpFiles', () => {
   })
 
   /**
-   * The Manual QA checkpoint writer that `safeAtomicWrite` replaced produced
-   * these. They do not end in `.tmp`, so nothing has ever swept them.
-   */
-  it('reports the Manual QA writer\'s old temp names instead of ignoring them', () => {
-    const legacy = join(TEST_DIR, 'workspace-baseline-v1.json.tmp-4821-1700000000000')
-    writeFileSync(legacy, '{"schemaVersion": 1}', 'utf-8')
-    const warnings: string[] = []
-    const warn = console.warn
-    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')) }
-
-    try {
-      expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
-    } finally {
-      console.warn = warn
-    }
-
-    expect(existsSync(legacy)).toBe(true)
-    expect(warnings.join(' ')).toContain(realpathSync.native(legacy))
-  })
-
-  /**
    * The interrupted append and the repair that finishes it are two halves of
    * one story, and they run one after the other on the same files at boot.
    */
@@ -768,6 +750,27 @@ describe('recoverOrphanTmpFiles', () => {
 
     expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
   })
+
+  it('checks the top of the execution setup folder but not its package caches', () => {
+    const cached = orphan(join(TEST_DIR, 'runtime', 'execution-setup', 'tool-cache', 'pkg.json'), '{}')
+    // LoopTroop writes its launcher atomically at the top of the setup folder.
+    const launcher = orphan(join(TEST_DIR, 'runtime', 'execution-setup', 'run'), '#!/bin/sh\n')
+    const control = orphan(join(TEST_DIR, 'runtime', 'scratch', 'pkg.json'), '{}')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    recoverOrphanTmpFiles(TEST_DIR)
+
+    const warnings = warn.mock.calls.map((call) => String(call[0]))
+    warn.mockRestore()
+    // Warnings name the canonical path recovery scans (Windows expands 8.3 short
+    // names, macOS adds /private), so compare against that spelling.
+    const reported = (path: string) => warnings.some((message) => message.includes(realpathSync.native(path)))
+    // The control proves an unknown temp file is reported when it is scanned at all.
+    expect(reported(control)).toBe(true)
+    expect(reported(launcher)).toBe(true)
+    expect(warnings.some((message) => message.includes('tool-cache'))).toBe(false)
+    expect(existsSync(cached)).toBe(true)
+  })
 })
 
 describe('fixTrailingLineCorruption', () => {
@@ -790,6 +793,43 @@ describe('fixTrailingLineCorruption', () => {
     expect(fixed).toBe(false)
   })
 
+  it('validates the last real line behind CRLF endings and whitespace-only lines', () => {
+    const filePath = join(TEST_DIR, 'crlf.jsonl')
+    const content = '{"a":1}\r\n{"b":2}\r\n \t\r\n\n'
+    writeFileSync(filePath, content, 'utf-8')
+
+    expect(fixTrailingLineCorruption(filePath)).toBe(false)
+    expect(readFileSync(filePath, 'utf-8')).toBe(content)
+  })
+
+  it('truncates a torn line that is followed by whitespace-only lines', () => {
+    const filePath = join(TEST_DIR, 'torn-then-blank.jsonl')
+    writeFileSync(filePath, '{"a":1}\n{"b":\n  \n\t\n', 'utf-8')
+
+    expect(fixTrailingLineCorruption(filePath)).toBe(true)
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"a":1}\n')
+  })
+
+  it('repairs a torn last line longer than the large-file scan cap in a small file', () => {
+    // Debug log lines reach several MB; a file under the large-file threshold
+    // must still be checked whatever the length of its last line.
+    const filePath = join(TEST_DIR, 'long-last-line.jsonl')
+    writeFileSync(filePath, `{"a":1}\n{"payload":"${'x'.repeat(5 * 1024 * 1024)}`, 'utf-8')
+
+    expect(fixTrailingLineCorruption(filePath)).toBe(true)
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"a":1}\n')
+  })
+
+  it('leaves empty and blank files alone', () => {
+    const empty = join(TEST_DIR, 'empty.jsonl')
+    const blank = join(TEST_DIR, 'blank.jsonl')
+    writeFileSync(empty, '', 'utf-8')
+    writeFileSync(blank, '\n\r\n \n', 'utf-8')
+
+    expect(fixTrailingLineCorruption(empty)).toBe(false)
+    expect(fixTrailingLineCorruption(blank)).toBe(false)
+    expect(readFileSync(blank, 'utf-8')).toBe('\n\r\n \n')
+  })
 })
 
 describe('JSONL read/write/append', () => {

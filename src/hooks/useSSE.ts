@@ -6,7 +6,7 @@ import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
 import { clearServerLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { probeSessionAfterStreamFailure } from '@/lib/sessionState'
 import { patchTicketStatusInCache } from './ticketStatusCache'
-import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
+import { ANY_ARTIFACT_TYPE_KEY, getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import { getTicketAiDetailsQueryKey } from './useTicketAiDetails'
 import { collectQueryKeyStrings } from './useTickets'
 import {
@@ -65,6 +65,22 @@ function dispatchServerLogRefresh(ticketId: string) {
 
 function invalidateManualQaQueries(ticketId: string) {
   queryClient.invalidateQueries({ queryKey: ['manual-qa', ticketId] })
+}
+
+/**
+ * Screens that asked for specific artifact types are not reached by the exact-key
+ * invalidations above. Refresh the ones whose types include the changed artifact,
+ * or all of this ticket's typed scopes when the event does not say which type.
+ */
+function invalidateTypedArtifactQueries(ticketId: string, artifactType: string | undefined) {
+  void queryClient.invalidateQueries({
+    predicate: (query) => {
+      const [root, keyTicketId, , , types] = query.queryKey
+      if (root !== 'ticket-artifacts' || keyTicketId !== ticketId) return false
+      if (typeof types !== 'string' || types === ANY_ARTIFACT_TYPE_KEY) return false
+      return artifactType === undefined || types.split('\n').includes(artifactType)
+    },
+  })
 }
 
 function recoverTicketAfterStreamGap(ticketId: string) {
@@ -399,6 +415,12 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
               queryKey: getTicketArtifactsQueryKey(ticketId),
               exact: true,
             })
+            // An edit that removed downstream artifacts names no phase or type,
+            // and screens keep their own phase and type scopes, so refresh every
+            // artifact query of this ticket.
+            if (data.invalidated === true) {
+              void queryClient.invalidateQueries({ queryKey: getTicketArtifactsQueryKey(ticketId).slice(0, 2) })
+            }
 
             const phases = new Set<string>()
             if (typeof data.phase === 'string') phases.add(data.phase)
@@ -449,6 +471,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
             if (artifactType?.startsWith('manual_qa_')) {
               invalidateManualQaQueries(ticketId)
             }
+            invalidateTypedArtifactQueries(ticketId, artifactType)
           }
           onEventRef.current?.({ type: 'artifact_change', data })
         } catch {

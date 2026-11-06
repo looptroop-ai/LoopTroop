@@ -215,14 +215,20 @@ describe('useTicketArtifacts', () => {
 describe('ticket artifact query helpers', () => {
   it('uses only valid attempt scopes and removes every cached scope for one ticket', () => {
     expect(getTicketArtifactsQueryKey(ticketId)).toEqual([
-      'ticket-artifacts', ticketId, '__all__', 'active',
+      'ticket-artifacts', ticketId, '__all__', 'active', '__any__',
     ])
     expect(getTicketArtifactsQueryKey(ticketId, { phase: 'PLAN', phaseAttempt: 2 })).toEqual([
-      'ticket-artifacts', ticketId, 'PLAN', 2,
+      'ticket-artifacts', ticketId, 'PLAN', 2, '__any__',
     ])
     expect(getTicketArtifactsQueryKey(ticketId, { phase: 'PLAN', phaseAttempt: Number.POSITIVE_INFINITY })).toEqual([
-      'ticket-artifacts', ticketId, 'PLAN', 'active',
+      'ticket-artifacts', ticketId, 'PLAN', 'active', '__any__',
     ])
+    // A type filter is one stable slot: order and repeats do not make a new query.
+    expect(getTicketArtifactsQueryKey(ticketId, { types: ['b_report', 'a_report', 'b_report'] })).toEqual([
+      'ticket-artifacts', ticketId, '__all__', 'active', 'a_report\nb_report',
+    ])
+    // No types means no filter, the same query the request makes for it.
+    expect(getTicketArtifactsQueryKey(ticketId, { types: [] })).toEqual(getTicketArtifactsQueryKey(ticketId))
 
     const client = new QueryClient()
     client.setQueryData(getTicketArtifactsQueryKey(ticketId), [artifact()])
@@ -332,5 +338,20 @@ describe('useTicketArtifactBundle', () => {
     await waitFor(() => expect(result.current.status).toBe('success'))
     expect(result.current.artifacts?.map(({ content }) => content)).toEqual(['retried', 'built'])
     expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+})
+
+describe('typed artifact requests', () => {
+  it('asks the server for each requested type once, in a stable order', async () => {
+    const fetchMock = vi.fn(async () => response([artifact()]))
+    vi.stubGlobal('fetch', fetchMock)
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useTicketArtifacts(ticketId, { types: ['prd_votes', 'prd_drafts', 'prd_votes'] }), { wrapper })
+
+    await waitFor(() => expect(result.current.status).toBe('success'))
+    const requested = new URL(String((fetchMock.mock.calls[0] as unknown[] | undefined)?.[0]), 'http://localhost')
+    expect(requested.pathname).toBe(`/api/tickets/${encodeURIComponent(ticketId)}/artifacts`)
+    expect(requested.searchParams.getAll('type')).toEqual(['prd_drafts', 'prd_votes'])
+    expect(requested.searchParams.has('phase')).toBe(false)
   })
 })

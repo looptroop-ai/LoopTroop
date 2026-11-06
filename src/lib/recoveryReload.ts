@@ -28,10 +28,7 @@ function parseRecoveryReloadRecord(raw: string | null): RecoveryReloadRecord | n
       ? { at: parsed.at, source: typeof parsed.source === 'string' ? parsed.source : 'unknown' }
       : null
   } catch {
-    const legacyTimestamp = Number(raw)
-    return Number.isFinite(legacyTimestamp)
-      ? { at: legacyTimestamp, source: 'legacy' }
-      : null
+    return null
   }
 }
 

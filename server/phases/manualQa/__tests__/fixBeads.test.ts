@@ -106,7 +106,7 @@ describe('Manual QA fix-bead generation contracts', () => {
       expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toEqual(candidates)
       const path = getManualQaStoragePaths(ticketDir, 1).fixBeadsPath
       writeFileSync(path, readFileSync(path, 'utf8').replace('schemaVersion: 2', 'schemaVersion: 1'))
-      expect(readManualQaFixBeadCandidates(ticketDir, 1, groups)).toBeNull()
+      expect(() => readManualQaFixBeadCandidates(ticketDir, 1, groups)).toThrow()
       rmSync(path)
       symlinkSync(outside, path, process.platform === 'win32' ? 'junction' : 'dir')
       expect(() => readManualQaFixBeadCandidates(ticketDir, 1, groups)).toThrow('escapes root')

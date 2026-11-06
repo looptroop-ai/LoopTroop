@@ -1,15 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   APP_SCHEMA_VERSION,
+  IncompatibleSchemaVersionError,
   PROJECT_SCHEMA_VERSION,
   UNVERSIONED_SCHEMA_VERSION,
+  appDatabaseResetInstructions,
   assertSchemaCompatible,
   buildNewerSchemaMessage,
-  buildUnsupportedSchemaMessage,
-  buildUnversionedResetMessage,
+  buildOlderSchemaMessage,
   classifySchemaVersion,
   hasAnyUserTable,
   inspectSchemaVersion,
+  projectDatabaseResetInstructions,
   readUserVersion,
   shouldStampAfterInit,
   writeUserVersion,
@@ -39,9 +41,9 @@ describe('classifySchemaVersion', () => {
       .toEqual({ kind: 'fresh' })
   })
 
-  it('distinguishes a pre-0.5 database from a fresh one', () => {
+  it('reports a database with tables but no version as older, not fresh', () => {
     expect(classifySchemaVersion({ found: 0, hasExistingTables: true }, 1))
-      .toEqual({ kind: 'unversioned' })
+      .toEqual({ kind: 'older', found: 0 })
   })
 
   it('reports a matching version as current', () => {
@@ -54,33 +56,20 @@ describe('classifySchemaVersion', () => {
       .toEqual({ kind: 'newer', found: 9 })
   })
 
-  it('reports an older versioned database as older', () => {
-    expect(classifySchemaVersion({ found: 2, hasExistingTables: true }, 5))
-      .toEqual({ kind: 'older', found: 2 })
-  })
-
-  it('reports databases below the migration floor as unsupported', () => {
-    expect(classifySchemaVersion({ found: 2, hasExistingTables: true }, 5, 3))
-      .toEqual({ kind: 'unsupported', found: 2 })
-  })
-
-  it('still upgrades a database sitting exactly on the floor', () => {
-    expect(classifySchemaVersion({ found: 3, hasExistingTables: true }, 5, 3))
-      .toEqual({ kind: 'older', found: 3 })
+  it('reports every lower version as older, including the one just below', () => {
+    expect(classifySchemaVersion({ found: 4, hasExistingTables: true }, 5))
+      .toEqual({ kind: 'older', found: 4 })
+    expect(classifySchemaVersion({ found: 1, hasExistingTables: true }, 5))
+      .toEqual({ kind: 'older', found: 1 })
   })
 })
 
 describe('shouldStampAfterInit', () => {
-  // The gap that shipped: `older` was classified but never stamped, so an
-  // upgraded database kept its previous version number.
-  it('stamps whenever DDL brought the schema forward', () => {
+  it('stamps only a database this boot created', () => {
     expect(shouldStampAfterInit({ kind: 'fresh' })).toBe(true)
-    expect(shouldStampAfterInit({ kind: 'unversioned' })).toBe(true)
-    expect(shouldStampAfterInit({ kind: 'older', found: 1 })).toBe(true)
-  })
-
-  it('does not rewrite a database that was already current', () => {
     expect(shouldStampAfterInit({ kind: 'current' })).toBe(false)
+    expect(shouldStampAfterInit({ kind: 'older', found: 1 })).toBe(false)
+    expect(shouldStampAfterInit({ kind: 'newer', found: 9 })).toBe(false)
   })
 })
 
@@ -89,46 +78,48 @@ describe('assertSchemaCompatible', () => {
     databaseLabel: 'app database',
     databasePath: '/tmp/app.sqlite',
     expected: 5,
-    migratableFrom: 3,
+    resetInstructions: 'Delete the test database.',
   }
 
-  it('refuses a newer database', () => {
-    const onNotice = vi.fn()
-    expect(() => assertSchemaCompatible({ ...base, store: fakeStore(9, ['t']), onNotice }))
-      .toThrow(/created by a newer version/)
-    expect(onNotice).not.toHaveBeenCalled()
+  function refusal(store: SchemaVersionStore): IncompatibleSchemaVersionError {
+    try {
+      assertSchemaCompatible({ ...base, store })
+    } catch (error) {
+      if (error instanceof IncompatibleSchemaVersionError) return error
+      throw error
+    }
+    throw new Error('expected the database to be refused')
+  }
+
+  it('refuses a newer database without reset instructions', () => {
+    const error = refusal(fakeStore(9, ['t']))
+    expect(error.message).toMatch(/created by a newer version/)
+    expect(error).toMatchObject({ databaseLabel: 'app database', databasePath: '/tmp/app.sqlite', found: 9, expected: 5, resetInstructions: '' })
   })
 
-  it('refuses a database below the migration floor rather than half-upgrading it', () => {
-    const onNotice = vi.fn()
-    expect(() => assertSchemaCompatible({ ...base, store: fakeStore(1, ['t']), onNotice }))
-      .toThrow(/can only upgrade databases from version 3/)
+  it('refuses an older database and says what to delete', () => {
+    const error = refusal(fakeStore(4, ['t']))
+    expect(error.message).toMatch(/created by an older version/)
+    expect(error.message).toContain('does not convert data')
+    expect(error.message).toContain('Delete the test database.')
+    expect(error).toMatchObject({ found: 4, expected: 5, resetInstructions: 'Delete the test database.' })
   })
 
-  it('allows an older database through and announces the upgrade', () => {
-    const onNotice = vi.fn()
-    const result = assertSchemaCompatible({ ...base, store: fakeStore(3, ['t']), onNotice })
-    expect(result).toEqual({ kind: 'older', found: 3 })
-    expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('from version 3 to 5'))
+  it('refuses a database that has tables but was never stamped', () => {
+    const error = refusal(fakeStore(0, ['t']))
+    expect(error.message).toContain('carries no schema version')
+    expect(error.found).toBe(0)
   })
 
-  it('announces an unversioned database once', () => {
-    const onNotice = vi.fn()
-    const result = assertSchemaCompatible({ ...base, store: fakeStore(0, ['t']), onNotice })
-    expect(result).toEqual({ kind: 'unversioned' })
-    expect(onNotice).toHaveBeenCalledTimes(1)
+  it('never stamps a database it refused', () => {
+    const store = fakeStore(4, ['t'])
+    expect(() => assertSchemaCompatible({ ...base, store })).toThrow(IncompatibleSchemaVersionError)
+    expect(readUserVersion(store)).toBe(4)
   })
 
-  it('says nothing for a fresh or current database', () => {
-    const fresh = vi.fn()
-    expect(assertSchemaCompatible({ ...base, store: fakeStore(0, []), onNotice: fresh }))
-      .toEqual({ kind: 'fresh' })
-    expect(fresh).not.toHaveBeenCalled()
-
-    const current = vi.fn()
-    expect(assertSchemaCompatible({ ...base, store: fakeStore(5, ['t']), onNotice: current }))
-      .toEqual({ kind: 'current' })
-    expect(current).not.toHaveBeenCalled()
+  it('lets a fresh or current database through', () => {
+    expect(assertSchemaCompatible({ ...base, store: fakeStore(0, []) })).toEqual({ kind: 'fresh' })
+    expect(assertSchemaCompatible({ ...base, store: fakeStore(5, ['t']) })).toEqual({ kind: 'current' })
   })
 })
 
@@ -185,10 +176,10 @@ describe('hasAnyUserTable', () => {
 })
 
 describe('inspectSchemaVersion', () => {
-  it('classifies an existing pre-0.5 database as unversioned', () => {
+  it('classifies an existing unstamped database as older', () => {
     const inspection = inspectSchemaVersion(fakeStore(0, ['profiles', 'app_meta']))
     expect(inspection).toEqual({ found: 0, hasExistingTables: true })
-    expect(classifySchemaVersion(inspection, 1)).toEqual({ kind: 'unversioned' })
+    expect(classifySchemaVersion(inspection, 1)).toEqual({ kind: 'older', found: 0 })
   })
 
   it('classifies an empty file as fresh', () => {
@@ -198,7 +189,7 @@ describe('inspectSchemaVersion', () => {
 })
 
 describe('operator messages', () => {
-  it('names the database, both versions, and a way forward when refusing', () => {
+  it('names the database, both versions, and a way forward when refusing a newer one', () => {
     const message = buildNewerSchemaMessage('app database', '/tmp/app.sqlite', 9, 3)
     expect(message).toContain('/tmp/app.sqlite')
     expect(message).toContain('9')
@@ -206,21 +197,26 @@ describe('operator messages', () => {
     expect(message).toMatch(/upgrade/i)
   })
 
-  it('tells the user how to reset a pre-0.5 database', () => {
-    const message = buildUnversionedResetMessage('project database', '/tmp/db.sqlite')
+  it('names both versions and ends with the reset instructions when refusing an older one', () => {
+    const message = buildOlderSchemaMessage('project database', '/tmp/db.sqlite', 2, 3, 'RESET STEPS')
     expect(message).toContain('/tmp/db.sqlite')
-    expect(message).toMatch(/0\.5\.0/)
-    expect(message).toMatch(/delete/i)
-    // Must not claim the schema is untouched: the boot DDL does reconcile it.
-    expect(message).toMatch(/no data migration is attempted/i)
+    expect(message).toContain('schema version 2')
+    expect(message).toContain('version 3')
+    expect(message).toMatch(/alpha/)
+    expect(message.endsWith('RESET STEPS')).toBe(true)
   })
 
-  it('explains why a too-old database is refused rather than upgraded', () => {
-    const message = buildUnsupportedSchemaMessage('app database', '/tmp/app.sqlite', 1, 4)
-    expect(message).toContain('/tmp/app.sqlite')
-    expect(message).toContain('1')
-    expect(message).toContain('4')
-    expect(message).toMatch(/partially modified/i)
+  it('tells the user what to delete for each database', () => {
+    const app = appDatabaseResetInstructions('/cfg/app.sqlite')
+    expect(app).toContain('delete /cfg/app.sqlite')
+    expect(app).toContain('-wal and -shm')
+    expect(app).toMatch(/attach your projects again/)
+
+    const project = projectDatabaseResetInstructions('/repo')
+    expect(project).toContain('delete the .looptroop folder in /repo')
+    expect(project).toContain('git worktree prune')
+    expect(project).toMatch(/ticket branches/)
+    expect(project).toMatch(/attach the project again/)
   })
 })
 

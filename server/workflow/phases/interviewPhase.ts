@@ -38,7 +38,7 @@ import { randomUUID } from 'node:crypto'
 import { and, eq, exists, gt, lte } from 'drizzle-orm'
 import { interviewBatchClaims, phaseArtifacts } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts, readTicketFile, removeTicketFile, writeTicketFile } from '../../storage/tickets'
-import { compareAndSetLatestPhaseArtifact } from '../../storage/ticketArtifacts'
+import { compareAndSetLatestPhaseArtifact, forgetArtifactManifestFields } from '../../storage/ticketArtifacts'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { credentialsWereSent, openCodeAuthAdvice } from '../../opencode/connection'
 import { safeAtomicWriteWithin } from '../../io/atomicWrite'
@@ -463,10 +463,9 @@ function isClaimOwnerProvablyDead(token: string): boolean {
     ? (parts[1] === 'recovery' ? parts[3] : undefined)
     : parts[1]
   if (ownerPid === process.pid) {
-    // PID reuse is possible after a daemon restart. New claims carry this
-    // process boot id; legacy two-part claims remain protected because they
-    // provide no evidence either way.
-    return parts.length >= 3 && ownerBootId !== undefined && ownerBootId !== PROCESS_BOOT_ID
+    // PID reuse is possible after a daemon restart, so the claim's boot id
+    // decides whether this process is the one that took it.
+    return ownerBootId !== undefined && ownerBootId !== PROCESS_BOOT_ID
   }
   try {
     process.kill(ownerPid, 0)
@@ -1082,6 +1081,9 @@ export function skipAllInterviewQuestionsToApproval(
             }
             continue
           }
+          // The restored row keeps its old id and timestamp, which the manifest
+          // cache may still hold for the content being rolled back.
+          forgetArtifactManifestFields(ticketId, before.id)
           if (!current || current.id !== before.id) {
             if (current) context.projectDb.delete(phaseArtifacts).where(eq(phaseArtifacts.id, current.id)).run()
             context.projectDb.insert(phaseArtifacts).values({ ...before }).run()
@@ -1241,9 +1243,10 @@ export async function restoreInterviewQASession(ticketId: string, signal?: Abort
 
   throwIfAborted(signal, ticketId)
   // After server restart the in-memory map is empty. Reload from DB and trust
-  // the persisted session ID — adapter.listSessions() silently returns [] on
-  // transient errors, causing valid sessions to be abandoned. The actual
-  // OpenCode prompt call will surface a real error if the session is gone.
+  // the persisted session ID rather than a session listing, which can be
+  // incomplete (one project only on v1, capped, or failing) and would abandon
+  // valid sessions. The actual OpenCode prompt call surfaces a real error if
+  // the session is gone.
   interviewQASessions.set(ticketId, persisted)
   return persisted
 }

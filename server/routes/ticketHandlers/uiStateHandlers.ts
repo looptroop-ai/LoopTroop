@@ -3,7 +3,7 @@ import { MAX_UI_STATE_BYTES } from '../../lib/constants'
 import { contentSha256 } from '../../lib/contentHash'
 import {
   getLatestPhaseArtifact,
-  getTicketByRef,
+  getTicketContext,
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { getErrorMessage, isRecord } from '@shared/typeGuards'
@@ -127,7 +127,7 @@ export function handleGetUiState(c: Context) {
     return c.json({ error: 'Invalid scope', details: parsed.error.flatten() }, 400)
   }
 
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   const state = readTicketUiState(ticketId, parsed.data.scope)
   if (!state) {
@@ -159,7 +159,7 @@ export async function handlePutUiState(c: Context) {
     return c.json({ error: 'Invalid UI state payload', details: parsed.error.flatten() }, 400)
   }
 
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   try {
     const result = await serializeUiStateSave(ticketId, parsed.data.scope, () => upsertUiState(

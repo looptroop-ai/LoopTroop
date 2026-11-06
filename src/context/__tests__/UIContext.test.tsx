@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { UIProvider } from '../UIContext'
 import { useUI } from '../useUI'
 
@@ -100,7 +100,7 @@ describe('UIProvider', () => {
     localStorage.clear()
   })
 
-  it('normalizes persisted partial filter state from older browser sessions', () => {
+  it('fills filter fields missing from the saved state with defaults', () => {
     localStorage.setItem('looptroop-ui-state', JSON.stringify({
       activeView: 'kanban',
       filters: {
@@ -119,7 +119,7 @@ describe('UIProvider', () => {
     expect(screen.getByTestId('error-state')).toHaveTextContent('none')
   })
 
-  it('migrates legacy onlyErrors:true to errorState "blocked"', () => {
+  it('ignores filter fields it does not know', () => {
     localStorage.setItem('looptroop-ui-state', JSON.stringify({
       filters: { onlyErrors: true },
     }))
@@ -130,10 +130,10 @@ describe('UIProvider', () => {
       </UIProvider>,
     )
 
-    expect(screen.getByTestId('error-state')).toHaveTextContent('blocked')
+    expect(screen.getByTestId('error-state')).toHaveTextContent('none')
   })
 
-  it('drops legacy single-string status filter', () => {
+  it('drops a status filter that is not a list', () => {
     localStorage.setItem('looptroop-ui-state', JSON.stringify({
       filters: { status: 'CODING' },
     }))
@@ -147,60 +147,37 @@ describe('UIProvider', () => {
     expect(screen.getByTestId('status-filter')).toHaveTextContent('none')
   })
 
-  it('migrates legacy looptroop-presets-* keys into presetsByProject', () => {
-    localStorage.setItem('looptroop-presets-global', JSON.stringify({
-      'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-    }))
+  it('keeps a deleted preset deleted across a reload', () => {
     localStorage.setItem('looptroop-ui-state', JSON.stringify({
       filters: {},
-      presetsByProject: {},
-    }))
-
-    render(
-      <UIProvider>
-        <UIStateProbe />
-      </UIProvider>,
-    )
-
-    expect(screen.getByTestId('preset-scopes')).toHaveTextContent('looptroop-presets-global')
-  })
-
-  it('recovers legacy preset keys on every load, even without a durable UI-state record', () => {
-    localStorage.setItem('looptroop-presets-global', JSON.stringify({
-      'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
+      presetsByProject: {
+        'looptroop-presets-global': {
+          'Night ops': { priority: [1], stuckDays: 3, errorState: 'blocked', sortBy: 'priority_asc' },
+        },
+      },
     }))
 
     const { unmount } = render(
       <UIProvider>
-        <UIStateProbe />
+        <PresetDeleteProbe />
       </UIProvider>,
     )
+    expect(screen.getByTestId('preset-names')).toHaveTextContent('Night ops')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete presets' }))
 
-    expect(screen.getByTestId('preset-scopes')).toHaveTextContent('looptroop-presets-global')
-
-    // A refresh with no user action still shows the preset: the first load wrote the
-    // merged blob before retiring the standalone key, so the second load reads it back
-    // from the blob.
     unmount()
     render(
       <UIProvider>
         <UIStateProbe />
       </UIProvider>,
     )
-    expect(screen.getByTestId('preset-scopes')).toHaveTextContent('looptroop-presets-global')
+
+    expect(screen.getByTestId('global-presets')).toHaveTextContent('')
   })
 
-  it('merges legacy preset keys into an existing persisted preset scope', () => {
+  it('reads presets only from the saved UI state, not from standalone keys', () => {
     localStorage.setItem('looptroop-presets-global', JSON.stringify({
-      'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-    }))
-    localStorage.setItem('looptroop-ui-state', JSON.stringify({
-      filters: {},
-      presetsByProject: {
-        'looptroop-presets-global': {
-          Existing: { priority: [2], stuckDays: null, errorState: 'none', sortBy: 'updatedAt_desc' },
-        },
-      },
+      'Night ops': { priority: [1], stuckDays: 3, errorState: 'blocked', sortBy: 'priority_asc' },
     }))
 
     render(
@@ -209,8 +186,7 @@ describe('UIProvider', () => {
       </UIProvider>,
     )
 
-    expect(screen.getByTestId('global-presets')).toHaveTextContent('Existing')
-    expect(screen.getByTestId('global-presets')).toHaveTextContent('Night ops')
+    expect(screen.getByTestId('preset-scopes')).toHaveTextContent('')
   })
 
   it('keeps valid presets when unrelated persisted UI fields are invalid', () => {
@@ -284,187 +260,6 @@ describe('UIProvider', () => {
     )
 
     expect(screen.getByTestId('preset-names')).toHaveTextContent('Night ops')
-  })
-
-  it('handles malformed preset keys without aborting migration of valid ones', () => {
-    localStorage.setItem('looptroop-presets-malformed', 'not-json')
-    localStorage.setItem('looptroop-presets-global', JSON.stringify({
-      'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-    }))
-
-    render(
-      <UIProvider>
-        <UIStateProbe />
-      </UIProvider>,
-    )
-
-    expect(screen.getByTestId('preset-scopes')).toHaveTextContent('looptroop-presets-global')
-  })
-
-  /**
-   * The legacy keys were merged on every load and never removed, so the blob could
-   * never express a deletion: a preset the user deleted was copied back out of its
-   * standalone key on the next load, however many times they deleted it. They are
-   * retired now — but only once the merged blob has actually been written, because
-   * deleting first and failing to write would destroy the only copy.
-   */
-  describe('legacy preset keys', () => {
-    afterEach(() => {
-      vi.restoreAllMocks()
-    })
-
-    it('retires a legacy key once the merged blob is written', () => {
-      localStorage.setItem('looptroop-presets-global', JSON.stringify({
-        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-      }))
-
-      render(
-        <UIProvider>
-          <UIStateProbe />
-        </UIProvider>,
-      )
-
-      expect(screen.getByTestId('global-presets')).toHaveTextContent('Night ops')
-      const stored = JSON.parse(localStorage.getItem('looptroop-ui-state') ?? '{}') as {
-        presetsByProject?: Record<string, Record<string, unknown>>
-      }
-      expect(stored.presetsByProject?.['looptroop-presets-global']).toHaveProperty('Night ops')
-      expect(localStorage.getItem('looptroop-presets-global')).toBeNull()
-    })
-
-    it('keeps a deleted preset deleted across a reload', () => {
-      localStorage.setItem('looptroop-presets-global', JSON.stringify({
-        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-      }))
-
-      const { unmount } = render(
-        <UIProvider>
-          <PresetDeleteProbe />
-        </UIProvider>,
-      )
-      fireEvent.click(screen.getByRole('button', { name: 'Delete presets' }))
-      expect(screen.getByTestId('preset-names')).toHaveTextContent('')
-
-      unmount()
-      render(
-        <UIProvider>
-          <UIStateProbe />
-        </UIProvider>,
-      )
-
-      expect(screen.getByTestId('global-presets')).toHaveTextContent('')
-    })
-
-    it('retires the key on the next write that succeeds after a failed one', () => {
-      localStorage.setItem('looptroop-presets-global', JSON.stringify({
-        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-      }))
-      const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementationOnce(() => {
-        throw new Error('QuotaExceededError')
-      })
-
-      render(
-        <UIProvider>
-          <PresetDeleteProbe />
-        </UIProvider>,
-      )
-      expect(localStorage.getItem('looptroop-presets-global')).not.toBeNull()
-
-      // Storage recovers and the user deletes the preset. Leaving the legacy key
-      // behind here would resurrect it on the next load, undoing the deletion.
-      fireEvent.click(screen.getByRole('button', { name: 'Delete presets' }))
-
-      expect(setItem).toHaveBeenCalled()
-      expect(localStorage.getItem('looptroop-presets-global')).toBeNull()
-    })
-
-    it('keeps a key whose removal was refused pending', () => {
-      localStorage.setItem('looptroop-presets-global', JSON.stringify({
-        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-      }))
-      const removeItem = vi.spyOn(window.localStorage, 'removeItem').mockImplementationOnce(() => {
-        throw new Error('Access is denied for this document.')
-      })
-
-      render(
-        <UIProvider>
-          <PresetDeleteProbe />
-        </UIProvider>,
-      )
-      expect(removeItem).toHaveBeenCalled()
-      expect(localStorage.getItem('looptroop-presets-global')).not.toBeNull()
-
-      // Dropping the key from the retry list would leave it on disk with nothing left
-      // to retire it, and the next load would bring the deleted preset back.
-      fireEvent.click(screen.getByRole('button', { name: 'Delete presets' }))
-
-      expect(localStorage.getItem('looptroop-presets-global')).toBeNull()
-    })
-
-    it('merges into the record as it stands, not the copy it started from', () => {
-      localStorage.setItem('looptroop-presets-global', JSON.stringify({
-        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-      }))
-      localStorage.setItem('looptroop-ui-state', JSON.stringify({ filters: {}, presetsByProject: {}, theme: 'system' }))
-
-      // Another tab writes between this one rehydrating and its migration landing.
-      const realGetItem = window.localStorage.getItem.bind(window.localStorage)
-      let rehydrated = false
-      vi.spyOn(window.localStorage, 'getItem').mockImplementation((key: string) => {
-        if (key === 'looptroop-ui-state' && rehydrated) {
-          return JSON.stringify({ filters: {}, presetsByProject: {}, theme: 'dark' })
-        }
-        if (key === 'looptroop-ui-state') rehydrated = true
-        return realGetItem(key)
-      })
-
-      render(
-        <UIProvider>
-          <UIStateProbe />
-        </UIProvider>,
-      )
-
-      const stored = JSON.parse(realGetItem('looptroop-ui-state') ?? '{}') as {
-        theme?: string
-        presetsByProject?: Record<string, Record<string, unknown>>
-      }
-      // The other tab's change survives, and the recovered preset is added to it.
-      expect(stored.theme).toBe('dark')
-      expect(stored.presetsByProject?.['looptroop-presets-global']).toHaveProperty('Night ops')
-    })
-
-    it('survives a browser that refuses to enumerate storage at all', () => {
-      vi.spyOn(window.localStorage, 'key').mockImplementation(() => {
-        throw new Error('Access is denied for this document.')
-      })
-
-      render(
-        <UIProvider>
-          <UIStateProbe />
-        </UIProvider>,
-      )
-
-      // Initialisation happens inside useReducer, so a throw there renders nothing.
-      expect(screen.getByTestId('preset-scopes')).toBeInTheDocument()
-    })
-
-    it('leaves the legacy key in place when the blob cannot be written', () => {
-      localStorage.setItem('looptroop-presets-global', JSON.stringify({
-        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
-      }))
-      vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
-        throw new Error('QuotaExceededError')
-      })
-
-      render(
-        <UIProvider>
-          <UIStateProbe />
-        </UIProvider>,
-      )
-
-      expect(screen.getByTestId('global-presets')).toHaveTextContent('Night ops')
-      expect(localStorage.getItem('looptroop-presets-global')).not.toBeNull()
-    })
   })
 
   /**

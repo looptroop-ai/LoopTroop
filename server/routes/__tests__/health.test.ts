@@ -1,6 +1,6 @@
 import { Database } from '../../db/sqliteShim'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
@@ -292,86 +292,75 @@ describe('health startup routes', () => {
     expect(afterDismissPayload.ui.restoreNotice.dismissedAt).toBe(dismissPayload.dismissedAt)
   })
 
-  it('migrates attached legacy project databases before startup reads them', async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), 'looptroop-health-legacy-project-'))
+  it('refuses an older app database without changing its file', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'looptroop-health-older-app-'))
+    tempRoots.add(tempRoot)
+    const configDir = join(tempRoot, 'config')
+    mkdirSync(configDir, { recursive: true })
+    const appDbPath = join(configDir, 'app.sqlite')
+    const seed = new Database(appDbPath)
+    seed.exec('CREATE TABLE profiles (id INTEGER PRIMARY KEY)')
+    seed.pragma('user_version = 2')
+    seed.close()
+    if (process.platform !== 'win32') chmodSync(appDbPath, 0o644)
+
+    activeApp = await loadHealthApp(configDir)
+    expect(() => activeApp!.initializeDatabase()).toThrow(/created by an older version of LoopTroop/)
+
+    const reopened = new Database(appDbPath, { readonly: true })
+    try {
+      // Neither switched to WAL (a header write) nor stamped.
+      expect(reopened.pragma('journal_mode')).toEqual([{ journal_mode: 'delete' }])
+      expect(reopened.pragma('user_version')).toEqual([{ user_version: 2 }])
+    } finally {
+      reopened.close()
+    }
+    expect(existsSync(`${appDbPath}-wal`)).toBe(false)
+    if (process.platform !== 'win32') expect(statSync(appDbPath).mode & 0o777).toBe(0o644)
+  })
+
+  it('leaves an app database whose first start failed before the stamp retryable', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'looptroop-health-fresh-app-'))
+    tempRoots.add(tempRoot)
+    const configDir = join(tempRoot, 'config')
+
+    activeApp = await loadHealthApp(configDir)
+    const schemaVersion = await import('../../db/schemaVersion')
+    const stamp = vi.spyOn(schemaVersion, 'writeUserVersion').mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    try {
+      expect(() => activeApp!.initializeDatabase()).toThrow('disk full')
+    } finally {
+      stamp.mockRestore()
+    }
+
+    // Rolled back with the tables: the next start sees a fresh file and stamps it.
+    activeApp!.initializeDatabase()
+    expect(activeApp!.sqlite.pragma('user_version')).toEqual([{ user_version: schemaVersion.APP_SCHEMA_VERSION }])
+  })
+
+  it('stops startup with reset steps when an attached project database is from an older version', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'looptroop-health-older-project-'))
     tempRoots.add(tempRoot)
     const configDir = join(tempRoot, 'config')
     const repoDir = repoManager.createRepo()
     const projectDbPath = getProjectDbPath(repoDir)
 
+    // Tables but no stamped version: what every build before schema versioning wrote.
     mkdirSync(dirname(projectDbPath), { recursive: true })
-    const legacyProjectDb = new Database(projectDbPath)
-    legacyProjectDb.exec(`
+    const olderProjectDb = new Database(projectDbPath)
+    olderProjectDb.exec(`
       CREATE TABLE projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         shortname TEXT NOT NULL,
-        icon TEXT DEFAULT '📁',
-        color TEXT DEFAULT '#3b82f6',
-        folder_path TEXT NOT NULL,
-        profile_id INTEGER,
-        council_members TEXT,
-        max_iterations INTEGER,
-        per_iteration_timeout INTEGER,
-        council_response_timeout INTEGER,
-        min_council_quorum INTEGER,
-        interview_questions INTEGER,
-        ticket_counter INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE tickets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        external_id TEXT NOT NULL UNIQUE,
-        project_id INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT,
-        priority INTEGER DEFAULT 3,
-        status TEXT NOT NULL DEFAULT 'DRAFT',
-        xstate_snapshot TEXT,
-        branch_name TEXT,
-        current_bead INTEGER,
-        total_beads INTEGER,
-        percent_complete REAL,
-        error_message TEXT,
-        locked_main_implementer TEXT,
-        locked_council_members TEXT,
-        started_at TEXT,
-        planned_date TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE phase_artifacts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER NOT NULL,
-        phase TEXT NOT NULL,
-        artifact_type TEXT,
-        content TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE opencode_sessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        ticket_id INTEGER,
-        phase TEXT NOT NULL,
-        member_id TEXT,
-        bead_id TEXT,
-        iteration INTEGER,
-        state TEXT NOT NULL DEFAULT 'active',
-        last_event_id TEXT,
-        last_event_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        folder_path TEXT NOT NULL
       );
     `)
-    legacyProjectDb.prepare(`
-      INSERT INTO projects (name, shortname, folder_path)
-      VALUES (?, ?, ?)
-    `).run('Legacy Project', 'LEG', normalizeFolderPath(repoDir))
-    legacyProjectDb.close()
+    olderProjectDb.prepare('INSERT INTO projects (name, shortname, folder_path) VALUES (?, ?, ?)')
+      .run('Older Project', 'OLD', normalizeFolderPath(repoDir))
+    olderProjectDb.close()
 
     const seedApp = await loadHealthApp(configDir)
     seedApp.initializeDatabase()
@@ -383,48 +372,26 @@ describe('health startup routes', () => {
 
     activeApp = await loadHealthApp(configDir)
     activeApp.initializeDatabase()
-    activeApp.initializeStartupState()
-
-    const response = await activeApp.app.request('/api/health/startup')
-    expect(response.status).toBe(200)
-
-    const payload = await response.json() as {
-      storage: {
-        kind: string
-        restoredProjectCount: number
-        restoredProjects: Array<{ name: string; shortname: string; folderPath: string }>
-      }
+    let refusal: unknown
+    try {
+      activeApp.initializeStartupState()
+    } catch (error) {
+      refusal = error
     }
 
-    expect(payload.storage.kind).toBe('restored')
-    expect(payload.storage.restoredProjectCount).toBe(1)
-    expect(payload.storage.restoredProjects).toEqual([
-      {
-        name: 'Legacy Project',
-        shortname: 'LEG',
-        folderPath: normalizeFolderPath(repoDir),
-      },
-    ])
+    expect(refusal).toBeInstanceOf(Error)
+    const message = (refusal as Error).message
+    expect(message).toContain(projectDbPath)
+    expect(message).toContain('created by an older version of LoopTroop')
+    expect(message).toContain('git worktree prune')
 
-    const migratedProjectDb = new Database(projectDbPath, { readonly: true })
-    const phaseArtifactColumns = migratedProjectDb.prepare('PRAGMA table_info(phase_artifacts)').all() as Array<{ name: string }>
-    const sessionColumns = migratedProjectDb.prepare('PRAGMA table_info(opencode_sessions)').all() as Array<{ name: string }>
-    const tables = migratedProjectDb.prepare(`
-      SELECT name
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'ticket_phase_attempts'
-    `).all() as Array<{ name: string }>
-    const artifactIndexes = migratedProjectDb.prepare('PRAGMA index_list(phase_artifacts)').all() as Array<{ name: string }>
-    const sessionIndexes = migratedProjectDb.prepare('PRAGMA index_list(opencode_sessions)').all() as Array<{ name: string }>
-    migratedProjectDb.close()
-
-    expect(phaseArtifactColumns.map((column) => column.name)).toContain('phase_attempt')
-    expect(phaseArtifactColumns.map((column) => column.name)).toContain('updated_at')
-    expect(sessionColumns.map((column) => column.name)).toContain('phase_attempt')
-    expect(sessionColumns.map((column) => column.name)).toContain('step')
-    expect(tables).toEqual([{ name: 'ticket_phase_attempts' }])
-    expect(artifactIndexes.map((index) => index.name)).toContain('idx_phase_artifacts_ticket_phase_attempt')
-    expect(sessionIndexes.map((index) => index.name)).toContain('idx_sessions_ticket_phase_step')
+    // Refused before any statement ran: nothing was added to the file.
+    const untouched = new Database(projectDbPath, { readonly: true })
+    const tables = untouched.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>
+    const version = untouched.pragma('user_version') as Array<{ user_version: number }>
+    untouched.close()
+    expect(tables.map((table) => table.name)).toEqual(['projects'])
+    expect(version[0]?.user_version).toBe(0)
   })
 })
 

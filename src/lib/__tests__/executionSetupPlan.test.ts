@@ -122,16 +122,14 @@ describe('execution setup workspace verification contract', () => {
     expect(parsed.warnings).toEqual([expect.stringContaining('git_hooks.policy')])
   })
 
-  it('migrates a legacy git hook policy name without warning', () => {
-    const parsed = parseReadyPlanWithPolicy('use_on_internal_commits')
+  it('keeps a current git hook policy name without warning', () => {
+    const parsed = parseReadyPlanWithPolicy('use_native_hooks')
 
     expect(parsed.plan?.gitHooks.policy).toBe('use_native_hooks')
     expect(parsed.warnings).toEqual([])
   })
 
-  it('does not treat an inherited property name as a legacy policy', () => {
-    // `'constructor' in legacyMap` was true, so this used to come back as a
-    // function rather than falling through to the default.
+  it('does not treat an inherited property name as a policy', () => {
     const parsed = parseReadyPlanWithPolicy('constructor')
 
     expect(parsed.plan?.gitHooks.policy).toBe('validate_advisory')

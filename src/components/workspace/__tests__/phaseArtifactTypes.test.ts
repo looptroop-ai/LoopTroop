@@ -445,6 +445,8 @@ describe('phaseArtifactTypes', () => {
 
     expect(getArtifactSourcePhases('COMPILING_INTERVIEW')).toEqual(['COMPILING_INTERVIEW', 'COUNCIL_DELIBERATING', 'COUNCIL_VOTING_INTERVIEW'])
     expect(getArtifactSourcePhases('WAITING_EXECUTION_SETUP_APPROVAL')).toEqual(['WAITING_EXECUTION_SETUP_APPROVAL'])
+    expect(getArtifactSourcePhases('CODING')).toEqual(['CODING', 'CREATING_PULL_REQUEST'])
+    expect(getArtifactSourcePhases('WAITING_INTERVIEW_APPROVAL')).toEqual(expect.arrayContaining(['COUNCIL_DELIBERATING', 'COUNCIL_VOTING_INTERVIEW']))
     expect(shouldCollapseVotingMemberArtifacts('COUNCIL_VOTING_PRD')).toBe(true)
     expect(shouldCollapseVotingMemberArtifacts('WAITING_PRD_APPROVAL')).toBe(false)
   })

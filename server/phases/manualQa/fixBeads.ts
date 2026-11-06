@@ -393,10 +393,6 @@ export function readManualQaFixBeadCandidates(
   const content = readManualQaText(ticketDir, path)
   if (content === null) return null
   const loaded: unknown = jsYaml.load(content)
-  // Version 1 persisted command strings. The current contract stores
-  // structured command specs, so an old document must be regenerated rather
-  // than being treated as a resumable candidate and rejected later.
-  if (isRecord(loaded) && loaded.schemaVersion === 1) return null
   const parsed = PersistedCandidateDocumentSchema.parse(loaded)
   if (parsed.version !== version) throw new Error('Persisted Manual QA fix beads belong to a different version.')
   if ((parsed.retryNote ?? null) !== (retryNote ?? null)) return null

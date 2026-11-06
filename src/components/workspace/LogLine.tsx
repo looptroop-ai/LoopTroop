@@ -42,7 +42,7 @@ const STRUCTURED_SECTION_STYLES: Record<StructuredSectionKind, { container: stri
 }
 
 const STRUCTURED_SECTION_PATTERN = /\n(Input|Output|Error|STDIN|STDOUT|STDERR):\n/g
-const LEGACY_COMMAND_SECTION_PATTERN = /(STDIN|STDOUT|STDERR): /g
+const INLINE_COMMAND_SECTION_PATTERN = /(STDIN|STDOUT|STDERR): /g
 const COMMAND_RESULT_SEPARATOR = '  →  '
 
 /** For streaming entries: returns [firstLine, ...last5Lines] with a separator when truncated. */
@@ -143,7 +143,7 @@ function splitStructuredBody(bodyText: string): { introText: string; sections: S
   }
 }
 
-function splitLegacyCommandBody(bodyText: string): { introText: string; sections: StructuredBodySection[] } {
+function splitInlineCommandBody(bodyText: string): { introText: string; sections: StructuredBodySection[] } {
   const separatorIndex = bodyText.indexOf(COMMAND_RESULT_SEPARATOR)
   if (separatorIndex === -1) return { introText: bodyText, sections: [] }
 
@@ -151,7 +151,7 @@ function splitLegacyCommandBody(bodyText: string): { introText: string; sections
   const resultText = bodyText.slice(separatorIndex + COMMAND_RESULT_SEPARATOR.length).trim()
   if (!resultText) return { introText: bodyText, sections: [] }
 
-  const streamMatches = Array.from(resultText.matchAll(LEGACY_COMMAND_SECTION_PATTERN))
+  const streamMatches = Array.from(resultText.matchAll(INLINE_COMMAND_SECTION_PATTERN))
   if (streamMatches.length > 0) {
     return {
       introText,
@@ -262,9 +262,9 @@ function renderCommandLogLine(entry: LogEntry, tagText: string, bodyText: string
     return renderStructuredLogLine(entry, tagText, structuredBody)
   }
 
-  const legacyBody = splitLegacyCommandBody(bodyText)
-  if (legacyBody.sections.length > 0) {
-    return renderStructuredLogLine(entry, tagText, legacyBody)
+  const inlineBody = splitInlineCommandBody(bodyText)
+  if (inlineBody.sections.length > 0) {
+    return renderStructuredLogLine(entry, tagText, inlineBody)
   }
 
   const color = getEntryColor(entry)

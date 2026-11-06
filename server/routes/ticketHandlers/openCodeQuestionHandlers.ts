@@ -5,9 +5,8 @@ import { getOpenCodeAdapter } from '../../opencode/factory'
 import { broadcaster } from '../../sse/broadcaster'
 import { appendLogEvent, createLogEvent, shouldSkipLogEmission } from '../../log/executionLog'
 import {
-  getTicketByRef,
   getTicketContext,
-  listNonTerminalTickets,
+  listNonTerminalTicketRefs,
 } from '../../storage/tickets'
 import { getErrorMessage } from '@shared/typeGuards'
 import {
@@ -159,10 +158,10 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
         sessionId: request.sessionID,
         requestId: request.id,
         memberId: session?.memberId ?? null,
-        // A session row stores its phase as free text, so one written by an
-        // older build can name a status that no longer exists. The ticket's own
-        // status is the fallback rather than dropping the question: an unclocked
-        // question waits forever, which is the failure this path exists to stop.
+        // A session row stores its phase as free text, so it is checked against
+        // the known statuses. The ticket's own status is the fallback rather than
+        // dropping the question: an unclocked question waits forever, which is
+        // the failure this path exists to stop.
         phase: resolveStoredWorkflowPhase(session?.phase, ticketContext.localTicket.status),
         phaseAttempt: session?.phaseAttempt ?? 1,
         windowMs: resolveAiQuestionSettings(ticketId).windowMs,
@@ -203,7 +202,7 @@ async function findPendingOpenCodeQuestionForTicket(ticketId: string, requestId:
 
 export async function handleListOpenCodeQuestions(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   try {
     const questions = await getTicketPendingOpenCodeQuestions(ticketId)
@@ -211,9 +210,10 @@ export async function handleListOpenCodeQuestions(c: Context) {
     return c.json({ questions, timer: getTicketQuestionState(ticketId).timer })
   } catch (err) {
     const message = getErrorMessage(err)
-    // The ticket may have gone, or hold a status this build no longer declares.
-    // The failure still has to be logged against something real.
-    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(getTicketByRef(ticketId)?.status), 'error', `Failed to list OpenCode questions: ${message}`)
+    // The ticket may have gone, or hold a status that is not a declared one.
+    // The failure still has to be logged against something real, and reading the
+    // row (not building the whole ticket) cannot fail in turn and hide this error.
+    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(getTicketContext(ticketId)?.localTicket.status), 'error', `Failed to list OpenCode questions: ${message}`)
     return c.json({ error: 'Failed to list OpenCode questions', details: message }, 500)
   }
 }
@@ -233,16 +233,16 @@ export async function handleListAllOpenCodeQuestions(c: Context) {
   const timers: Record<string, AiQuestionTimerState> = {}
   const errors: Array<{ ticketId: string; message: string }> = []
 
-  for (const ticket of listNonTerminalTickets()) {
+  for (const ticketId of listNonTerminalTicketRefs()) {
     try {
-      const ticketQuestions = await getTicketPendingOpenCodeQuestions(ticket.id)
+      const ticketQuestions = await getTicketPendingOpenCodeQuestions(ticketId)
       if (ticketQuestions?.length) {
         questions.push(...ticketQuestions)
-        const timer = getTicketQuestionState(ticket.id).timer
-        if (timer) timers[ticket.id] = timer
+        const timer = getTicketQuestionState(ticketId).timer
+        if (timer) timers[ticketId] = timer
       }
     } catch (err) {
-      errors.push({ ticketId: ticket.id, message: getErrorMessage(err) })
+      errors.push({ ticketId, message: getErrorMessage(err) })
     }
   }
 

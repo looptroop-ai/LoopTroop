@@ -7,6 +7,14 @@ describe('stripTerminalFormatting', () => {
 
     expect(stripTerminalFormatting(raw)).toBe('{\n  "items": [\n    {},\n    {},\n    {}\n  ]\n}')
   })
+
+  it('removes C0, DEL and C1 controls but keeps tabs, newlines and astral characters', () => {
+    const controls = [0x00, 0x08, 0x0b, 0x0c, 0x1f, 0x7f, 0x80, 0x9f].map((code) => String.fromCharCode(code)).join('')
+
+    // Just above the C1 range: a no-break space and an inverted exclamation mark stay.
+    const aboveC1 = String.fromCharCode(0xa0, 0xa1)
+    expect(stripTerminalFormatting(`a\tb${controls}\nc é 😀 ${aboveC1}`)).toBe(`a\tb\nc é 😀 ${aboveC1}`)
+  })
 })
 
 describe('sanitizeErrorForDisplay', () => {

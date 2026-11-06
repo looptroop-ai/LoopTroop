@@ -29,8 +29,14 @@ import { openFileNoFollowSync, readFileNoFollowSync } from './readFile'
 const MAX_DIRECT_READ_BYTES = 256 * 1024 * 1024 // 256 MB
 /** Chunk size used when scanning large files backwards. */
 const SCAN_CHUNK_SIZE = 8 * 1024 // 8 KB
-/** Maximum bytes to scan backwards when looking for the start of the last line. */
+/**
+ * Maximum bytes to scan backwards for the start of the last line in a file larger
+ * than MAX_DIRECT_READ_BYTES. Smaller files are scanned back to their start, so a
+ * torn last line of any length in them is found and repaired.
+ */
 const MAX_LAST_LINE_SCAN = 4 * 1024 * 1024 // 4 MB
+/** Tab, LF, VT, FF, CR and space: the ASCII bytes `String.prototype.trim` removes. */
+const ASCII_WHITESPACE: ReadonlySet<number> = new Set([0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20])
 const LINK_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
   'EPERM', 'EACCES', 'ENOSYS', 'EXDEV', 'EOPNOTSUPP', 'ENOTSUP', 'EMLINK',
 ])
@@ -194,15 +200,6 @@ function judgeTmpContent(fd: number, tmpPath: string, targetPath: string): TmpVe
 
   return PROMOTE
 }
-
-/**
- * `${target}.tmp-${pid}-${milliseconds}`, written by the private Manual QA
- * checkpoint writer that now goes through `safeAtomicWrite`. It does not end in
- * `.tmp`, so nothing has ever swept it — a pre-upgrade crash leaves one sitting
- * in `.ticket/` unmentioned. Reported for the same reason as the plain
- * `${target}.tmp` family: neither name says what the file was becoming.
- */
-const LEGACY_TMP_NAME = /\.tmp-\d+-\d+$/
 
 type FileIdentity = Pick<ReturnType<typeof fstatSync>, 'dev' | 'ino' | 'size' | 'mtimeMs' | 'birthtimeMs'>
 
@@ -404,20 +401,6 @@ function sameEntryIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
     && sameOptionalTimestamp(left.birthtimeMs, right.birthtimeMs)
-}
-
-function reportLegacyTmpFile(tmpPath: string): void {
-  // Left in place: the pre-upgrade crash that produced it is exactly the case
-  // someone would want to look at, and vaulting it silently is worse than
-  // either promoting it or saying so.
-  let modified = 'an unknown time'
-  try {
-    modified = lstatSync(tmpPath).mtime.toISOString()
-  } catch { /* reported without it */ }
-  console.warn(
-    `[recovery] Ignoring ${tmpPath} (last modified ${modified}): its name predates the current ` +
-      'atomic-write suffix, so the file it was meant to become cannot be derived',
-  )
 }
 
 function discardTmpFile(tmpPath: string, reason: string, opened?: FileIdentity, deps = defaultRecoveryDeps): void {
@@ -885,11 +868,10 @@ function promoteTmpFile(fd: number, tmpPath: string, targetPath: string, deps: R
 /**
  * Puts back writes that a crash interrupted, and clears away the ones it cannot.
  *
- * Only names `safeAtomicWrite` produced are recognised. The pre-upgrade writer
- * used a plain `${target}.tmp`, whose target cannot be derived — a
- * `report.json.tmp` is as consistent with `report.json` as with a file someone
- * named `report.json.tmp` on purpose — so those are reported and left alone
- * rather than guessed at.
+ * Only names `safeAtomicWrite` produces are recognised. Any other `.tmp` file
+ * is reported and left alone rather than guessed at: its target cannot be
+ * derived, and `report.json.tmp` is as consistent with `report.json` as with a
+ * file someone named `report.json.tmp` on purpose.
  */
 export function recoverOrphanTmpFiles(
   rootDir: string,
@@ -918,7 +900,15 @@ export function recoverOrphanTmpFiles(
     assertRecoveryPath(canonicalRoot, candidate, allowMissingTail)
   }
 
-  function scanDir(dir: string) {
+  // LoopTroop writes only its launcher at the top of runtime/execution-setup.
+  // Everything below holds the setup's package caches, thousands of directories
+  // that only cost startup time, so only that top level is scanned. No known
+  // artifact lives there (see isKnownArtifactTarget); add one and this has to change.
+  const executionSetupDir = rootKind === 'ticket' ? join(canonicalRoot, 'runtime', 'execution-setup') : null
+  const isExecutionSetupDir = (path: string): boolean => executionSetupDir !== null
+    && (process.platform === 'win32' ? path.toLowerCase() === executionSetupDir.toLowerCase() : path === executionSetupDir)
+
+  function scanDir(dir: string, recurse = true) {
     if (!existsSync(dir)) return
     try {
       guard(dir)
@@ -926,7 +916,7 @@ export function recoverOrphanTmpFiles(
       for (const entry of entries) {
         const fullPath = join(dir, entry.name)
         if (entry.isDirectory()) {
-          scanDir(fullPath)
+          if (recurse) scanDir(fullPath, !isExecutionSetupDir(fullPath))
           continue
         }
         const name = entry.name.toLowerCase()
@@ -948,7 +938,7 @@ export function recoverOrphanTmpFiles(
           }
           continue
         }
-        if (!name.endsWith('.tmp') && !LEGACY_TMP_NAME.test(name)) continue
+        if (!name.endsWith('.tmp')) continue
         if (entry.isSymbolicLink()) {
           console.warn(`[recovery] Ignoring symbolic-link temp file ${fullPath}`)
           continue
@@ -957,7 +947,7 @@ export function recoverOrphanTmpFiles(
 
         const targetPath = parseAtomicTmpPath(fullPath)
         if (targetPath === null) {
-          reportLegacyTmpFile(fullPath)
+          console.warn(`[recovery] Leaving ${fullPath}: not a temp name LoopTroop writes, so the file it was meant to become is unknown`)
           continue
         }
 
@@ -1048,54 +1038,23 @@ export function fixTrailingLineCorruption(filePath: string): boolean {
   try {
     const { size: fileSize } = fstatSync(fd)
     if (fileSize === 0) return false
-
-    if (fileSize > MAX_DIRECT_READ_BYTES) {
-      return fixCorruptionLarge(fd, filePath, fileSize)
-    }
-
-    const content = readFileSync(fd)
-    const lines = content.toString('utf-8').split('\n')
-
-    // Remove empty trailing lines
-    while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
-      lines.pop()
-    }
-
-    // Check last line is valid JSON
-    if (lines.length > 0) {
-      const lastLine = lines[lines.length - 1]
-      if (lastLine) {
-        try {
-          JSON.parse(lastLine)
-        } catch {
-          console.warn(`[recovery] Truncating corrupt last line in ${filePath}`)
-          lines.pop()
-          // Truncate original bytes on the verified descriptor; never reopen by name.
-          let retainedBytes = 0
-          for (let line = 0; line < lines.length; line++) retainedBytes = content.indexOf(0x0a, retainedBytes) + 1
-          ftruncateSync(fd, retainedBytes)
-          fsyncSync(fd)
-          return true
-        }
-      }
-    }
-
-    return false
+    // Only the last line can be torn, so only the tail is read. Reading whole logs
+    // here made startup read every ticket's logs (over a gigabyte) synchronously.
+    return fixCorruptionLarge(fd, filePath, fileSize)
   } finally {
     closeSync(fd)
   }
 }
 
 /**
- * Large-file variant: scans backward in byte chunks to find the last line without
- * loading the whole file into memory. Only truncates — never re-encodes — to avoid
- * UTF-8 boundary issues.
+ * Scans backward in byte chunks to find the last line without loading the whole
+ * file into memory. Only truncates — never re-encodes — to avoid UTF-8 boundary issues.
  */
 function fixCorruptionLarge(fd: number, filePath: string, fileSize: number): boolean {
   const contentEnd = findContentEnd(fd, fileSize)
   if (contentEnd <= 0) return false
 
-  const lineStart = findLineStart(fd, contentEnd)
+  const lineStart = findLineStart(fd, contentEnd, fileSize > MAX_DIRECT_READ_BYTES ? MAX_LAST_LINE_SCAN : fileSize)
   if (lineStart === null) {
     console.warn(
       `[recovery] Skipping large-file corruption check for ${filePath}: ` +
@@ -1120,7 +1079,11 @@ function fixCorruptionLarge(fd: number, filePath: string, fileSize: number): boo
   }
 }
 
-/** Returns the byte offset one past the last non-newline byte, or 0 if the file is all newlines. */
+/**
+ * Returns the byte offset one past the last non-whitespace byte, or 0 if the file is
+ * blank. Trailing whitespace-only lines are skipped, as `trim()` skipped them when
+ * whole files were read; NUL and every other byte count as content.
+ */
 function findContentEnd(fd: number, fileSize: number): number {
   let pos = fileSize
   while (pos > 0) {
@@ -1129,7 +1092,7 @@ function findContentEnd(fd: number, fileSize: number): number {
     const buf = Buffer.allocUnsafe(readSize)
     const bytesRead = readSync(fd, buf, 0, readSize, pos)
     for (let i = bytesRead - 1; i >= 0; i--) {
-      if (buf[i] !== 0x0a && buf[i] !== 0x0d) {
+      if (!ASCII_WHITESPACE.has(buf[i]!)) {
         return pos + i + 1
       }
     }
@@ -1140,10 +1103,10 @@ function findContentEnd(fd: number, fileSize: number): number {
 /**
  * Returns the byte offset of the first byte of the last line (the byte right after
  * its preceding newline), scanning backward from `contentEnd`.
- * Returns `null` if the last line is longer than MAX_LAST_LINE_SCAN (too big to validate safely).
+ * Returns `null` if the last line is longer than `maxScan` (too big to validate safely).
  */
-function findLineStart(fd: number, contentEnd: number): number | null {
-  const scanStart = Math.max(0, contentEnd - MAX_LAST_LINE_SCAN)
+function findLineStart(fd: number, contentEnd: number, maxScan: number): number | null {
+  const scanStart = Math.max(0, contentEnd - maxScan)
   let pos = contentEnd
   while (pos > scanStart) {
     const readSize = Math.min(SCAN_CHUNK_SIZE, pos - scanStart)

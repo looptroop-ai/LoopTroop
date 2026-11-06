@@ -7,6 +7,7 @@ import { PROFILE_DEFAULTS } from '../../db/defaults'
 import type { StructuredLogFields, StructuredLogAudience, StructuredLogKind, StructuredLogOp } from './types'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { sanitizeDiagnosticText, sanitizeDiagnosticValue } from '@shared/errorDiagnostics'
+import { canStoreDebugPayloadInData, PAYLOAD_IN_DATA_FIELD } from '../../log/storedEntry'
 
 // ── Cached tool log limits from profile ──────────────────────────────────────
 
@@ -166,8 +167,13 @@ export function emitDebugLog(
   persist = true,
 ) {
   const safePayload = sanitizeDiagnosticValue(payload)
-  const payloadText = safePayload === undefined ? '' : ` ${stringifyForLog(safePayload)}`
-  const content = `[DEBUG] ${sanitizeDiagnosticText(message)}${payloadText}`
+  const serializedPayload = safePayload === undefined ? '' : stringifyForLog(safePayload)
+  const payloadText = safePayload === undefined ? '' : ` ${serializedPayload}`
+  const label = `[DEBUG] ${sanitizeDiagnosticText(message)}`
+  const content = `${label}${payloadText}`
+  // The payload is also kept whole in `data`, so the persisted line stores only the
+  // label and readers rebuild this text from `data` (server/log/storedEntry.ts).
+  const payloadInData = canStoreDebugPayloadInData(safePayload, serializedPayload)
   const liveContent = content.length > LIVE_DEBUG_LOG_MAX_CHARS
     ? `${content.slice(0, LIVE_DEBUG_LOG_MAX_CHARS)}\n... [debug payload truncated for live stream; full entry is available in the debug log]`
     : content
@@ -202,7 +208,16 @@ export function emitDebugLog(
 
   // Only persist to disk when this is a direct (non-mirror) debug call.
   if (persist) {
-    appendLogEvent(ticketId, 'debug', phase, content, logData, 'debug', phase, structuredExtra)
+    appendLogEvent(
+      ticketId,
+      'debug',
+      phase,
+      payloadInData ? label : content,
+      logData,
+      'debug',
+      phase,
+      payloadInData ? { ...structuredExtra, [PAYLOAD_IN_DATA_FIELD]: true } : structuredExtra,
+    )
   }
 }
 

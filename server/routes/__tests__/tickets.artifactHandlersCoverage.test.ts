@@ -97,6 +97,50 @@ describe('ticketRouter artifact handler routes', () => {
     expect(invalidManifestPayload.artifacts[0]).not.toHaveProperty('content')
   })
 
+  it('returns only the requested artifact types, with and without a phase filter', async () => {
+    const ticket = createArtifactTicket()
+    addArtifact(ticket.id, 'integration_report', '{"status":"passed"}')
+    addArtifact(ticket.id, 'final_test_report', '{"passed":true}')
+    addArtifact(ticket.id, 'prd_votes', '{"big":"council output"}')
+
+    const typed = await app.request(`/api/tickets/${ticket.id}/artifacts?type=final_test_report&type=integration_report`)
+    expect(typed.status).toBe(200)
+    expect((await typed.json() as Array<{ artifactType: string }>).map((artifact) => artifact.artifactType).sort())
+      .toEqual(['final_test_report', 'integration_report'])
+
+    const typedPhase = await app.request(`/api/tickets/${ticket.id}/artifacts?phase=WAITING_PRD_APPROVAL&type=prd_votes`)
+    expect(await typedPhase.json()).toMatchObject([{ artifactType: 'prd_votes', content: '{"big":"council output"}' }])
+    const otherPhase = await app.request(`/api/tickets/${ticket.id}/artifacts?phase=DRAFTING_PRD&type=prd_votes`)
+    expect(await otherPhase.json()).toEqual([])
+
+    const manifest = await app.request(`/api/tickets/${ticket.id}/artifacts/manifest?type=prd_votes`)
+    expect((await manifest.json() as { artifacts: Array<{ artifactType: string }> }).artifacts.map((entry) => entry.artifactType)).toEqual(['prd_votes'])
+
+    const untyped = await app.request(`/api/tickets/${ticket.id}/artifacts`)
+    expect(await untyped.json()).toHaveLength(3)
+  })
+
+  it('counts a repeated type once against the filter limit', async () => {
+    const ticket = createArtifactTicket()
+    const repeated = Array.from({ length: 60 }, () => 'type=prd_votes').join('&')
+    const response = await app.request(`/api/tickets/${ticket.id}/artifacts?${repeated}`)
+    expect(response.status).toBe(200)
+  })
+
+  it.each([
+    ['an empty type', 'type='],
+    ['a blank type', 'type=%20%20'],
+    ['an overlong type', `type=${'x'.repeat(201)}`],
+    ['too many types', Array.from({ length: 51 }, (_, index) => `type=t${index}`).join('&')],
+  ])('rejects %s filter', async (_label, query) => {
+    const ticket = createArtifactTicket()
+    for (const path of ['artifacts', 'artifacts/manifest']) {
+      const response = await app.request(`/api/tickets/${ticket.id}/${path}?${query}`)
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({ error: expect.stringContaining('type must be') })
+    }
+  })
+
   it('serves artifact content with validators and returns not-modified for a matching ETag', async () => {
     const ticket = createArtifactTicket()
     const content = '{"title":"Review result","status":"passed"}'

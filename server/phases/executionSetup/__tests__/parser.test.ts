@@ -66,7 +66,7 @@ describe('parseExecutionSetupResult', () => {
         tooling_probe_commands: ['./.ticket/runtime/execution-setup/run go version'],
         workspace_probes: [{ id: 'workspace-1', command: 'go list ./...', purpose: 'load packages' }],
         git_hooks: {
-          policy: 'validate_explicitly',
+          policy: 'validate_required',
           detected: [{ name: 'pre-commit', path: '.husky/pre-commit', source: 'core.hooksPath', executable: true, manager_hint: 'husky' }],
           validation_commands: [{ id: 'hook-1', hook: 'pre-commit', command: 'project check', purpose: 'validate commit' }],
         },

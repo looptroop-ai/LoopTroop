@@ -59,7 +59,7 @@ describe('daemon.json', () => {
       databasePath: '/tmp/app.sqlite',
       found: 9,
       expected: 1,
-      migratableFrom: 1,
+      resetInstructions: '',
     },
   }
 
@@ -83,6 +83,16 @@ describe('daemon.json', () => {
     // Not the message: a caller deciding whether to upgrade or move the file
     // aside must not have to parse prose that was written for a person.
     expect(readDaemonStartFailure(configDir)).toEqual(failure)
+  })
+
+  it('ignores a refusal record missing the label or the reset instructions doctor prints', () => {
+    const configDir = makeConfigDir()
+    const { databaseLabel: _label, ...withoutLabel } = failure.schema
+    const { resetInstructions: _reset, ...withoutReset } = failure.schema
+    for (const schema of [withoutLabel, withoutReset]) {
+      writeFileSync(getDaemonStatePath(configDir), JSON.stringify({ startFailure: { ...failure, schema } }))
+      expect(readDaemonStartFailure(configDir)).toBeNull()
+    }
   })
 
   it('reports no running daemon when the file records a refusal', () => {

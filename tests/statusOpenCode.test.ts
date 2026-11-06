@@ -51,17 +51,12 @@ describe('status output for OpenCode', () => {
     expect(degraded).not.toBe(adopted)
   })
 
-  it('names mock mode rather than reporting a server that does not exist', () => {
-    expect(describeOpenCodeForStatus(undefined)).toContain('mock mode')
-  })
-
-  /**
-   * A daemon started by an older build is still running while the new CLI reads
-   * its file. `owned` is everything that record says, and inventing a status
-   * from it would report an adopted server as one LoopTroop can stop.
-   */
-  it('reports only what an older record actually said', () => {
+  it('still describes a record that carries no status', () => {
     expect(describeOpenCodeForStatus({ baseUrl, owned: true })).toBe(`${baseUrl} (started by LoopTroop)`)
     expect(describeOpenCodeForStatus({ baseUrl, owned: false })).toBe(baseUrl)
+  })
+
+  it('names mock mode rather than reporting a server that does not exist', () => {
+    expect(describeOpenCodeForStatus(undefined)).toContain('mock mode')
   })
 })

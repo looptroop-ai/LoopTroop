@@ -9,15 +9,15 @@ export function isBeadStatus(value: unknown): value is BeadStatus {
   return typeof value === 'string' && (BEAD_STATUSES as readonly string[]).includes(value)
 }
 
-/** Status spellings earlier releases and some models still emit. */
-export const BEAD_STATUS_LEGACY_ALIASES: Readonly<Record<string, BeadStatus>> = Object.freeze({
+/** Status spellings some models emit. */
+export const BEAD_STATUS_ALIASES: Readonly<Record<string, BeadStatus>> = Object.freeze({
   completed: 'done',
   failed: 'error',
   skipped: 'done',
 })
 
 /**
- * The canonical status a legacy spelling means, or `undefined`.
+ * The canonical status an aliased spelling means, or `undefined`.
  *
  * Indexing the map directly reads through the prototype, so a bead whose status
  * was the string `constructor` resolved to a function rather than to nothing.
@@ -26,8 +26,8 @@ export const BEAD_STATUS_LEGACY_ALIASES: Readonly<Record<string, BeadStatus>> = 
  */
 export function resolveBeadStatusAlias(value: string): BeadStatus | undefined {
   const folded = value.trim().toLowerCase()
-  return Object.hasOwn(BEAD_STATUS_LEGACY_ALIASES, folded)
-    ? BEAD_STATUS_LEGACY_ALIASES[folded]
+  return Object.hasOwn(BEAD_STATUS_ALIASES, folded)
+    ? BEAD_STATUS_ALIASES[folded]
     : undefined
 }
 

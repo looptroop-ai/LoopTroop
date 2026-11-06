@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { readFileNoFollowSync } from '../io/readFile'
 import * as path from 'node:path'
 import { z } from 'zod'
-import { getTicketByRef, getTicketPaths, getLatestPhaseArtifact, isDisplayOnlyMockTicket, resolveTicketContainedPath, writeTicketFile } from '../storage/tickets'
+import { getTicketByRef, getTicketContext, getTicketPaths, getLatestPhaseArtifact, isDisplayOnlyMockTicket, resolveTicketContainedPath, writeTicketFile } from '../storage/tickets'
 import { ContainedPathError } from '../lib/containedPath'
 import { syncTicketRuntimeProjection } from '../storage/ticketRuntimeProjection'
 import { clearExecutionSetupState } from '../phases/executionSetup/storage'
@@ -245,7 +245,7 @@ function withExternalTargets(items: unknown[], ticketId: string): unknown[] {
 
 beadsRouter.get('/tickets/:id/beads', (c) => {
   const ticketId = c.req.param('id')
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   const flow = c.req.query('flow')
   const resolved = resolveBeadsPath(ticketId, flow)
@@ -275,7 +275,7 @@ beadsRouter.get('/tickets/:id/beads', (c) => {
  */
 beadsRouter.get('/tickets/:id/beads/raw', (c) => {
   const ticketId = c.req.param('id')
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   const resolved = resolveBeadsPath(ticketId, c.req.query('flow'))
   if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status)
@@ -508,7 +508,7 @@ beadsRouter.get('/tickets/:id/beads/:beadId/diff', (c) => {
   const ticketId = c.req.param('id')
   const beadId = c.req.param('beadId')
 
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   if (!beadId || !BEAD_ID_PATTERN.test(beadId)) {
     return c.json({ error: 'Invalid bead ID' }, 400)
   }

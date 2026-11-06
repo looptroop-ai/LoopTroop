@@ -12,6 +12,8 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { SkipReasonField } from './SkipReasonField'
 
+const VERIFICATION_SUMMARY_ARTIFACT_TYPES = ['integration_report', 'final_test_report'] as const
+
 interface VerificationSummaryPanelProps {
   ticket: Ticket
   onMerge: () => void
@@ -44,7 +46,8 @@ function shortSha(sha: string | null | undefined): string {
 }
 
 export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isPending }: VerificationSummaryPanelProps) {
-  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
+  // Only the two reports this panel reads, not every artifact the ticket ever made.
+  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id, { types: VERIFICATION_SUMMARY_ARTIFACT_TYPES })
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
   const [isCloseConfirmOpen, setIsCloseConfirmOpen] = useState(false)
   const [closeReason, setCloseReason] = useState('')

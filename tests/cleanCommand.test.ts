@@ -540,7 +540,7 @@ describe('clean command', () => {
       const pid = spawnStandIn()
       writeState(configDir, {
         pid: departedPid,
-        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid, startToken: tokenFor(pid) },
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid, startToken: tokenFor(pid) },
       })
 
       expect(inspectOrphanedOpenCode(configDir)).toEqual({ kind: 'stoppable', pid })
@@ -549,11 +549,11 @@ describe('clean command', () => {
     it('never signals a pid the record cannot prove', () => {
       const configDir = makeTempDir('config')
       const pid = spawnStandIn()
-      // The daemon that wrote this predates start tokens, so the number in it is
+      // The platform could not report a start token, so the number in it is
       // all there is — and a number is not an identity.
       writeState(configDir, {
         pid: departedPid,
-        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid },
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid },
       })
 
       const verdict = inspectOrphanedOpenCode(configDir)
@@ -571,6 +571,7 @@ describe('clean command', () => {
         opencode: {
           baseUrl: 'http://127.0.0.1:4096',
           owned: true,
+          status: 'managed',
           pid,
           startToken: 'the-token-of-a-process-that-has-exited',
         },
@@ -588,7 +589,7 @@ describe('clean command', () => {
       const pid = spawnStandIn()
       writeState(configDir, {
         pid: departedPid,
-        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: false, pid, startToken: tokenFor(pid) },
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: false, status: 'adopted', pid, startToken: tokenFor(pid) },
       })
 
       expect(inspectOrphanedOpenCode(configDir).kind).toBe('nothing')
@@ -601,6 +602,7 @@ describe('clean command', () => {
         opencode: {
           baseUrl: 'http://127.0.0.1:4096',
           owned: true,
+          status: 'managed',
           pid: departedPid,
           startToken: 'anything',
         },
@@ -617,7 +619,7 @@ describe('clean command', () => {
       try {
         writeState(configDir, {
           pid: departedPid,
-          opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid: pgid, startToken: 'anything' },
+          opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: pgid, startToken: 'anything' },
         })
 
         expect(inspectOrphanedOpenCode(configDir)).toEqual({
@@ -636,7 +638,7 @@ describe('clean command', () => {
       const pid = spawnStandIn()
       writeState(configDir, {
         pid: departedPid,
-        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid, startToken: tokenFor(pid) },
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid, startToken: tokenFor(pid) },
       })
 
       const { code, output } = await captureClean({ apply: true, configDir })
@@ -652,7 +654,7 @@ describe('clean command', () => {
       const pid = spawnStandIn()
       writeState(configDir, {
         pid: departedPid,
-        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid, startToken: tokenFor(pid) },
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid, startToken: tokenFor(pid) },
       })
 
       const { code, output } = await captureClean({
@@ -676,7 +678,7 @@ describe('clean command', () => {
       const pid = spawnStandIn()
       writeState(configDir, {
         pid: departedPid,
-        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid },
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid },
       })
 
       const { code, output } = await captureClean({ apply: true, configDir })

@@ -825,7 +825,6 @@ describe('commitBeadChanges', () => {
     writeFileSync(join(dir, '.repo-tool-cache', 'deps', 'state.ts'), 'export const cache = true\n')
 
     expect(getExecutionSetupCommitExcludedRoots(dir)).toEqual(expect.arrayContaining([
-      '.cache/project-tooling',
       '.ticket/runtime/execution-setup/tool-cache',
       '.repo-tool-cache',
     ]))
@@ -905,22 +904,5 @@ describe('commitBeadChanges', () => {
     expect(committedFiles).toEqual(['app.ts'])
     expect(execFileSync('git', ['-C', dir, 'ls-files', '--others', '--exclude-standard'], { encoding: 'utf8' }))
       .toContain('local-config/project.json')
-  })
-
-  it('does not commit legacy .cache/project-tooling files even without a setup profile', async () => {
-    const dir = makeFreshRepo()
-    mkdirSync(join(dir, '.cache', 'project-tooling', 'go', 'src'), { recursive: true })
-    writeFileSync(join(dir, '.cache', 'project-tooling', 'go', 'src', 'runtime.go'), 'package runtime\n')
-
-    const result = await commitBeadChanges(dir, 'bead-cache', 'Skip legacy cache')
-
-    expect(result).toMatchObject({
-      committed: false,
-      pushed: false,
-    })
-    expect(result.skippedFiles).toEqual(['.cache/project-tooling/go/src/runtime.go'])
-
-    const untrackedFiles = execFileSync('git', ['-C', dir, 'ls-files', '--others', '--exclude-standard'], { encoding: 'utf8' })
-    expect(untrackedFiles).toContain('.cache/project-tooling/go/src/runtime.go')
   })
 })

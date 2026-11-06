@@ -5,7 +5,6 @@ import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy, type GitHookPolicy } from '@s
 export {
   DEFAULT_GIT_HOOK_POLICY,
   isGitHookPolicy,
-  migrateGitHookPolicy,
   type GitHookPolicy,
 } from '@shared/gitHookPolicy'
 

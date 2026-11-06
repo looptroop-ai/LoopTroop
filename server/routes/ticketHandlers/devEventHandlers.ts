@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { getTicketState, sendTicketEvent } from '../../machines/persistence'
-import { getTicketByRef } from '../../storage/tickets'
+import { getTicketByRef, getTicketContext } from '../../storage/tickets'
 import { getTicketParam, logTicketOperationError } from './routeUtils'
 import { devEventSchema } from './schemas'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -18,7 +18,7 @@ export async function handleDevEvent(c: Context) {
   }
 
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   try {
     const body = await c.req.json()

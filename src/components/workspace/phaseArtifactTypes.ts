@@ -1972,20 +1972,30 @@ export function getArtifactTargetPhases(phase: string): string[] {
   return phaseMap[phase] || [phase]
 }
 
-/** Every phase whose active artifacts are needed to render a complete phase review. */
+/**
+ * Every phase whose active artifacts are needed to render a complete phase review.
+ * The artifacts panel loads exactly these when its parent passes nothing, so a
+ * view that reads another phase's artifact (by name, not through the target
+ * phases) has to list that phase here or find nothing.
+ */
 export function getArtifactSourcePhases(phase: string): string[] {
-  const councilDependencies: Record<string, string[]> = {
+  const readsFrom: Record<string, string[]> = {
     COUNCIL_VOTING_INTERVIEW: ['COUNCIL_DELIBERATING'],
     COMPILING_INTERVIEW: ['COUNCIL_DELIBERATING', 'COUNCIL_VOTING_INTERVIEW'],
+    // The final-interview fallback rebuilds from the council's drafts and votes.
+    VERIFYING_INTERVIEW_COVERAGE: ['COUNCIL_DELIBERATING', 'COUNCIL_VOTING_INTERVIEW'],
+    WAITING_INTERVIEW_APPROVAL: ['COUNCIL_DELIBERATING', 'COUNCIL_VOTING_INTERVIEW'],
     COUNCIL_VOTING_PRD: ['DRAFTING_PRD'],
     REFINING_PRD: ['DRAFTING_PRD', 'COUNCIL_VOTING_PRD'],
     COUNCIL_VOTING_BEADS: ['DRAFTING_BEADS'],
     REFINING_BEADS: ['DRAFTING_BEADS', 'COUNCIL_VOTING_BEADS'],
+    // Bead Commits' Net Diff is the candidate_diff written when the PR is created.
+    CODING: ['CREATING_PULL_REQUEST'],
   }
 
   return [...new Set([
     ...getArtifactTargetPhases(phase),
-    ...(councilDependencies[phase] ?? []),
+    ...(readsFrom[phase] ?? []),
     phase,
   ])]
 }

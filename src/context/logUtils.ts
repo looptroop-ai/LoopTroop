@@ -101,7 +101,6 @@ export interface LogActionsValue {
 export type LogContextValue = LogStateValue & LogActionsValue
 
 export const LOG_STORAGE_PREFIX = 'logs-v2-'
-const LEGACY_LOG_STORAGE_PREFIX = 'logs-'
 export const SERVER_LOG_REFRESH_EVENT = 'looptroop:server-log-refresh'
 export const INITIAL_LOG_PAGE_LIMIT = 20
 export const OLDER_LOG_PAGE_LIMIT = 250
@@ -706,11 +705,11 @@ export function clearPersistedTicketLogs(ticketId: string) {
 
   if (typeof window === 'undefined') return
 
-  const prefixes = [`${LOG_STORAGE_PREFIX}${ticketId}-`, `${LEGACY_LOG_STORAGE_PREFIX}${ticketId}-`]
+  const prefix = `${LOG_STORAGE_PREFIX}${ticketId}-`
   const keysToRemove: string[] = []
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
-    if (key && prefixes.some(prefix => key.startsWith(prefix))) {
+    if (key?.startsWith(prefix)) {
       keysToRemove.push(key)
     }
   }

@@ -74,6 +74,8 @@ export interface OpenCodeAdapter {
   ): Promise<string>;
   getSession(sessionId: string, signal?: AbortSignal): Promise<Session | null>;
   listSessions(signal?: AbortSignal): Promise<Session[]>;
+  /** Every session id in every project, or null when the transport cannot prove that complete. */
+  listAllSessionIds?(signal?: AbortSignal): Promise<ReadonlySet<string> | null>;
   getSessionMessages(
     sessionId: string,
     signal?: AbortSignal,
@@ -1824,6 +1826,17 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     return await (await this.getTransport(signal)).listSessions(signal);
   }
 
+  async listAllSessionIds(
+    signal?: AbortSignal,
+  ): Promise<ReadonlySet<string> | null> {
+    const transport = await this.getTransport(signal);
+    // v1 lists only the server's own project and does not page, so it cannot
+    // say which sessions are gone.
+    return transport.listAllSessionIds
+      ? await transport.listAllSessionIds(signal)
+      : null;
+  }
+
   async getSession(
     sessionId: string,
     signal?: AbortSignal,
@@ -2190,7 +2203,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
       if (beadId) {
         // The raw file text above is what the prompt shows; the bead itself is
-        // read through the reconciler, so a legacy stored status does not reach
+        // read through the reconciler, so an aliased status does not reach
         // `formatBeadContext` unrecognised and a malformed line does not abort
         // the whole read.
         const bead = readBeadsFile(containedBeadsPath, {

@@ -1,8 +1,9 @@
 import type { LogEvent, LogEventType, LogSource } from './types'
 import { safeAtomicAppendWithin } from '../io/atomicAppend'
-import { getTicketPaths } from '../storage/tickets'
+import { getTicketStorageContext } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
-import { queueProjectionAppend, type PersistedLogChannel } from './projection'
+import { queueProjectionAppend, resolveTicketLogPath, type PersistedLogChannel, type TicketLogStorage } from './projection'
+import { compactLogEntryForStorage } from './storedEntry'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { relative } from 'node:path'
 import { resolveContainedPath } from '../lib/containedPath'
@@ -120,9 +121,14 @@ function resolvePhaseAttemptSafely(
  *    to top-level event properties (entryId, sessionId, etc.) and internal
  *    flags (suppressDebugMirror) are removed from `data` before serializing.
  *
- * These optimizations reduce log size by ~80% (38 MB → ~7 MB measured on
- * a real ticket). The real-time log viewer is unaffected because it receives
- * all events via SSE, which is independent of disk persistence.
+ * 4. EACH TEXT IS STORED ONCE. `content` is left out when it equals `message`,
+ *    and a debug line keeps its plain-object payload only in `data` (flagged
+ *    `payloadInData`). Every reader expands lines back to the full shape with
+ *    expandStoredLogEntry (storedEntry.ts). This halves the normal and AI logs
+ *    and cuts the debug log to about a third.
+ *
+ * The real-time log viewer is unaffected because it receives all events via
+ * SSE, which is independent of disk persistence.
  * ─────────────────────────────────────────────────────────────────────────
  */
 export function appendLogEvent(
@@ -137,6 +143,15 @@ export function appendLogEvent(
 ) {
   const isDebugLog = isDebugLogInput(type, source, extra)
   const structured: Partial<LogEvent> = isDebugLog ? {} : pickStructuredFields(data)
+  // Streaming upserts are NOT persisted — only delivered via SSE (see budget
+  // note above). The finalize event carries the complete final content.
+  // Decided first, from the same merge the event uses: a streaming model sends
+  // up to 100 of these a second, and resolving the ticket for each one took a
+  // fifth of the server's time while models were writing.
+  const routing: Partial<LogEvent> = { ...structured, ...extra }
+  if (routing.op === UPSERT_LOG_OPERATION && routing.streaming && routing.entryId) {
+    return
+  }
   const timestamp = typeof data?.timestamp === 'string' ? data.timestamp : new Date().toISOString()
   const phaseAttempt = extra?.phaseAttempt
     ?? structured.phaseAttempt
@@ -160,24 +175,19 @@ export function appendLogEvent(
     ? event.fingerprint
     : undefined
 
-  const paths = getTicketPaths(ticketId)
-  if (!paths) {
+  // Only the storage location: the full ticket paths also resolve the worktree,
+  // setup and beads paths and read the ticket metadata, none of which an append uses.
+  const storage = getTicketStorageContext(ticketId)
+  if (!storage) {
     throw new Error(`Ticket not found for execution log append: ${ticketId}`)
   }
   const primaryChannel: PersistedLogChannel = isDebugEvent(event) ? 'debug' : 'normal'
-  const primaryLogPath = primaryChannel === 'debug' ? paths.debugLogPath : paths.executionLogPath
-
-  // Streaming upserts are NOT persisted — only delivered via SSE (see budget
-  // note above). The finalize event carries the complete final content.
-  if (event.op === UPSERT_LOG_OPERATION && event.streaming && event.entryId) {
-    return
-  }
 
   if (isAiDetailEvent(event)) {
-    appendEventToChannel(ticketId, paths.projectRoot, 'ai', paths.aiLogPath, event, phase, phaseAttempt, fingerprint)
+    appendEventToChannel(ticketId, storage, 'ai', event, phase, phaseAttempt, fingerprint)
   }
 
-  appendEventToChannel(ticketId, paths.projectRoot, primaryChannel, primaryLogPath, event, phase, phaseAttempt, fingerprint)
+  appendEventToChannel(ticketId, storage, primaryChannel, event, phase, phaseAttempt, fingerprint)
 }
 
 const MAX_PERSISTED_FINGERPRINTS_PER_TICKET = 256
@@ -186,9 +196,8 @@ const persistedFingerprintsByTicket = new Map<string, Map<string, number>>()
 
 function appendEventToChannel(
   ticketId: string,
-  projectRoot: string,
+  storage: TicketLogStorage,
   channel: PersistedLogChannel,
-  logPath: string,
   event: LogEvent,
   phase: WorkflowPhaseId,
   phaseAttempt: number,
@@ -198,10 +207,15 @@ function appendEventToChannel(
     return
   }
 
-  const serialized = JSON.stringify(event)
-  const canonicalRoot = resolveContainedPath(projectRoot, '.')
+  const logPath = resolveTicketLogPath(storage, channel)
+  // Each text is written once; readers expand the line (server/log/storedEntry.ts).
+  // The projection gets the same compact object, so live indexing and a catch-up
+  // from disk see identical input.
+  const stored = compactLogEntryForStorage(event as unknown as Record<string, unknown>)
+  const serialized = JSON.stringify(stored)
+  const canonicalRoot = resolveContainedPath(storage.projectRoot, '.')
   const range = safeAtomicAppendWithin(canonicalRoot, relative(canonicalRoot, logPath), serialized)
-  queueProjectionAppend(ticketId, channel, event as unknown as Record<string, unknown>, range.offset, range.length)
+  queueProjectionAppend(ticketId, channel, stored, range.offset, range.length)
   if (fingerprint) {
     rememberPersistedFingerprint(ticketId, channel, phase, phaseAttempt, fingerprint)
   }

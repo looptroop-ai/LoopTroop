@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { createReadStream, type ReadStream } from 'node:fs'
 import * as readline from 'node:readline'
-import { getTicketByRef, resolveTicketContainedPath } from '../storage/tickets'
+import { getTicketByRef, getTicketContext, resolveTicketContainedPath } from '../storage/tickets'
 import { listAttachedProjectRoots } from '../storage/projects'
 import { openFileNoFollowSync, readFileNoFollowSync } from '../io/readFile'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
@@ -251,7 +251,7 @@ filesRouter.get('/files/:ticketId/:file', async (c) => {
     return c.json({ error: `Invalid file type. Must be one of: ${VALID_FILES.join(', ')}` }, 400)
   }
 
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   const filePath = resolveTicketFilePath(ticketId, file)
   if (!filePath) return c.json({ error: 'Ticket not found' }, 404)
 
@@ -272,7 +272,7 @@ filesRouter.put('/files/:ticketId/:file', async (c) => {
     return c.json({ error: `Invalid file type. Must be one of: ${VALID_FILES.join(', ')}` }, 400)
   }
 
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   if (!resolveTicketFilePath(ticketId, file)) return c.json({ error: 'Ticket not found' }, 404)
 
   if (file === 'interview') {

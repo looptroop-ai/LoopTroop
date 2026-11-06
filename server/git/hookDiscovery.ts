@@ -77,7 +77,7 @@ export function readApprovedGitHookEvidence(profileContent: string): DetectedGit
 /**
  * A stable projection of hook evidence: known fields only, in a fixed key
  * order, sorted by the identity of the hook. Malformed entries are dropped
- * rather than compared, so a legacy or hand-edited profile cannot register as
+ * rather than compared, so a hand-edited profile cannot register as
  * drift purely by being unreadable.
  */
 export function normalizeGitHookEvidence(value: unknown): DetectedGitHookPayload[] {

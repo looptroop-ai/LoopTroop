@@ -188,13 +188,14 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
   }
 
   async listSessions(signal?: AbortSignal): Promise<Session[]> {
-    const res = await this.client.session.list(
+    // The SDK resolves an HTTP error instead of rejecting it, and an empty list
+    // read from that would look like a server with no sessions.
+    const res = this.rejectHttpError(await this.client.session.list(
       { limit: SESSION_LIST_LIMIT },
       this.requestOptions(this.withSdkOperationTimeout(signal)),
-    )
-    return Array.isArray(res.data)
-      ? res.data.map(session => this.mapSession(session as Record<string, unknown>))
-      : []
+    ))
+    if (!Array.isArray(res.data)) throw new Error('OpenCode returned a session list that is not a list')
+    return res.data.map(session => this.mapSession(session as Record<string, unknown>))
   }
 
   async getSessionMessages(sessionId: string, directory?: string, signal?: AbortSignal): Promise<Message[]> {
@@ -245,13 +246,16 @@ export class OpenCodeV1Transport implements OpenCodeTransport {
     signal?: AbortSignal,
   ): Promise<OpenCodeQuestionRequest[]> {
     const scopedDirectory = directory ?? projectPath
-    const res = await this.client.question.list(
+    // As for listSessions: an HTTP error read as an empty list would mean "no
+    // pending questions", and startup would close the waits of live ones.
+    const res = this.rejectHttpError(await this.client.question.list(
       scopedDirectory ? { directory: scopedDirectory } : undefined,
       this.requestOptions(this.withSdkOperationTimeout(signal)),
-    )
-    const requests = Array.isArray(res.data)
-      ? res.data.map(request => this.mapQuestionRequest(request)).filter((request): request is OpenCodeQuestionRequest => Boolean(request))
-      : []
+    ))
+    if (!Array.isArray(res.data)) throw new Error('OpenCode returned a question list that is not a list')
+    const requests = res.data
+      .map(request => this.mapQuestionRequest(request))
+      .filter((request): request is OpenCodeQuestionRequest => Boolean(request))
     return sessionId ? requests.filter(request => request.sessionID === sessionId) : requests
   }
 

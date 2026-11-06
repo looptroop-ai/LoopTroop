@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { AlertTriangle, FileText, Loader2 } from 'lucide-react'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
-import { useTicketArtifacts, type TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
+import { useTicketArtifactBundle, type TicketArtifactCollectionState, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
 import { useQuery } from '@tanstack/react-query'
 import { describeQueryError, throwIfNotOk } from '@/lib/fetchError'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
@@ -28,6 +28,7 @@ import {
   buildFinalInterviewArtifactContent,
   buildFinalRefinementArtifactContent,
   buildCoverageArtifactContent,
+  getArtifactSourcePhases,
   getArtifactTargetPhases,
   parseRefinementArtifact,
   parseExecutionSetupPlanReport,
@@ -140,7 +141,13 @@ function normalizeBeadCommitMetadata(value: unknown): BeadCommitMetadata | null 
 export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMemberCount = 3, councilMemberNames, prefixElement, artifactState }: PhaseArtifactsPanelProps) {
   const supplementalArtifacts = useMemo(() => getSupplementalArtifacts(phase, isCompleted), [phase, isCompleted])
   const [viewingSelection, setViewingSelection] = useState<ViewingArtifactSelection | null>(null)
-  const internalArtifactState = useTicketArtifacts(artifactState ? undefined : ticketId)
+  // Without a bundle from the parent, load the same source phases the review and
+  // council views pass in, not every artifact the ticket ever produced.
+  const internalScopes = useMemo<TicketArtifactQueryScope[]>(
+    () => (artifactState ? [] : getArtifactSourcePhases(phase).map((sourcePhase) => ({ phase: sourcePhase }))),
+    [artifactState, phase],
+  )
+  const internalArtifactState = useTicketArtifactBundle(artifactState ? undefined : ticketId, internalScopes)
   const resolvedArtifactState = artifactState ?? internalArtifactState
   const dbArtifacts = useMemo(() => resolvedArtifactState.artifacts ?? [], [resolvedArtifactState.artifacts])
   const artifactErrorMessage = describeQueryError(resolvedArtifactState.error) ?? 'The artifact request failed.'

@@ -15,6 +15,7 @@ import {
 } from '@/test/workspaceArtifactBuilders'
 import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { PhaseArtifactsPanel } from '../PhaseArtifactsPanel'
+import { getArtifactSourcePhases } from '../phaseArtifactTypes'
 import { buildCouncilMemberArtifacts, getCouncilStatusLabel } from '../councilArtifacts'
 import type { TicketArtifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
 
@@ -155,6 +156,48 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent(message)
     expect(screen.queryByText(/will be generated during this phase/i)).not.toBeInTheDocument()
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('loads only its source phases when the parent passes no artifacts', async () => {
+    const fetchMock = vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderWithProviders(<PhaseArtifactsPanel phase="COUNCIL_VOTING_PRD" isCompleted={false} ticketId={TEST.ticketId} />)
+
+    const expectedPhases = getArtifactSourcePhases('COUNCIL_VOTING_PRD')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(expectedPhases.length))
+    const requests = fetchMock.mock.calls.map((call) => new URL(String((call as unknown[])[0]), 'http://localhost'))
+    expect(requests.every((url) => url.pathname.endsWith('/artifacts'))).toBe(true)
+    expect(requests.map((url) => url.searchParams.get('phase')).sort()).toEqual([...expectedPhases].sort())
+    expect(expectedPhases).toEqual(expect.arrayContaining(['COUNCIL_VOTING_PRD', 'DRAFTING_PRD']))
+  })
+
+  it('loads the PR candidate diff for a completed coding phase when the parent passes no artifacts', async () => {
+    const candidateDiffArtifact = makeArtifact({
+      phase: 'CREATING_PULL_REQUEST',
+      artifactType: 'candidate_diff',
+      content: JSON.stringify({
+        status: 'passed',
+        patch: [
+          'diff --git a/src/final.ts b/src/final.ts',
+          '--- a/src/final.ts',
+          '+++ b/src/final.ts',
+          '@@ -1 +1 @@',
+          '-draft',
+          '+final candidate behavior',
+        ].join('\n'),
+      }),
+    })
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost')
+      const body = url.searchParams.get('phase') === 'CREATING_PULL_REQUEST' ? [candidateDiffArtifact] : []
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderWithProviders(<PhaseArtifactsPanel phase="CODING" isCompleted ticketId={TEST.ticketId} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Bead Commits/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /src\/final\.ts/i }))
+    expect(screen.getByText(hasExactTextContent('+final candidate behavior'))).toBeInTheDocument()
   })
 
   it('keeps loaded content visible when a background refresh fails', () => {

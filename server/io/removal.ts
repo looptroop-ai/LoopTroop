@@ -1,4 +1,5 @@
 import { chmodSync, lstatSync, readdirSync, rmSync } from 'node:fs'
+import { chmod, lstat, readdir } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -31,4 +32,30 @@ export function makeOwnerWritableRecursive(targetPath: string): void {
   }
 
   chmodSync(targetPath, stats.mode | 0o600)
+}
+
+/**
+ * `makeOwnerWritableRecursive` without blocking the event loop, for trees large
+ * enough (package caches) that a synchronous walk would stall the server.
+ */
+export async function makeOwnerWritableRecursiveAsync(targetPath: string): Promise<void> {
+  let stats: Stats
+  try {
+    stats = await lstat(targetPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+
+  if (stats.isSymbolicLink()) return
+
+  if (stats.isDirectory()) {
+    await chmod(targetPath, stats.mode | 0o700)
+    for (const entry of await readdir(targetPath)) {
+      await makeOwnerWritableRecursiveAsync(resolve(targetPath, entry))
+    }
+    return
+  }
+
+  await chmod(targetPath, stats.mode | 0o600)
 }

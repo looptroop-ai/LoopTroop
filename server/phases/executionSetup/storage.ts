@@ -1,10 +1,13 @@
 import { runGitSync } from '../../git/runCommand'
 import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { lstatSync, readdirSync, rmSync } from 'node:fs'
+import { lstat, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { phaseArtifacts } from '../../db/schema'
-import { getTicketContext, getTicketPaths, resolveTicketContainedPath, writeTicketFile } from '../../storage/tickets'
+import { getTicketContext, getTicketPaths, getTicketStorageContext, resolveTicketContainedPath, writeTicketFile } from '../../storage/tickets'
+import { getProjectWorktreesRoot } from '../../storage/paths'
+import { makeOwnerWritableRecursiveAsync } from '../../io/removal'
 import {
   EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
   EXECUTION_SETUP_PLAN_NOTES_ARTIFACT_TYPE,
@@ -64,14 +67,6 @@ export function validateExecutionSetupPaths(
   }
 }
 
-export function removeExecutionSetupPathViolations(
-  _worktreePath: string,
-  _baseline?: ExecutionSetupPathSnapshot,
-): string[] {
-  // Compatibility no-op: repository-local setup outputs are no longer policy violations.
-  return []
-}
-
 export function writeExecutionSetupProfileMirror(ticketId: string, profile: ExecutionSetupProfile): string | null {
   const path = resolveTicketContainedPath(ticketId, 'runtime/execution-setup-profile.json')
   if (!path) return null
@@ -113,6 +108,79 @@ export function clearExecutionSetupRuntimeArtifacts(ticketId: string, options: {
     const targetPath = join(paths.executionSetupDir, entry.name)
     rmSync(targetPath, { recursive: true, force: true })
     removed.push(targetPath)
+  }
+  return removed
+}
+
+/**
+ * A canceled ticket never runs again, so its setup folder (package caches that can
+ * reach gigabytes, plus the launcher) only costs disk space and startup scans. The
+ * small setup profile stays as the record of what ran. Completed tickets lose this
+ * folder in Cleaning Up; blocked tickets keep it, because a retry reuses the cache.
+ *
+ * Asynchronous: deleting thousands of cache files synchronously would stall every
+ * request and live update until it finished.
+ */
+export async function removeCanceledExecutionSetupFolder(ticketId: string): Promise<boolean> {
+  const executionSetupDir = resolveTicketContainedPath(ticketId, 'runtime/execution-setup', 'remove')
+  if (!executionSetupDir) return false
+  try {
+    await lstat(executionSetupDir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  // Retries cover a just-stopped Windows child still holding a handle.
+  try {
+    await rm(executionSetupDir, { recursive: true, force: true, maxRetries: 3 })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'EACCES' && code !== 'EPERM') throw error
+    // Some package caches (Go's module cache) are read-only by design. Cleaning
+    // Up makes the tree writable first; here only after a refusal, and without
+    // blocking the server.
+    await makeOwnerWritableRecursiveAsync(executionSetupDir)
+    await rm(executionSetupDir, { recursive: true, force: true, maxRetries: 3 })
+  }
+  return true
+}
+
+/** The folder's plain path, for a check that must not cost synchronous work. */
+function plainExecutionSetupPath(ticketRef: string): string | null {
+  const storage = getTicketStorageContext(ticketRef)
+  return storage
+    ? join(getProjectWorktreesRoot(storage.projectRoot), storage.externalId, '.ticket', 'runtime', 'execution-setup')
+    : null
+}
+
+/**
+ * Retries the removal for canceled tickets, one at a time. A cancel whose delete
+ * failed, or a crash in the middle of one, leaves a folder nothing else removes.
+ *
+ * Runs on every start, so a ticket without a leftover folder costs one async
+ * lstat. `shouldRemove` is asked right before deleting (still canceled, cancel
+ * confirmed), because the ref can meanwhile belong to another ticket.
+ */
+export async function sweepCanceledExecutionSetupFolders(
+  ticketRefs: readonly string[],
+  shouldRemove: (ticketRef: string) => boolean,
+): Promise<number> {
+  let removed = 0
+  for (const ticketRef of ticketRefs) {
+    try {
+      const plainPath = plainExecutionSetupPath(ticketRef)
+      if (!plainPath) continue
+      try {
+        await lstat(plainPath)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      if (!shouldRemove(ticketRef)) continue
+      if (await removeCanceledExecutionSetupFolder(ticketRef)) removed += 1
+    } catch (error) {
+      console.warn(`[startup] Could not remove the execution setup folder of canceled ticket ${ticketRef}:`, error)
+    }
   }
   return removed
 }

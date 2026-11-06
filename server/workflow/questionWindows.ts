@@ -1292,12 +1292,54 @@ export interface RestartSessionOwner {
   active: boolean
 }
 
+const RESTART_QUESTION_LIST_CONCURRENCY = 8
+
+/**
+ * The sessions OpenCode still has, in every project, or null when that cannot be
+ * known: the listing failed, was malformed or cut short, or the protocol lists
+ * one project only (v1). A session OpenCode no longer has cannot hold a question,
+ * but treating an incomplete answer as complete would skip live questions and let
+ * startup close their waits.
+ */
+export async function listLiveOpenCodeSessionIds(): Promise<ReadonlySet<string> | null> {
+  const adapter = getOpenCodeAdapter()
+  if (!adapter.listAllSessionIds) return null
+  try {
+    return await adapter.listAllSessionIds()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether OpenCode answered that a session does not exist. A session it no
+ * longer has cannot hold a question, so failing to list its questions is not
+ * an unverified check; a lookup that fails (transport, timeout) proves nothing.
+ */
+async function isSessionConfirmedGone(
+  adapter: ReturnType<typeof getOpenCodeAdapter>,
+  sessionId: string,
+): Promise<boolean> {
+  if (typeof adapter.getSession !== 'function') return false
+  try {
+    return (await adapter.getSession(sessionId)) === null
+  } catch {
+    return false
+  }
+}
+
 export async function reconcilePendingQuestionsAfterRestart(input: {
   projectRoot: string
   /** Every active session in the project, whichever ticket owns it. */
   owners: RestartSessionOwner[]
   /** Per-ticket window, for a request whose artifact could not be rebuilt. */
   windowMsFor: (ticketId: string) => number
+  /**
+   * Sessions OpenCode still has (listLiveOpenCodeSessionIds). Owners outside it are
+   * not asked and are not unverified: nothing can be pending for them. Null or
+   * absent asks every owner, as when the listing could not be trusted.
+   */
+  liveSessionIds?: ReadonlySet<string> | null
 }): Promise<{ reattached: number; rejected: number; unverified: number }> {
   const adapter = getOpenCodeAdapter()
 
@@ -1307,11 +1349,31 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
   const owners = new Map(input.owners.map((owner) => [owner.sessionId, owner]))
   const pendingById = new Map<string, Awaited<ReturnType<typeof adapter.listPendingQuestions>>[number]>()
   let unverified = 0
-  for (const owner of owners.values()) {
-    let requests: Awaited<ReturnType<typeof adapter.listPendingQuestions>>
-    try {
-      requests = await adapter.listPendingQuestions(undefined, undefined, owner.sessionId)
-    } catch {
+  // Most recorded sessions are long gone, and each failed lookup used to count as
+  // unverified, which kept stale question waits open. So a session that did not
+  // come back is asked only while OpenCode still lists it; one that reconnected
+  // was just found by exact lookup and is always asked. Up to eight at a time;
+  // results merge in owner order.
+  const liveSessionIds = input.liveSessionIds ?? null
+  const ownerList = [...owners.values()].filter((owner) => owner.active || !liveSessionIds || liveSessionIds.has(owner.sessionId))
+  const listed: Array<Awaited<ReturnType<typeof adapter.listPendingQuestions>> | null> = []
+  let nextOwner = 0
+  await Promise.all(Array.from({ length: Math.min(RESTART_QUESTION_LIST_CONCURRENCY, ownerList.length) }, async () => {
+    while (nextOwner < ownerList.length) {
+      const index = nextOwner++
+      const sessionId = ownerList[index]!.sessionId
+      try {
+        listed[index] = await adapter.listPendingQuestions(undefined, undefined, sessionId)
+      } catch {
+        // Without a complete listing (v1, or a list that failed) gone sessions
+        // are asked too, and asking a gone session fails. Only a failure for a
+        // session that may still exist leaves the project unverified.
+        listed[index] = await isSessionConfirmedGone(adapter, sessionId) ? [] : null
+      }
+    }
+  }))
+  for (const requests of listed) {
+    if (requests === null) {
       unverified += 1
       continue
     }

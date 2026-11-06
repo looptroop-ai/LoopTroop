@@ -16,7 +16,7 @@ import type {
 import { CancelledError } from './types'
 import type { Message, PromptPart, StreamEvent } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
-import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE, VOTING_RUBRIC, getVotingRubricForPhase } from './types'
+import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE, VOTING_RUBRIC_INTERVIEW, getVotingRubricForPhase } from './types'
 import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../workflow/runOpenCodePrompt'
 import { createWorkBudget } from '../workflow/workBudget'
 import { buildStructuredRetryPrompt, normalizeVoteScorecardOutput } from '../structuredOutput'
@@ -41,7 +41,7 @@ function unconfirmedVoterStopError(sessionId?: string): Error {
     : 'Could not confirm abort of an OpenCode session that was still being created')
 }
 
-function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC): string {
+function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC_INTERVIEW): string {
   return [
     'Output strict machine-readable YAML with top-level `draft_scores` keyed by the exact presented draft labels (`Draft 1`, `Draft 2`, etc.).',
     `For each draft, include only these integer fields: ${rubric.map(item => `\`${item.category}\``).join(', ')}, and \`total_score\`.`,
@@ -159,7 +159,7 @@ export async function conductVoting(
   buildPromptForVoter?: (entry: {
     voter: CouncilMember
     anonymizedDrafts: PresentedDraft[]
-    rubric: typeof VOTING_RUBRIC
+    rubric: typeof VOTING_RUBRIC_INTERVIEW
   }) => PromptPart[],
   sessionOwnership?: {
     ticketId: string
@@ -179,7 +179,7 @@ export async function conductVoting(
   }
   const votes: Vote[] = []
   const validDrafts = drafts.filter(d => d.outcome === 'completed' && d.content)
-  const rubric = phase ? getVotingRubricForPhase(phase) : VOTING_RUBRIC
+  const rubric = phase ? getVotingRubricForPhase(phase) : VOTING_RUBRIC_INTERVIEW
   const presentationOrders: Record<string, VotePresentationOrder> = {}
   const memberOutcomes = voters.reduce<Record<string, MemberOutcome>>((outcomes, voter) => {
     outcomes[voter.modelId] = 'pending'

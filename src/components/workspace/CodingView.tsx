@@ -1292,7 +1292,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
       if (entry.beadIteration !== undefined && entry.beadIteration !== activeRawAttempt.iteration) return false
       return !iterationBounds || (index >= iterationBounds.start && index < iterationBounds.end)
     })
-    // Older logs may not carry iteration metadata. Keep them visible when
+    // Some entries carry no iteration metadata. Keep them visible when
     // there is only one known iteration, but do not mix them into a view with
     // multiple iterations where their origin cannot be determined safely.
     if (entriesForIteration.length > 0 || beadRawAttempts.length > 1) return entriesForIteration

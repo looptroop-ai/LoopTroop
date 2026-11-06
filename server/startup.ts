@@ -9,7 +9,9 @@ import { getOpenCodeBaseUrl } from './opencode/runtimeConfig'
 import { recoverPendingOpenCodeSessionOwnership, SessionManager } from './opencode/sessionManager'
 import { opencodeSessions, tickets } from './db/schema'
 import { getProjectContextById, listProjects } from './storage/projects'
-import { buildTicketRef, getTicketPaths, listTickets } from './storage/tickets'
+import { buildTicketRef, getTicketContext, getTicketPaths, listCanceledTicketRefs, listTicketRefs } from './storage/tickets'
+import { isTicketCancellationPending } from './workflow/phases/state'
+import { sweepCanceledExecutionSetupFolders } from './phases/executionSetup/storage'
 import {
   formatStartupStorageSummary,
   initializeStartupState,
@@ -19,7 +21,7 @@ import { restoreInterruptedOpencodeStepsConfig } from './phases/execution/openco
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
 import { resolveAppConfigDir } from './lib/appConfigDir'
-import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
+import { getPendingQuestionSummary, listLiveOpenCodeSessionIds, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
 import { closeQuestionWait, listOpenQuestionWaitTicketIds } from './storage/questionWaits'
 import { resolveAiQuestionSettings } from './workflow/phases/helpers'
 import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
@@ -36,9 +38,9 @@ export function recoverTicketRuntimeArtifacts() {
   // state.
   recoveredTmpFiles += recoverOrphanTmpFiles(resolveAppConfigDir(), 'config').length
 
-  for (const ticket of listTickets()) {
+  for (const ticketId of listTicketRefs()) {
     try {
-      const paths = getTicketPaths(ticket.id)
+      const paths = getTicketPaths(ticketId)
       if (!paths) continue
 
       recoveredTmpFiles += recoverOrphanTmpFiles(paths.ticketDir).length
@@ -64,7 +66,7 @@ export function recoverTicketRuntimeArtifacts() {
       }
     } catch (error) {
       if (error instanceof RecoveryBlockedError) throw error
-      console.warn(`[startup] Skipped artifact recovery for ${ticket.id}: ${getErrorMessage(error)}`)
+      console.warn(`[startup] Skipped artifact recovery for ${ticketId}: ${getErrorMessage(error)}`)
     }
   }
 
@@ -185,6 +187,8 @@ export async function reconcileOpenCodeQuestions(
 ): Promise<{ reattached: number; rejected: number }> {
   let reattached = 0
   let rejected = 0
+  // One listing for every project: which recorded sessions OpenCode still has.
+  const liveSessionIds = await listLiveOpenCodeSessionIds()
 
   for (const project of attachedProjects) {
     const context = getProjectContextById(project.id)
@@ -253,6 +257,7 @@ export async function reconcileOpenCodeQuestions(
         projectRoot: project.folderPath,
         owners,
         windowMsFor: (ticketId) => resolveAiQuestionSettings(ticketId).windowMs,
+        liveSessionIds,
       })
       reattached += result.reattached
       rejected += result.rejected
@@ -297,6 +302,19 @@ export async function startupSequence(): Promise<void> {
   console.log('[startup] Step 2: Recover ticket runtime artifacts')
   const recovery = recoverTicketRuntimeArtifacts()
   console.log(`[startup] Recovered ${recovery.recoveredTmpFiles} orphan temp files, repaired ${recovery.repairedExecutionLogs} execution logs, settled ${recovery.settledOpencodeStepCaps} interrupted OpenCode step caps, rebuilt ${recovery.rebuiltProjections} state projections`)
+
+  // In the background: deleting package caches can take a while, and nothing waits
+  // on it. Only tickets still canceled, whose cancel was confirmed: until then a
+  // stopped session may still be writing there.
+  void Promise.resolve()
+    .then(() => sweepCanceledExecutionSetupFolders(
+      listCanceledTicketRefs(),
+      (ticketRef) => getTicketContext(ticketRef)?.localTicket.status === 'CANCELED' && !isTicketCancellationPending(ticketRef),
+    ))
+    .then((removed) => {
+      if (removed > 0) console.log(`[startup] Removed ${removed} execution setup folders left by canceled tickets`)
+    })
+    .catch((error) => console.warn(`[startup] Could not sweep execution setup folders of canceled tickets: ${getErrorMessage(error)}`))
 
   console.log('[startup] Step 3: Start WAL checkpoint timer')
   startWalCheckpoint()

@@ -1,4 +1,18 @@
 import { readPhaseRetryNote, savePhaseRetryNote } from '../retryNotes'
+import { readPersistedLogEntries } from '../../test/logFiles'
+
+/** The structured-output notice rows these tests read back from the phase log. */
+interface StructuredOutputNotice {
+  content: string
+  data: {
+    structuredOutput: {
+      repairWarnings: string[]
+      interventions: Array<{ technicalDetail: string; rawMessages: string[]; examples: Array<{ before: string; after: string }>; exactCorrection?: string }>
+      autoRetryCount?: number
+      validationError?: string
+    }
+  }
+}
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -204,26 +218,27 @@ describe('additional interview phase flows', () => {
     try {
       await handleInterviewQAStart(ticket.id, context, vi.fn(), new AbortController().signal)
       expect(readInterviewSessionSnapshotArtifact(ticket.id)?.currentBatch?.aiCommentary).toBe(commentary)
-      const notices = readFileSync(paths.executionLogPath, 'utf8').trim().split('\n')
-        .map((line) => JSON.parse(line)).filter((entry) => entry.content.startsWith('Interview output normalization:'))
+      const notices = readPersistedLogEntries<StructuredOutputNotice>(paths.executionLogPath)
+        .filter((entry) => entry.content.startsWith('Interview output normalization:'))
       if (kind === 'clean') {
         expect(notices).toHaveLength(0)
       } else {
         expect(notices).toHaveLength(1)
-        expect(notices[0]).toMatchObject({ phase: 'WAITING_INTERVIEW_ANSWERS', modelId: winnerId, sessionId: 'first-prom4-session' })
+        const notice = notices[0]!
+        expect(notice).toMatchObject({ phase: 'WAITING_INTERVIEW_ANSWERS', modelId: winnerId, sessionId: 'first-prom4-session' })
         if (kind === 'repair') {
-          expect(notices[0].content).toContain('Corrected the formatting of ai_commentary at payload line 7. The emitted value was preserved.')
-          expect(notices[0].content).not.toContain(commentary)
-          const logged = notices[0].data.structuredOutput
+          expect(notice.content).toContain('Corrected the formatting of ai_commentary at payload line 7. The emitted value was preserved.')
+          expect(notice.content).not.toContain(commentary)
+          const logged = notice.data.structuredOutput
           expect(logged.repairWarnings[0]).toContain('(truncated')
-          expect(logged.interventions[0].technicalDetail).toContain('(truncated')
-          expect(logged.interventions[0].rawMessages[0]).toContain('(truncated')
-          expect(logged.interventions[0].examples[0].before).toContain('(truncated')
-          expect(logged.interventions[0].examples[0].after).toContain('(truncated')
+          expect(logged.interventions[0]?.technicalDetail).toContain('(truncated')
+          expect(logged.interventions[0]?.rawMessages[0]).toContain('(truncated')
+          expect(logged.interventions[0]?.examples[0]?.before).toContain('(truncated')
+          expect(logged.interventions[0]?.examples[0]?.after).toContain('(truncated')
           expect(JSON.stringify(logged)).not.toContain(commentary)
         } else {
-          expect(notices[0].content).toContain('accepted after 1 structured retry attempt(s)')
-          expect(notices[0].data.structuredOutput).toMatchObject({ autoRetryCount: 1, validationError: 'The previous response was invalid.' })
+          expect(notice.content).toContain('accepted after 1 structured retry attempt(s)')
+          expect(notice.data.structuredOutput).toMatchObject({ autoRetryCount: 1, validationError: 'The previous response was invalid.' })
         }
       }
     } finally {
@@ -501,8 +516,7 @@ describe('additional interview phase flows', () => {
         sessionId: 'replacement-prom4-session',
         winnerId: TEST.councilMembers[0],
       })
-      const phaseLog = readFileSync(paths.executionLogPath, 'utf8')
-        .trim().split('\n').map((line) => JSON.parse(line))
+      const phaseLog = readPersistedLogEntries(paths.executionLogPath)
       expect(phaseLog).toContainEqual(expect.objectContaining({
         phase: 'WAITING_INTERVIEW_ANSWERS',
         modelId: TEST.councilMembers[0],
@@ -561,8 +575,8 @@ describe('additional interview phase flows', () => {
         answers: { Q01: { answer: 'The main outcome is stable behavior.' } },
       })
       expect(readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf8')).toContain('The main outcome is stable behavior.')
-      const notices = readFileSync(paths.executionLogPath, 'utf8').trim().split('\n')
-        .map((line) => JSON.parse(line)).filter((entry) => entry.content.startsWith('Interview output normalization:'))
+      const notices = readPersistedLogEntries<StructuredOutputNotice>(paths.executionLogPath)
+        .filter((entry) => entry.content.startsWith('Interview output normalization:'))
       if (kind === 'clean') expect(notices).toHaveLength(0)
       else {
         expect(notices).toHaveLength(1)
@@ -570,7 +584,7 @@ describe('additional interview phase flows', () => {
           phase: 'WAITING_INTERVIEW_ANSWERS', modelId: active.winnerId, sessionId: 'prom4-session',
           data: { structuredOutput },
         })
-        expect(notices[0].content).toContain(kind === 'retry'
+        expect(notices[0]?.content).toContain(kind === 'retry'
           ? 'accepted after 1 structured retry attempt(s)'
           : structuredOutput?.interventions?.[0]?.exactCorrection)
       }

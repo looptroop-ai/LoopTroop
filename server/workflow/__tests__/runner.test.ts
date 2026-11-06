@@ -1,4 +1,5 @@
 import { createActor } from 'xstate'
+import * as executionSetupStorage from '../../phases/executionSetup/storage'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TicketContext } from '../../machines/types'
 import { ticketMachine } from '../../machines/ticketMachine'
@@ -742,6 +743,43 @@ describe('attachWorkflowRunner', () => {
     await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledTimes(2))
     await vi.waitFor(() => expect(hasPendingSessionContinuationForTicketPhase(TEST.ticketId, 'CODING')).toBe(false))
     actor.stop()
+  })
+
+  it('removes the setup folder of a canceled ticket only after the stop is confirmed', async () => {
+    const removeFolder = vi.spyOn(executionSetupStorage, 'removeCanceledExecutionSetupFolder').mockResolvedValue(true)
+    try {
+      abortTicketSessionsMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+      const actor = createSnapshotActor('CANCELED', { title: 'Canceled setup folder', status: 'CANCELED', previousStatus: 'PREPARING_EXECUTION_ENV' })
+      actor.start()
+      attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+
+      await vi.waitFor(() => expect(abortTicketSessionsMock).toHaveBeenCalledTimes(1))
+      expect(removeFolder).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(removeFolder).toHaveBeenCalledWith(TEST.ticketId))
+      expect(removeFolder).toHaveBeenCalledOnce()
+      actor.stop()
+    } finally {
+      removeFolder.mockRestore()
+    }
+  })
+
+  it('finishes a cancel even when the setup folder cannot be removed', async () => {
+    const removeFolder = vi.spyOn(executionSetupStorage, 'removeCanceledExecutionSetupFolder').mockRejectedValue(new Error('EACCES'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      abortTicketSessionsMock.mockResolvedValueOnce(true)
+      const actor = createSnapshotActor('CANCELED', { title: 'Locked setup folder', status: 'CANCELED', previousStatus: 'CODING' })
+      actor.start()
+      attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
+
+      await vi.waitFor(() => expect(removeFolder).toHaveBeenCalledOnce())
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not remove the execution setup folder'), expect.any(Error))
+      expect(actor.getSnapshot().value).toBe('CANCELED')
+      actor.stop()
+    } finally {
+      removeFolder.mockRestore()
+      warn.mockRestore()
+    }
   })
 
   it('redrives a failed cancel marker before sending CANCEL from a live phase', async () => {

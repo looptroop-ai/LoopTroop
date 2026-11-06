@@ -43,7 +43,7 @@ export interface UIState {
     search: string
     priority: number[] | null
     stuckDays: number | null
-    /** Tri-state error filter replacing the legacy binary `onlyErrors`. */
+    /** Tri-state error filter. */
     errorState: ErrorStateFilter
     sortBy: string
     showMocks: boolean

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as executionLog from '../../../log/executionLog'
+import { expandStoredLogEntry } from '../../../log/storedEntry'
 import { broadcaster } from '../../../sse/broadcaster'
 import {
   buildBeadLogFields,
@@ -29,11 +30,21 @@ describe('DEBUG emission privacy', () => {
       expect(append).toHaveBeenCalledTimes(1)
       const persistedMessage = append.mock.calls[0]?.[3] ?? ''
       const persistedData = append.mock.calls[0]?.[4]
+      const persistedExtra = append.mock.calls[0]?.[7]
       const live = broadcast.mock.calls[0]?.[2]
       for (const evidence of [persistedMessage, JSON.stringify(persistedData), JSON.stringify(live)]) {
         expect(evidence).not.toMatch(/logger-(?:header|cookie|other-cookie|body|message)-secret/)
       }
-      expect(persistedMessage.length).toBeGreaterThan(10_000)
+      // Stored once: the line keeps the label and the payload lives only in data;
+      // a reader rebuilds the complete text, unlike the truncated live copy.
+      expect(persistedExtra).toMatchObject({ payloadInData: true })
+      expect(persistedMessage).not.toContain('Keep the cause')
+      const readable = expandStoredLogEntry<Record<string, unknown>>({ message: persistedMessage, data: persistedData, payloadInData: persistedExtra?.payloadInData })
+      expect(String(readable.message).length).toBeGreaterThan(10_000)
+      expect(readable.message).toBe(`${persistedMessage} ${JSON.stringify(Object.fromEntries(Object.entries(persistedData ?? {}).filter(([key]) => key !== 'timestamp')))}`)
+      expect(readable.content).toBe(readable.message)
+      expect(readable.message).toContain('e'.repeat(9000))
+      expect(readable.message).toContain('Keep the cause.')
       expect(live?.content).toContain('debug payload truncated for live stream')
       expect(persistedData).toMatchObject({
         ...payload,
@@ -245,5 +256,29 @@ describe('buildBeadLogFields', () => {
 
   it('omits the bead id when it is empty', () => {
     expect(buildBeadLogFields('', 2)).toEqual({ beadIteration: 2 })
+  })
+})
+
+describe('DEBUG emission storage', () => {
+  it('keeps the payload text in the line when it cannot be rebuilt from data', () => {
+    const append = vi.spyOn(executionLog, 'appendLogEvent').mockImplementation(() => {})
+    const broadcast = vi.spyOn(broadcaster, 'broadcast').mockImplementation(() => {})
+    try {
+      emitDebugLog('1:T-storage', 'CODING', 'payload with its own time', { timestamp: 'payload time', value: 1 })
+      emitDebugLog('1:T-storage', 'CODING', 'string payload', 'raw provider text')
+      emitDebugLog('1:T-storage', 'CODING', 'plain payload', { value: 2 })
+
+      const [withTimestamp, withString, plain] = append.mock.calls
+      expect(withTimestamp?.[3]).toBe('[DEBUG] payload with its own time {"timestamp":"payload time","value":1}')
+      expect(withTimestamp?.[7]).not.toHaveProperty('payloadInData')
+      expect(withString?.[3]).toBe('[DEBUG] string payload raw provider text')
+      expect(withString?.[7]).not.toHaveProperty('payloadInData')
+      // The control: a plain payload is stored once, as the label plus data.
+      expect(plain?.[3]).toBe('[DEBUG] plain payload')
+      expect(plain?.[7]).toMatchObject({ payloadInData: true })
+    } finally {
+      append.mockRestore()
+      broadcast.mockRestore()
+    }
   })
 })

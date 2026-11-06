@@ -40,8 +40,8 @@ function hasDamagedHeader(response: Response): boolean {
 }
 
 function readNavigatorData(value: unknown): BeadsNavigatorData {
-  // Keep already-cached array data usable while the query migrates to the
-  // damage-aware envelope returned by the route.
+  // The approval view writes the saved bead list straight into this cache, as
+  // a plain array; the route returns the damage-aware envelope.
   if (Array.isArray(value)) return { items: value, damaged: false }
   if (!value || typeof value !== 'object') return { items: [], damaged: false }
   const candidate = value as { items?: unknown; damaged?: unknown }

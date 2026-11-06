@@ -1,53 +1,32 @@
 /**
  * Schema versioning for both SQLite databases.
  *
- * Databases predating `SCHEMA_VERSIONING_SINCE` carry no version marker. They
- * are disposable test data and are stamped with the current version on first
- * open. From that release onward the version is authoritative: a database
- * written by a newer LoopTroop is refused rather than opened, because the boot
- * path mutates schema destructively (migrateLegacyProfilesTable drops and
- * recreates `profiles`) and an older binary cannot know what a newer one added.
+ * LoopTroop is in alpha and does not upgrade data written by another version.
+ * A database is either fresh (created and stamped now) or at exactly the version
+ * this build writes; anything else, older or newer, is refused before any DDL runs,
+ * with a message that says what to delete to start fresh.
  *
  * The two databases version independently: they evolve in separate code paths
- * and a project database can be much older than the app database that opens it.
+ * and a project database can be older than the app database that opens it.
  */
 
-/**
- * The release in which schema versioning began.
- *
- * A fixed point in history rather than the running version, so it is stated
- * once here instead of written literally into each message that reports it.
- * `verify:version` rejects a literal that matches the current version, and this
- * boundary would otherwise become a release-blocking failure in the very
- * release that reached it.
- */
-export const SCHEMA_VERSIONING_SINCE = '0.5.0'
+/** Bump when the app database schema changes. Every other version is refused. */
+export const APP_SCHEMA_VERSION = 3
 
-/** Bump when the app database schema changes in a way older builds cannot read. */
-export const APP_SCHEMA_VERSION = 2
+/** Bump when the project database schema changes. Every other version is refused. */
+export const PROJECT_SCHEMA_VERSION = 3
 
-/** Bump when the project database schema changes in a way older builds cannot read. */
-export const PROJECT_SCHEMA_VERSION = 2
-
-/** Version recorded for databases created before schema versioning existed. */
+/** What `PRAGMA user_version` reads before anything was stamped. */
 export const UNVERSIONED_SCHEMA_VERSION = 0
 
-/**
- * Oldest version the idempotent boot DDL can still bring forward.
- *
- * Raise this in the same change that introduces a schema step needing real data
- * migration rather than additive DDL. Databases below the floor are refused
- * instead of being half-upgraded.
- */
-export const APP_MIGRATABLE_FROM = 1
-export const PROJECT_MIGRATABLE_FROM = 1
+/** The names the operator messages use for the two databases. */
+export const APP_DATABASE_LABEL = 'app database'
+export const PROJECT_DATABASE_LABEL = 'project database'
 
 export type SchemaCompatibility =
   | { kind: 'fresh' }
-  | { kind: 'unversioned' }
   | { kind: 'current' }
   | { kind: 'older'; found: number }
-  | { kind: 'unsupported'; found: number }
   | { kind: 'newer'; found: number }
 
 export interface SchemaVersionInspection {
@@ -58,33 +37,41 @@ export interface SchemaVersionInspection {
 /**
  * Classifies a database before anything mutates it.
  *
- * `hasExistingTables` distinguishes a brand-new file (version 0, no tables)
- * from a database predating `SCHEMA_VERSIONING_SINCE` (version 0, tables
- * present). Both read as 0, but only the latter needs the reset message.
+ * `hasExistingTables` tells a brand-new file (version 0, no tables) from one
+ * written before versions were stamped (version 0, tables present): only the
+ * first is fresh; the second is older and refused.
  */
 export function classifySchemaVersion(
   inspection: SchemaVersionInspection,
   expected: number,
-  migratableFrom: number = 1,
 ): SchemaCompatibility {
   const { found, hasExistingTables } = inspection
-
-  if (found === UNVERSIONED_SCHEMA_VERSION) {
-    if (!hasExistingTables) return { kind: 'fresh' }
-    return { kind: 'unversioned' }
-  }
-
+  if (found === UNVERSIONED_SCHEMA_VERSION && !hasExistingTables) return { kind: 'fresh' }
   if (found === expected) return { kind: 'current' }
   if (found > expected) return { kind: 'newer', found }
-  if (found < migratableFrom) return { kind: 'unsupported', found }
   return { kind: 'older', found }
 }
 
 /** True when the boot DDL should stamp the current version after it runs. */
 export function shouldStampAfterInit(compatibility: SchemaCompatibility): boolean {
   return compatibility.kind === 'fresh'
-    || compatibility.kind === 'unversioned'
-    || compatibility.kind === 'older'
+}
+
+/** How to start fresh after the app database was refused. */
+export function appDatabaseResetInstructions(databasePath: string): string {
+  return `To start fresh, delete ${databasePath} and the -wal and -shm files next to it, then attach your projects again.`
+}
+
+/**
+ * How to start fresh after a project database was refused. The whole `.looptroop`
+ * folder goes, because its ticket folders belong to the old tickets; old ticket
+ * branches would otherwise be picked up by new tickets that get the same IDs.
+ */
+export function projectDatabaseResetInstructions(projectRoot: string): string {
+  return [
+    `To start fresh, delete the .looptroop folder in ${projectRoot}, run "git worktree prune" there,`,
+    'delete the old ticket branches you no longer need (new tickets reuse a branch with their ID), and attach the project again.',
+  ].join(' ')
 }
 
 export function buildNewerSchemaMessage(
@@ -101,37 +88,18 @@ export function buildNewerSchemaMessage(
   ].join('\n')
 }
 
-export function buildUnversionedResetMessage(
-  databaseLabel: string,
-  databasePath: string,
-): string {
-  return [
-    `The ${databaseLabel} at ${databasePath} predates LoopTroop ${SCHEMA_VERSIONING_SINCE} and carries no schema version.`,
-    'Its schema will be reconciled by the standard startup DDL, which only adds missing',
-    'tables and columns; no data migration is attempted. It is then stamped with the current',
-    'schema version. If LoopTroop misbehaves, delete that file and restart to begin clean.',
-  ].join('\n')
-}
-
 export function buildOlderSchemaMessage(
   databaseLabel: string,
-  found: number,
-  expected: number,
-): string {
-  return `Upgrading ${databaseLabel} schema from version ${found} to ${expected}.`
-}
-
-export function buildUnsupportedSchemaMessage(
-  databaseLabel: string,
   databasePath: string,
   found: number,
-  migratableFrom: number,
+  expected: number,
+  resetInstructions: string,
 ): string {
+  const written = found === UNVERSIONED_SCHEMA_VERSION ? 'carries no schema version' : `reports schema version ${found}`
   return [
-    `The ${databaseLabel} at ${databasePath} reports schema version ${found}.`,
-    `This build can only upgrade databases from version ${migratableFrom} onward.`,
-    'Upgrading it here would leave it partially modified, so LoopTroop stopped instead.',
-    'Delete that file to start from a clean database, or run an older LoopTroop first.',
+    `The ${databaseLabel} at ${databasePath} was created by an older version of LoopTroop: it ${written}, and this build uses version ${expected}.`,
+    'LoopTroop is in alpha and does not convert data from older versions, so it stopped without changing its tables or data.',
+    resetInstructions,
   ].join('\n')
 }
 
@@ -179,7 +147,8 @@ export interface IncompatibleSchemaDetails {
   databasePath: string
   found: number
   expected: number
-  migratableFrom: number
+  /** What to delete to start fresh; empty for a newer database, which only needs a newer LoopTroop. */
+  resetInstructions: string
 }
 
 /**
@@ -196,7 +165,7 @@ export class IncompatibleSchemaVersionError extends Error {
   readonly databasePath: string
   readonly found: number
   readonly expected: number
-  readonly migratableFrom: number
+  readonly resetInstructions: string
 
   constructor(message: string, details: IncompatibleSchemaDetails) {
     super(message)
@@ -205,7 +174,7 @@ export class IncompatibleSchemaVersionError extends Error {
     this.databasePath = details.databasePath
     this.found = details.found
     this.expected = details.expected
-    this.migratableFrom = details.migratableFrom
+    this.resetInstructions = details.resetInstructions
   }
 }
 
@@ -214,39 +183,31 @@ export interface AssertSchemaCompatibleArgs {
   databaseLabel: string
   databasePath: string
   expected: number
-  migratableFrom: number
-  onNotice: (message: string) => void
+  /** What the refusal tells the operator to delete; see the reset-instruction helpers. */
+  resetInstructions: string
 }
 
 /**
  * Shared guard for both database boot paths: classifies before anything
- * mutates, refuses what cannot be upgraded safely, and returns the
- * compatibility so the caller knows whether to stamp once DDL has run.
+ * mutates, refuses every database not written by this schema version, and
+ * returns the compatibility so the caller knows whether to stamp after its DDL.
  */
 export function assertSchemaCompatible(args: AssertSchemaCompatibleArgs): SchemaCompatibility {
-  const { store, databaseLabel, databasePath, expected, migratableFrom, onNotice } = args
-  const compatibility = classifySchemaVersion(inspectSchemaVersion(store), expected, migratableFrom)
+  const { store, databaseLabel, databasePath, expected, resetInstructions } = args
+  const compatibility = classifySchemaVersion(inspectSchemaVersion(store), expected)
 
   if (compatibility.kind === 'newer') {
     throw new IncompatibleSchemaVersionError(
       buildNewerSchemaMessage(databaseLabel, databasePath, compatibility.found, expected),
-      { databaseLabel, databasePath, found: compatibility.found, expected, migratableFrom },
+      { databaseLabel, databasePath, found: compatibility.found, expected, resetInstructions: '' },
     )
-  }
-
-  if (compatibility.kind === 'unsupported') {
-    throw new IncompatibleSchemaVersionError(
-      buildUnsupportedSchemaMessage(databaseLabel, databasePath, compatibility.found, migratableFrom),
-      { databaseLabel, databasePath, found: compatibility.found, expected, migratableFrom },
-    )
-  }
-
-  if (compatibility.kind === 'unversioned') {
-    onNotice(buildUnversionedResetMessage(databaseLabel, databasePath))
   }
 
   if (compatibility.kind === 'older') {
-    onNotice(buildOlderSchemaMessage(databaseLabel, compatibility.found, expected))
+    throw new IncompatibleSchemaVersionError(
+      buildOlderSchemaMessage(databaseLabel, databasePath, compatibility.found, expected, resetInstructions),
+      { databaseLabel, databasePath, found: compatibility.found, expected, resetInstructions },
+    )
   }
 
   return compatibility

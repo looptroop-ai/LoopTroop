@@ -18,6 +18,7 @@ import { clearTicketArtifactsCache, useTicketArtifacts, type TicketArtifact } fr
 import { useSaveTicketUIState, useTicketUIState, type Ticket } from '@/hooks/useTickets'
 import { getCascadeEditWarningMessage } from '@/lib/workflowMeta'
 import type { InterviewDocument } from '@shared/interviewArtifact'
+import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { parseInterviewDocument } from '@/lib/interviewDocument'
 import {
   type PrdApprovalDraft,
@@ -95,6 +96,16 @@ function parseWinnerId(content: string | null | undefined): string | null {
   const winnerId = typeof parsed?.winnerId === 'string' ? parsed.winnerId.trim() : ''
   return winnerId || null
 }
+
+/**
+ * Every artifact this pane reads (the winner, votes, drafts, full answers and the
+ * coverage report, plus their UI companions), so it does not download the rest.
+ */
+const PRD_APPROVAL_ARTIFACT_TYPES = [
+  'prd_winner',
+  ...['prd_votes', 'prd_drafts', 'prd_full_answers', 'prd_coverage']
+    .flatMap((type) => [type, buildUiArtifactCompanionArtifactType(type)]),
+]
 
 function resolvePrdWinnerId(artifacts: TicketArtifact[]): string | null {
   const winnerArtifact = findLatestArtifact(artifacts, artifact => artifact.artifactType === 'prd_winner')
@@ -183,7 +194,7 @@ export function PrdApprovalPane({
     isError: isArtifactsError,
     error: artifactsError,
     refetch: refetchArtifacts,
-  } = useTicketArtifacts(ticket.id)
+  } = useTicketArtifacts(ticket.id, { types: PRD_APPROVAL_ARTIFACT_TYPES })
   // Coverage gaps live in the artifacts. A failed request made `coverageWarning`
   // absent, which reads exactly like "no gaps" — so the button said "Approve"
   // and the operator approved without the answer having been obtained.

@@ -73,23 +73,19 @@ describe('classifyWorktreePath', () => {
     }
   })
 
-  it('excludes the legacy execution setup cache whether or not the path is tracked', () => {
-    expect(classifyWorktreePath('.cache/project-tooling/go/src/runtime.go', { untracked: true }))
-      .toEqual({ category: 'setupExcluded' })
-    expect(classifyWorktreePath('.cache/project-tooling/go/src/runtime.go', { untracked: false }))
-      .toEqual({ category: 'setupExcluded' })
-  })
-
   it('matches a cache root on segment boundaries, not on a string prefix', () => {
-    // `.cache/project-tooling-extra` is not inside `.cache/project-tooling`, so
-    // it is only noise, and only while untracked.
-    expect(classifyWorktreePath('.cache/project-tooling-extra/go/src/runtime.go', { untracked: true }))
+    const setupExcludedRoots = ['.cache/tooling']
+    expect(classifyWorktreePath('.cache/tooling/go/src/runtime.go', { untracked: false, setupExcludedRoots }))
+      .toEqual({ category: 'setupExcluded' })
+    // `.cache/tooling-extra` is not inside `.cache/tooling`, so it is only
+    // noise, and only while untracked.
+    expect(classifyWorktreePath('.cache/tooling-extra/go/src/runtime.go', { untracked: true, setupExcludedRoots }))
       .toEqual({ category: 'generatedNoise', generatedNoisePattern: '.cache/' })
-    expect(classifyWorktreePath('.cache/project-tooling-extra/go/src/runtime.go', { untracked: false }))
+    expect(classifyWorktreePath('.cache/tooling-extra/go/src/runtime.go', { untracked: false, setupExcludedRoots }))
       .toEqual({ category: 'committable' })
   })
 
-  it('excludes the setup roots the caller supplies, on top of the legacy ones', () => {
+  it('excludes the setup roots the caller supplies', () => {
     const setupExcludedRoots = ['.ticket/runtime/execution-setup/tool-cache']
 
     expect(classifyWorktreePath('.ticket/runtime/execution-setup/tool-cache/go/src/runtime.go', {

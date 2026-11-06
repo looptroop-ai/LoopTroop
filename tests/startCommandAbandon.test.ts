@@ -281,7 +281,7 @@ describe('abandoning a start that never reported ready', () => {
       startedAt: new Date().toISOString(),
       version: '0.0.0-test',
       apiToken: 'test-token',
-      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid: pid + 1 },
+      opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, status: 'managed', pid: pid + 1 },
     }, configDir)
 
     const message = await abandonFailedStart(configDir, child, null)
@@ -344,7 +344,7 @@ describe('abandoning a start that never reported ready', () => {
           databasePath: join(configDir, 'app.db'),
           found: 9,
           expected: 7,
-          migratableFrom: 7,
+          resetInstructions: '',
         },
       },
     }

@@ -189,8 +189,8 @@ export interface SkipReceipt {
   reason: string | null
   truncated_for_prompt: boolean
   supersedes: string | null
-  /** Present only on `opencode_question` rows. */
-  question_context?: SkipQuestionContext | null
+  /** Set on `opencode_question` rows, null on every other row. */
+  question_context: SkipQuestionContext | null
 }
 
 /** The camelCase read view the audit surfaces and the client work with. */
@@ -210,12 +210,7 @@ export interface SkipEvent {
   /** True when a prompt reading this reason will see a shortened copy. */
   truncatedForPrompt: boolean
   skippedAt: string
-  /**
-   * Who decided.
-   *
-   * Rows written before this field existed report `user`, which is what they
-   * meant: a person was the only actor there was.
-   */
+  /** Who decided. */
   skippedBy: SkipActor
   reason: string | null
   supersedes: string | null

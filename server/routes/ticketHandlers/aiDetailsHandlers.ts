@@ -1,11 +1,11 @@
 import type { Context } from 'hono'
 import { getTicketParam } from './routeUtils'
 import { getAiDetails } from '../../storage/aiTurnMetrics'
-import { getTicketByRef, resolvePhaseAttempt } from '../../storage/tickets'
+import { getTicketContext, resolvePhaseAttempt } from '../../storage/tickets'
 
 export function handleGetAiDetails(c: Context) {
   const ticketId = getTicketParam(c)
-  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  if (!getTicketContext(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
 
   const scope = c.req.query('scope') ?? 'phase'
   if (scope !== 'phase' && scope !== 'lifecycle') {

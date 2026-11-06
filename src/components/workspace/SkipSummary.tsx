@@ -2,7 +2,6 @@ import { AlertCircle, RefreshCw } from 'lucide-react'
 import { formatAiQuestionWindow } from '@shared/aiQuestions'
 import {
   describeSkipSurface,
-  SKIP_ACTORS,
   SKIP_ACTOR_LABELS,
   type SkipActor,
   type SkipEvent,
@@ -52,19 +51,6 @@ function CountsLine({ counts }: { counts: SkipEventCounts }) {
       {counts.itemsWithoutReason} without
     </span>
   )
-}
-
-/**
- * Reads the actor off a row, defaulting to `user`.
- *
- * Receipts written before the trail had an actor meant `user` — a person was
- * the only thing that could skip. Rendering those as "unknown" would invent a
- * doubt the record never had.
- */
-function resolveSkipActor(value: unknown): SkipActor {
-  return typeof value === 'string' && (SKIP_ACTORS as readonly string[]).includes(value)
-    ? (value as SkipActor)
-    : 'user'
 }
 
 // Three actors, three registers, none of them a failure. A wait that ran out is
@@ -133,7 +119,7 @@ function SkipLine({ event, itemCount, showClock }: {
   showClock?: boolean
 }) {
   const label = describeSkipSurface(event.surface)
-  const actor = resolveSkipActor(event.skippedBy)
+  const actor = event.skippedBy
   const context = showClock ? event.questionContext ?? null : null
   // The reason keeps the hover it has always had; the clock adds to it rather
   // than taking it over.

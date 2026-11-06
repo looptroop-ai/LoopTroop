@@ -97,82 +97,36 @@ const skipQuestionContextSchema = z.object({
 })
 
 /**
- * Versioned discriminated union.
+ * Parsing at the read boundary is what protects a stored record: a TypeScript
+ * type describes what this build writes, not what is in the database.
  *
- * A TypeScript union describes what this build writes; it does nothing for what
- * an older build already wrote into the database. Parsing at the read boundary
- * is the only thing that protects a stored record.
+ * `skipped_by` is not a literal `user`: a question that ran out its wait was
+ * refused by nobody, and filing that under a person's name would be a lie the
+ * trail cannot walk back.
  */
-const V1_SURFACES = SKIP_SURFACES.filter((surface) => surface !== 'opencode_question')
-
-export const skipReceiptSchema = z.discriminatedUnion('schema_version', [
-  /**
-   * Frozen. This is what is already in people's databases.
-   *
-   * Its surface and item-type lists are pinned to what v1 could actually write.
-   * Widening the shared enums inside this branch would let a v1 row claim a
-   * surface that did not exist when it was written, which is exactly the drift
-   * versioning is here to prevent.
-   */
-  z.object({
-    schema_version: z.literal(1),
-    artifact: z.literal('skip_receipt'),
-    receipt_id: z.string().min(1),
-    action_id: z.string().min(1),
-    parent_action_id: z.string().min(1).nullable(),
-    surface: z.enum(V1_SURFACES as unknown as [SkipSurface, ...SkipSurface[]]),
-    item_id: z.string().min(1).nullable(),
-    item_type: z.enum([
-      'interview_question',
-      'interview_batch',
-      'approval',
-      'manual_qa_round',
-      'manual_qa_item',
-      'ticket',
-    ]),
-    is_action_summary: z.boolean(),
-    phase: z.string().min(1),
-    phase_attempt: z.number().int().positive().nullable(),
-    ticket_status_before: z.string().min(1),
-    skipped_by: z.literal('user'),
-    actor_ref: z.string().min(1).nullable(),
-    skipped_at: z.string().min(1),
-    reason: z.string().max(SKIP_REASON_MAX_LENGTH).nullable(),
-    truncated_for_prompt: z.boolean(),
-    supersedes: z.string().min(1).nullable(),
-    /** True when this row records an item that stopped being skipped. */
-    resolves: z.boolean().default(false),
-  }),
-  /**
-   * v2 adds the actor and the question context.
-   *
-   * `skipped_by` was a literal because a person was the only thing that could
-   * skip. A question that ran out its wait was refused by nobody, and filing
-   * that under a person's name would be a lie the trail cannot walk back.
-   */
-  z.object({
-    schema_version: z.literal(2),
-    artifact: z.literal('skip_receipt'),
-    receipt_id: z.string().min(1),
-    action_id: z.string().min(1),
-    parent_action_id: z.string().min(1).nullable(),
-    surface: z.enum(SKIP_SURFACES as unknown as [SkipSurface, ...SkipSurface[]]),
-    item_id: z.string().min(1).nullable(),
-    item_type: skipItemTypeSchema,
-    is_action_summary: z.boolean(),
-    phase: z.string().min(1),
-    phase_attempt: z.number().int().positive().nullable(),
-    ticket_status_before: z.string().min(1),
-    skipped_by: z.enum(SKIP_ACTORS as unknown as [SkipActor, ...SkipActor[]]),
-    actor_ref: z.string().min(1).nullable(),
-    skipped_at: z.string().min(1),
-    reason: z.string().max(SKIP_REASON_MAX_LENGTH).nullable(),
-    truncated_for_prompt: z.boolean(),
-    supersedes: z.string().min(1).nullable(),
-    resolves: z.boolean().default(false),
-    question_context: skipQuestionContextSchema.nullable().default(null),
-  }),
-])
+export const skipReceiptSchema = z.object({
+  schema_version: z.literal(SKIP_RECEIPT_SCHEMA_VERSION),
+  artifact: z.literal('skip_receipt'),
+  receipt_id: z.string().min(1),
+  action_id: z.string().min(1),
+  parent_action_id: z.string().min(1).nullable(),
+  surface: z.enum(SKIP_SURFACES as unknown as [SkipSurface, ...SkipSurface[]]),
+  item_id: z.string().min(1).nullable(),
+  item_type: skipItemTypeSchema,
+  is_action_summary: z.boolean(),
+  phase: z.string().min(1),
+  phase_attempt: z.number().int().positive().nullable(),
+  ticket_status_before: z.string().min(1),
+  skipped_by: z.enum(SKIP_ACTORS as unknown as [SkipActor, ...SkipActor[]]),
+  actor_ref: z.string().min(1).nullable(),
+  skipped_at: z.string().min(1),
+  reason: z.string().max(SKIP_REASON_MAX_LENGTH).nullable(),
+  truncated_for_prompt: z.boolean(),
+  supersedes: z.string().min(1).nullable(),
+  /** True when this row records an item that stopped being skipped. */
+  resolves: z.boolean(),
+  question_context: skipQuestionContextSchema.nullable(),
+})
 
 export interface SkipReceiptItemInput {
   itemId: string | null
@@ -254,7 +208,6 @@ export function deriveSkipActionId(prefix: string, parts: Array<string | number 
 
 function readSkipReceiptRows(ticketRef: string): Array<{
   id: number
-  /** As stored. A row written by an older build can name a status that is gone. */
   phase: string
   phaseAttempt: number
   artifactType: string
@@ -479,9 +432,7 @@ function toSkipEvent(receipt: SkipReceipt): SkipEvent {
     ticketStatusBefore: receipt.ticket_status_before,
     truncatedForPrompt: receipt.truncated_for_prompt,
     skippedAt: receipt.skipped_at,
-    // A v1 row has no actor field. It was written when a person was the only
-    // thing that could skip, so `user` is what it meant, not a guess.
-    skippedBy: receipt.skipped_by ?? 'user',
+    skippedBy: receipt.skipped_by,
     reason: receipt.reason,
     supersedes: receipt.supersedes,
     superseded: false,

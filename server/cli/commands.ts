@@ -1104,8 +1104,8 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
     case 'adopted':
       return `${opencode.baseUrl} (started elsewhere)`
     default:
-      // A record from a build that predates the status field. `owned` is all it
-      // said, and guessing beyond that would be inventing the answer.
+      // Rejecting the record instead would hide a running daemon from `stop`
+      // after an upgrade. `owned` is all it says; guessing more would invent it.
       return `${opencode.baseUrl}${opencode.owned ? ' (started by LoopTroop)' : ''}`
   }
 }

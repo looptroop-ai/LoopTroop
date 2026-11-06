@@ -208,6 +208,61 @@ describe('server/git/runCommand', () => {
     }
   })
 
+  it.runIf(process.platform !== 'win32')('reuses the core.sshCommand answer for a few seconds, then reads it again', () => {
+    const root = makeTempDir('run-command-ssh-probe-window-')
+    const clock = vi.spyOn(Date, 'now')
+    try {
+      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
+      const start = Date.now()
+      clock.mockReturnValue(start)
+      runGitSync(root, ['status', '--porcelain'], { log: false })
+
+      const marker = join(root, 'ssh-wrapper-used')
+      const wrapper = join(root, 'ssh-wrapper.sh')
+      writeFileSync(wrapper, `#!/bin/sh\nprintf configured > "${marker}"\nexit 1\n`, { mode: 0o755 })
+      execFileSync('git', ['-C', root, 'config', 'core.sshCommand', `${wrapper} --configured`], { stdio: 'pipe' })
+
+      // Inside the window the earlier "not configured" answer stands, so the
+      // non-interactive fallback is used instead of the new wrapper.
+      runGitSync(root, ['ls-remote', 'ssh://example.invalid/unused.git'], { log: false })
+      expect(existsSync(marker)).toBe(false)
+
+      clock.mockReturnValue(start + 5_001)
+      runGitSync(root, ['ls-remote', 'ssh://example.invalid/unused.git'], { log: false })
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      clock.mockRestore()
+      removeTempDir(root)
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('reads core.sshCommand again when the environment git inherits changes', () => {
+    const root = makeTempDir('run-command-ssh-probe-env-')
+    const otherHome = makeTempDir('run-command-ssh-probe-home-')
+    const clock = vi.spyOn(Date, 'now')
+    try {
+      execFileSync('git', ['-C', root, 'init'], { stdio: 'pipe' })
+      clock.mockReturnValue(Date.now())
+      runGitSync(root, ['status', '--porcelain'], { log: false })
+
+      const marker = join(root, 'ssh-wrapper-used')
+      const wrapper = join(root, 'ssh-wrapper.sh')
+      writeFileSync(wrapper, `#!/bin/sh\nprintf configured > "${marker}"\nexit 1\n`, { mode: 0o755 })
+      execFileSync('git', ['-C', root, 'config', 'core.sshCommand', `${wrapper} --configured`], { stdio: 'pipe' })
+
+      // Same directory, same instant, but git would now read another global
+      // config: the earlier answer does not apply, so the wrapper is found.
+      vi.stubEnv('HOME', otherHome)
+      runGitSync(root, ['ls-remote', 'ssh://example.invalid/unused.git'], { log: false })
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      vi.unstubAllEnvs()
+      clock.mockRestore()
+      removeTempDir(root)
+      removeTempDir(otherHome)
+    }
+  })
+
   it.runIf(process.platform !== 'win32')('does not block the async runner while reading core.sshCommand', async () => {
     const root = makeTempDir('run-command-async-ssh-config-')
     try {

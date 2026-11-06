@@ -5,6 +5,7 @@ import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { readTicketMeta } from '../../ticket/metadata'
+import * as ticketMetadata from '../../ticket/metadata'
 import * as ticketFileStorage from '../../ticket/containedPath'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { attachProject, getProjectContextById, updateProject } from '../projects'
@@ -655,6 +656,19 @@ describe('ticket start configuration locking', () => {
       effectiveGitHookPolicy: 'use_native_hooks',
       effectiveGitHookPolicySource: 'project',
     })
+  })
+
+  it('asks for a fresh base branch before deciding whether to delete the ticket branch', async () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'SAFE' })
+    const ticket = createTicket({ projectId: project.id, title: 'Fresh base branch on delete' })
+    const resolveBase = vi.spyOn(ticketMetadata, 'resolveTicketBaseBranch')
+    try {
+      expect(await deleteTicket(ticket.id)).toBe(true)
+      expect(resolveBase).toHaveBeenCalledWith(expect.any(String), ticket.externalId, { fresh: true })
+    } finally {
+      resolveBase.mockRestore()
+    }
   })
 
   it('falls back to the detected base branch and unlinks an aliased ticket worktree without following it', async () => {

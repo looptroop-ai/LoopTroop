@@ -5,10 +5,6 @@ import { isAbsolute, relative, resolve } from 'node:path'
 
 export const EXECUTION_SETUP_PROFILE_PATH = '.ticket/runtime/execution-setup-profile.json'
 
-export const LEGACY_EXECUTION_SETUP_CACHE_ROOTS = [
-  '.cache/project-tooling',
-] as const
-
 const GIT_OP_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
 const LOOP_TROOP_ROOTS = [
@@ -206,7 +202,7 @@ export function getExecutionSetupCommitExcludedRoots(
   worktreePath: string,
   profile?: ExecutionSetupProfileLike | null,
 ): string[] {
-  const roots = new Set<string>(LEGACY_EXECUTION_SETUP_CACHE_ROOTS)
+  const roots = new Set<string>()
   for (const root of collectExecutionSetupRoots(worktreePath, profile)) {
     roots.add(root)
   }
@@ -264,11 +260,7 @@ export function classifyWorktreePath(path: string, options: FileClassifyOptions 
     }
   }
 
-  const setupExcludedRoots = [
-    ...LEGACY_EXECUTION_SETUP_CACHE_ROOTS,
-    ...(options.setupExcludedRoots ?? []),
-  ]
-  for (const root of setupExcludedRoots) {
+  for (const root of options.setupExcludedRoots ?? []) {
     if (isWithinRoot(normalizedPath, root)) {
       return { category: 'setupExcluded' }
     }

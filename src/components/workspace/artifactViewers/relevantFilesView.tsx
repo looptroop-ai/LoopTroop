@@ -65,7 +65,7 @@ export function RelevantFilesScanView({ content }: { content: string }) {
     return <RawContentWithCopy content={content} />
   }
 
-  // Normalize: accept both camelCase (new) and snake_case (legacy DB rows)
+  // The stored artifact uses the model's snake_case `content_preview`; accept camelCase too.
   const parsed: RelevantFilesScanData = {
     ...raw,
     files: raw.files.map(f => ({

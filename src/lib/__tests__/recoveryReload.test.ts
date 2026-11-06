@@ -42,6 +42,22 @@ describe('requestRecoveryReload', () => {
     expect(reload).toHaveBeenCalledTimes(1)
   })
 
+  it('treats a stored value that is not a reload record as no record', () => {
+    // A bare timestamp parses as JSON but has no `at`; text does not parse at all.
+    for (const stored of ['1000', 'not a record', '0x3e8']) {
+      const reload = vi.fn()
+      const setTimeout = vi.fn()
+
+      expect(requestRecoveryReload('backend-reconnect', {
+        now: () => 1_000,
+        reload,
+        setTimeout,
+        storage: createStorage(stored),
+      })).toBe(true)
+      expect(setTimeout).toHaveBeenCalledTimes(1)
+    }
+  })
+
   it('suppresses duplicate reload requests inside the cooldown', () => {
     const storage = createStorage()
     const reload = vi.fn()

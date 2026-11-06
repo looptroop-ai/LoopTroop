@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseUiArtifactCompanionArtifact } from '@shared/artifactCompanions'
-import { VOTING_RUBRIC, type Vote } from '../../council/types'
+import { VOTING_RUBRIC_INTERVIEW, type Vote } from '../../council/types'
 import type { conductVoting as ConductVoting } from '../../council/voter'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { getLatestPhaseArtifact } from '../../storage/tickets'
@@ -208,7 +208,7 @@ describe('interview voting workflow', () => {
           draftId: draft.memberId,
           content: `Draft ${index + 1}:\n${draft.content}`,
         })),
-        rubric: VOTING_RUBRIC,
+        rubric: VOTING_RUBRIC_INTERVIEW,
       })
       expect(prompt?.map((part) => part.content).join('\n')).toContain(context.title)
 

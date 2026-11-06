@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
-import { migrateGitHookPolicy, readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../hookPolicy'
+import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../hookPolicy'
 
 const roots: string[] = []
 
@@ -33,13 +33,5 @@ describe('Git hook policy', () => {
     const root = makeTempDir('looptroop-hook-policy-')
     roots.push(root)
     expect(readWorktreeGitHookPolicy(root)).toBe('validate_advisory')
-  })
-
-  it.each([
-    ['validate_explicitly', 'validate_advisory'],
-    ['ignore_internal_only', 'observe_only'],
-    ['use_on_internal_commits', 'use_native_hooks'],
-  ] as const)('maps persisted legacy policy %s to %s for settings migration', (legacyPolicy, expected) => {
-    expect(migrateGitHookPolicy(legacyPolicy)).toBe(expected)
   })
 })

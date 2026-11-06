@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import type { Database, Statement } from '../db/sqliteShim'
 import { getProjectDatabase } from '../db/project'
-import { getTicketContext, getTicketPaths } from '../storage/tickets'
+import { getTicketContext, getTicketStorageContext } from '../storage/tickets'
+import { getTicketAiLogPath, getTicketDebugLogPath, getTicketExecutionLogPath } from '../storage/paths'
 import { extractLogFingerprint } from '@shared/logIdentity'
 import { getLogModelId, isAiLogEntry } from '@shared/logClassification'
 import { normalizePersistedLogEntry, classifyPersistedLogEntry, type LogView } from './view'
@@ -65,14 +66,21 @@ function prepareProjectionStatements(sqlite: Database): ProjectionStatements {
       INSERT INTO execution_log_projection (
         ticket_id, channel, identity, ordinal, timestamp, phase, phase_attempt, status, classification,
         model_id, bead_id, entry_json, byte_offset, byte_length,
-        ai_visible, mirror_key, mirror_occurrence, updated_timestamp, text_lines
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ai_visible, mirror_key, mirror_occurrence, updated_timestamp, text_lines,
+        entry_kind, entry_audience, entry_streaming, entry_op, entry_session_id, entry_data_session_id,
+        entry_is_command, timestamp_rank, debug_sort_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(ticket_id, channel, identity) DO UPDATE SET
         timestamp = excluded.timestamp, phase = excluded.phase, phase_attempt = excluded.phase_attempt,
         status = excluded.status, classification = excluded.classification, model_id = excluded.model_id,
         bead_id = excluded.bead_id, entry_json = excluded.entry_json, byte_offset = excluded.byte_offset,
         byte_length = excluded.byte_length, ai_visible = excluded.ai_visible,
-        updated_timestamp = excluded.updated_timestamp, text_lines = excluded.text_lines
+        updated_timestamp = excluded.updated_timestamp, text_lines = excluded.text_lines,
+        entry_kind = excluded.entry_kind, entry_audience = excluded.entry_audience,
+        entry_streaming = excluded.entry_streaming, entry_op = excluded.entry_op,
+        entry_session_id = excluded.entry_session_id, entry_data_session_id = excluded.entry_data_session_id,
+        entry_is_command = excluded.entry_is_command, timestamp_rank = excluded.timestamp_rank,
+        debug_sort_key = excluded.debug_sort_key
     `),
     selectCursor: sqlite.prepare(`SELECT channel, indexed_offset FROM execution_log_projection_cursors WHERE ticket_id = ? AND channel = ?`),
     advanceCursor: sqlite.prepare(`
@@ -107,7 +115,6 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
       classification TEXT NOT NULL,
       model_id TEXT,
       bead_id TEXT,
-      entry_json TEXT NOT NULL,
       byte_offset INTEGER NOT NULL,
       byte_length INTEGER NOT NULL,
       ai_visible INTEGER NOT NULL,
@@ -115,6 +122,20 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
       mirror_occurrence INTEGER NOT NULL,
       updated_timestamp TEXT NOT NULL,
       text_lines INTEGER NOT NULL,
+      -- Filter and ordering fields of the normalized entry, so views never parse
+      -- entry_json to choose rows (see storedEntryColumns).
+      entry_kind TEXT,
+      entry_audience TEXT,
+      entry_streaming INTEGER NOT NULL,
+      entry_op TEXT,
+      entry_session_id TEXT,
+      entry_data_session_id TEXT,
+      entry_is_command INTEGER NOT NULL,
+      timestamp_rank INTEGER NOT NULL,
+      debug_sort_key TEXT NOT NULL,
+      -- Last on purpose: reading any column stored after a large value walks its
+      -- overflow pages, so the filters above stay cheap however big the entry is.
+      entry_json TEXT NOT NULL,
       PRIMARY KEY (ticket_id, channel, identity)
     );
     CREATE TABLE IF NOT EXISTS execution_log_projection_cursors (
@@ -133,6 +154,12 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
       ON execution_log_projection(ticket_id, ai_visible, model_id, phase, phase_attempt, bead_id);
     CREATE INDEX IF NOT EXISTS idx_execution_log_projection_mirror
       ON execution_log_projection(ticket_id, mirror_key, mirror_occurrence, channel, updated_timestamp, timestamp);
+    -- The DEBUG view's order, so a page is read straight off the index instead of
+    -- sorting the ticket's whole debug history for every page.
+    CREATE INDEX IF NOT EXISTS idx_execution_log_projection_debug_order
+      ON execution_log_projection(ticket_id, timestamp_rank, timestamp, debug_sort_key, mirror_occurrence, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_execution_log_projection_debug_phase_order
+      ON execution_log_projection(ticket_id, phase, timestamp_rank, timestamp, debug_sort_key, mirror_occurrence, ordinal);
     CREATE TABLE IF NOT EXISTS execution_log_native_snapshots (
       ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
       snapshot_key TEXT NOT NULL,
@@ -244,6 +271,42 @@ function sortableTimestamp(value: unknown): string {
   return Number.isFinite(time) ? new Date(time).toISOString() : ''
 }
 
+/** A stored row in the shape the API returns (texts expanded, display fields inferred). */
+function readStoredEntry(entryJson: string): Record<string, unknown> {
+  return normalizePersistedLogEntry(JSON.parse(entryJson)) ?? {}
+}
+
+/** A JSON scalar the way SQLite's json_extract compared it: text, or null for anything else. */
+function scalarText(value: unknown): string | null {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return null
+}
+
+/**
+ * The fields views filter and sort on, taken from the normalized entry once at index
+ * time. Views used to json_extract them from every row's stored JSON on every query.
+ */
+function storedEntryColumns(entry: Record<string, unknown>, channel: PersistedLogChannel, identity: string, ordinal: number, mirrorKey: string, timestamp: string) {
+  const data = entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data)
+    ? entry.data as Record<string, unknown>
+    : null
+  const streaming = entry.streaming
+  return [
+    scalarText(entry.kind),
+    scalarText(entry.audience),
+    streaming === undefined || streaming === null || streaming === false || streaming === 0 ? 0 : 1,
+    scalarText(entry.op),
+    scalarText(entry.sessionId),
+    scalarText(data?.sessionId),
+    String(entry.content ?? entry.message ?? '').startsWith('[CMD]') ? 1 : 0,
+    timestamp === '' ? 1 : 0,
+    // The DEBUG view's tie-break after the timestamp: channel order, then file
+    // position for anonymous rows or the mirror key for identified ones.
+    `${channel === 'normal' ? '0:' : channel === 'debug' ? '1:' : '2:'}${identity.startsWith('offset:') ? `offset:${String(ordinal).padStart(20, '0')}` : mirrorKey}`,
+  ] as const
+}
+
 function indexEntry(ticketId: string, channel: PersistedLogChannel, raw: unknown, offset: number, length: number, existingStorage?: ProjectionStorage) {
   const storage = existingStorage ?? ensureProjectionSchema(ticketId)
   if (!storage) return
@@ -252,7 +315,13 @@ function indexEntry(ticketId: string, channel: PersistedLogChannel, raw: unknown
   const { context, statements } = storage
   const identity = identityFor(entry, offset)
   const existing = statements.selectEntry.get(context.localTicketId, channel, identity) as ProjectionRow | undefined
-  const canonical = existing ? mergeCanonical(JSON.parse(existing.entry_json), entry) : entry
+  // Merge readable forms: merging stored ones could keep a stale `content` that the
+  // newer line left out because it equaled its `message`.
+  const canonical = existing ? mergeCanonical(readStoredEntry(existing.entry_json), entry) : entry
+  // Store what the log file stores, each text once. A merged row (the same entry
+  // persisted again, which is rare) keeps its full merged shape so its fields stay
+  // exactly as merged. readStoredEntry expands either form.
+  const stored = existing ? canonical : raw as Record<string, unknown>
   const classification = classifyPersistedLogEntry(canonical)
   const ordinal = existing?.ordinal ?? offset
   const aiVisible = isAiLogEntry(canonical)
@@ -266,13 +335,15 @@ function indexEntry(ticketId: string, channel: PersistedLogChannel, raw: unknown
       ? (statements.countMirrors.get(context.localTicketId, channel, mirrorKey) as { count: number }).count
       : 0)
   const content = String(canonical.content ?? canonical.message ?? '')
+  const timestamp = sortableTimestamp(canonical.timestamp)
   statements.upsertEntry.run(
-    context.localTicketId, channel, identity, ordinal, sortableTimestamp(canonical.timestamp), String(canonical.phase ?? 'unknown'),
+    context.localTicketId, channel, identity, ordinal, timestamp, String(canonical.phase ?? 'unknown'),
     Number(canonical.phaseAttempt ?? 1), String(canonical.status ?? canonical.phase ?? 'unknown'), classification,
     getLogModelId(canonical),
     typeof canonical.beadId === 'string' ? canonical.beadId : null,
-    JSON.stringify(canonical), offset, length, Number(aiVisible), mirrorKey, occurrence,
+    JSON.stringify(stored), offset, length, Number(aiVisible), mirrorKey, occurrence,
     sortableTimestamp(entry.timestamp), content ? content.split('\n').length : 0,
+    ...storedEntryColumns(canonical, channel, identity, ordinal, mirrorKey, timestamp),
   )
 }
 
@@ -280,19 +351,38 @@ function indexEntry(ticketId: string, channel: PersistedLogChannel, raw: unknown
 export function queueProjectionAppend(ticketId: string, channel: PersistedLogChannel, raw: unknown, offset: number, length: number) {
   queueMicrotask(() => {
     try {
-      indexEntry(ticketId, channel, raw, offset, length)
+      // One ticket lookup per append: indexEntry takes the storage it would otherwise resolve again.
       const storage = ensureProjectionSchema(ticketId)
-      if (storage) storage.statements.advanceCursor.run(storage.context.localTicketId, channel, offset + length)
+      if (!storage) return
+      indexEntry(ticketId, channel, raw, offset, length, storage)
+      storage.statements.advanceCursor.run(storage.context.localTicketId, channel, offset + length)
     } catch (error) {
       console.warn(`[logs] projection append deferred for ${ticketId}: ${getErrorMessage(error)}`)
     }
   })
 }
 
+/** Where a ticket's files live; enough to resolve its log paths. */
+export interface TicketLogStorage {
+  projectRoot: string
+  externalId: string
+}
+
+/** One persisted log file of a ticket, without resolving the ticket's other paths or metadata. */
+export function resolveTicketLogPath(storage: TicketLogStorage, channel: PersistedLogChannel): string {
+  switch (channel) {
+    case 'normal':
+      return getTicketExecutionLogPath(storage.projectRoot, storage.externalId)
+    case 'debug':
+      return getTicketDebugLogPath(storage.projectRoot, storage.externalId)
+    case 'ai':
+      return getTicketAiLogPath(storage.projectRoot, storage.externalId)
+  }
+}
+
 function logPath(ticketId: string, channel: PersistedLogChannel): string | null {
-  const paths = getTicketPaths(ticketId)
-  if (!paths) return null
-  return channel === 'debug' ? paths.debugLogPath : channel === 'ai' ? paths.aiLogPath : paths.executionLogPath
+  const storage = getTicketStorageContext(ticketId)
+  return storage ? resolveTicketLogPath(storage, channel) : null
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -484,8 +574,8 @@ function activityRowsSql(where: string): string {
   return `WITH activity_candidates AS (
     SELECT p.ticket_id, p.channel, p.identity, p.ordinal, p.timestamp, p.phase,
       p.phase_attempt, p.mirror_occurrence,
-      json_extract(p.entry_json, '$.kind') AS activity_kind,
-      NULLIF(json_extract(p.entry_json, '$.sessionId'), '') AS activity_session
+      p.entry_kind AS activity_kind,
+      NULLIF(p.entry_session_id, '') AS activity_session
     FROM execution_log_projection AS p
     WHERE ${where}
   ), activity_turns AS (
@@ -517,7 +607,7 @@ function activityRowsSql(where: string): string {
     WHERE first_detail_order = 1 OR last_detail_order = 1
   ), activity_selected AS (
     SELECT p.*,
-      CASE WHEN json_extract(p.entry_json, '$.kind') = 'session'
+      CASE WHEN p.entry_kind = 'session'
         THEN p.updated_timestamp ELSE p.timestamp END AS activity_timestamp
     FROM activity_selected_keys AS selected
     JOIN execution_log_projection AS p USING (ticket_id, channel, identity)
@@ -533,9 +623,6 @@ interface DebugProjectionRow {
   modelId: string | null
 }
 
-const DEBUG_TIMESTAMP_RANK_SQL = `(CASE WHEN p.timestamp = '' THEN 1 ELSE 0 END)`
-const DEBUG_SORT_KEY_SQL = `(CASE p.channel WHEN 'normal' THEN '0:' WHEN 'debug' THEN '1:' ELSE '2:' END ||
-  CASE WHEN p.identity LIKE 'offset:%' THEN 'offset:' || printf('%020d', p.ordinal) ELSE p.mirror_key END)`
 const NATIVE_SNAPSHOT_RETENTION = 4
 
 function compareStrings(a: string, b: string): number {
@@ -1485,7 +1572,7 @@ async function queryDebugPage(
   // merely to discover native rows for a later page. Do not apply modelId here:
   // the persisted row owns the session, while the native row owns its model.
   // Ownership may have been recorded before this failure window began.
-  const sessionIdSql = "COALESCE(NULLIF(json_extract(p.entry_json, '$.sessionId'), ''), json_extract(p.entry_json, '$.data.sessionId'))"
+  const sessionIdSql = "COALESCE(NULLIF(p.entry_session_id, ''), p.entry_data_session_id)"
   const sessionSql = `SELECT DISTINCT ${sessionIdSql} AS session_id
     FROM execution_log_projection AS p
     WHERE ${clauses.join(' AND ')}
@@ -1524,27 +1611,22 @@ async function queryDebugPage(
   const pageClauses = [...scopeClauses]
   const pageParams = [...scopeParams]
   if (before) {
-    const rank = before.timestamp === '' ? 1 : 0
-    pageClauses.push(`(
-      ${DEBUG_TIMESTAMP_RANK_SQL} < ?
-      OR (${DEBUG_TIMESTAMP_RANK_SQL} = ? AND p.timestamp < ?)
-      OR (${DEBUG_TIMESTAMP_RANK_SQL} = ? AND p.timestamp = ? AND ${DEBUG_SORT_KEY_SQL} < ?)
-      OR (${DEBUG_TIMESTAMP_RANK_SQL} = ? AND p.timestamp = ? AND ${DEBUG_SORT_KEY_SQL} = ? AND p.mirror_occurrence < ?)
-      OR (${DEBUG_TIMESTAMP_RANK_SQL} = ? AND p.timestamp = ? AND ${DEBUG_SORT_KEY_SQL} = ? AND p.mirror_occurrence = ? AND p.ordinal < ?)
-    )`)
+    // Keyset seek on the stored order columns: a deep page reads only its own rows
+    // from the debug-order indexes instead of sorting the whole history again.
+    pageClauses.push('(p.timestamp_rank, p.timestamp, p.debug_sort_key, p.mirror_occurrence, p.ordinal) < (?, ?, ?, ?, ?)')
     pageParams.push(
-      rank,
-      rank, before.timestamp,
-      rank, before.timestamp, before.mirrorKey,
-      rank, before.timestamp, before.mirrorKey, before.mirrorOccurrence,
-      rank, before.timestamp, before.mirrorKey, before.mirrorOccurrence, before.ordinal,
+      before.timestamp === '' ? 1 : 0,
+      before.timestamp,
+      before.mirrorKey,
+      before.mirrorOccurrence,
+      before.ordinal,
     )
   }
-  const sql = `SELECT identity, ordinal, timestamp AS sort_timestamp, channel, mirror_key, mirror_occurrence, model_id, entry_json
+  const sql = `SELECT ordinal, timestamp AS sort_timestamp, channel, identity, mirror_key, mirror_occurrence, model_id,
+      debug_sort_key, entry_json
     FROM execution_log_projection AS p
     WHERE ${pageClauses.join(' AND ')} AND ${DEBUG_VISIBLE_ROWS}
-    ORDER BY ${DEBUG_TIMESTAMP_RANK_SQL} DESC, p.timestamp DESC, ${DEBUG_SORT_KEY_SQL} DESC,
-      p.mirror_occurrence DESC, p.ordinal DESC
+    ORDER BY p.timestamp_rank DESC, p.timestamp DESC, p.debug_sort_key DESC, p.mirror_occurrence DESC, p.ordinal DESC
     LIMIT ?`
   let statement = statements.queryPages.get(sql)
   if (!statement) {
@@ -1559,10 +1641,11 @@ async function queryDebugPage(
     mirror_key: string
     mirror_occurrence: number
     model_id: string | null
+    debug_sort_key: string
     entry_json: string
   }>
   const rows: DebugProjectionRow[] = persistedRows.map(row => {
-    const entry = JSON.parse(row.entry_json) as Record<string, unknown>
+    const entry = readStoredEntry(row.entry_json)
     if (typeof entry.entryId !== 'string' || !entry.entryId) {
       entry.entryId = `persisted:${row.channel}:${row.mirror_key}:${row.mirror_occurrence}`
     }
@@ -1576,10 +1659,10 @@ async function queryDebugPage(
     return {
       entry,
       timestamp: row.sort_timestamp,
-      // The route historically concatenated normal, debug, AI, then native rows.
-      // Keep that source order for equal timestamps, with the mirror key providing
-      // the same deterministic tie-break within one channel.
-      sortKey: `${row.channel === 'normal' ? '0' : row.channel === 'debug' ? '1' : '2'}:${row.identity.startsWith('offset:') ? `offset:${String(row.ordinal).padStart(20, '0')}` : row.mirror_key}`,
+      // Normal, debug, AI, then native rows for equal timestamps, with the mirror key
+      // (or file position) as the deterministic tie-break within one channel. Stored
+      // at index time, so the cursor and the SQL order use the very same value.
+      sortKey: row.debug_sort_key,
       occurrence: row.mirror_occurrence,
       ordinal: row.ordinal,
       modelId: row.model_id,
@@ -1684,15 +1767,15 @@ export async function queryLogPage(
   if (query.view === 'activity') {
     // Keep lifecycle evidence independent of the selected log tab without reading raw/native debug logs.
     clauses.push(DEBUG_VISIBLE_ROWS)
-    clauses.push(`json_extract(entry_json, '$.kind') IN (
+    clauses.push(`entry_kind IN (
       'prompt', 'milestone', 'session', 'error', 'text', 'model_output', 'assistant', 'reasoning', 'tool', 'step',
       'question', 'todo', 'part_summary', 'file_edit', 'file-edited', 'file_edited', 'done'
     )`)
-    clauses.push("(channel != 'debug' OR json_extract(entry_json, '$.kind') = 'error')")
+    clauses.push("(channel != 'debug' OR entry_kind = 'error')")
     clauses.push(`classification != 'command' AND NOT (
       classification = 'error'
-      AND json_extract(entry_json, '$.audience') != 'ai'
-      AND substr(COALESCE(json_extract(entry_json, '$.content'), json_extract(entry_json, '$.message'), ''), 1, 5) = '[CMD]'
+      AND entry_audience != 'ai'
+      AND entry_is_command = 1
     )`)
   }
   else if (query.view === 'ai') { clauses.push(AI_VISIBLE_ROWS) }
@@ -1704,15 +1787,12 @@ export async function queryLogPage(
     clauses.push(`(
       classification = 'system'
       OR classification = 'error'
-      OR json_extract(entry_json, '$.kind') = 'prompt'
+      OR entry_kind = 'prompt'
       OR (
         classification = 'ai'
-        AND json_extract(entry_json, '$.audience') = 'ai'
-        AND json_extract(entry_json, '$.kind') = 'text'
-        AND (
-          COALESCE(json_extract(entry_json, '$.streaming'), 0) = 0
-          OR json_extract(entry_json, '$.op') = 'append'
-        )
+        AND entry_audience = 'ai'
+        AND entry_kind = 'text'
+        AND (entry_streaming = 0 OR entry_op = 'append')
       )
     )`)
   }
@@ -1792,10 +1872,11 @@ export async function queryLogPage(
   const oldest = page.at(-1)
   return {
     entries: page.reverse().map(row => {
-      const entry = JSON.parse(row.entry_json)
+      const entry = readStoredEntry(row.entry_json)
       if (query.view === 'activity' && truncateActivity && entry.kind !== 'milestone' && entry.kind !== 'session' && entry.kind !== 'error') {
-        for (const field of ['content', 'message']) {
-          if (typeof entry[field] === 'string') entry[field] = entry[field].trim().slice(0, 256)
+        for (const field of ['content', 'message'] as const) {
+          const text = entry[field]
+          if (typeof text === 'string') entry[field] = text.trim().slice(0, 256)
         }
       }
       if (query.view === 'ai' || query.view === 'activity') {

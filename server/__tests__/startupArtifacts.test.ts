@@ -32,6 +32,7 @@ vi.mock('../storage/tickets', async (importOriginal) => {
   return {
     ...actual,
     listTickets: vi.fn(() => startupFixture.tickets),
+    listTicketRefs: vi.fn(() => startupFixture.tickets.map((ticket) => ticket.id)),
     getTicketPaths: vi.fn(() => startupFixture.paths),
   }
 })

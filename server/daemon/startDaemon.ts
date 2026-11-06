@@ -139,7 +139,7 @@ export function describeStartFailure(
       databasePath: error.databasePath,
       found: error.found,
       expected: error.expected,
-      migratableFrom: error.migratableFrom,
+      resetInstructions: error.resetInstructions,
     },
   }
 }

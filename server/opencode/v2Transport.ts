@@ -380,6 +380,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     }
   }
 
+  /** Up to the cap, best effort; not proof of completeness (see `listAllSessionIds`). */
   async listSessions(signal?: AbortSignal): Promise<Session[]> {
     const sessions: Session[] = [];
     const seenCursors = new Set<string>();
@@ -406,6 +407,46 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       cursor = next;
     }
     return sessions;
+  }
+
+  /**
+   * Like `listSessions`, but only an answer the server proves complete: paging
+   * ended because the server said there was no next page. A page that is not a
+   * list, a cursor that is not a string or was already given, a page that adds
+   * no new session, or running out of pages before the cap all mean more may
+   * exist (or the server is misbehaving), so the answer is null. Bounded by page
+   * count, because startup waits on this.
+   */
+  async listAllSessionIds(signal?: AbortSignal): Promise<ReadonlySet<string> | null> {
+    const ids = new Set<string>();
+    const seenCursors = new Set<string>();
+    const pageLimit = Math.ceil(SESSION_LIST_LIMIT / LIST_PAGE_SIZE);
+    let cursor: string | undefined;
+
+    for (let pageCount = 0; pageCount < pageLimit; pageCount++) {
+      const query = new URLSearchParams({
+        limit: String(Math.min(LIST_PAGE_SIZE, SESSION_LIST_LIMIT - ids.size)),
+        ...(!cursor ? { order: "desc" } : {}),
+      });
+      if (cursor) query.set("cursor", cursor);
+      const page = asRecord(
+        await this.request(`/api/session?${query}`, { signal }),
+      );
+      if (!Array.isArray(page?.data)) return null;
+      const before = ids.size;
+      for (const session of page.data) ids.add(mapV2Session(session).id);
+      // Every page carries a cursor object; `listChildSessions` relies on that too.
+      const pageCursor = asRecord(page.cursor);
+      if (!pageCursor) return null;
+      const next = pageCursor.next;
+      if (next === undefined || next === null) return ids;
+      if (typeof next !== "string" || next.length === 0) return null;
+      if (seenCursors.has(next) || ids.size === before) return null;
+      if (ids.size >= SESSION_LIST_LIMIT) return null;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return null;
   }
 
   private async hydrateRelatedSessions(

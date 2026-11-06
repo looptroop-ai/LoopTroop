@@ -5,14 +5,14 @@ import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
 import { secureFile } from '../lib/appConfigDir'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
 import {
-  PROJECT_MIGRATABLE_FROM,
+  PROJECT_DATABASE_LABEL,
   PROJECT_SCHEMA_VERSION,
   assertSchemaCompatible,
+  projectDatabaseResetInstructions,
   shouldStampAfterInit,
   writeUserVersion,
   type SchemaCompatibility,
 } from './schemaVersion'
-import { buildGitHookPolicyMigrationSql } from '@shared/gitHookPolicy'
 
 interface ProjectDatabase {
   sqlite: Database
@@ -29,17 +29,6 @@ function closeCachedProjectDatabase(projectRoot: string): boolean {
   cached.sqlite.close()
   projectDbCache.delete(projectRoot)
   return true
-}
-
-function ensureColumn(
-  sqlite: Database,
-  table: string,
-  column: string,
-  definition: string,
-) {
-  const columns = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
-  if (columns.some((entry) => entry.name === column)) return
-  sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
 
 function initializeProjectSqlite(sqlite: Database) {
@@ -253,7 +242,9 @@ function initializeProjectSqlite(sqlite: Database) {
 
     CREATE INDEX IF NOT EXISTS idx_project_tickets_status ON tickets(status);
     CREATE INDEX IF NOT EXISTS idx_project_tickets_external_id ON tickets(external_id);
-    CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket ON phase_artifacts(ticket_id);
+    -- "Latest artifact of this type for this ticket" is the common lookup (several
+    -- per ticket on every board refresh); ticket-only reads use the same prefix.
+    CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket_type ON phase_artifacts(ticket_id, artifact_type, id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_artifacts_ticket_skip_receipt
       ON phase_artifacts(ticket_id, CASE WHEN json_valid(content) THEN json_extract(content, '$.receipt_id') END)
       WHERE artifact_type GLOB 'skip_receipt:*';
@@ -275,55 +266,6 @@ function initializeProjectSqlite(sqlite: Database) {
       ON ticket_ai_turn_metrics(ticket_id, phase, phase_attempt, model_id);
     CREATE INDEX IF NOT EXISTS idx_ai_turn_metrics_lifecycle
       ON ticket_ai_turn_metrics(ticket_id, model_id, updated_at);
-  `)
-
-  ensureColumn(sqlite, 'tickets', 'locked_interview_questions', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_coverage_follow_up_budget_percent', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_max_coverage_passes', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_max_prd_coverage_passes', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_max_beads_coverage_passes', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_structured_retry_count', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'manual_qa_override', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'cancel_reason', 'TEXT')
-  ensureColumn(sqlite, 'tickets', 'locked_manual_qa_enabled', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_manual_qa_source', 'TEXT')
-  ensureColumn(sqlite, 'tickets', 'ai_questions_override', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'ai_question_window_override', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_ai_questions_enabled', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_ai_questions_source', 'TEXT')
-  ensureColumn(sqlite, 'tickets', 'locked_ai_question_window', 'INTEGER')
-  ensureColumn(sqlite, 'tickets', 'locked_ai_question_window_source', 'TEXT')
-  ensureColumn(sqlite, 'tickets', 'locked_git_hook_policy', 'TEXT')
-  ensureColumn(sqlite, 'tickets', 'locked_git_hook_policy_source', 'TEXT')
-  ensureColumn(sqlite, 'tickets', 'workflow_revision', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(sqlite, 'tickets', 'locked_main_implementer_variant', 'TEXT')
-  ensureColumn(sqlite, 'tickets', 'locked_council_member_variants', 'TEXT')
-  ensureColumn(sqlite, 'opencode_sessions', 'phase_attempt', 'INTEGER DEFAULT 1')
-  ensureColumn(sqlite, 'opencode_sessions', 'step', 'TEXT')
-  ensureColumn(sqlite, 'ticket_error_occurrences', 'diagnostic_details', 'TEXT')
-  ensureColumn(sqlite, 'projects', 'execution_setup_timeout', 'INTEGER')
-  ensureColumn(sqlite, 'projects', 'manual_qa_override', 'INTEGER')
-  ensureColumn(sqlite, 'projects', 'ai_questions_override', 'INTEGER')
-  ensureColumn(sqlite, 'projects', 'ai_question_window_override', 'INTEGER')
-  ensureColumn(sqlite, 'projects', 'git_hook_policy', 'TEXT')
-  ensureColumn(sqlite, 'projects', 'ignore_mode', 'TEXT')
-  ensureColumn(sqlite, 'phase_artifacts', 'phase_attempt', 'INTEGER NOT NULL DEFAULT 1')
-  ensureColumn(sqlite, 'phase_artifacts', 'updated_at', 'TEXT')
-
-  const gitHookPolicyMigration = buildGitHookPolicyMigrationSql('projects')
-  if (gitHookPolicyMigration) sqlite.exec(gitHookPolicyMigration)
-
-  sqlite.exec(`
-    UPDATE phase_artifacts
-    SET phase_attempt = COALESCE(phase_attempt, 1)
-    WHERE phase_attempt IS NULL;
-
-    UPDATE phase_artifacts
-    SET updated_at = COALESCE(updated_at, created_at)
-    WHERE updated_at IS NULL;
-  `)
-
-  sqlite.exec(`
     CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket_phase_attempt
       ON phase_artifacts(ticket_id, phase, phase_attempt);
     CREATE INDEX IF NOT EXISTS idx_ticket_phase_attempts_ticket_phase
@@ -421,38 +363,38 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   ensureProjectStorageDirs(projectRoot)
   const sqlite = new Database(dbPath)
-  // Carries OpenCode session ownership and ticket state, so restrict it even
-  // though it lives inside the user's own repository.
-  secureFile(dbPath)
-  sqlite.pragma('journal_mode=WAL')
-  sqlite.pragma('locking_mode=NORMAL')
-  sqlite.pragma('synchronous=NORMAL')
-  sqlite.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
-
-  // Classify before any DDL: cleanupProjectForeignKeyOrphans below deletes
-  // rows, so an incompatible database must be refused before we reach it.
-  let compatibility: SchemaCompatibility
   try {
-    compatibility = assertSchemaCompatible({
+    // Connection-level only; it changes nothing in the file.
+    sqlite.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
+    // Classify before anything writes to the file: a database from another
+    // version is refused with its tables, data, mode and journal as they were.
+    const compatibility: SchemaCompatibility = assertSchemaCompatible({
       store: sqlite,
-      databaseLabel: 'project database',
+      databaseLabel: PROJECT_DATABASE_LABEL,
       databasePath: dbPath,
       expected: PROJECT_SCHEMA_VERSION,
-      migratableFrom: PROJECT_MIGRATABLE_FROM,
-      onNotice: (message) => console.warn(message),
+      resetInstructions: projectDatabaseResetInstructions(projectRoot),
     })
+    // Carries OpenCode session ownership and ticket state, so restrict it even
+    // though it lives inside the user's own repository.
+    secureFile(dbPath)
+    sqlite.pragma('journal_mode=WAL')
+    sqlite.pragma('locking_mode=NORMAL')
+    sqlite.pragma('synchronous=NORMAL')
+    // One transaction: a first start interrupted between the tables and the
+    // version stamp would otherwise leave tables with no version, which the next
+    // start refuses as an older database. Rolled back, the file is still fresh.
+    sqlite.transaction(() => {
+      initializeProjectSqlite(sqlite)
+      cleanupProjectForeignKeyOrphans(sqlite)
+      if (shouldStampAfterInit(compatibility)) writeUserVersion(sqlite, PROJECT_SCHEMA_VERSION)
+    })()
+    // A no-op inside a transaction, so only once the schema is committed.
+    sqlite.pragma('foreign_keys=ON')
   } catch (error) {
+    // Not cached yet, so nothing else could ever close this handle.
     sqlite.close()
     throw error
-  }
-
-  initializeProjectSqlite(sqlite)
-  cleanupProjectForeignKeyOrphans(sqlite)
-  sqlite.pragma('foreign_keys=ON')
-
-  // Stamp after DDL: project DBs use PRAGMA user_version (no new table needed).
-  if (shouldStampAfterInit(compatibility)) {
-    writeUserVersion(sqlite, PROJECT_SCHEMA_VERSION)
   }
 
   const projectDb: ProjectDatabase = {

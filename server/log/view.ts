@@ -1,5 +1,6 @@
 import { extractLogFingerprint } from '@shared/logIdentity'
 import { isAiLogEntry, isDebugLogEntry } from '@shared/logClassification'
+import { expandStoredLogEntry } from './storedEntry'
 
 export type LogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug' | 'activity'
 
@@ -36,10 +37,14 @@ function inferKind(type: string, audience: string): string {
   return 'milestone'
 }
 
-/** Infer omitted display fields before either indexing a row or returning it. */
+/**
+ * A stored line in the shape the API returns: texts stored once are expanded first
+ * (storedEntry.ts), then omitted display fields are inferred. Used both to index a
+ * row and to return it, and idempotent, so it can run on an already-normalized row.
+ */
 export function normalizePersistedLogEntry(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object') return null
-  const record = raw as Record<string, unknown>
+  const record = expandStoredLogEntry(raw as Record<string, unknown>)
   const phase = typeof record.phase === 'string' ? record.phase : typeof record.status === 'string' ? record.status : 'unknown'
   const phaseAttempt = Number(record.phaseAttempt)
   const content = typeof record.content === 'string' ? record.content : typeof record.message === 'string' ? record.message : ''

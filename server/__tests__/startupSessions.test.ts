@@ -256,6 +256,55 @@ describe('startup OpenCode session reconciliation', () => {
     expect(context.projectDb.select().from(questionWaits).all()[0]?.endedAt).not.toBeNull()
   })
 
+  it('closes the wait when the only failing session is one OpenCode confirms gone', async () => {
+    const { secondProject, ticket } = setupContinuation({
+      kind: 'transport',
+      source: 'opencode',
+      summary: 'OpenCode temporarily unavailable',
+      sessionId: 'ses-confirmed-gone',
+    })
+    const context = getTicketContext(ticket.id)!
+    openQuestionWait(buildTicketRef(secondProject.id, ticket.externalId), Date.now())
+    // No complete listing (as on OpenCode v1): every recorded session is asked,
+    // and asking a gone session fails. OpenCode then says it does not exist.
+    const getSession = vi.fn(async () => null)
+    Object.assign(questionReconcileAdapter, { getSession })
+    try {
+      questionReconcileAdapter.listPendingQuestions.mockRejectedValueOnce(new Error('no trusted worktree directory'))
+      await reconcileOpenCodeQuestions([secondProject])
+
+      expect(getSession).toHaveBeenCalledWith('ses-confirmed-gone')
+      expect(context.projectDb.select().from(questionWaits).all()[0]?.endedAt).not.toBeNull()
+    } finally {
+      delete (questionReconcileAdapter as { getSession?: unknown }).getSession
+    }
+  })
+
+  it('still asks a reconnected session that a complete listing omits, so its wait is not closed unverified', async () => {
+    const { secondProject, ticket } = setupContinuation({
+      kind: 'transport',
+      source: 'opencode',
+      summary: 'OpenCode temporarily unavailable',
+      sessionId: 'ses-listing-omits',
+    })
+    const context = getTicketContext(ticket.id)!
+    openQuestionWait(buildTicketRef(secondProject.id, ticket.externalId), Date.now())
+    // A listing that claims OpenCode has no sessions at all. Skipping the active
+    // session on its word would count reconciliation as verified and close the wait.
+    const listAllSessionIds = vi.fn(async () => new Set<string>())
+    Object.assign(questionReconcileAdapter, { listAllSessionIds })
+    try {
+      questionReconcileAdapter.listPendingQuestions.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      await reconcileOpenCodeQuestions([secondProject])
+
+      expect(listAllSessionIds).toHaveBeenCalledTimes(1)
+      expect(questionReconcileAdapter.listPendingQuestions).toHaveBeenCalledWith(undefined, undefined, 'ses-listing-omits')
+      expect(context.projectDb.select().from(questionWaits).all()[0]?.endedAt).toBeNull()
+    } finally {
+      delete (questionReconcileAdapter as { listAllSessionIds?: unknown }).listAllSessionIds
+    }
+  })
+
   it('keeps an orphan wait open after an unconfirmed stop, then closes it after a later confirmed sweep', async () => {
     vi.useFakeTimers()
     try {

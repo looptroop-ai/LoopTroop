@@ -1,4 +1,5 @@
 import { startTransition, useMemo, useState, useCallback, useRef, useEffect } from 'react'
+import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useInterviewQuestions, useTicketUIState, useSaveTicketUIState } from '@/hooks/useTickets'
@@ -149,6 +150,9 @@ function validateJsonl(jsonl: string): string | null {
  * shared filter also keeps the editor's ordering aligned with the outline's
  * focus anchors and the artifact view.
  */
+/** The coverage report this pane's warning reads, and nothing else. */
+const BEADS_COVERAGE_ARTIFACT_TYPES = ['beads_coverage', buildUiArtifactCompanionArtifactType('beads_coverage')]
+
 function parseBeadsForEditor(data: unknown[]): NormalizedBead[] {
   // `verbatim`: an editor must give back exactly what is stored. The artifact
   // views read the same fields with `display`, which trims and drops blanks.
@@ -228,7 +232,7 @@ function BeadsApprovalPane({
     isError: isArtifactsError,
     error: artifactsError,
     refetch: refetchArtifacts,
-  } = useTicketArtifacts(ticket.id)
+  } = useTicketArtifacts(ticket.id, { types: BEADS_COVERAGE_ARTIFACT_TYPES })
   // See `PrdApprovalPane`: an absent coverage warning is indistinguishable from
   // "no gaps", so approving on a failed artifact request approves an unknown.
   const isCoverageUnknown = isArtifactsError && loadedArtifacts === undefined

@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, chmodSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, chmodSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
 import { formatNodeVersion } from '../shared/nodeFloor'
@@ -119,16 +119,23 @@ describe('doctor command', () => {
         detail: expect.stringContaining(`version ${schemaVersion.APP_SCHEMA_VERSION + 1}`),
       })
 
-      sqlite.pragma('user_version = 1')
+      // LoopTroop does not convert older data, so the version just below is
+      // refused like any other, with what to delete instead of a promised upgrade.
+      sqlite.pragma(`user_version = ${schemaVersion.APP_SCHEMA_VERSION - 1}`)
       const olderSchema = (await runChecks()).find((check) => check.name === 'schema')
       expect(olderSchema).toMatchObject({
-        status: 'warn',
-        detail: expect.stringContaining(`will be upgraded to ${schemaVersion.APP_SCHEMA_VERSION}`),
+        status: 'fail',
+        detail: expect.stringContaining(`version ${schemaVersion.APP_SCHEMA_VERSION - 1}, written by an older LoopTroop`),
+        remedy: schemaVersion.appDatabaseResetInstructions(APP_DB_PATH),
       })
 
       sqlite.pragma('user_version = 0')
       const unversionedSchema = (await runChecks()).find((check) => check.name === 'schema')
-      expect(unversionedSchema).toMatchObject({ status: 'warn', detail: expect.stringContaining('predates LoopTroop') })
+      expect(unversionedSchema).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('carries no version'),
+        remedy: schemaVersion.appDatabaseResetInstructions(APP_DB_PATH),
+      })
 
       sqlite.pragma(`user_version = ${schemaVersion.APP_SCHEMA_VERSION}`)
       const beforeAttach = (await runChecks()).find((check) => check.name === 'project ignores')
@@ -563,6 +570,11 @@ describe('doctor command', () => {
 
   it('treats a missing database as healthy rather than a fault', async () => {
     useConfigDir()
+    // APP_DB_PATH is fixed at first import, and Windows may keep an earlier
+    // test's database there when its temp folder could not be removed.
+    const { APP_DB_PATH, closeDatabase } = await import('../server/db/index')
+    closeDatabase()
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${APP_DB_PATH}${suffix}`, { force: true })
 
     const schema = (await runChecks()).find((check) => check.name === 'schema')
 
@@ -946,7 +958,7 @@ describe('doctor command', () => {
           databasePath: dbPath,
           found: options.found,
           expected: 1,
-          migratableFrom: 1,
+          resetInstructions: '',
         },
       }, configDir)
 
@@ -973,24 +985,74 @@ describe('doctor command', () => {
 
       const parsed = JSON.parse(stdout.text()) as {
         ok: boolean
-        checks: { name: string; schema?: { databasePath: string; found: number; expected: number } }[]
+        checks: { name: string; schema?: Record<string, unknown> }[]
       }
       const check = parsed.checks.find((entry) => entry.name === 'last start')
-      expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: 1 })
+      // The file as this build sees it: what it reports, and what this build expects.
+      const { PROJECT_SCHEMA_VERSION } = await import('../server/db/schemaVersion')
+      expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: PROJECT_SCHEMA_VERSION, databaseLabel: 'project database' })
       expect(parsed.ok).toBe(false)
     })
 
-    it('stops reporting a refusal the user has already fixed', async () => {
+    it('names what to delete when the refused database was older', async () => {
       const configDir = useConfigDir()
-      // Version 1 is what this build expects: whoever hit the refusal has since
-      // upgraded LoopTroop or replaced the file.
-      await recordRefusal(configDir, { found: 1 })
+      const projectRoot = join(configDir, 'repo')
+      const dbPath = join(projectRoot, '.looptroop', 'db.sqlite')
+      mkdirSync(dirname(dbPath), { recursive: true })
+      const { Database } = await import('../server/db/sqliteShim')
+      const seed = new Database(dbPath)
+      seed.exec('CREATE TABLE marker (id INTEGER PRIMARY KEY)')
+      seed.pragma('user_version = 1')
+      seed.close()
+      const { writeDaemonStartFailure } = await import('../server/lib/daemonPaths')
+      writeDaemonStartFailure({
+        reason: 'schema-incompatible',
+        at: '2026-01-02T03:04:05.000Z',
+        version: '0.0.0-test',
+        message: `The project database at ${dbPath} was created by an older version of LoopTroop.`,
+        schema: {
+          databaseLabel: 'project database',
+          databasePath: dbPath,
+          found: 1,
+          expected: 2,
+          resetInstructions: 'Delete the .looptroop folder of that project.',
+        },
+      }, configDir)
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      // The steps for a project database, worked out now: the whole .looptroop folder.
+      const { projectDatabaseResetInstructions } = await import('../server/db/schemaVersion')
+      expect(check).toMatchObject({
+        status: 'fail',
+        remedy: projectDatabaseResetInstructions(projectRoot),
+        schema: { databaseLabel: 'project database', resetInstructions: projectDatabaseResetInstructions(projectRoot) },
+      })
+    })
+
+    it('stops reporting a refusal the user fixed by upgrading LoopTroop', async () => {
+      const configDir = useConfigDir()
+      const { PROJECT_SCHEMA_VERSION } = await import('../server/db/schemaVersion')
+      // An older build (expecting version 1) refused this file as newer; this
+      // build writes exactly that version, so it opens fine now.
+      await recordRefusal(configDir, { found: PROJECT_SCHEMA_VERSION })
 
       const check = (await runChecks()).find((entry) => entry.name === 'last start')
 
       // A week-old refusal reported as a live failure sends someone hunting for
-      // a problem that is no longer there.
+      // a problem that is no longer there, and nothing tells a tool to delete it.
       expect(check?.status).toBe('ok')
+      expect(check?.schema).not.toHaveProperty('resetInstructions')
+    })
+
+    it('keeps failing when the refused database cannot be read now', async () => {
+      const configDir = useConfigDir()
+      const dbPath = await recordRefusal(configDir, { found: 99 })
+      writeFileSync(dbPath, 'not a SQLite database')
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      expect(check).toMatchObject({ status: 'fail', detail: expect.stringContaining('cannot be read now') })
     })
 
     it('says nothing when no start has been refused', async () => {

@@ -9,6 +9,21 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.6.4 (2026-11-06)
+
+
+### Release Highlights
+
+- **🚨 Breaking change: this release does not work with older versions, projects or tickets.** It does not convert data from an earlier version. On first start it refuses an older database, leaves it untouched and names the files to delete, and older projects and tickets must be started fresh. Read [Data from an earlier version](https://www.looptroop.ovh/docs/installation#data-from-an-earlier-version) before you upgrade.
+- **🚀 LoopTroop — What's New Since v0.6.3**
+- A speed update: the server stays responsive while the board refreshes and ticket sizes are calculated, startup is quicker, and logs open and scroll much faster.
+- **1. ⚡ A board that no longer stalls** — Refreshing the board, opening a ticket page or calculating a ticket's size no longer freezes the server, so "backend not available" stops appearing during normal use.
+- **2. 🚀 Ready sooner after a restart** — Startup reads only what it needs: the end of each log file, tickets by ID, and the OpenCode sessions that still exist. On a machine with 55 tickets it went from 41 s to under 20 s.
+- **3. 📜 Logs that open and scroll quickly** — On a long ticket, the coding phase's Activity panel loads in about a second instead of 5–6 seconds, and scrolling back through the Debug log no longer re-sorts the whole history for every page.
+- **4. 🧹 Smaller log files** — Each log line stores its text once. Normal and AI logs are about half their previous size and the debug log about a third, with no change to what the log views show.
+- **5. 🔧 Less background work** — Ticket pages check for a ticket with one lookup, board refreshes skip artifact loading they do not need, and Git settings are reused for five seconds instead of starting an extra process for every command.
+- **✨ Overall:** the same app, much faster, but it needs a fresh start.
+
 ### Summary
 
 - The server stays responsive while the board refreshes, ticket pages load and ticket sizes are calculated, so "backend not available" no longer appears during normal use.

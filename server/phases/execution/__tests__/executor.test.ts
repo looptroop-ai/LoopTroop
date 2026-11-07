@@ -267,7 +267,7 @@ describe('executeBead', () => {
     )
 
     expect(result.success).toBe(true)
-    expect(adapter.abortCalls).toEqual(['mock-session-1'])
+    expect(adapter.abortCalls).toEqual([])
     expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual(['mock-session-1', 'mock-session-1'])
   })
 
@@ -298,7 +298,7 @@ describe('executeBead', () => {
       'mock-session-1',
       'mock-session-1',
     ])
-    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1'])
+    expect(adapter.abortCalls).toEqual(['mock-session-1'])
   })
 
   it('calls onContextWipe when iteration fails and PROM51 generates notes', async () => {
@@ -736,7 +736,7 @@ describe('executeBead', () => {
     expect(result.success).toBe(true)
     // Timeout cleanup, the recovery-note prompt's cleanup, and the context
     // wipe each need their own remote confirmation for a reused session id.
-    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1', 'mock-session-1', 'mock-session-2'])
+    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1', 'mock-session-1'])
     expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual([
       'mock-session-1',
       'mock-session-1',
@@ -827,7 +827,7 @@ describe('executeBead', () => {
     ])
     expect(preservedTimeouts).toEqual([])
     // The timed-out continuation and the context-wipe reset both confirm the
-    // same remote session independently.
+    // same remote session independently; the owned replacement retires on completion.
     expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1', 'mock-session-2'])
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1', 'mock-session-2'])
   }, 40_000)

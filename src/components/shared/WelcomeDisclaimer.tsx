@@ -12,8 +12,8 @@ export function WelcomeDisclaimer({ open, onDismiss, appPathWarning }: WelcomeDi
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-card text-card-foreground border border-border rounded-2xl shadow-xl max-w-md w-full p-6">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4">
+      <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-xl">
         <h2 className="text-xl font-bold mb-3 text-foreground">Welcome to LoopTroop</h2>
 
         <p className="text-sm text-muted-foreground mb-4">

@@ -44,7 +44,7 @@ export function KeyboardShortcuts() {
   // DROPDOWN_Z_INDEX, so clearing only the modal layers is not enough.
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 flex items-center justify-center overflow-y-auto bg-black/50 p-4"
       style={{ zIndex: SHORTCUTS_OVERLAY_Z_INDEX }}
       onClick={() => setIsOpen(false)}
     >
@@ -55,7 +55,7 @@ export function KeyboardShortcuts() {
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={handleTrapKeyDown}
-        className="w-full max-w-md outline-none"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto outline-none"
         onClick={e => e.stopPropagation()}
       >
         <CardHeader>

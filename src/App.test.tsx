@@ -1251,7 +1251,7 @@ describe('App startup notices', () => {
 
     renderApp()
 
-    expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
   })
 
   it('does not show the restore popup for empty existing startup state', () => {
@@ -1266,7 +1266,7 @@ describe('App startup notices', () => {
 
     renderApp()
 
-    expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
   })
 
   it('waits for the welcome disclaimer to be dismissed before showing the restore popup', async () => {
@@ -1276,11 +1276,11 @@ describe('App startup notices', () => {
 
     expect(screen.getByText('Welcome to LoopTroop')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /got it, let's go!/i }))
 
-    expect(await screen.findByText('Existing Local Data Found')).toBeInTheDocument()
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
   })
 
@@ -1320,7 +1320,7 @@ describe('App startup notices', () => {
       ],
     })
     const { rerender } = renderApp()
-    expect(screen.getByText('Restored your saved LoopTroop profile and 2 projects.')).toBeInTheDocument()
+    expect(screen.getByText('Your saved profile and 2 projects are ready.')).toBeInTheDocument()
 
     mockState.startupStatus = makeStartupStatus({
       profileRestored: true,
@@ -1334,7 +1334,7 @@ describe('App startup notices', () => {
         </UIProvider>
       </QueryClientProvider>,
     )
-    expect(screen.getByText('Restored your saved LoopTroop profile.')).toBeInTheDocument()
+    expect(screen.getByText('Your saved profile is ready.')).toBeInTheDocument()
 
     mockState.startupStatus = makeStartupStatus({
       profileRestored: false,
@@ -1364,7 +1364,9 @@ describe('App startup notices', () => {
         </UIProvider>
       </QueryClientProvider>,
     )
-    expect(screen.getByText('Restored 3 projects from existing local LoopTroop data.')).toBeInTheDocument()
+    expect(screen.getByText('Your 3 projects are ready.')).toBeInTheDocument()
+    expect(screen.getByText('Projects found: 3')).toBeInTheDocument()
+    expect(screen.getByText('Local data location')).toBeInTheDocument()
     expect(screen.getByText('/home/liviu/.config/looptroop/app.sqlite')).toBeInTheDocument()
     expect(screen.getByText(/Alpha/)).toBeInTheDocument()
     expect(screen.getByText(/Beta/)).toBeInTheDocument()
@@ -1374,7 +1376,7 @@ describe('App startup notices', () => {
     expect(screen.getByText('/work/gamma')).toBeInTheDocument()
 
     await waitFor(() => {
-      expect(screen.getByText('This notice is stored with your local LoopTroop app data and will not appear again after dismissal.')).toBeInTheDocument()
+      expect(screen.getByText('After you continue, this notice stays dismissed for this local database.')).toBeInTheDocument()
     })
   })
 
@@ -1394,7 +1396,7 @@ describe('App startup notices', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     await waitFor(() => {
-      expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+      expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
     })
     mockState.startupStatus = {
       ...startupStatus,
@@ -1420,7 +1422,7 @@ describe('App startup notices', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
-    expect(screen.getByText('Existing Local Data Found')).toBeInTheDocument()
+    expect(screen.getByText('Saved data found')).toBeInTheDocument()
     expect(await screen.findByText('Failed to dismiss restore notice')).toBeInTheDocument()
   })
 

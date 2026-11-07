@@ -15,6 +15,8 @@ describe('KeyboardShortcuts', () => {
     open()
     const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto')
+    expect(dialog.parentElement).toHaveClass('overflow-y-auto')
   })
 
   /**

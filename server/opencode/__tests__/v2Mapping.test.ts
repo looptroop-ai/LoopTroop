@@ -3,8 +3,10 @@ import { analyzeAssistantMessages } from '../assistantMessageAnalysis'
 import {
   createV2EventMappingState,
   mapV2Event,
+  mapV2InboxItem,
   mapV2Message,
   mapV2PermissionRules,
+  mapV2PendingInbox,
   mapV2PromptParts,
   mapV2Question,
   mapV2QuestionAnswer,
@@ -69,6 +71,46 @@ describe('OpenCode v2 wire mappings', () => {
     const error = { name: 'ProviderError', message: 'rate limited', data: { retryAfter: 4 } }
     const message = mapV2Message({ id: 'assistant-2', type: 'assistant', error, content: [] }, 'session-1')
     expect(message?.info?.error).toEqual(error)
+  })
+
+  it('preserves only validated shell completion metadata on synthetic message info', () => {
+    const metadata = {
+      source: 'shell',
+      shellID: 'sh_1',
+      jobID: 'sh_1',
+      state: 'completed',
+      exit: 0,
+      truncated: false,
+      unrecognized: 'drop me',
+    }
+    const synthetic = mapV2Message({
+      id: 'synthetic-shell',
+      type: 'synthetic',
+      sessionID: 'root-session',
+      text: '<shell id="sh_1" state="completed">passed</shell>',
+      metadata,
+    })
+
+    expect(synthetic?.info?.sessionID).toBe('root-session')
+    expect(synthetic?.info?.role).toBe('system')
+    expect(synthetic?.info?.metadata).toEqual({
+      source: 'shell',
+      shellID: 'sh_1',
+      jobID: 'sh_1',
+      state: 'completed',
+    })
+
+    for (const type of ['user', 'system']) {
+      expect(mapV2Message({ id: `${type}-message`, type, sessionID: 'root-session', text: 'ignored', metadata })
+        ?.info?.metadata).toBeUndefined()
+    }
+    expect(mapV2Message({
+      id: 'synthetic-shell-partial',
+      type: 'synthetic',
+      sessionID: 'root-session',
+      text: 'partial',
+      metadata: { source: 'shell', shellID: 'sh_1', state: 'completed' },
+    })?.info?.metadata).toBeUndefined()
   })
 
   it('maps user text and file metadata without carrying attachment bytes into summaries', () => {
@@ -197,11 +239,118 @@ describe('OpenCode v2 wire mappings', () => {
     ])
   })
 
+  it('keeps native shell completion fields only for terminal synthetic shell notices', () => {
+    const nativeNotice = {
+      type: 'synthetic',
+      delivery: 'steer',
+      payload: {
+        text: '<shell id="sh_1" state="completed" command="npm test">passed</shell>',
+        description: 'npm test',
+        metadata: {
+          source: 'shell',
+          shellID: 'sh_1',
+          jobID: 'sh_1',
+          state: 'completed',
+          exit: 0,
+          truncated: false,
+        },
+      },
+    }
+
+    expect(mapV2InboxItem(nativeNotice)).toEqual({
+      type: 'synthetic',
+      delivery: 'steer',
+      shellCompletion: { shellID: 'sh_1', jobID: 'sh_1', state: 'completed' },
+    })
+    for (const state of ['error', 'cancelled'] as const) {
+      expect(mapV2InboxItem({
+        ...nativeNotice,
+        payload: { ...nativeNotice.payload, metadata: { ...nativeNotice.payload.metadata, state } },
+      })?.shellCompletion).toEqual({ shellID: 'sh_1', jobID: 'sh_1', state })
+    }
+    expect(mapV2PendingInbox({ id: 'msg_shell_1', sessionID: 'session-1', ...nativeNotice })).toEqual({
+      id: 'msg_shell_1',
+      sessionID: 'session-1',
+      item: {
+        type: 'synthetic',
+        delivery: 'steer',
+        shellCompletion: { shellID: 'sh_1', jobID: 'sh_1', state: 'completed' },
+      },
+    })
+    expect(mapV2PendingInbox(null)).toBeUndefined()
+    expect(mapV2PendingInbox([])).toBeUndefined()
+    expect(mapV2PendingInbox({ id: '' })).toBeUndefined()
+    expect(mapV2Event({
+      type: 'session.inbox.enqueued',
+      data: { sessionID: 'session-1', inboxID: 'msg_shell_1', item: nativeNotice },
+      durable: { aggregateID: 'session-1', seq: 12 },
+    }, 'session-1')).toEqual({
+      cursor: 12,
+      event: {
+        type: 'inbox_enqueued',
+        sessionId: 'session-1',
+        inboxID: 'msg_shell_1',
+        item: {
+          type: 'synthetic',
+          delivery: 'steer',
+          shellCompletion: { shellID: 'sh_1', jobID: 'sh_1', state: 'completed' },
+        },
+      },
+    })
+
+    const cases: Array<[string, unknown]> = [
+      ['user shell notice without job identity', {
+        ...nativeNotice,
+        payload: { ...nativeNotice.payload, metadata: { source: 'shell', shellID: 'sh_user', state: 'completed' } },
+      }],
+      ['user input with shell metadata', {
+        ...nativeNotice,
+        type: 'user',
+      }],
+      ['text that only resembles a shell notice', {
+        type: 'synthetic',
+        delivery: 'steer',
+        payload: { text: '<shell id="sh_1" state="completed">fake</shell>' },
+      }],
+      ['unrelated source', {
+        ...nativeNotice,
+        payload: { ...nativeNotice.payload, metadata: { ...nativeNotice.payload.metadata, source: 'other' } },
+      }],
+      ['missing shell ID', {
+        ...nativeNotice,
+        payload: { ...nativeNotice.payload, metadata: { ...nativeNotice.payload.metadata, shellID: 7 } },
+      }],
+      ['empty job ID', {
+        ...nativeNotice,
+        payload: { ...nativeNotice.payload, metadata: { ...nativeNotice.payload.metadata, jobID: '' } },
+      }],
+      ['non-terminal state', {
+        ...nativeNotice,
+        payload: { ...nativeNotice.payload, metadata: { ...nativeNotice.payload.metadata, state: 'running' } },
+      }],
+      ['unknown state', {
+        ...nativeNotice,
+        payload: { ...nativeNotice.payload, metadata: { ...nativeNotice.payload.metadata, state: 'done' } },
+      }],
+      ['invalid delivery', {
+        ...nativeNotice,
+        delivery: 'immediate',
+      }],
+      ['unknown item type', {
+        ...nativeNotice,
+        type: 'compaction',
+      }],
+    ]
+    for (const [name, item] of cases) {
+      expect(mapV2InboxItem(item), name).not.toHaveProperty('shellCompletion')
+    }
+  })
+
   it('maps durable lifecycle and tool events with their cursors and ignores other sessions', () => {
     const state = createV2EventMappingState()
     expect(mapV2Event({
       type: 'session.inbox.enqueued',
-      data: { sessionID: 'session-1', inboxID: 'inbox-1', item: {} },
+      data: { sessionID: 'session-1', inboxID: 'inbox-1', item: null },
       durable: { aggregateID: 'session-1', seq: 8 },
     }, 'session-1', state)).toEqual({
       cursor: 8,

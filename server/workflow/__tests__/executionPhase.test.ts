@@ -966,7 +966,7 @@ describe("handleCoding", () => {
           "Iteration was interrupted before its OpenCode session could be resumed; restarted from the bead start snapshot.",
       }),
     ]);
-    expect(abortSessionMock).toHaveBeenCalledWith("ses-interrupted");
+    expect(abortSessionMock).toHaveBeenCalledWith("ses-interrupted", { retire: true });
     expect(abortSessionMock).not.toHaveBeenCalledWith("ses-other-iteration");
     expect(
       listOpenCodeSessionsForTicket(ticket.id, ["active"]).map(

@@ -13,6 +13,9 @@ import type {
   ToolMessagePart,
 } from "./types";
 import type {
+  OpenCodeInboxItem,
+  OpenCodePendingInbox,
+  OpenCodeShellCompletion,
   OpenCodeTransportEvent,
   OpenCodeTransportEventEnvelope,
 } from "./transport";
@@ -150,6 +153,10 @@ export function mapV2Message(
   const timestamp = isoTime(created);
   const model = asRecord(raw.model);
   const variant = stringValue(model?.variant) ?? stringValue(raw.variant);
+  const syntheticMetadata = asRecord(raw.metadata);
+  const shellCompletion = kind === "synthetic"
+    ? mapV2ShellCompletion(syntheticMetadata)
+    : undefined;
   const info: MessageInfo = {
     id: raw.id,
     sessionID,
@@ -176,6 +183,9 @@ export function mapV2Message(
     ...(raw.cost !== undefined ? { cost: raw.cost } : {}),
     ...(raw.tokens !== undefined ? { tokens: raw.tokens } : {}),
     ...(raw.snapshot !== undefined ? { snapshot: raw.snapshot } : {}),
+    ...(shellCompletion
+      ? { metadata: { source: "shell", ...shellCompletion } }
+      : {}),
   };
 
   if (kind !== "assistant") {
@@ -348,6 +358,53 @@ export function mapV2Event(
     : null;
 }
 
+export function mapV2InboxItem(value: unknown): OpenCodeInboxItem | undefined {
+  const item = asRecord(value);
+  if (!item) return undefined;
+  const type = stringValue(item.type);
+  const delivery = item.delivery === "steer" || item.delivery === "queue"
+    ? item.delivery
+    : undefined;
+  const metadata = asRecord(asRecord(item.payload)?.metadata);
+  const shellCompletion = type === "synthetic" && delivery
+    ? mapV2ShellCompletion(metadata)
+    : undefined;
+
+  return {
+    ...(type ? { type } : {}),
+    ...(delivery ? { delivery } : {}),
+    ...(shellCompletion ? { shellCompletion } : {}),
+  };
+}
+
+function mapV2ShellCompletion(
+  metadata: RecordValue | null,
+): OpenCodeShellCompletion | undefined {
+  const shellID = stringValue(metadata?.shellID);
+  const jobID = stringValue(metadata?.jobID);
+  const state = metadata?.state;
+  return metadata?.source === "shell" &&
+    shellID?.trim() &&
+    jobID?.trim() &&
+    (state === "completed" || state === "error" || state === "cancelled")
+    ? { shellID, jobID, state }
+    : undefined;
+}
+
+export function mapV2PendingInbox(value: unknown): OpenCodePendingInbox | undefined {
+  const inbox = asRecord(value);
+  const id = stringValue(inbox?.id);
+  return id
+    ? {
+        id,
+        ...(stringValue(inbox?.sessionID)
+          ? { sessionID: stringValue(inbox?.sessionID) }
+          : {}),
+        item: mapV2InboxItem(inbox),
+      }
+    : undefined;
+}
+
 // OpenCode's session-event DurableDefinitions; verify this list when updating the v2 CI fixture.
 export const V2_DURABLE_EVENT_TYPES = new Set([
   "session.created",
@@ -447,6 +504,10 @@ function mapEventData(
     case "session.inbox.enqueued":
     case "session.inbox.delivered": {
       const inboxID = stringValue(data.inboxID);
+      const item =
+        type === "session.inbox.enqueued"
+          ? mapV2InboxItem(data.item)
+          : undefined;
       return inboxID
         ? {
             type:
@@ -455,6 +516,7 @@ function mapEventData(
                 : "inbox_delivered",
             sessionId,
             inboxID,
+            ...(item ? { item } : {}),
           }
         : null;
     }

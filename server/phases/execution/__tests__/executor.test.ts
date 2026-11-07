@@ -9,6 +9,7 @@ import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
 import { buildBead } from '../../../test/factories'
 import { createShellCommandSpec } from '@shared/commandSpec'
+import { COMPLETION_DEPENDENT_COMMAND_RULE } from '../../../prompts'
 import {
   BEAD_AGENT_RESPONSE_INVALID,
   BEAD_ITERATION_TIMEOUT,
@@ -146,6 +147,7 @@ describe('executeBead', () => {
 
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
+    expect(messages.some((message) => typeof message.content === 'string' && message.content.includes(COMPLETION_DEPENDENT_COMMAND_RULE))).toBe(true)
   })
 
   it('uses PROM_CODING template for prompt construction', async () => {
@@ -239,6 +241,7 @@ describe('executeBead', () => {
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Continue Bead Execution'))).toBe(true)
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Do not reply with a plain-text progress update or plan'))).toBe(true)
+    expect(messages.some((message) => typeof message.content === 'string' && message.content.includes(COMPLETION_DEPENDENT_COMMAND_RULE))).toBe(true)
   })
 
   it('treats per-iteration timeout 0 as no deadline across continuation prompts', async () => {
@@ -300,6 +303,7 @@ describe('executeBead', () => {
 
   it('calls onContextWipe when iteration fails and PROM51 generates notes', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()
+    const stop = vi.spyOn(adapter, 'abortSession')
     adapter.promptFailures.set('mock-session-1#1', new Error('tests still failing'))
     adapter.mockResponses.set('mock-session-1#2', '\u001b[31mIteration 1 failed because: no completion marker output.\u001b[0m')
 
@@ -314,6 +318,7 @@ describe('executeBead', () => {
       undefined,
       {
         onContextWipe: async ({ beadId, failedIterationNotes }) => {
+          expect(stop).toHaveBeenLastCalledWith('mock-session-1', { retire: true })
           notesUpdates.push({ beadId, failedIterationNotes })
         },
       },
@@ -822,8 +827,8 @@ describe('executeBead', () => {
     ])
     expect(preservedTimeouts).toEqual([])
     // The timed-out continuation and the context-wipe reset both confirm the
-    // same remote session independently.
-    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1'])
+    // same remote session independently; the owned replacement retires on completion.
+    expect(adapter.abortCalls).toEqual(['mock-session-1', 'mock-session-1', 'mock-session-2'])
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1', 'mock-session-2'])
   }, 40_000)
 

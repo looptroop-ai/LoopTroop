@@ -23,6 +23,7 @@ import {
   SessionManager,
 } from '../sessionManager'
 import * as opencodeFactory from '../factory'
+import { onOpenCodeSessionEnded } from '../sessionEvents'
 import { eq } from 'drizzle-orm'
 import { opencodeSessions } from '../../db/schema'
 import { getTicketContext } from '../../storage/tickets'
@@ -577,6 +578,36 @@ describe('SessionManager', () => {
     expect(adapter.forgetCalls).toContain(session.id)
   })
 
+  it.each(['completeSession', 'abandonSession'] as const)('keeps ownership active when %s cannot retire the remote task', async operation => {
+    const { ticket, adapter, sessionManager, session } = await createOwnedSessionFixture({
+      phase: 'CODING', title: 'Confirm terminal cleanup', description: 'Retain history and withhold handoff until cleanup succeeds.',
+    })
+    const abort = vi.spyOn(adapter, 'abortSession').mockResolvedValue(false)
+    const ended = vi.fn()
+    const unsubscribe = onOpenCodeSessionEnded(ended)
+    try {
+      requestSessionContinuation({ ticketId: ticket.id, phase: 'CODING', sessionId: session.id })
+      await expect(sessionManager[operation](session.id)).rejects.toThrow('Could not confirm retirement')
+      expect(abort).toHaveBeenCalledWith(session.id, { retire: true })
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map(row => row.sessionId)).toContain(session.id)
+      expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'CODING')).not.toBeNull()
+      const cause = new Error('Native command cleanup is unavailable')
+      abort.mockRejectedValueOnce(cause)
+      await expect(sessionManager[operation](session.id)).rejects.toMatchObject({ cause })
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map(row => row.sessionId)).toContain(session.id)
+      expect(ended).not.toHaveBeenCalled()
+      abort.mockResolvedValue(true)
+      await sessionManager[operation](session.id)
+      expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toEqual([])
+      expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'CODING')).toBeNull()
+      expect(ended).toHaveBeenCalledTimes(operation === 'abandonSession' ? 1 : 0)
+      if (operation === 'abandonSession')
+        expect(ended).toHaveBeenCalledWith({ sessionId: session.id, ticketId: ticket.id, reason: 'abandoned' })
+    } finally {
+      unsubscribe()
+    }
+  })
+
   it('abandons fallback ownership when compensation confirms the remote stop', async () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({
@@ -713,6 +744,7 @@ describe('SessionManager', () => {
       description: 'Invalid recovery metadata must remain visible for repair.',
     })
     await sessionManager.completeSession(session.id)
+      adapter.abortCalls.length = 0
     writeTicketFile(ticket.id, 'runtime/opencode-pending-sessions.json', JSON.stringify([{
       sessionId: 'session-with-invalid-attempt',
       phase: 'CODING',
@@ -803,7 +835,7 @@ describe('SessionManager', () => {
       expect(sessionManager.hasUnresolvedSessionOwnership(ticket.id)).toBe(true)
       await expect(abortTicketSessions(ticket.id)).resolves.toBe(false)
       expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((row) => row.sessionId)).toEqual([session.id])
-      expect(abort).toHaveBeenCalledWith(session.id)
+      expect(abort).toHaveBeenCalledWith(session.id, { retire: true })
     } finally {
       warn.mockRestore()
       factorySpy.mockRestore()

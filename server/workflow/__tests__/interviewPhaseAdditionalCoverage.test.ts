@@ -35,14 +35,15 @@ import { clearAllPendingSessionContinuationsForTests, requestSessionContinuation
 import { openCodeAuthAdvice } from '../../opencode/connection'
 import { buildStructuredOutputMetadata } from '../../structuredOutput'
 
-const { checkHealthMock, getSessionMock, deliberateInterviewMock } = vi.hoisted(() => ({
+const { checkHealthMock, getSessionMock, abortSessionMock, deliberateInterviewMock } = vi.hoisted(() => ({
   checkHealthMock: vi.fn(),
   getSessionMock: vi.fn(),
+  abortSessionMock: vi.fn(),
   deliberateInterviewMock: vi.fn(),
 }))
 
 vi.mock('../../opencode/factory', () => ({
-  getOpenCodeAdapter: () => ({ checkHealth: checkHealthMock, getSession: getSessionMock }),
+  getOpenCodeAdapter: () => ({ checkHealth: checkHealthMock, getSession: getSessionMock, abortSession: abortSessionMock }),
   isMockOpenCodeMode: () => process.env.LOOPTROOP_OPENCODE_MODE === 'mock',
 }))
 
@@ -109,6 +110,7 @@ describe('additional interview phase flows', () => {
     clearAllPendingSessionContinuationsForTests()
     checkHealthMock.mockReset().mockResolvedValue({ available: true, version: 'test' })
     getSessionMock.mockReset().mockResolvedValue(null)
+    abortSessionMock.mockReset().mockResolvedValue(true)
     deliberateInterviewMock.mockReset()
     delete process.env.LOOPTROOP_OPENCODE_MODE
   })
@@ -173,6 +175,7 @@ describe('additional interview phase flows', () => {
       expect(interviewQASessions.has(ticket.id)).toBe(false)
       expect(getLatestPhaseArtifact(ticket.id, 'interview_qa_session', 'WAITING_INTERVIEW_ANSWERS')).toBeUndefined()
       expect(storageContext.projectDb.select().from(opencodeSessions).get()?.state).toBe('completed')
+      expect(abortSessionMock).toHaveBeenCalledWith(recoveredSessionId, { retire: true })
     } finally {
       start.mockRestore()
       clearAllPendingSessionContinuationsForTests()

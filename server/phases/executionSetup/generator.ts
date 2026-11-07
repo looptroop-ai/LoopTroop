@@ -1,6 +1,6 @@
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, Session, StreamEvent } from '../../opencode/types'
-import { buildPromptFromTemplate, PROM_EXECUTION_SETUP } from '../../prompts/index'
+import { buildPromptFromTemplate, COMPLETION_DEPENDENT_COMMAND_RULE, PROM_EXECUTION_SETUP } from '../../prompts/index'
 import {
   formatPromptText,
   runOpenCodePrompt,
@@ -29,6 +29,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import type { WorkBudget } from '../../workflow/workBudget'
 
 const EXECUTION_SETUP_SCHEMA_REMINDER = [
+  COMPLETION_DEPENDENT_COMMAND_RULE,
   'Return exactly one <EXECUTION_SETUP_RESULT>...</EXECUTION_SETUP_RESULT> block and nothing else.',
   'Inside the marker, return a single JSON or YAML object with top-level keys: status, summary, profile, checks.',
   'status and profile.status must match: use ready only when every check passes, or blocked when at least one check fails.',
@@ -48,6 +49,7 @@ const EXECUTION_SETUP_PROGRESS_CONTINUATION_PROMPT = [
   'Continue the workspace preparation in this same session.',
   'Your previous response was only a progress update, so the setup work is not finished yet.',
   'Use the available tools to complete the approved setup work now. Do not return another progress update.',
+  COMPLETION_DEPENDENT_COMMAND_RULE,
   'Finish with exactly one <EXECUTION_SETUP_RESULT>...</EXECUTION_SETUP_RESULT> block that honestly reports ready or blocked, including the cause and evidence when blocked.',
 ].join('\n')
 

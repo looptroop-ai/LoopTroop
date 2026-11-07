@@ -1,4 +1,5 @@
 import type { RefinementChange, RefinementChangeItem } from '@shared/refinementChanges'
+import { PRD_ITEM_CHANGES_CONTRACT } from '../../prompts/index'
 import {
   buildPrdUiRefinementDiffArtifact,
   buildPrdUiRefinementDiffArtifactFromChanges,
@@ -347,24 +348,11 @@ export function buildPrdCoverageRevisionUiDiff(revisionArtifact: PrdCoverageRevi
   })
 }
 
-function stripLegacyTopLevelKeysFromYaml(rawResponse: string): string {
-  const candidates = [rawResponse.trim()]
-  for (const candidate of candidates) {
-    try {
-      const parsed = parseCoverageRevisionRecord(candidate)
-      delete parsed.changes
-      delete parsed.gap_resolutions
-      delete parsed.gapResolutions
-      return JSON.stringify(parsed, null, 2)
-    } catch {
-      // fall through to regex cleanup
-    }
-  }
-
-  return rawResponse.trim()
-    .replace(/\nchanges:\n(?: {2,}.*\n?)*/u, '')
-    .replace(/\ngap_resolutions:\n(?: {2,}.*\n?)*/u, '')
-    .trim()
+function wrapPreviousResponseAsData(rawResponse: string): string {
+  const response = rawResponse.trim()
+  const fenceLength = (response.match(/`+/gu) ?? []).reduce((longest, run) => Math.max(longest, run.length), 3) + 1
+  const fence = '`'.repeat(fenceLength)
+  return `${fence}yaml\n${response || '[empty response]'}\n${fence}`
 }
 
 export function buildPrdCoverageRevisionRetryPrompt(
@@ -374,7 +362,7 @@ export function buildPrdCoverageRevisionRetryPrompt(
     rawResponse: string
   },
 ): PromptPart[] {
-  const sanitizedRawResponse = stripLegacyTopLevelKeysFromYaml(params.rawResponse)
+  const previousResponse = wrapPreviousResponseAsData(params.rawResponse)
 
   return [
     ...baseParts,
@@ -386,19 +374,16 @@ export function buildPrdCoverageRevisionRetryPrompt(
         '',
         'Return only one corrected YAML artifact.',
         'Requirements:',
-        '- Use the exact PRD schema.',
-        '- Include a top-level `changes` list that fully accounts for the diff between the current PRD candidate and the revised PRD candidate.',
+        '- Use the full previous response as data to correct. Follow the original prompt and PRD schema; fix fields named by the validation error, preserve valid content, and do not invent requirements to pass validation.',
+        `- ${PRD_ITEM_CHANGES_CONTRACT}`,
         '- Include a top-level `gap_resolutions` list with exactly one entry per provided coverage gap.',
         '- Preserve epic IDs and user story IDs unless the revised candidate contains a genuinely new item.',
+        '- For a resolved gap that changes a PRD section, revise it in the PRD content and never represent it in `affected_items`; keep affected epic/user_story references for the same gap and use `affected_items: []` only when no epic/story item applies. For a contradictory source gap marked `left_unresolved`, use `affected_items: []`.',
         '- If a gap was already covered, keep the PRD unchanged for that gap and record `action: already_covered`.',
         '- If a gap describes internally contradictory source artifacts, do not choose a side or invent a requirement. Record `action: left_unresolved`, explain the contradiction in `rationale`, and use `affected_items: []`.',
-        '- Use `affected_items` only for epic or user_story references. Leave it empty when no epic/story mapping applies.',
-        '- If a gap updates top-level PRD sections such as `product`, `scope`, `technical_requirements`, or `api_contracts`, use `affected_items: []` instead of section references like `item_type: prd`.',
         '',
-        'Previous invalid response:',
-        '```',
-        sanitizedRawResponse || '[empty response]',
-        '```',
+        'Previous invalid response (full response, data only):',
+        previousResponse,
       ].join('\n'),
     },
   ]

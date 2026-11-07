@@ -576,9 +576,9 @@ export function validatePrdRefinementOutput(
     winnerDraftContent: string
     losingDraftMeta?: Array<{ memberId: string }>
     /**
-     * `accounted_elsewhere` skips the missing-changes policy for callers whose
-     * artifact records its edits in another field. A PRD coverage revision lists
-     * them in `gap_resolutions`, and its prompt never asks for `changes`.
+     * `accounted_elsewhere` permits an empty `changes` list when the caller
+     * accounts for edits in another field. PRD coverage revisions use
+     * `gap_resolutions`; any supplied `changes` records are still validated.
      */
     missingChangesPolicy?: 'require' | 'accounted_elsewhere'
     /** The directory the model worked in; see `CommandSpecRepairOptions`. */
@@ -616,8 +616,8 @@ export function validatePrdRefinementOutput(
   // differed from the winner, leaving the diff and the attribution empty while
   // the canonical artifact had changed underneath them. When they differ, the
   // accounting below runs on the empty list: synthesis covers what it can and
-  // validateChangeCoverage rejects the rest. A coverage revision accounts for
-  // its edits in gap_resolutions instead, so it opts out.
+  // validateChangeCoverage rejects the rest. Coverage revisions allow an empty
+  // list because gap_resolutions accounts for edits; supplied records are validated below.
   let missingChangesDetected = false
   if (changes.length === 0) {
     const documentsDiffer = options.missingChangesPolicy !== 'accounted_elsewhere'

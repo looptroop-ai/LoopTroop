@@ -13,6 +13,7 @@ import { generateFinalTests } from '../generator'
 import type { OpenCodePromptDispatchEvent } from '../../../workflow/runOpenCodePrompt'
 import { detectHostContext } from '../../../lib/hostContext'
 import { normalizeCommandSpec } from '@shared/commandSpec'
+import { COMPLETION_DEPENDENT_COMMAND_RULE } from '../../../prompts'
 
 const LEGACY_TEST_COMMAND = normalizeCommandSpec('npm run test:server', detectHostContext())
 
@@ -106,6 +107,7 @@ describe('generateFinalTests', () => {
 
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
+    expect(messages.some((message) => typeof message.content === 'string' && message.content.includes(COMPLETION_DEPENDENT_COMMAND_RULE))).toBe(true)
     for (const call of adapter.promptCalls) {
       expect(call.options?.permission).toEqual(resolveOpenCodePermissions('default', false, true))
       expect(call.options?.permissionGuard).toBe(true)

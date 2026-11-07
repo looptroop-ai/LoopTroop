@@ -9,6 +9,21 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- OpenCode tasks recover their own background command notifications and stop old task commands before handing off the worktree, while preserving conversation history.
+- PRD coverage reviews show clearer item changes and explanations for the gaps each revision addresses.
+
+### Changed
+
+- PRD revision instructions now ask for exact current and revised item titles, separate records for changed epics and stories, and a reason for each gap resolution. For resolved gaps, section-only changes can have no affected item references, while mixed changes keep affected stories; unresolved source contradictions use an empty list. Empty change lists remain accepted during coverage; the review can derive a diff from saved PRD versions, and supplied records keep their existing validation behavior.
+
+### Fixed
+
+- Continue handles owned background notifications, permissions already pending at reconnect or before a new prompt receipt, crash/restart history, and stream-loss recovery without accepting unrelated work.
+- Completed and abandoned LoopTroop tasks have their native OpenCode tools disabled before their verified background commands are stopped, including commands with receipts older than the normal response-history window. Unconfirmed cleanup retains ownership and withholds worktree reset; active Continue sessions keep their normal permissions and all conversation history is retained. Unowned interactive callers retain control of their session lifetime.
+- Coding, runtime setup, and final-test prompts run checks needed for the final outcome in the foreground, avoiding progress-only replies while those checks are still running. PRD coverage retries retain the full rejected response so valid change records can be corrected rather than recreated.
+
 ## 0.6.4 (2026-11-06)
 
 

@@ -9,6 +9,7 @@ import { createTestRepoManager, createUninitializedTestTicket, resetTestDb } fro
 import { recordTimeoutAndExpectContinuation } from '../../../test/openCodeContinuation'
 import { SequencedMockOpenCodeAdapter, StructuredRetryTimeoutAdapter } from '../../../test/openCodeAdapters'
 import { generateExecutionSetup } from '../generator'
+import { COMPLETION_DEPENDENT_COMMAND_RULE } from '../../../prompts'
 
 const repoManager = createTestRepoManager('execution-setup-generator-')
 
@@ -213,6 +214,7 @@ describe('generateExecutionSetup', () => {
     }
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
+    expect(messages.some((message) => typeof message.content === 'string' && message.content.includes(COMPLETION_DEPENDENT_COMMAND_RULE))).toBe(true)
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
   })
 
@@ -326,6 +328,7 @@ describe('generateExecutionSetup', () => {
       && message.content.includes('previous response was only a progress update')
       && message.content.includes('Do not return another progress update')
     ))).toBe(true)
+    expect(messages.some((message) => typeof message.content === 'string' && message.content.includes(COMPLETION_DEPENDENT_COMMAND_RULE))).toBe(true)
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(false)
   })
 

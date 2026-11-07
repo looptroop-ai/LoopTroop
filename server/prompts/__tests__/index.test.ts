@@ -12,6 +12,8 @@ import {
   PROM12,
   PROM13,
   PROM13b,
+  PRD_ITEM_CHANGES_CONTRACT,
+  COMPLETION_DEPENDENT_COMMAND_RULE,
   PROM20,
   PROM21,
   PROM22,
@@ -111,6 +113,13 @@ describe.concurrent('structured prompt hardening', () => {
     expect(PROM_MANUAL_QA_FIX_BEADS.toolPolicy).toBe('read_only')
   })
 
+  it('requires real completion results before tool-using workflow markers', () => {
+    for (const prompt of [PROM_CODING, PROM_EXECUTION_SETUP, PROM52]) {
+      expect(buildPromptFromTemplate(prompt, [])).toContain(COMPLETION_DEPENDENT_COMMAND_RULE)
+    }
+    expect(COMPLETION_DEPENDENT_COMMAND_RULE).toContain('Keep ongoing work that must run concurrently in the background')
+  })
+
   it('grounds conditional repository inspection in supplied evidence before targeted reads', () => {
     for (const prompt of [
       PROM1,
@@ -165,6 +174,9 @@ describe.concurrent('structured prompt hardening', () => {
     expect(PROM10b.outputFormat).not.toContain('PROM13.output_file')
 
     const draftPrompt = buildPromptFromTemplate(PROM10b, [])
+    expect(draftPrompt).toContain('Include only additional top-level fields explicitly requested by this prompt')
+    expect(PROM10b.outputFormat).not.toContain('`changes`')
+    expect(PROM10b.outputFormat).not.toContain('`gap_resolutions`')
     expect(draftPrompt).toContain('Schema Contract')
     expect(draftPrompt).toContain('Complete Interview Input')
     expect(draftPrompt).toContain('Source Contradiction Rule')
@@ -185,9 +197,27 @@ describe.concurrent('structured prompt hardening', () => {
     expect(refinePrompt).toContain('Include `inspiration.item.detail` whenever the source item has useful supporting text')
 
     const coverageResolutionPrompt = buildPromptFromTemplate(PROM13b, [])
+    expect(coverageResolutionPrompt).toContain(PRD_ITEM_CHANGES_CONTRACT)
+    expect(coverageResolutionPrompt).toContain('A populated `before` or `after` record uses `{id, label, detail?}`')
+    expect(coverageResolutionPrompt).toContain('Copy each `before.label` exactly from the current PRD item title and each `after.label` exactly from the revised PRD item title; the labels may differ when the title changes.')
+    expect(coverageResolutionPrompt).toContain('An epic change never subsumes changes to its user stories; include each changed epic and user story exactly once.')
     expect(coverageResolutionPrompt).toContain('Every epic in the revised PRD must include at least one fully populated `user_stories` entry')
     expect(coverageResolutionPrompt).toContain('making the affected acceptance criteria, scope language, or verification guidance more concrete and testable')
-    expect(coverageResolutionPrompt).toContain('If a gap updates top-level PRD sections such as `product`, `scope`, `technical_requirements`, or `api_contracts`, keep `affected_items: []`')
+    expect(coverageResolutionPrompt).toContain('The top-level `changes` list must fully and exactly account for every changed epic and user story')
+    expect(coverageResolutionPrompt).toContain('For `added`, use `before: null` and a populated `after`')
+    expect(coverageResolutionPrompt).toContain('for `removed`, use a populated `before` and `after: null`')
+    expect(coverageResolutionPrompt).toContain('for `modified`, populate both records with the same `id`')
+    expect(coverageResolutionPrompt).toContain('The `changes` list records epic and user_story items only')
+    expect(coverageResolutionPrompt).not.toContain('PROM12')
+    expect(coverageResolutionPrompt).toContain('For gaps resolved with `updated_prd` or `already_covered`, `affected_items` must be a YAML list of `{ item_type, id, label }` entries referencing epic or user_story items. Use `[]` only when no epic/story item applies, such as a section-only change. For `left_unresolved` source-artifact contradictions, use `[]` as directed above.')
+    expect(coverageResolutionPrompt).toContain('For a resolved gap that also edits a PRD section and affects epic or user_story items, include those references; use `affected_items: []` only when no epic/story item applies.')
+    expect(coverageResolutionPrompt).toContain('For `left_unresolved` source-artifact contradictions, use `affected_items: []`.')
+    expect(coverageResolutionPrompt).toContain('For resolved gaps, each `affected_items` entry: {item_type, id, label}; use `[]` only when no epic/story item applies, such as a section-only change. For `left_unresolved` source-artifact contradictions, use `affected_items: []`.')
+    expect(coverageResolutionPrompt).not.toContain('use `affected_items: []` when the gap changes PRD sections')
+    expect(coverageResolutionPrompt).toContain('Include only additional top-level fields explicitly requested by this prompt')
+    expect(coverageResolutionPrompt).not.toContain('exactly these top-level keys')
+    expect(coverageResolutionPrompt).toContain('Include a top-level `changes` list')
+    expect(coverageResolutionPrompt).toContain('Also include a top-level `gap_resolutions` list')
     expect(coverageResolutionPrompt).toContain('If a provided gap describes internally contradictory source artifacts')
     expect(coverageResolutionPrompt).toContain('Record that gap with `action: left_unresolved` and `affected_items: []`')
   })

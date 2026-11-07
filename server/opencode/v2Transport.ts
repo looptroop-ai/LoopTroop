@@ -7,9 +7,11 @@ import type {
   OpenCodeQuestionRequest,
   OpenCodeSessionCreateOptions,
   Session,
+  ToolMessagePart,
 } from "./types";
 import type {
   OpenCodeEventSubscription,
+  OpenCodePendingInbox,
   OpenCodePromptRequest,
   OpenCodeSessionLog,
   OpenCodeSessionUpdateOptions,
@@ -29,6 +31,7 @@ import {
   mapV2Event,
   mapV2Message,
   mapV2PermissionRules,
+  mapV2PendingInbox,
   mapV2PromptParts,
   mapV2Question,
   mapV2QuestionAnswer,
@@ -801,7 +804,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     sessionId: string,
     _directory?: string,
     signal?: AbortSignal,
-  ): Promise<readonly string[]> {
+  ): Promise<readonly OpenCodePendingInbox[]> {
     const response = dataOf(
       await this.request(
         `/api/session/${encodeURIComponent(sessionId)}/inbox`,
@@ -811,11 +814,90 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     if (!Array.isArray(response))
       throw new Error("OpenCode v2 returned an invalid pending inbox list");
     return response.map((item) => {
-      const inboxID = stringValue(asRecord(item)?.id);
-      if (!inboxID)
+      const inbox = mapV2PendingInbox(item);
+      if (!inbox)
         throw new Error("OpenCode v2 returned a pending inbox without an id");
-      return inboxID;
+      if (inbox.sessionID !== sessionId)
+        throw new Error("OpenCode v2 returned a pending inbox for a different session");
+      return inbox;
     });
+  }
+
+  async getPendingPermissions(
+    sessionId: string,
+    directory?: string,
+    signal?: AbortSignal,
+  ): Promise<OpenCodeTransportEventEnvelope[]> {
+    const relatedSessions = createRelatedSessionRoutingState(sessionId, directory);
+    await this.hydrateRelatedSessions(sessionId, relatedSessions, signal);
+    const permissionSessionIds = [sessionId, ...relatedSessions.descendants];
+    const responses = await this.readPendingPermissionResponses(
+      permissionSessionIds,
+      signal,
+    );
+    for (const [index, pendingSessionId] of permissionSessionIds.entries()) {
+      const pending = dataOf(responses[index]);
+      if (!Array.isArray(pending) || !pending.some(request => ["shell", "bash"].includes(String(asRecord(request)?.action)))) continue;
+      const messages = await this.getSessionMessages(pendingSessionId, relatedSessions.directories.get(pendingSessionId), signal);
+      for (const message of messages) {
+        if (message.role !== "assistant" || message.info?.sessionID !== pendingSessionId) continue;
+        for (const part of message.parts ?? []) {
+          if (part.type !== "tool" || part.sessionID !== pendingSessionId) continue;
+          const tool = part as ToolMessagePart;
+          if (!tool.callID || !tool.state.input) continue;
+          relatedSessions.toolCalls.set(nativeToolCallKey(pendingSessionId, message.id, tool.callID), {
+            toolName: tool.tool, input: tool.state.input, inputComplete: true,
+          });
+        }
+      }
+    }
+    return this.mapPendingPermissionResponses(
+      permissionSessionIds,
+      responses,
+      createV2EventMappingState(),
+      relatedSessions,
+    );
+  }
+
+  private async readPendingPermissionResponses(
+    permissionSessionIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<Array<unknown | null>> {
+    return await Promise.all(permissionSessionIds.map(async (permissionSessionId) => {
+      try {
+        return await this.request(
+          `/api/session/${encodeURIComponent(permissionSessionId)}/permission`,
+          { signal },
+        );
+      } catch (error) {
+        if (permissionSessionId !== permissionSessionIds[0] && isSessionNotFound(error)) return null;
+        throw error;
+      }
+    }));
+  }
+
+  private mapPendingPermissionResponses(
+    permissionSessionIds: readonly string[],
+    responses: readonly (unknown | null)[],
+    mappingState: ReturnType<typeof createV2EventMappingState>,
+    relatedSessions: RelatedSessionRoutingState,
+  ): OpenCodeTransportEventEnvelope[] {
+    const pendingPermissions: OpenCodeTransportEventEnvelope[] = [];
+    for (const [index, permissionSessionId] of permissionSessionIds.entries()) {
+      const response = responses[index];
+      if (response === null) continue;
+      const rawRequests = dataOf(response);
+      if (!Array.isArray(rawRequests))
+        throw new Error("OpenCode v2 returned an invalid pending permission list");
+      for (const request of rawRequests) {
+        const rawPermission = { type: "permission.asked", data: request };
+        const event = mapV2Event(rawPermission, permissionSessionId, mappingState, true);
+        if (!event?.event || event.event.type !== "permission")
+          throw new Error("OpenCode v2 returned an invalid pending permission request");
+        pendingPermissions.push(withPermissionDirectory(event, rawPermission, relatedSessions));
+      }
+    }
+    return pendingPermissions;
   }
 
   async dispatchPrompt(
@@ -1050,8 +1132,9 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
   async interruptSession(
     sessionId: string,
     directory?: string,
+    operationSignal?: AbortSignal,
   ): Promise<boolean> {
-    const signal = AbortSignal.timeout(IDLE_WAIT_TIMEOUT_MS);
+    const signal = operationSignal ?? AbortSignal.timeout(IDLE_WAIT_TIMEOUT_MS);
     try {
       await this.request(
         `/api/session/${encodeURIComponent(sessionId)}/interrupt?resume=false`,
@@ -1065,6 +1148,87 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
       throw error;
     }
     await this.waitForIdle(sessionId, directory, signal);
+    return true;
+  }
+
+  async retireSession(sessionId: string, directory?: string): Promise<boolean> {
+    if (!directory) throw new Error("OpenCode session retirement requires a trusted worktree directory");
+    const signal = AbortSignal.timeout(IDLE_WAIT_TIMEOUT_MS);
+    const queue = [{ id: sessionId, directory }];
+    const visited = new Map<string, string>();
+    const directories = new Set<string>();
+    const shellOwners = new Map<string, string>();
+    for (let index = 0; index < queue.length; index++) {
+      const session = queue[index];
+      if (!session || visited.has(session.id)) continue;
+      if (visited.size >= SESSION_LIST_LIMIT)
+        throw new Error("OpenCode returned too many sessions to confirm retirement");
+      visited.set(session.id, session.directory);
+      directories.add(session.directory);
+      try {
+        // A cancelled shell can wake the model later; keep its native tools denied.
+        await this.updateSession(session.id, session.directory, {
+          permission: [{ permission: "*", pattern: "*", action: "deny" }],
+        }, signal);
+        await this.interruptSession(session.id, session.directory, signal);
+      } catch (error) {
+        if (!isSessionNotFound(error)) throw error;
+        if (session.id === sessionId) return true;
+        continue;
+      }
+      const messages = await this.getSessionMessages(session.id, session.directory, signal);
+      for (const message of messages) {
+        if (message.role !== "assistant" || message.info?.sessionID !== session.id) continue;
+        for (const part of message.parts ?? []) {
+          if (part.type !== "tool" || part.sessionID !== session.id) continue;
+          const tool = part as ToolMessagePart;
+          const shellID = tool.state.metadata?.shellID;
+          if ((tool.tool !== "shell" && tool.tool !== "bash") || typeof shellID !== "string" || !shellID.trim()) continue;
+          const previousOwner = shellOwners.get(shellID);
+          if (previousOwner && previousOwner !== session.id)
+            throw new Error("OpenCode reused a shell ID across sessions during retirement");
+          shellOwners.set(shellID, session.id);
+        }
+      }
+      // Stop each parent before discovering children, so an old turn cannot keep adding them.
+      for (const child of await this.listChildSessions(session.id, signal)) {
+        if (visited.has(child.id)) continue;
+        if (!child.directory)
+          throw new Error("OpenCode returned a child session without a trusted retirement directory");
+        queue.push({ id: child.id, directory: child.directory });
+      }
+    }
+    for (const worktreeDirectory of directories) {
+      const query = new URLSearchParams({ directory: worktreeDirectory });
+      const listRunning = async () => {
+        const payload = asRecord(await this.request("/api/shell", { query, signal }));
+        if (!Array.isArray(payload?.data))
+          throw new Error("OpenCode returned an invalid shell list during retirement");
+        return payload.data.map((value) => {
+          const shell = asRecord(value);
+          const id = stringValue(shell?.id);
+          const owner = stringValue(asRecord(shell?.metadata)?.sessionID);
+          if (!id || !shell || !asRecord(shell.metadata) || !["running", "exited", "timeout", "killed"].includes(String(shell.status)))
+            throw new Error("OpenCode returned an invalid shell record during retirement");
+          if (shell.status !== "running") return undefined;
+          const verifiedOwner = shellOwners.get(id);
+          if (verifiedOwner && owner !== verifiedOwner)
+            throw new Error("OpenCode changed a verified shell's session during retirement");
+          if (owner && visited.has(owner) && verifiedOwner !== owner)
+            throw new Error("OpenCode has a running session shell without a verified model-tool receipt; retirement is unconfirmed");
+          return verifiedOwner ? id : undefined;
+        }).filter((id): id is string => id !== undefined);
+      };
+      for (const shellID of await listRunning()) {
+        await this.request(`/api/shell/${encodeURIComponent(shellID)}`, {
+          method: "DELETE", query, signal, expectedStatus: 204,
+        });
+      }
+      if ((await listRunning()).length > 0)
+        throw new Error("OpenCode still has running task commands; retirement is unconfirmed");
+    }
+    for (const [id, worktreeDirectory] of visited)
+      await this.interruptSession(id, worktreeDirectory, signal);
     return true;
   }
 
@@ -1522,14 +1686,9 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
               const permissionSessionIds = fetchPendingPermissions
                 ? [sessionId, ...relatedSessions.descendants]
                 : [];
-              const pendingPermissionsResponses = await Promise.all(permissionSessionIds.map(async (permissionSessionId) => {
-                try {
-                  return await this.request(`/api/session/${encodeURIComponent(permissionSessionId)}/permission`, { signal });
-                } catch (error) {
-                  if (permissionSessionId !== sessionId && isSessionNotFound(error)) return null;
-                  throw error;
-                }
-              }));
+              const pendingPermissionsResponses = fetchPendingPermissions
+                ? await this.readPendingPermissionResponses(permissionSessionIds, signal)
+                : [];
               const replayEvents: OpenCodeTransportEventEnvelope[] = [];
               // Failed replay must not consume text/tool state before a retry.
               const replayState = structuredClone(state);
@@ -1542,28 +1701,14 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
                 relatedSessions,
               );
               const replayGap = coverageGap || !replay.coverageComplete;
-              const pendingPermissions: OpenCodeTransportEventEnvelope[] = [];
-              if (!replayGap && fetchPendingPermissions) {
-                for (const [index, permissionSessionId] of permissionSessionIds.entries()) {
-                  const response = pendingPermissionsResponses[index];
-                  if (response === null) continue;
-                  const rawRequests = dataOf(response);
-                  if (!Array.isArray(rawRequests))
-                    throw new Error(
-                      "OpenCode v2 returned an invalid pending permission list",
-                    );
-                  for (const request of rawRequests) {
-                    const rawPermission = { type: "permission.asked", data: request };
-                    const event = mapV2Event(rawPermission, permissionSessionId, replayState, true);
-                    if (!event?.event || event.event.type !== "permission") {
-                      throw new Error(
-                        "OpenCode v2 returned an invalid pending permission request",
-                      );
-                    }
-                    pendingPermissions.push(withPermissionDirectory(event, rawPermission, relatedSessions));
-                  }
-                }
-              }
+              const pendingPermissions = !replayGap && fetchPendingPermissions
+                ? this.mapPendingPermissionResponses(
+                    permissionSessionIds,
+                    pendingPermissionsResponses,
+                    replayState,
+                    relatedSessions,
+                  )
+                : [];
               await connection.close();
               ownedConnections.delete(connection);
               connection = reconnected;

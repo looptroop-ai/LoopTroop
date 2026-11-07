@@ -297,6 +297,7 @@ describe('runOpenCodePrompt', () => {
     expect(audit.response).toBe('Audit response')
     expect(audit.session.id).not.toBe(draft.session.id)
     expect(adapter.promptCalls[1]?.parts[0]).toEqual({ type: 'text', content: 'Audit files' })
+    expect(adapter.abortCalls).not.toContain(draft.session.id)
     const resumed = await runOpenCodePrompt({
       adapter, projectPath: '/tmp/project', parts: [{ type: 'text', content: 'Do not resend the draft inputs' }],
       sessionOwnership: { ticketId: ticket.id, phase: 'CREATING_PULL_REQUEST', step: 'pull_request_draft', forceFresh: true },
@@ -304,7 +305,7 @@ describe('runOpenCodePrompt', () => {
     expect(resumed.session.id).toBe(draft.session.id)
     expect(resumed.response).toBe('Continued draft')
     expect(adapter.promptCalls[2]?.parts[0]).toEqual({ type: 'text', content: 'continue please' })
-    expect(adapter.abortCalls).not.toContain(draft.session.id)
+    expect(adapter.abortCalls).toContain(draft.session.id)
   })
 
   it('uses the current attempt and appends the literal retry note only to restarted work', async () => {
@@ -1559,7 +1560,7 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(result.session.id).toBe('ses-2')
-    expect(adapter.abortCalls).toEqual(['ses-1'])
+    expect(adapter.abortCalls).toEqual(['ses-1', 'ses-2'])
     expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual(['ses-1', 'ses-2'])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active'])).toHaveLength(0)
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned'])).toHaveLength(1)
@@ -2466,7 +2467,7 @@ describe('runOpenCodePrompt', () => {
             },
           ],
         }),
-        abort: async () => ({ data: {} }),
+        abort: async () => ({ data: true }),
       },
       global: {
         event: async () => ({
@@ -2627,7 +2628,7 @@ describe('runOpenCodePrompt', () => {
     await expect(promise).resolves.toMatchObject({
       response: 'done after disabled timeout',
     })
-    expect(adapter.abortCalls).toEqual([])
+    expect(adapter.abortCalls).toEqual(['ses-1'])
   })
 
   it('uses an explicit absolute deadline instead of restarting timeoutMs', async () => {

@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react'
 import { tryParseStructuredContent } from '../phaseArtifactTypes'
 import type { RelevantFileScanEntry, RelevantFilesScanData } from '../phaseArtifactTypes'
 import { buildReadableRawDisplayContent } from '../rawDisplayContent'
-import { CopyButton, RawContentWithCopy, RawDisplayPre, RawDisplayStats } from '../RawTextDisplay'
+import { RawContentWithCopy, RawDisplayPre, RawDisplayStats } from '../RawTextDisplay'
 import { CollapsibleSection } from './CollapsibleSection'
 import { ArtifactProcessingNotice } from './ArtifactProcessingNotice'
 import { RawAttemptVariantSelector } from './WithRawTab'
@@ -126,14 +126,13 @@ export function RelevantFilesScanView({ content }: { content: string }) {
               Raw
             </button>
           )}
-          {currentTab === 'raw' && <CopyButton content={activeRawContent} />}
         </div>
       </div>
 
       {currentTab === 'raw' ? (
         <>
           {rawVariantSelector}
-          <RawDisplayStats content={activeRawDisplayContent} />
+          <RawDisplayStats content={activeRawDisplayContent} copyContent={activeRawContent} />
           <RawDisplayPre content={activeRawDisplayContent} />
         </>
       ) : (

@@ -199,14 +199,13 @@ function RefinedArtifactTabs({ content, hasChanges, sectionsContent, diffContent
           >
             Raw
           </button>
-          {currentTab === 'raw' && <CopyButton content={content} />}
         </div>
       </div>
 
       {currentTab === 'sections' ? notice : null}
 
       {currentTab === 'raw' && (
-        <RawDisplayStats content={rawDisplayContent} />
+        <RawDisplayStats content={rawDisplayContent} copyContent={content} />
       )}
 
       {currentTab === 'sections' ? (
@@ -785,13 +784,12 @@ function FinalInterviewArtifactView({
           <button onClick={() => setActiveTab('raw')} className={tabButtonClass('raw')}>
             Raw
           </button>
-          {currentTab === 'raw' && <CopyButton content={content} />}
         </div>
       </div>
       {currentTab === 'final' ? notice : null}
       {currentTab === 'raw' ? (
         <div className="min-w-0 max-w-full space-y-3">
-          <RawDisplayStats content={rawDisplayContent} />
+          <RawDisplayStats content={rawDisplayContent} copyContent={content} />
           <RawDisplayPre content={rawDisplayContent} />
         </div>
       ) : currentTab === 'final'
@@ -862,11 +860,8 @@ function FinalPrdDraftView({
   if (!parsed) {
     return (
       <div className="min-w-0 max-w-full space-y-3">
-        <div className="flex justify-end">
-          <CopyButton content={activeRawContent} />
-        </div>
         {rawVariantSelector}
-        <RawDisplayStats content={activeRawDisplayContent} />
+        <RawDisplayStats content={activeRawDisplayContent} copyContent={activeRawContent} />
         <RawDisplayPre content={activeRawDisplayContent} />
       </div>
     )
@@ -876,11 +871,8 @@ function FinalPrdDraftView({
   if (!refinedContent) {
     return (
       <div className="min-w-0 max-w-full space-y-3">
-        <div className="flex justify-end">
-          <CopyButton content={activeRawContent} />
-        </div>
         {rawVariantSelector}
-        <RawDisplayStats content={activeRawDisplayContent} />
+        <RawDisplayStats content={activeRawDisplayContent} copyContent={activeRawContent} />
         <RawDisplayPre content={activeRawDisplayContent} />
       </div>
     )
@@ -920,14 +912,13 @@ function FinalPrdDraftView({
               Raw
             </button>
           )}
-          {currentTab === 'raw' && <CopyButton content={activeRawContent} />}
         </div>
       </div>
       {currentTab === 'final' ? notice : null}
       {currentTab === 'raw' ? (
         <div className="min-w-0 max-w-full space-y-3">
           {rawVariantSelector}
-          <RawDisplayStats content={activeRawDisplayContent} />
+          <RawDisplayStats content={activeRawDisplayContent} copyContent={activeRawContent} />
           <RawDisplayPre content={activeRawDisplayContent} />
         </div>
       ) : currentTab === 'final'

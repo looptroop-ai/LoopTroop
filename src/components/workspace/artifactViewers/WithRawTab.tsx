@@ -4,7 +4,7 @@ import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelIcon } from '@/components/shared/ModelBadge'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { buildReadableRawDisplayContent } from '../rawDisplayContent'
-import { CopyButton, RawDisplayPre, RawDisplayStats } from '../RawTextDisplay'
+import { RawDisplayPre, RawDisplayStats } from '../RawTextDisplay'
 import {
   buildAggregateRawSource,
   canShowRawSourceSelector,
@@ -128,7 +128,6 @@ export function WithRawTab({
           >
             Raw
           </button>
-          {activeTab === 'raw' && <CopyButton content={activeRawContent} />}
         </div>
       </div>
 
@@ -223,7 +222,7 @@ export function WithRawTab({
               })}
             </div>
           )}
-          <RawDisplayStats content={activeRawDisplayContent} />
+          <RawDisplayStats content={activeRawDisplayContent} copyContent={activeRawContent} />
         </>
       )}
 

@@ -35,7 +35,7 @@ import type { PrdDocument } from '@/lib/prdDocument'
 import { isStatusAtOrPast } from '@shared/workflowMeta'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
-import { CopyButton as RawCopyButton, RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
+import { RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
 import { manualQaEvidenceUrl } from '@/hooks/useManualQA'
 import { normalizeRawAttempts, tryParseStructuredContent, type ArtifactRawAttemptData } from './phaseArtifactTypes'
 import { stripAnsiSequences } from '@shared/ansi'
@@ -985,7 +985,11 @@ function BeadRawAttemptPanel({
             {attempt?.modelId ? <span className="rounded border border-border bg-background px-2 py-1">Model {attempt.modelId}</span> : null}
             {attempt?.sessionId ? <span className="rounded border border-border bg-background px-2 py-1">Session {attempt.sessionId}</span> : null}
           </div>
-          <RawDisplayStats content={displayContent} />
+          <RawDisplayStats
+            content={displayContent}
+            copyContent={content}
+            copyTitle={mode === 'input' ? 'Copy bead input' : 'Copy bead output'}
+          />
           <RawDisplayPre content={displayContent} />
         </div>
       ) : (
@@ -1311,11 +1315,6 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     || ticket.status === 'CANCELED'
     || ticket.status === 'BLOCKED_ERROR'
   const outputTabEnabled = Boolean(activeRawOutput.trim()) && outputContextIsTerminal
-  const activeRawCopyContent = detailTab === 'input'
-    ? activeRawInput
-    : detailTab === 'output' && outputTabEnabled
-      ? activeRawOutput
-      : ''
   const changesTabEnabled = viewedBead ? (viewedBead.status === 'completed' || viewedBead.status === 'skipped') : false
 
   useEffect(() => {
@@ -1477,11 +1476,6 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
               <BeadDetailTabButton tab="input" activeTab={detailTab} onSelect={setDetailTab} icon={<FileInput className="h-3 w-3" />}>
                 Input
               </BeadDetailTabButton>
-              {detailTab === 'input' && activeRawCopyContent.trim() && (
-                <div className="flex items-center pr-1">
-                  <RawCopyButton content={activeRawCopyContent} title="Copy bead input" />
-                </div>
-              )}
               <BeadDetailTabButton
                 tab="output"
                 activeTab={detailTab}
@@ -1491,12 +1485,6 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
               >
                 Output
               </BeadDetailTabButton>
-              {detailTab === 'output' && activeRawCopyContent.trim() && (
-                <div className="flex items-center pr-1">
-                  <RawCopyButton content={activeRawCopyContent} title="Copy bead output" />
-                </div>
-              )}
-
               {detailTab === 'model' && (
                 <div className="ml-auto flex items-center pr-2 gap-2 text-xs text-muted-foreground">
                   {hasMultipleBeadIterations && (

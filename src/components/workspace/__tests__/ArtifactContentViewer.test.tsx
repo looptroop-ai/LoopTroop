@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render as baseRender, screen, within } from '@
 import type { ReactElement, ReactNode } from 'react'
 import { deriveStructuredInterventions } from '@shared/structuredInterventions'
 import { estimateTokens } from '@shared/tokenEstimate'
-import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersView, PrdDraftView } from '../ArtifactContentViewer'
+import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersView, PrdDraftView, WithRawTab } from '../ArtifactContentViewer'
 import { buildArtifactProcessingNoticeCopy } from '../artifactProcessingNotice'
 import { serializeBeadCommitsDiffContent } from '../diffUtils'
 import type { ArtifactStructuredOutputData } from '../phaseArtifactTypes'
@@ -116,6 +116,31 @@ function renderWithLogContext(ui: ReactElement, logsByPhase: Record<string, LogE
 describe('ArtifactContentViewer', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('keeps copy to the right of raw stats for not-yet-produced artifact content', () => {
+    const content = '# Pending artifact\n\nThis artifact is not available yet.'
+    render(<ArtifactContent artifactId="not-produced" content={content} />)
+
+    const copyButton = screen.getByRole('button', { name: 'Copy raw output' })
+    const header = copyButton.closest('div.flex.w-full')
+    expect(header).toContainElement(screen.getByText(`${content.split('\n').length} Lines`))
+    expect(header?.lastElementChild).toContainElement(copyButton)
+  })
+
+  it('keeps raw-tab copy beside its stats instead of in the tab controls', () => {
+    render(
+      <WithRawTab content="raw artifact output" structuredLabel="Details">
+        <div>Structured artifact</div>
+      </WithRawTab>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }))
+
+    const copyButton = screen.getByRole('button', { name: 'Copy raw output' })
+    const header = copyButton.closest('div.flex.w-full')
+    expect(within(screen.getByTestId('raw-tab-controls')).queryByRole('button', { name: 'Copy raw output' })).not.toBeInTheDocument()
+    expect(header).toContainElement(screen.getByText('1 Lines'))
+    expect(header?.lastElementChild).toContainElement(copyButton)
   })
 
   it('scrolls a section into view when it is expanded', () => {

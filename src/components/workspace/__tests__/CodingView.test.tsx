@@ -984,6 +984,9 @@ describe('CodingView', () => {
     expect(screen.getByText('Session session-raw-1')).toBeTruthy()
 
     const copyBtn = screen.getByRole('button', { name: 'Copy bead input' })
+    const rawHeader = copyBtn.closest('div.flex.w-full')
+    expect(rawHeader).toContainElement(screen.getByText('2 Lines'))
+    expect(rawHeader?.lastElementChild).toContainElement(copyBtn)
     await act(async () => { fireEvent.click(copyBtn) })
     expect(writeTextMock).toHaveBeenCalledWith(prompt)
   })

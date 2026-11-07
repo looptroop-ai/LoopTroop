@@ -667,41 +667,15 @@ export class SessionManager {
     )
   }
 
-  async completeSession(sessionId: string): Promise<void> {
-    const found = findSessionRecord(sessionId)
-    if (!found) return
-    const current = found.projectDb.select({ state: opencodeSessions.state })
-      .from(opencodeSessions)
-      .where(eq(opencodeSessions.sessionId, sessionId))
-      .get()
-    if (!current || current.state !== 'active') return
-
-    try {
-      if (!await this.adapter.abortSession(sessionId, { retire: true }))
-        throw new Error('OpenCode did not confirm task cleanup')
-    } catch (error) {
-      throw new Error(`Could not confirm retirement of OpenCode session ${sessionId}`, { cause: error })
-    }
-
-    const update = found.projectDb.update(opencodeSessions)
-      .set({ state: 'completed', updatedAt: new Date().toISOString() })
-      .where(and(eq(opencodeSessions.sessionId, sessionId), eq(opencodeSessions.state, 'active')))
-      .run()
-    if (update.changes === 0) {
-      const state = found.projectDb.select({ state: opencodeSessions.state })
-        .from(opencodeSessions)
-        .where(eq(opencodeSessions.sessionId, sessionId))
-        .get()?.state
-      if (state === 'completed') return
-      throw new Error(`Could not record completed OpenCode session ${sessionId}`)
-    }
-    clearSessionContinuation(sessionId)
-    const ticketRef = resolveSessionTicketRef(found)
-    if (ticketRef) forgetPendingSessionOwnership(ticketRef, sessionId)
-    this.adapter.forgetSessionDirectory?.(sessionId)
+  completeSession(sessionId: string): Promise<void> {
+    return this.finishSession(sessionId, 'completed')
   }
 
-  async abandonSession(sessionId: string): Promise<void> {
+  abandonSession(sessionId: string): Promise<void> {
+    return this.finishSession(sessionId, 'abandoned')
+  }
+
+  private async finishSession(sessionId: string, terminalState: 'completed' | 'abandoned'): Promise<void> {
     const found = findSessionRecord(sessionId)
     if (!found) return
     const current = found.projectDb.select({ state: opencodeSessions.state })
@@ -718,7 +692,7 @@ export class SessionManager {
     }
 
     const update = found.projectDb.update(opencodeSessions)
-      .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
+      .set({ state: terminalState, updatedAt: new Date().toISOString() })
       .where(and(eq(opencodeSessions.sessionId, sessionId), eq(opencodeSessions.state, 'active')))
       .run()
     if (update.changes === 0) {
@@ -726,21 +700,17 @@ export class SessionManager {
         .from(opencodeSessions)
         .where(eq(opencodeSessions.sessionId, sessionId))
         .get()?.state
-      if (state === 'abandoned') return
-      throw new Error(`Could not record abandoned OpenCode session ${sessionId}`)
+      if (state === terminalState) return
+      throw new Error(`Could not record ${terminalState} OpenCode session ${sessionId}`)
     }
     clearSessionContinuation(sessionId)
     const ticketRef = resolveSessionTicketRef(found)
     if (ticketRef) forgetPendingSessionOwnership(ticketRef, sessionId)
     this.adapter.forgetSessionDirectory?.(sessionId)
-    // A question window that outlives its session would later reject a request
-    // OpenCode no longer has, and its suspended work budget would hold the next
-    // run's clocks still.
-    emitOpenCodeSessionEnded({
-      sessionId,
-      ticketId: resolveSessionTicketRef(found),
-      reason: 'abandoned',
-    })
+    if (terminalState === 'abandoned') {
+      // Close question windows and release their suspended work budgets.
+      emitOpenCodeSessionEnded({ sessionId, ticketId: ticketRef, reason: 'abandoned' })
+    }
   }
 
   /**

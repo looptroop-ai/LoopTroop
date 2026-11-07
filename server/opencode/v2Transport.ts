@@ -525,14 +525,22 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     _directory?: string,
     signal?: AbortSignal,
   ): Promise<Message[]> {
+    return this.readSessionMessages(sessionId, signal, MESSAGE_LIST_LIMIT);
+  }
+
+  private async readSessionMessages(
+    sessionId: string,
+    signal: AbortSignal | undefined,
+    limit: number,
+  ): Promise<Message[]> {
     const messages: Message[] = [];
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
 
-    while (messages.length < MESSAGE_LIST_LIMIT) {
+    while (messages.length < limit) {
       const query = new URLSearchParams({
         limit: String(
-          Math.min(MESSAGE_PAGE_SIZE, MESSAGE_LIST_LIMIT - messages.length),
+          Math.min(MESSAGE_PAGE_SIZE, limit - messages.length),
         ),
         ...(!cursor ? { order: "desc" } : {}),
       });
@@ -544,7 +552,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         ),
       );
       for (const item of arrayValue(page?.data)) {
-        if (messages.length >= MESSAGE_LIST_LIMIT) break;
+        if (messages.length >= limit) break;
         const message = mapV2Message(item, sessionId);
         if (message) messages.push(message);
       }
@@ -1176,7 +1184,8 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
         if (session.id === sessionId) return true;
         continue;
       }
-      const messages = await this.getSessionMessages(session.id, session.directory, signal);
+      // A long-lived command's receipt can precede the normal response window.
+      const messages = await this.readSessionMessages(session.id, signal, Infinity);
       for (const message of messages) {
         if (message.role !== "assistant" || message.info?.sessionID !== session.id) continue;
         for (const part of message.parts ?? []) {

@@ -548,11 +548,8 @@ export async function runOpenCodePrompt({
     if (sessionManager && !sessionOwnership?.keepActive) {
       await sessionManager.completeSession(session.id)
       clearOpenCodePromptDispatchCount(session.id)
-    } else if (!sessionOwnership?.keepActive) {
-      if (!await adapter.abortSession(session.id, { retire: true }))
-        throw new Error(`Could not confirm retirement of OpenCode session ${session.id}`)
-      adapter.forgetSessionDirectory?.(session.id)
     }
+    // Unowned callers control the session lifetime, including interactive follow-ups.
     return result
   } catch (error) {
     preservedForContinuation = !isWorkflowDeadlineTimeoutError(error) && shouldPreserveSessionForContinuation({

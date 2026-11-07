@@ -2628,7 +2628,7 @@ describe('runOpenCodePrompt', () => {
     await expect(promise).resolves.toMatchObject({
       response: 'done after disabled timeout',
     })
-    expect(adapter.abortCalls).toEqual(['ses-1'])
+    expect(adapter.abortCalls).toEqual([])
   })
 
   it('uses an explicit absolute deadline instead of restarting timeoutMs', async () => {

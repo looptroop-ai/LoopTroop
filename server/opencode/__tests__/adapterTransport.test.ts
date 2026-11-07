@@ -1363,12 +1363,17 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(controller.signal.aborted).toBe(false)
   })
 
-  it.each([false, true])('handles an owned continuation already active at bootstrap without approving mixed foreign work: %s', async mixed => {
+  it.each([
+    { mixed: false, snapshot: false }, { mixed: true, snapshot: false },
+    { mixed: false, snapshot: true }, { mixed: true, snapshot: true },
+  ])('handles a bootstrap continuation permission (snapshot: $snapshot, mixed foreign work: $mixed)', async ({ mixed, snapshot }) => {
     const shellID = 'shell-bootstrap-active'
     let dispatched = false
     let waits = 0
     let resolvePermission: (() => void) | undefined
     const replied = new Promise<void>(resolve => { resolvePermission = resolve })
+    const permission = { event: { type: 'permission' as const, sessionId: 'session-1', action: 'asked' as const, permissionId: 'bootstrap-permission', permission: 'read' } }
+    const terminalCursor = snapshot ? 51 : 52
     const history = withCertifiedPrefix(mixed ? [
       inboxEvent('inbox_enqueued', 'owned', 46, shellCompletionItem(shellID)),
       executionEvent('execution_started', 47), inboxEvent('inbox_delivered', 'owned', 48),
@@ -1382,18 +1387,19 @@ describe('OpenCode adapter transport orchestration', () => {
       getSessionMessages: vi.fn(async () => [runningShellMessage(shellID), ...(dispatched ? [message('new', 'current answer')] : [])]),
       readSessionLog: vi.fn(async (_id, after) => after === undefined
         ? { events: history, cursor: 50, coverageComplete: true }
-        : { events: [], cursor: after === 50 && waits > 0 ? 52 : after, coverageComplete: true }),
+        : { events: [], cursor: after === 50 && waits > 0 ? terminalCursor : after, coverageComplete: true }),
+      getPendingPermissions: vi.fn(async () => snapshot ? [permission] : []),
       waitForIdle: vi.fn(async () => {
         if (++waits !== 1) return
-        source.push({ cursor: 51, event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'bootstrap-permission', permission: 'read' } })
+        if (!snapshot) source.push({ cursor: 51, ...permission })
         if (!mixed) await settleWithin(replied, 'bootstrap continuation permission')
-        source.push(executionEvent('execution_terminal', 52))
+        source.push(executionEvent('execution_terminal', terminalCursor))
       }),
       replyPermission: vi.fn(async () => { resolvePermission?.() }),
       dispatchPrompt: vi.fn(async () => {
         dispatched = true
         markDispatched()
-        source.push(inboxEvent('inbox_enqueued', 'inbox-own', 53), executionEvent('execution_started', 54), inboxEvent('inbox_delivered', 'inbox-own', 55), executionEvent('execution_terminal', 56))
+        source.push(inboxEvent('inbox_enqueued', 'inbox-own', terminalCursor + 1), executionEvent('execution_started', terminalCursor + 2), inboxEvent('inbox_delivered', 'inbox-own', terminalCursor + 3), executionEvent('execution_terminal', terminalCursor + 4))
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
     })
@@ -1940,7 +1946,7 @@ describe('OpenCode adapter transport orchestration', () => {
       },
     }
     const { transport, source, markDispatched } = createV2Transport({
-      getPendingPermissions: vi.fn(async () => permissionReplied ? [] : [pendingPermission]),
+      getPendingPermissions: vi.fn(async () => !dispatched || permissionReplied ? [] : [pendingPermission]),
       replyPermission: vi.fn(async () => { permissionReplied = true }),
       dispatchPrompt: vi.fn(async () => {
         dispatched = true
@@ -2662,7 +2668,7 @@ describe('OpenCode adapter transport orchestration', () => {
         const history = replied ? [...events, executionEvent('execution_terminal', 59)] : events
         return { events: history.filter(event => (event.cursor ?? 0) > (after ?? 0)), cursor: replied ? 59 : 58, coverageComplete: true }
       }),
-      getPendingPermissions: vi.fn(async (): Promise<OpenCodeTransportEventEnvelope[]> => replied ? [] : [{ event: {
+      getPendingPermissions: vi.fn(async (): Promise<OpenCodeTransportEventEnvelope[]> => !dispatched || replied ? [] : [{ event: {
         type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'recovered', permission: 'bash',
       } }]),
       replyPermission: vi.fn(async () => { replied = true }),

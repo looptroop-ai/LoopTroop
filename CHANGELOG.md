@@ -20,8 +20,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
-- Continue handles owned background notifications, permissions before a new prompt receipt, crash/restart history, and stream-loss recovery without accepting unrelated work.
-- Completed and abandoned native OpenCode sessions have their tools disabled before their verified background commands are stopped. Unconfirmed cleanup retains ownership and withholds worktree reset; active Continue sessions keep their normal permissions and all conversation history is retained.
+- Continue handles owned background notifications, permissions already pending at reconnect or before a new prompt receipt, crash/restart history, and stream-loss recovery without accepting unrelated work.
+- Completed and abandoned LoopTroop tasks have their native OpenCode tools disabled before their verified background commands are stopped, including commands with receipts older than the normal response-history window. Unconfirmed cleanup retains ownership and withholds worktree reset; active Continue sessions keep their normal permissions and all conversation history is retained. Unowned interactive callers retain control of their session lifetime.
 - Coding, runtime setup, and final-test prompts run checks needed for the final outcome in the foreground, avoiding progress-only replies while those checks are still running. PRD coverage retries retain the full rejected response so valid change records can be corrected rather than recreated.
 
 ## 0.6.4 (2026-11-06)

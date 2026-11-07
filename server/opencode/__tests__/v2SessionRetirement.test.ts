@@ -65,6 +65,25 @@ function fixture(options: {
 }
 
 describe('OpenCode v2 session retirement', () => {
+  it('verifies a running command whose tool receipt is older than the normal message window', async () => {
+    const { transport, requests, shells, json } = fixture({
+      nodes: [{ id: 'root', directory: '/worktree', shellID: 'root-shell' }],
+      fail: (method, url) => {
+        if (method !== 'GET' || !url.pathname.endsWith('/message')) return
+        const page = Number(url.searchParams.get('cursor') ?? 0)
+        return json({
+          data: page < 100
+            ? Array.from({ length: 100 }, (_, index) => ({ id: `newer-${page}-${index}`, type: 'assistant', sessionID: 'root', content: [] }))
+            : [{ id: 'old-receipt', type: 'assistant', sessionID: 'root', content: [{ type: 'tool', id: 'old-call', name: 'shell', state: { status: 'completed', metadata: { shellID: 'root-shell' } } }] }],
+          cursor: page < 100 ? { next: String(page + 1) } : {},
+        })
+      },
+    })
+    await expect(transport.retireSession('root', '/worktree')).resolves.toBe(true)
+    expect(requests.filter(request => request.url.pathname.endsWith('/message'))).toHaveLength(101)
+    expect(shells[0]?.status).toBe('killed')
+  })
+
   it('freezes and stops the task and its children before removing their running commands, retaining transcripts', async () => {
     const { transport, requests, permissions, shells } = fixture()
     const adapter = new OpenCodeSDKAdapter('http://opencode.test', undefined, async () => transport)

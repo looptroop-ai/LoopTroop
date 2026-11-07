@@ -990,6 +990,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             for (const envelope of batch) await observePreflightPermission(envelope);
           }
           replaying = false;
+          if (transport.getPendingPermissions)
+            for (const envelope of await transport.getPendingPermissions(sessionId, directory, operationSignal))
+              await observeSubscriptionEnvelope(envelope);
         }
       }
       operation = "waiting for the session to become idle before sending the prompt";

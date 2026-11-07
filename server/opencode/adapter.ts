@@ -1914,12 +1914,13 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const acceptedInbox = lifecycle.inboxes.get(
           dispatched.receipt.inboxID,
         );
-        let terminalOrder = acceptedInbox?.completedOrder;
-        if (terminalOrder === undefined) {
+        const acceptedTerminalOrder = acceptedInbox?.completedOrder;
+        if (acceptedTerminalOrder === undefined) {
           throw new Error(
             "OpenCode v2 completed the accepted prompt without a certified terminal cursor",
           );
         }
+        let terminalOrder: number = acceptedTerminalOrder;
         while (true) {
           const snapshot = await this.readAssistantSnapshotWithRetry(
             sessionId,

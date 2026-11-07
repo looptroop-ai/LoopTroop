@@ -608,6 +608,40 @@ describe('OpenCode adapter transport orchestration', () => {
   })
 
   it.each([
+    { label: 'one consumed notice', notificationIDs: ['delivered-notice'] },
+    { label: 'conflicting consumed notices', notificationIDs: ['delivered-notice', 'duplicate-notice'] },
+  ])('rejects a new pending notification for a shell job with $label', async ({ notificationIDs }) => {
+    const shellID = 'shell-already-consumed'
+    const baseline: Message[] = [
+      runningShellMessage(shellID),
+      ...notificationIDs.map((id): Message => ({
+        id,
+        role: 'system',
+        info: {
+          id,
+          sessionID: 'session-1',
+          role: 'system',
+          metadata: { source: 'shell', shellID, jobID: shellID, state: 'completed' },
+        },
+        parts: [],
+      })),
+    ]
+    const pending: OpenCodePendingInbox = {
+      id: 'new-notification',
+      sessionID: 'session-1',
+      item: shellCompletionItem(shellID),
+    }
+    const { transport } = createV2Transport({
+      getSessionMessages: vi.fn(async () => baseline),
+      listPendingInboxes: vi.fn(async () => [pending]),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }]))
+      .rejects.toThrow(/background shell/)
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it.each([
     {
       label: 'the root message belongs to another session',
       baseline: runningShellMessage('shell-pending-foreign-message', { infoSessionID: 'session-other' }),
@@ -2202,11 +2236,16 @@ describe('OpenCode adapter transport orchestration', () => {
 
   it('waits for a late owned shell execution and returns a snapshot read after its terminal', async () => {
     let reads = 0
+    let settled = false
     let markSnapshotStarted: (() => void) | undefined
     let releaseSnapshot: (() => void) | undefined
+    let markLateDeliveryObserved: (() => void) | undefined
+    let markPendingSnapshotRead: (() => void) | undefined
     let markLateTerminalObserved: (() => void) | undefined
     const snapshotStarted = new Promise<void>(resolve => { markSnapshotStarted = resolve })
     const delayedSnapshot = new Promise<void>(resolve => { releaseSnapshot = resolve })
+    const lateDeliveryObserved = new Promise<void>(resolve => { markLateDeliveryObserved = resolve })
+    const pendingSnapshotRead = new Promise<void>(resolve => { markPendingSnapshotRead = resolve })
     const lateTerminalObserved = new Promise<void>(resolve => { markLateTerminalObserved = resolve })
     const { transport, source, markDispatched } = createV2Transport({
       subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
@@ -2215,12 +2254,18 @@ describe('OpenCode adapter transport orchestration', () => {
           events: (async function* () {
             for await (const envelope of events) {
               yield envelope
+              if (envelope.cursor === 58) markLateDeliveryObserved?.()
               if (envelope.cursor === 59) markLateTerminalObserved?.()
             }
           })(),
           cursor: afterCursor ?? 50,
           coverageComplete: true,
         }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (after === 58) markPendingSnapshotRead?.()
+        return { events: [], cursor: after, coverageComplete: true }
       }),
       getSessionMessages: vi.fn(async () => {
         reads += 1
@@ -2246,17 +2291,22 @@ describe('OpenCode adapter transport orchestration', () => {
     })
 
     const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }])
-    void prompt.catch(() => undefined)
+    void prompt.then(() => { settled = true }, () => { settled = true })
     try {
       await settleWithin(snapshotStarted, 'first terminal snapshot')
       source.push(
         inboxEvent('inbox_enqueued', 'inbox-shell-late', 56, shellCompletionItem('shell-late')),
         executionEvent('execution_started', 57),
         inboxEvent('inbox_delivered', 'inbox-shell-late', 58),
-        executionEvent('execution_terminal', 59),
       )
-      await settleWithin(lateTerminalObserved, 'owned shell terminal')
+      await settleWithin(lateDeliveryObserved, 'owned shell delivery')
       releaseSnapshot?.()
+      await settleWithin(pendingSnapshotRead, 'snapshot with an unfinished owned continuation')
+      await new Promise<void>(resolve => realSetTimeout(resolve, 0))
+      expect(settled).toBe(false)
+      expect(transport.getSessionMessages).toHaveBeenCalledTimes(2)
+      source.push(executionEvent('execution_terminal', 59))
+      await settleWithin(lateTerminalObserved, 'owned shell terminal')
 
       await expect(prompt).resolves.toBe('final answer')
       expect(transport.getSessionMessages).toHaveBeenCalledTimes(3)
@@ -2358,14 +2408,18 @@ describe('OpenCode adapter transport orchestration', () => {
 
   it('replays a late owned terminal after the event stream ends during snapshot collection', async () => {
     let reads = 0
+    let emptyReplayReads = 0
+    let terminalReady = false
     let markSnapshotStarted: (() => void) | undefined
     let releaseSnapshot: (() => void) | undefined
     let markOwnedDeliveryObserved: (() => void) | undefined
     let markTerminalReplayRead: (() => void) | undefined
+    let markPendingReplayRead: (() => void) | undefined
     const snapshotStarted = new Promise<void>(resolve => { markSnapshotStarted = resolve })
     const delayedSnapshot = new Promise<void>(resolve => { releaseSnapshot = resolve })
     const ownedDeliveryObserved = new Promise<void>(resolve => { markOwnedDeliveryObserved = resolve })
     const terminalReplayRead = new Promise<void>(resolve => { markTerminalReplayRead = resolve })
+    const pendingReplayRead = new Promise<void>(resolve => { markPendingReplayRead = resolve })
     const lateTerminal = executionEvent('execution_terminal', 59)
     const { transport, source, markDispatched } = createV2Transport({
       subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
@@ -2384,6 +2438,12 @@ describe('OpenCode adapter transport orchestration', () => {
       readSessionLog: vi.fn(async (_sessionId, after) => {
         if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
         if (after === 58) {
+          if (!terminalReady) {
+            emptyReplayReads += 1
+            if (emptyReplayReads > 3) throw new Error('Owned continuation replay polled without waiting')
+            if (emptyReplayReads === 2) markPendingReplayRead?.()
+            return { events: [], cursor: 58, coverageComplete: true }
+          }
           markTerminalReplayRead?.()
           return { events: [lateTerminal], cursor: 59, coverageComplete: true }
         }
@@ -2424,7 +2484,10 @@ describe('OpenCode adapter transport orchestration', () => {
       await settleWithin(ownedDeliveryObserved, 'owned shell delivery')
       source.fail(new Error('SSE disconnected during snapshot'))
       releaseSnapshot?.()
-      await settleWithin(terminalReplayRead, 'durable owned terminal replay')
+      await settleWithin(pendingReplayRead, 'owned continuation waiting on the durable log')
+      await new Promise<void>(resolve => realSetTimeout(resolve, 0))
+      terminalReady = true
+      await settleWithin(terminalReplayRead, 'durable owned terminal replay', 2_000)
 
       await expect(prompt).resolves.toBe('final answer')
       expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 58, undefined)

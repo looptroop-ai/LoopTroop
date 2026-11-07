@@ -3732,6 +3732,35 @@ describe("OpenCode v2 fetch transport", () => {
     expect(childRequests).toBe(SESSION_LIST_LIMIT + 1);
   });
 
+  it("recovers pending permissions without an event stream, preserving child directory routing", async () => {
+    const child = "existing-child";
+    const { transport } = createTransport((request) => {
+      if (request.url.pathname === `/api/session/${child}/permission`)
+        return jsonResponse({ data: [{ id: "child-request", action: "shell", resources: ["git status"], source: { type: "tool", messageID: "child-message", id: "child-call" } }] });
+      if (request.url.pathname === `/api/session/${child}/message`)
+        return jsonResponse({ data: [{ id: "child-message", sessionID: child, type: "assistant", content: [{
+          type: "tool", id: "child-call", name: "bash", state: { status: "running", input: { command: "git status", workdir: "/worktree/child" } },
+        }] }], cursor: {} });
+      if (request.url.pathname === "/api/session/session-1/permission")
+        return jsonResponse({ data: [{ id: "root-request", action: "read", resources: ["src/app.ts"] }] });
+      throw new Error(`Unexpected ${request.method} ${request.url}`);
+    }, "http://127.0.0.1:4096", {
+      "session-1": [{ id: child, location: { directory: "/worktree/child" } }],
+    });
+    const pending = await transport.getPendingPermissions("session-1", "/worktree");
+    expect(pending).toHaveLength(2);
+    expect(pending.map(envelope => envelope.event)).toEqual([
+      expect.objectContaining({ type: "permission", sessionId: "session-1", permissionId: "root-request", permissionDirectory: "/worktree" }),
+      expect.objectContaining({ type: "permission", sessionId: child, permissionId: "child-request", permissionDirectory: "/worktree/child" }),
+    ]);
+    expect(pending[1]?.event).not.toMatchObject({ permissionDirectoryUnverified: true });
+  });
+
+  it.each([{}, [{ id: "foreign", sessionID: "unrelated", action: "read" }]])("rejects malformed or foreign pending permission snapshots: %j", async data => {
+    const { transport } = createTransport(() => jsonResponse({ data }));
+    await expect(transport.getPendingPermissions("session-1", "/worktree")).rejects.toThrow("invalid pending permission");
+  });
+
   it("re-fetches pending permissions for hydrated child sessions after reconnect", async () => {
     const child = "existing-child";
     let eventConnections = 0;

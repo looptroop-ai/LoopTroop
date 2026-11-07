@@ -20,7 +20,7 @@ import { SessionManager } from '../../opencode/sessionManager'
 import { PROMPT_MAX_TIMEOUT_MS, EXECUTOR_NOTE_TRUNCATION_LENGTH, EXECUTOR_DETAIL_TRUNCATION_LENGTH, MODEL_OUTPUT_PREVIEW_LENGTH } from '../../lib/constants'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
-import { buildPromptFromTemplate, buildSameSessionPromptFromTemplate, PROM_CODING, PROM51 } from '../../prompts/index'
+import { buildPromptFromTemplate, buildSameSessionPromptFromTemplate, COMPLETION_DEPENDENT_COMMAND_RULE, PROM_CODING, PROM51 } from '../../prompts/index'
 import {
   BEAD_AGENT_RESPONSE_INVALID,
   BEAD_ITERATION_TIMEOUT,
@@ -39,6 +39,7 @@ import { isContinuableOpenCodeRetryMessage, type OpenCodeRetryPolicy } from '../
 import { isWorkflowDeadlineTimeoutError, WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
 
 const BEAD_STATUS_SCHEMA_REMINDER = [
+  COMPLETION_DEPENDENT_COMMAND_RULE,
   'Return exactly one <BEAD_STATUS>...</BEAD_STATUS> block and nothing else.',
   'Inside the marker, return a single JSON or YAML object with: bead_id, status, checks.',
   'checks must contain exactly: tests, lint, typecheck, qualitative.',
@@ -48,6 +49,7 @@ const BEAD_STATUS_SCHEMA_REMINDER = [
 
 const CONTINUE_CODING_SCHEMA_REMINDER = [
   'Continue working in this same session until the bead is actually complete.',
+  COMPLETION_DEPENDENT_COMMAND_RULE,
   'Do not stop because lint, tests, or typecheck failed; inspect the real failures, fix them, and rerun the same checks.',
   'Do not reply with a plain-text progress update or plan. Keep using tools and continue working until you can return the final marker.',
   'Do not return status error while iteration time remains unless the app interrupts you.',
@@ -855,7 +857,9 @@ export async function executeBead(
         // The next callback normally resets the worktree. Do not let it race a
         // model whose remote stop was only attempted or became unverifiable.
         throwIfAborted(signal)
-        const stopped = await adapter.abortSession(contextWipeSessionId).catch((error) => {
+        const stopped = await (sessionManager
+          ? sessionManager.abortAndAbandonSession(contextWipeSessionId)
+          : adapter.abortSession(contextWipeSessionId, { retire: true })).catch((error) => {
           console.warn(`[executor] Failed to abort context-wipe session ${contextWipeSessionId}:`, error)
           return false
         })
@@ -867,22 +871,16 @@ export async function executeBead(
         }
       }
       const attempt = iteration - startingIteration + 1
-      try {
-        await callbacks?.onContextWipe?.({
-          beadId: bead.id,
-          failedIterationNotes: [...bead.failedIterationNotes],
-          iteration,
-          reason: contextWipeReason,
-          attempt,
-          nextAttempt: attempt + 1,
-          maxAttempts: maxIterations > 0 ? maxIterations : null,
-        })
-      } finally {
-        if (contextWipeSessionId && sessionManager) {
-          await sessionManager.abandonSession(contextWipeSessionId)
-          clearOpenCodePromptDispatchCount(contextWipeSessionId)
-        }
-      }
+      if (contextWipeSessionId) clearOpenCodePromptDispatchCount(contextWipeSessionId)
+      await callbacks?.onContextWipe?.({
+        beadId: bead.id,
+        failedIterationNotes: [...bead.failedIterationNotes],
+        iteration,
+        reason: contextWipeReason,
+        attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts: maxIterations > 0 ? maxIterations : null,
+      })
       throwIfAborted(signal)
 
       if (maxAttemptIteration !== null && iteration >= maxAttemptIteration) {

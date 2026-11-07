@@ -759,7 +759,7 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     })
 
     expect(response.status).toBe(200)
-    expect(abortSessionMock).toHaveBeenCalledWith('ses-setup-current')
+    expect(abortSessionMock).toHaveBeenCalledWith('ses-setup-current', { retire: true })
     expect(getSessionMock).not.toHaveBeenCalled()
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })
     expect(getPendingSessionContinuationForTicketPhase(ticket.id, 'PREPARING_EXECUTION_ENV')).toBeNull()
@@ -1035,7 +1035,7 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     })
 
     expect(response.status).toBe(409)
-    expect(abortSessionMock).toHaveBeenCalledWith('ses-stuck-planning')
+    expect(abortSessionMock).toHaveBeenCalledWith('ses-stuck-planning', { retire: true })
     expect(readPhaseRetryNote(ticket.id, phase)).toBeUndefined()
     expect(listPhaseAttempts(ticket.id, phase)).toEqual([
       expect.objectContaining({ attemptNumber: 1, state: 'active' }),
@@ -1094,7 +1094,7 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
     const response = await app.request(`/api/tickets/${ticket.id}/retry`, { method: 'POST' })
 
     expect(response.status).toBe(status)
-    expect(abortSessionMock).toHaveBeenCalledWith('ses-council-member')
+    expect(abortSessionMock).toHaveBeenCalledWith('ses-council-member', { retire: true })
     expect(councilSessionState(ticket.id)).toBe(state)
     if (confirmed) {
       expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, { type: 'RETRY' })

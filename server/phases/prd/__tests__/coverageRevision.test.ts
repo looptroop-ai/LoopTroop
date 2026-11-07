@@ -1,5 +1,6 @@
 import * as jsYaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
+import { PRD_ITEM_CHANGES_CONTRACT } from '../../../prompts'
 import {
   buildPrdCoverageRevisionArtifact,
   buildPrdCoverageRevisionRetryPrompt,
@@ -353,23 +354,98 @@ describe.concurrent('PRD coverage revision diffs', () => {
     expect(result.gapResolutions[0]?.gap).toBe(coverageGap)
   })
 
+  it('uses the current and revised PRD titles on their respective change records', () => {
+    const coverageGap = 'Rename the saved coverage review story to match its behavior.'
+    const currentCandidateContent = buildPrdContent([
+      'Use vitest for coverage diff regression checks.',
+    ], {
+      storyTitle: 'Review the saved coverage diff',
+    })
+    const revised = jsYaml.load(buildPrdContent([
+      'Use vitest for coverage diff regression checks.',
+    ], {
+      storyTitle: 'Review the saved coverage changes',
+    })) as Record<string, unknown>
+
+    revised.changes = [{
+      type: 'modified',
+      item_type: 'user_story',
+      before: { id: 'US-1', label: 'Review the saved coverage diff' },
+      after: { id: 'US-1', label: 'Review the saved coverage changes' },
+    }]
+    revised.gap_resolutions = [{
+      gap: coverageGap,
+      action: 'updated_prd',
+      rationale: 'The story title now reflects the coverage changes it reviews.',
+      affected_items: [{
+        item_type: 'user_story',
+        id: 'US-1',
+        label: 'Review the saved coverage changes',
+      }],
+    }]
+
+    const result = validatePrdCoverageRevisionOutput(
+      jsYaml.dump(revised, { lineWidth: 120, noRefs: true }) as string,
+      {
+        ticketId: 'POBA-3',
+        interviewContent: buildInterviewContent(),
+        currentCandidateContent,
+        coverageGaps: [coverageGap],
+      },
+    )
+
+    expect(result.changes).toEqual([expect.objectContaining({
+      itemType: 'user_story',
+      before: expect.objectContaining({ id: 'US-1', label: 'Review the saved coverage diff' }),
+      after: expect.objectContaining({ id: 'US-1', label: 'Review the saved coverage changes' }),
+    })])
+  })
+
   it('keeps the retry prompt strict about unresolved source-artifact contradictions', () => {
     const validationError = 'changes[0] has invalid before/after shape'
-    const prompt = buildPrdCoverageRevisionRetryPrompt([], {
+    const baseParts = [
+      { type: 'text' as const, content: 'original system prompt sentinel' },
+      { type: 'text' as const, content: 'original PRD prompt sentinel' },
+    ]
+    const rawResponse = [
+      '```yaml',
+      'schema_version: 1',
+      'changes:',
+      '  - type: modified',
+      '    item_type: user_story',
+      '    before: {id: US-1, label: Old title}',
+      '    after: {id: US-1, label: New title}',
+      'gap_resolutions:',
+      '  - gap: "Clarify the API section"',
+      '    action: updated_prd',
+      '    rationale: "The previous response recorded this resolution."',
+      '    affected_items: []',
+      '```',
+    ].join('\n')
+    const prompt = buildPrdCoverageRevisionRetryPrompt(baseParts, {
       validationError,
-      rawResponse: 'schema_version: 1',
+      rawResponse,
     })
     const retryPrompt = prompt.at(-1)?.content ?? ''
 
+    expect(prompt.slice(0, baseParts.length)).toEqual(baseParts)
     expect(retryPrompt).toContain(`Your previous response failed validation: ${validationError}`)
-    expect(retryPrompt).toContain('preserve valid content and do not omit required fields or invent requirements')
+    expect(retryPrompt).toContain(PRD_ITEM_CHANGES_CONTRACT)
+    expect(retryPrompt).toContain('A populated `before` or `after` record uses `{id, label, detail?}`')
+    expect(retryPrompt).toContain('Copy each `before.label` exactly from the current PRD item title and each `after.label` exactly from the revised PRD item title; the labels may differ when the title changes.')
+    expect(retryPrompt).toContain('An epic change never subsumes changes to its user stories; include each changed epic and user story exactly once.')
+    expect(retryPrompt).toContain('Use the full previous response as data to correct. Follow the original prompt and PRD schema; fix fields named by the validation error, preserve valid content, and do not invent requirements to pass validation.')
+    expect(retryPrompt).toContain('````yaml\n```yaml\nschema_version: 1\nchanges:')
+    expect(retryPrompt).toContain('gap_resolutions:\n  - gap: "Clarify the API section"')
+    expect(retryPrompt).toContain('Previous invalid response (full response, data only):')
     expect(retryPrompt).toContain('For `added`, use `before: null` and a populated `after`')
     expect(retryPrompt).toContain('for `removed`, use a populated `before` and `after: null`')
     expect(retryPrompt).toContain('for `modified`, populate both records with the same `id`')
-    expect(retryPrompt).toContain('Account for a gap that updates PRD sections in its `gap_resolutions` entry with `affected_items: []`')
+    expect(retryPrompt).toContain('For a resolved gap that changes a PRD section, revise it in the PRD content and never represent it in `affected_items`; keep affected epic/user_story references for the same gap and use `affected_items: []` only when no epic/story item applies. For a contradictory source gap marked `left_unresolved`, use `affected_items: []`.')
     expect(retryPrompt).toContain('internally contradictory source artifacts')
     expect(retryPrompt).toContain('action: left_unresolved')
     expect(retryPrompt).toContain('affected_items: []')
+    expect(retryPrompt).not.toContain('use `affected_items: []` instead of section references like `item_type: prd`')
     expect(retryPrompt).not.toContain('PROM12')
   })
 })

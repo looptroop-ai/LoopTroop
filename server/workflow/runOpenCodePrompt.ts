@@ -451,11 +451,10 @@ export async function runOpenCodePrompt({
           sessionOwnership,
         )
         if (existing) {
-          const stopped = await adapter.abortSession(existing.sessionId).catch(() => false)
+          const stopped = await sessionManager.abortAndAbandonSession(existing.sessionId)
           if (!stopped) {
             throw new Error(`Could not confirm abort of existing OpenCode session ${existing.sessionId}`)
           }
-          await sessionManager.abandonSession(existing.sessionId)
           clearOpenCodePromptDispatchCount(existing.sessionId)
         }
       }
@@ -502,17 +501,11 @@ export async function runOpenCodePrompt({
     // Session creation callbacks may persist workflow state. If that callback
     // fails, the remote session still needs a confirmed stop before its local
     // ownership row can be abandoned.
-    const stopped = await adapter.abortSession(session.id).catch(() => false)
+    const stopped = await (sessionManager
+      ? sessionManager.abortAndAbandonSession(session.id)
+      : adapter.abortSession(session.id, { retire: true })).catch(() => false)
     if (stopped) {
-      if (sessionManager) {
-        try {
-          await sessionManager.abandonSession(session.id)
-        } catch (cleanupError) {
-          console.warn(`[runOpenCodePrompt] Failed to abandon session ${session.id} after callback failure:`, cleanupError)
-        }
-      } else {
-        clearSessionContinuation(session.id)
-      }
+      if (!sessionManager) clearSessionContinuation(session.id)
       clearOpenCodePromptDispatchCount(session.id)
     } else {
       console.warn(`[runOpenCodePrompt] Could not confirm cleanup for session ${session.id} after onSessionCreated failed`)
@@ -556,6 +549,8 @@ export async function runOpenCodePrompt({
       await sessionManager.completeSession(session.id)
       clearOpenCodePromptDispatchCount(session.id)
     } else if (!sessionOwnership?.keepActive) {
+      if (!await adapter.abortSession(session.id, { retire: true }))
+        throw new Error(`Could not confirm retirement of OpenCode session ${session.id}`)
       adapter.forgetSessionDirectory?.(session.id)
     }
     return result
@@ -568,10 +563,11 @@ export async function runOpenCodePrompt({
       signal,
     })
     if (!sessionOwnership?.keepActive && !preservedForContinuation) {
-      const stopped = await adapter.abortSession(session.id).catch(() => false)
+      const stopped = await (sessionManager
+        ? sessionManager.abortAndAbandonSession(session.id)
+        : adapter.abortSession(session.id, { retire: true })).catch(() => false)
       if (stopped) {
-        if (sessionManager) await sessionManager.abandonSession(session.id)
-        else clearSessionContinuation(session.id)
+        if (!sessionManager) clearSessionContinuation(session.id)
         clearOpenCodePromptDispatchCount(session.id)
       } else {
         console.warn(`[runOpenCodePrompt] Could not confirm abort for session ${session.id}; retaining its active row`)
@@ -673,6 +669,12 @@ export async function runOpenCodeSessionPrompt({
     }
     resolvedSession = reconnected
   }
+
+  const stopSession = (retire: boolean) => retire
+    ? sessionManager
+      ? sessionManager.abortAndAbandonSession(resolvedSession.id)
+      : adapter.abortSession(resolvedSession.id, { retire: true })
+    : adapter.abortSession(resolvedSession.id)
 
   let response = ''
   const promptTimeoutMs = readRemaining()
@@ -876,7 +878,7 @@ export async function runOpenCodeSessionPrompt({
         signal,
       })
       // Keep the conversation, but stop its in-flight turn before a person can resume it.
-      await adapter.abortSession(resolvedSession.id).catch(() => false)
+      await stopSession(!sessionOwnership?.keepActive && !preserveForContinuation).catch(() => false)
       const enrichedError = preserveForContinuation
         ? attachContinuationDiagnostics(openCodeRetryError, {
             error: openCodeRetryError,
@@ -907,7 +909,7 @@ export async function runOpenCodeSessionPrompt({
         signal,
         fallbackMessage: TIMEOUT_ERROR_MESSAGE,
       })
-      const stopped = await adapter.abortSession(resolvedSession.id).catch((error) => {
+      const stopped = await stopSession(!sessionOwnership?.keepActive && !preserveForContinuation).catch((error) => {
         console.warn(`[runOpenCodeSessionPrompt] Failed to abort timed-out session ${resolvedSession.id}:`, error)
         return false
       })
@@ -915,7 +917,6 @@ export async function runOpenCodeSessionPrompt({
         console.warn(`[runOpenCodeSessionPrompt] Could not confirm abort for timed-out session ${resolvedSession.id}`)
       }
       if (sessionManager && !sessionOwnership?.keepActive && !preserveForContinuation && stopped) {
-        await sessionManager.abandonSession(resolvedSession.id)
         clearOpenCodePromptDispatchCount(resolvedSession.id)
       }
       const enrichedError = preserveForContinuation
@@ -937,13 +938,12 @@ export async function runOpenCodeSessionPrompt({
       signal,
     })
     if (preserveForContinuation || (!sessionOwnership?.keepActive && isPromptTransportFailure(error))) {
-      const stopped = await adapter.abortSession(resolvedSession.id).catch((cleanupError) => {
+      const stopped = await stopSession(!sessionOwnership?.keepActive && !preserveForContinuation).catch((cleanupError) => {
         console.warn(`[runOpenCodeSessionPrompt] Failed to abort errored session ${resolvedSession.id}:`, cleanupError)
         return false
       })
       if (stopped && !preserveForContinuation) {
-        if (sessionManager) await sessionManager.abandonSession(resolvedSession.id)
-        else clearSessionContinuation(resolvedSession.id)
+        if (!sessionManager) clearSessionContinuation(resolvedSession.id)
         clearOpenCodePromptDispatchCount(resolvedSession.id)
       } else if (!stopped) {
         console.warn(`[runOpenCodeSessionPrompt] Could not confirm abort for errored session ${resolvedSession.id}`)

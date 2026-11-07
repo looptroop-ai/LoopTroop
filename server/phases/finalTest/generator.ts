@@ -1,6 +1,6 @@
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, StreamEvent } from '../../opencode/types'
-import { buildPromptFromTemplate, PROM52 } from '../../prompts/index'
+import { buildPromptFromTemplate, COMPLETION_DEPENDENT_COMMAND_RULE, PROM52 } from '../../prompts/index'
 import {
   formatPromptText,
   runOpenCodePrompt,
@@ -25,6 +25,7 @@ import { detectHostContext } from '../../lib/hostContext'
 import { getCommandSpecPromptExample } from '@shared/commandSpec'
 
 const FINAL_TEST_SCHEMA_REMINDER = [
+  COMPLETION_DEPENDENT_COMMAND_RULE,
   'Return exactly one <FINAL_TEST_COMMANDS>...</FINAL_TEST_COMMANDS> block and nothing else.',
   'Inside the marker, return a single JSON or YAML object with a non-empty commands field.',
   `commands must contain CommandSpec objects shaped like ${JSON.stringify(getCommandSpecPromptExample())}.`,

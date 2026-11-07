@@ -100,6 +100,7 @@ function createV2Transport(overrides: Partial<OpenCodeTransport> = {}) {
       coverageComplete: after !== undefined,
     })),
     listPendingInboxes: vi.fn(async () => []),
+    getPendingPermissions: vi.fn(async () => []),
     dispatchPrompt: vi.fn(async () => {
       dispatched = true
       return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
@@ -179,6 +180,7 @@ function shellToolEvent(
   cursor: number,
   status: 'running' | 'completed' = 'running',
   includeShellID = true,
+  tool: 'shell' | 'bash' = 'shell',
 ): OpenCodeTransportEventEnvelope {
   return {
     cursor,
@@ -187,7 +189,7 @@ function shellToolEvent(
       sessionId: 'session-1',
       messageId: 'root-assistant',
       partId: `shell-part-${shellID}`,
-      tool: 'shell',
+      tool,
       callId: `shell-call-${shellID}`,
       status,
       ...(includeShellID ? { metadata: { shellID } } : {}),
@@ -202,6 +204,7 @@ function runningShellMessage(
     infoSessionID?: string
     partSessionID?: string
     metadata?: Record<string, unknown>
+    tool?: 'shell' | 'bash'
   } = {},
 ): Message {
   const messageID = 'root-assistant'
@@ -220,7 +223,7 @@ function runningShellMessage(
       sessionID: options.partSessionID ?? 'session-1',
       type: 'tool',
       callID: `shell-call-${shellID}`,
-      tool: 'shell',
+      tool: options.tool ?? 'shell',
       state: {
         status: 'running',
         metadata: options.metadata ?? { status: 'running', shellID },
@@ -575,9 +578,10 @@ describe('OpenCode adapter transport orchestration', () => {
   it.each([
     { label: 'running-status metadata', shellID: 'shell-continue-status', metadata: { status: 'running', shellID: 'shell-continue-status' } },
     { label: 'shell-ID-only progress metadata', shellID: 'shell-continue-progress', metadata: { shellID: 'shell-continue-progress' } },
-  ])('continues when a pending shell notification matches the root tool part with $label', async ({ shellID, metadata }) => {
+    { label: 'bash alias metadata', shellID: 'shell-continue-bash', metadata: { status: 'running', shellID: 'shell-continue-bash' }, tool: 'bash' as const },
+  ])('continues when a pending shell notification matches the root tool part with $label', async ({ shellID, metadata, tool }) => {
     let dispatched = false
-    const rootMessage = runningShellMessage(shellID, { metadata })
+    const rootMessage = runningShellMessage(shellID, { metadata, tool })
     const pendingShell: OpenCodePendingInbox = {
       id: 'inbox-shell-pending',
       sessionID: 'session-1',
@@ -802,6 +806,80 @@ describe('OpenCode adapter transport orchestration', () => {
           inboxEvent('inbox_delivered', 'inbox-own', 52),
           executionEvent('execution_started', 53),
           executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+  })
+
+  it('completes a prompt receipt steered into an execution already handling its owned shell notification', async () => {
+    const shellID = 'shell-existing-execution'
+    let dispatched = false
+    const rootMessage = runningShellMessage(shellID)
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => dispatched ? [rootMessage, message('new-assistant', 'current answer')] : [rootMessage]),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-shell', 51, shellCompletionItem(shellID)),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_enqueued', 'inbox-own', 53, { type: 'user', delivery: 'steer' }),
+          inboxEvent('inbox_delivered', 'inbox-own', 54),
+          inboxEvent('inbox_delivered', 'inbox-shell', 55),
+          executionEvent('execution_terminal', 56),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }]))
+      .resolves.toBe('current answer')
+  })
+
+  it('recognizes a bash provider tool event as owned shell progress', async () => {
+    const shellID = 'shell-bash-progress'
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          shellToolEvent(shellID, 54, 'running', true, 'bash'),
+          inboxEvent('inbox_enqueued', 'inbox-shell', 55, shellCompletionItem(shellID)),
+          inboxEvent('inbox_delivered', 'inbox-shell', 56),
+          executionEvent('execution_terminal', 57),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+  })
+
+  it('reconciles a shell notification when its tool metadata arrives only in the post-terminal snapshot', async () => {
+    const shellID = 'shell-late-metadata'
+    let dispatched = false
+    const rootMessage = runningShellMessage(shellID)
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => dispatched
+        ? [rootMessage, message('new-assistant', 'current answer')]
+        : [message('old-assistant', 'stale answer')]),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          inboxEvent('inbox_enqueued', 'inbox-shell', 54, shellCompletionItem(shellID)),
+          inboxEvent('inbox_delivered', 'inbox-shell', 55),
+          executionEvent('execution_terminal', 56),
         )
         return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
       }),
@@ -1083,6 +1161,34 @@ describe('OpenCode adapter transport orchestration', () => {
     expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
   })
 
+  it('ignores a pre-baseline orphan execution restart when attributing the new prompt', async () => {
+    const interruptedHistory = withCertifiedPrefix([
+      executionEvent('execution_started', 46),
+      inboxEvent('inbox_enqueued', 'inbox-orphan', 47),
+      inboxEvent('inbox_delivered', 'inbox-orphan', 48),
+      executionEvent('execution_started', 49),
+      executionEvent('execution_terminal', 50),
+    ])
+    const { transport, source, markDispatched } = createV2Transport({
+      readSessionLog: vi.fn(async (_sessionId, after) => after === undefined
+        ? { events: interruptedHistory, cursor: 50, coverageComplete: true }
+        : { events: [], cursor: after, coverageComplete: true }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+  })
+
   it('does not continue or approve a v2 prompt whose POST has no verifiable receipt', async () => {
     const { transport, source } = createV2Transport({
       dispatchPrompt: vi.fn(async () => {
@@ -1156,6 +1262,165 @@ describe('OpenCode adapter transport orchestration', () => {
       undefined,
       expect.stringContaining('working directory cannot be verified'),
     )
+  })
+
+  it('replies to a certified owned-continuation permission before the preflight idle wait returns', async () => {
+    const shellID = 'shell-preflight-permission'
+    const pendingShell: OpenCodePendingInbox = {
+      id: 'inbox-shell-pending',
+      sessionID: 'session-1',
+      item: shellCompletionItem(shellID),
+    }
+    let dispatched = false
+    let idleWaits = 0
+    let pendingInboxReads = 0
+    let resolvePermissionReply: (() => void) | undefined
+    const permissionReplied = new Promise<void>(resolve => { resolvePermissionReply = resolve })
+    const order: string[] = []
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => [
+        runningShellMessage(shellID),
+        ...(dispatched ? [message('new-assistant', 'current answer')] : []),
+      ]),
+      listPendingInboxes: vi.fn(async () => pendingInboxReads++ === 0 ? [pendingShell] : []),
+      waitForIdle: vi.fn(async () => {
+        idleWaits += 1
+        order.push(`idle:${idleWaits}`)
+        if (idleWaits === 1) {
+          source.push(
+            inboxEvent('inbox_delivered', pendingShell.id, 51),
+            executionEvent('execution_started', 52),
+            {
+              cursor: 53,
+              event: {
+                type: 'permission',
+                sessionId: 'session-1',
+                action: 'asked',
+                permissionId: 'preflight-owned-permission',
+                permission: 'read',
+              },
+            },
+          )
+          await settleWithin(permissionReplied, 'the owned preflight permission reply', 500)
+          source.push(executionEvent('execution_terminal', 54))
+        }
+      }),
+      replyPermission: vi.fn(async () => {
+        order.push('permission')
+        resolvePermissionReply?.()
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after?: number) => {
+        const cursor = after ?? 50
+        return { events: [], cursor: cursor === 50 && idleWaits > 0 ? 54 : cursor, coverageComplete: after !== undefined }
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        order.push('dispatch')
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 55),
+          executionEvent('execution_started', 56),
+          inboxEvent('inbox_delivered', 'inbox-own', 57),
+          executionEvent('execution_terminal', 58),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'continue' }],
+      undefined,
+      { autoApprovePermissions: true },
+    )).resolves.toBe('current answer')
+    expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'preflight-owned-permission', 'once', '/worktree', undefined)
+    expect(order.indexOf('permission')).toBeLessThan(order.indexOf('dispatch'))
+  })
+
+  it('reports a failed preflight permission reply without waiting for idle or dispatching a new prompt', async () => {
+    const shellID = 'shell-preflight-refusal'
+    const controller = new AbortController()
+    let waits = 0
+    const { transport, source } = createV2Transport({
+      getSessionMessages: vi.fn(async () => [runningShellMessage(shellID)]),
+      listPendingInboxes: vi.fn(async () => [{ id: 'owned', sessionID: 'session-1', item: shellCompletionItem(shellID) }]),
+      waitForIdle: vi.fn(async (_id, _directory, signal) => {
+        if (++waits === 1) source.push(
+          executionEvent('execution_started', 51), inboxEvent('inbox_delivered', 'owned', 52),
+          { cursor: 53, event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'refused', permission: 'read' } },
+        )
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      }),
+      replyPermission: vi.fn(async () => { throw new Error('permission reply rejected') }),
+    })
+    await expect(settleWithin(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }], controller.signal, { autoApprovePermissions: true }), 'preflight permission failure'))
+      .rejects.toThrow('permission reply rejected')
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+    expect(transport.interruptSession).toHaveBeenCalled()
+    expect(vi.mocked(transport.waitForIdle).mock.calls[0]?.[2]?.aborted).toBe(true)
+    expect(controller.signal.aborted).toBe(false)
+  })
+
+  it.each([false, true])('handles an owned continuation already active at bootstrap without approving mixed foreign work: %s', async mixed => {
+    const shellID = 'shell-bootstrap-active'
+    let dispatched = false
+    let waits = 0
+    let resolvePermission: (() => void) | undefined
+    const replied = new Promise<void>(resolve => { resolvePermission = resolve })
+    const history = withCertifiedPrefix(mixed ? [
+      inboxEvent('inbox_enqueued', 'owned', 46, shellCompletionItem(shellID)),
+      executionEvent('execution_started', 47), inboxEvent('inbox_delivered', 'owned', 48),
+      inboxEvent('inbox_enqueued', 'foreign', 49, { type: 'user', delivery: 'steer' }),
+      inboxEvent('inbox_delivered', 'foreign', 50),
+    ] : [
+      inboxEvent('inbox_enqueued', 'owned', 48, shellCompletionItem(shellID)),
+      executionEvent('execution_started', 49), inboxEvent('inbox_delivered', 'owned', 50),
+    ])
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => [runningShellMessage(shellID), ...(dispatched ? [message('new', 'current answer')] : [])]),
+      readSessionLog: vi.fn(async (_id, after) => after === undefined
+        ? { events: history, cursor: 50, coverageComplete: true }
+        : { events: [], cursor: after === 50 && waits > 0 ? 52 : after, coverageComplete: true }),
+      waitForIdle: vi.fn(async () => {
+        if (++waits !== 1) return
+        source.push({ cursor: 51, event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'bootstrap-permission', permission: 'read' } })
+        if (!mixed) await settleWithin(replied, 'bootstrap continuation permission')
+        source.push(executionEvent('execution_terminal', 52))
+      }),
+      replyPermission: vi.fn(async () => { resolvePermission?.() }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(inboxEvent('inbox_enqueued', 'inbox-own', 53), executionEvent('execution_started', 54), inboxEvent('inbox_delivered', 'inbox-own', 55), executionEvent('execution_terminal', 56))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }], undefined, { autoApprovePermissions: true })).resolves.toBe('current answer')
+    expect(transport.replyPermission).toHaveBeenCalledTimes(mixed ? 0 : 1)
+  })
+
+  it('answers an owned continuation permission before the new prompt receipt is enqueued', async () => {
+    const shellID = 'shell-before-receipt'
+    let dispatched = false
+    let resolvePermission: (() => void) | undefined
+    const replied = new Promise<void>(resolve => { resolvePermission = resolve })
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => [runningShellMessage(shellID), ...(dispatched ? [message('new', 'current answer')] : [])]),
+      replyPermission: vi.fn(async () => { resolvePermission?.() }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(inboxEvent('inbox_enqueued', 'owned', 51, shellCompletionItem(shellID)), executionEvent('execution_started', 52), inboxEvent('inbox_delivered', 'owned', 53),
+          { cursor: 54, event: { type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'before-receipt', permission: 'read' } })
+        await settleWithin(replied, 'permission before receipt enqueue')
+        source.push(inboxEvent('inbox_enqueued', 'inbox-own', 55, { type: 'user', delivery: 'steer' }), inboxEvent('inbox_delivered', 'inbox-own', 56), executionEvent('execution_terminal', 57))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }], undefined, { autoApprovePermissions: true })).resolves.toBe('current answer')
+    expect(transport.replyPermission).toHaveBeenCalledOnce()
   })
 
   it('continues after a rejection consumes sibling permission requests in the same session', async () => {
@@ -1660,6 +1925,57 @@ describe('OpenCode adapter transport orchestration', () => {
       { autoApprovePermissions: true },
     )).resolves.toBe('current answer')
     expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-1', 'once', '/worktree', undefined)
+  })
+
+  it('recovers a pending permission from the endpoint after the event stream ends', async () => {
+    let dispatched = false
+    let permissionReplied = false
+    const pendingPermission = {
+      event: {
+        type: 'permission' as const,
+        sessionId: 'session-1',
+        action: 'asked' as const,
+        permissionId: 'permission-from-endpoint',
+        permission: 'read',
+      },
+    }
+    const { transport, source, markDispatched } = createV2Transport({
+      getPendingPermissions: vi.fn(async () => permissionReplied ? [] : [pendingPermission]),
+      replyPermission: vi.fn(async () => { permissionReplied = true }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.fail(new Error('SSE disconnected'))
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after?: number) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (dispatched && after === 50) return {
+          events: [
+            inboxEvent('inbox_enqueued', 'inbox-own', 51),
+            executionEvent('execution_started', 52),
+            inboxEvent('inbox_delivered', 'inbox-own', 53),
+          ],
+          cursor: 53,
+          coverageComplete: true,
+        }
+        if (dispatched && after === 53 && permissionReplied) return {
+          events: [executionEvent('execution_terminal', 54)],
+          cursor: 54,
+          coverageComplete: true,
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      { autoApprovePermissions: true },
+    )).resolves.toBe('current answer')
+    expect(transport.getPendingPermissions).toHaveBeenCalled()
+    expect(transport.replyPermission).toHaveBeenCalledWith('session-1', 'permission-from-endpoint', 'once', '/worktree', undefined)
   })
 
   it('does not auto-approve a pending ask after replay finds a competing inbox', async () => {
@@ -2315,8 +2631,56 @@ describe('OpenCode adapter transport orchestration', () => {
     }
   })
 
+  it('recovers a permission after the stream ends during an owned continuation, tolerating one failed log read', async () => {
+    let dispatched = false
+    let replied = false
+    let injectedFailure = false
+    const events: OpenCodeTransportEventEnvelope[] = [
+      inboxEvent('inbox_enqueued', 'inbox-own', 51), executionEvent('execution_started', 52),
+      shellToolEvent('shell-replayed-permission', 53), inboxEvent('inbox_delivered', 'inbox-own', 54), executionEvent('execution_terminal', 55),
+      inboxEvent('inbox_enqueued', 'owned', 56, shellCompletionItem('shell-replayed-permission')),
+      executionEvent('execution_started', 57), inboxEvent('inbox_delivered', 'owned', 58),
+    ]
+    const { transport, source, markDispatched } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_id, _directory, signal) => ({
+        cursor: 50, coverageComplete: true,
+        events: (async function* () {
+          for await (const envelope of source.events(signal)) {
+            yield envelope
+            if (envelope.cursor === 58) return
+          }
+        })(),
+      })),
+      getSessionMessages: vi.fn(async () => !dispatched ? [message('old', 'old answer')]
+        : [message(replied ? 'final' : 'intermediate', replied ? 'final answer' : 'intermediate answer')]),
+      readSessionLog: vi.fn(async (_id, after) => {
+        if (!dispatched) return { events: [], cursor: after ?? 50, coverageComplete: after !== undefined }
+        if ((after ?? 0) >= 58 && !injectedFailure) {
+          injectedFailure = true
+          throw new TypeError('temporary log connection failure')
+        }
+        const history = replied ? [...events, executionEvent('execution_terminal', 59)] : events
+        return { events: history.filter(event => (event.cursor ?? 0) > (after ?? 0)), cursor: replied ? 59 : 58, coverageComplete: true }
+      }),
+      getPendingPermissions: vi.fn(async (): Promise<OpenCodeTransportEventEnvelope[]> => replied ? [] : [{ event: {
+        type: 'permission', sessionId: 'session-1', action: 'asked', permissionId: 'recovered', permission: 'bash',
+      } }]),
+      replyPermission: vi.fn(async () => { replied = true }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(...events)
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }], undefined, { autoApprovePermissions: true })).resolves.toBe('final answer')
+    expect(injectedFailure).toBe(true)
+    expect(transport.replyPermission).toHaveBeenCalledOnce()
+  })
+
   it('auto-approves a permission from a late owned shell execution before accepting its final snapshot', async () => {
     let reads = 0
+    let dispatched = false
     let markSnapshotStarted: (() => void) | undefined
     let releaseSnapshot: (() => void) | undefined
     let markPermissionReplied: (() => void) | undefined
@@ -2340,9 +2704,9 @@ describe('OpenCode adapter transport orchestration', () => {
         }
       }),
       getSessionMessages: vi.fn(async () => {
+        if (!dispatched) return [message('old-assistant', 'stale answer')]
         reads += 1
-        if (reads === 1) return [message('old-assistant', 'stale answer')]
-        if (reads === 2) {
+        if (reads === 1) {
           markSnapshotStarted?.()
           await delayedSnapshot
           return [message('first-terminal-assistant', 'intermediate answer')]
@@ -2351,6 +2715,7 @@ describe('OpenCode adapter transport orchestration', () => {
       }),
       replyPermission: vi.fn(async () => { markPermissionReplied?.() }),
       dispatchPrompt: vi.fn(async () => {
+        dispatched = true
         markDispatched()
         source.push(
           inboxEvent('inbox_enqueued', 'inbox-own', 51),
@@ -2400,7 +2765,7 @@ describe('OpenCode adapter transport orchestration', () => {
       releaseSnapshot?.()
 
       await expect(prompt).resolves.toBe('final answer')
-      expect(transport.getSessionMessages).toHaveBeenCalledTimes(3)
+      expect(transport.getSessionMessages).toHaveBeenCalledTimes(4)
     } finally {
       releaseSnapshot?.()
     }
@@ -2700,7 +3065,7 @@ describe('OpenCode adapter transport orchestration', () => {
       [{ type: 'text', content: 'own prompt' }],
     )).rejects.toThrow('session log unavailable')
     expect(reads).toBe(3)
-    expect(logReads).toBe(2)
+    expect(logReads).toBe(5)
   })
 
   it('fails closed if an echo-refresh snapshot advances past missing durable history', async () => {
@@ -2739,6 +3104,55 @@ describe('OpenCode adapter transport orchestration', () => {
     )).rejects.toThrow('history and live event stream are incomplete')
     expect(reads).toBe(3)
     expect(logReads).toBe(2)
+  })
+
+  it('checks owned continuation failures after an echo refresh snapshot', async () => {
+    const shellID = 'shell-echo-refresh-failure'
+    let dispatched = false
+    let messageReads = 0
+    let continuationEvents: OpenCodeTransportEventEnvelope[] = []
+    const rootMessage = runningShellMessage(shellID)
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => {
+        messageReads += 1
+        if (!dispatched) return [rootMessage]
+        if (messageReads === 3) {
+          continuationEvents = [
+            inboxEvent('inbox_enqueued', 'inbox-shell', 55, shellCompletionItem(shellID)),
+            inboxEvent('inbox_delivered', 'inbox-shell', 56),
+            executionEvent('execution_started', 57),
+            { cursor: 58, event: { type: 'execution_terminal', sessionId: 'session-1', outcome: 'failed', error: 'shell continuation failed' } },
+          ]
+          source.push(...continuationEvents)
+        }
+        return messageReads === 2
+          ? [rootMessage, message('echo', 'CRITICAL OUTPUT RULE:\n## Task\nRepeat the user prompt.')]
+          : [rootMessage, message('refreshed', 'refreshed answer')]
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after?: number) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (continuationEvents.length > 0 && after === 54) return {
+          events: continuationEvents,
+          cursor: 58,
+          coverageComplete: true,
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'own prompt' }]))
+      .rejects.toThrow('shell continuation failed')
   })
 
   it('rejects a result when another inbox was coalesced into the same execution', async () => {

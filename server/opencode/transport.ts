@@ -213,6 +213,15 @@ export interface OpenCodeTransport {
     directory?: string,
     signal?: AbortSignal,
   ): Promise<readonly OpenCodePendingInbox[]>;
+  getPendingPermissions?(
+    sessionId: string,
+    directory?: string,
+    signal?: AbortSignal,
+  ): Promise<OpenCodeTransportEventEnvelope[]>;
+  retireSession?(
+    sessionId: string,
+    directory?: string,
+  ): Promise<boolean>;
   dispatchPrompt(
     request: OpenCodePromptRequest,
     signal?: AbortSignal,

@@ -118,7 +118,7 @@ async function abandonInterruptedCodingSessions(
     interruptedSessions.map(async (session) => {
       let stopped = false;
       try {
-        stopped = await adapter.abortSession(session.sessionId);
+        stopped = await sessionManager.abortAndAbandonSession(session.sessionId);
       } catch (err) {
         console.warn(
           `[executionPhase] Failed to abort interrupted OpenCode session ${session.sessionId}:`,
@@ -132,7 +132,6 @@ async function abandonInterruptedCodingSessions(
         );
         return;
       }
-      await sessionManager.abandonSession(session.sessionId);
       clearOpenCodePromptDispatchCount(session.sessionId);
     }),
   );

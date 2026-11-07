@@ -11,13 +11,18 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
-- Background command completion notifications no longer block the task that started them, including when continuing a preserved OpenCode session.
-- PRD coverage revisions receive the complete change-record format, reducing rejected responses caused by incomplete instructions.
+- OpenCode tasks recover their own background command notifications and stop old task commands before handing off the worktree, while preserving conversation history.
+- PRD coverage reviews show clearer item changes and explanations for the gaps each revision addresses.
+
+### Changed
+
+- PRD revision instructions now ask for exact current and revised item titles, separate records for changed epics and stories, and a reason for each gap resolution. For resolved gaps, section-only changes can have no affected item references, while mixed changes keep affected stories; unresolved source contradictions use an empty list. Empty change lists remain accepted during coverage; the review can derive a diff from saved PRD versions, and supplied records keep their existing validation behavior.
 
 ### Fixed
 
-- OpenCode task ownership checks distinguish completion notifications for the task's own background commands from unrelated session input. Continue applies the same ownership checks to pending notifications; unrelated or unverifiable work still blocks safely.
-- The PRD coverage revision prompt and its structured retry spell out the required epic and story change records, including before/after records and how section edits are accounted for in gap resolutions. The shared PRD format also permits explicitly requested metadata instead of contradicting that request with an exact-key restriction. Parser acceptance rules stay unchanged.
+- Continue handles owned background notifications, permissions before a new prompt receipt, crash/restart history, and stream-loss recovery without accepting unrelated work.
+- Completed and abandoned native OpenCode sessions have their tools disabled before their verified background commands are stopped. Unconfirmed cleanup retains ownership and withholds worktree reset; active Continue sessions keep their normal permissions and all conversation history is retained.
+- Coding, runtime setup, and final-test prompts run checks needed for the final outcome in the foreground, avoiding progress-only replies while those checks are still running. PRD coverage retries retain the full rejected response so valid change records can be corrected rather than recreated.
 
 ## 0.6.4 (2026-11-06)
 

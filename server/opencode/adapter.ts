@@ -9,10 +9,14 @@ import type {
   SessionErrorStreamEvent,
   Session,
   StreamEvent,
+  ToolMessagePart,
 } from "./types";
 import type {
   OpenCodeEventSubscription,
+  OpenCodeInboxItem,
+  OpenCodePendingInbox,
   OpenCodePromptRequest,
+  OpenCodeShellCompletion,
   OpenCodeTransport,
   OpenCodeTransportEvent,
   OpenCodeTransportEventEnvelope,
@@ -456,11 +460,16 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       let bootstrapHistory: OpenCodeSessionLog | undefined;
       let preWaitLog: OpenCodeSessionLog | undefined;
       let idleLog: OpenCodeSessionLog | undefined;
+      let pendingAfterIdle: readonly OpenCodePendingInbox[] = [];
       let subscription!: OpenCodeEventSubscription;
       let preflightCoverageGap = false;
       let preflightCursor: number | undefined;
       let preflightLifecycleActive = false;
       let v2StreamEnded = false;
+      const lifecycleChangeWaiters = new Set<() => void>();
+      const wakeLifecycleWaiters = () => {
+        for (const wake of [...lifecycleChangeWaiters]) wake();
+      };
       const preflightEnvelopes: OpenCodeTransportEventEnvelope[] = [];
       let initialSubscriptionEnvelopes =
         new Set<OpenCodeTransportEventEnvelope>();
@@ -648,6 +657,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           void streamDrain.then(() => {
             v2StreamEnded = true;
             wakePreflightWaiter?.();
+            wakeLifecycleWaiters();
           });
         }
 
@@ -714,16 +724,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         operation = "waiting for the session to become idle before sending the prompt";
         await transport.waitForIdle(sessionId, directory, operationSignal);
         operation = "checking pending session work before sending the prompt";
-        const pendingAfterIdle = await transport.listPendingInboxes!(
+        pendingAfterIdle = await transport.listPendingInboxes!(
           sessionId,
           directory,
           operationSignal,
         );
-        if (pendingAfterIdle.length > 0) {
-          throw new Error(
-            "OpenCode v2 still has pending inbox work after the idle boundary; refusing to dispatch into a session with competing work",
-          );
-        }
       }
       if (promptOptions.permission && transport.protocol === "v1") {
         operation = "applying OpenCode session permissions";
@@ -783,6 +788,48 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const baselineMessageIds = new Set(
         baselineMessages.map((message) => message.id).filter(Boolean),
       );
+      const knownBackgroundShellIDs = new Set<string>();
+      const consumedShellNotificationIDs = new Map<string, string>();
+      const duplicateConsumedShellIDs = new Set<string>();
+      const rememberShellID = (value: unknown) => {
+        if (typeof value === "string" && value.length > 0)
+          knownBackgroundShellIDs.add(value);
+      };
+      for (const message of baselineMessages) {
+        if (message.info?.sessionID !== sessionId) continue;
+        const syntheticMetadata = this.getRecord(message.info.metadata);
+        if (
+          syntheticMetadata?.source === "shell" &&
+          typeof syntheticMetadata.shellID === "string" &&
+          syntheticMetadata.shellID.length > 0 &&
+          syntheticMetadata.jobID === syntheticMetadata.shellID &&
+          (syntheticMetadata.state === "completed" ||
+            syntheticMetadata.state === "error" ||
+            syntheticMetadata.state === "cancelled")
+        ) {
+          const previousID = consumedShellNotificationIDs.get(
+            syntheticMetadata.shellID,
+          );
+          if (previousID && previousID !== message.id)
+            duplicateConsumedShellIDs.add(syntheticMetadata.shellID);
+          else
+            consumedShellNotificationIDs.set(
+              syntheticMetadata.shellID,
+              message.id,
+            );
+        }
+        if (message.role !== "assistant") continue;
+        for (const part of message.parts ?? []) {
+          if (part.type !== "tool" || part.sessionID !== sessionId) continue;
+          const toolPart = part as ToolMessagePart;
+          const metadata = toolPart.state.metadata;
+          if (
+            toolPart.tool === "shell" &&
+            typeof metadata?.shellID === "string"
+          )
+            rememberShellID(metadata.shellID);
+        }
+      }
       let lastCursor =
         transport.protocol === "v2" ? bootstrapCursor : undefined;
       const streamedTextByMessage = new Map<string, Map<string, string>>();
@@ -855,6 +902,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       let v2DispatchStarted = false;
 
       type InboxLifecycle = {
+        item?: OpenCodeInboxItem;
+        ownedShellCompletion?: OpenCodeShellCompletion;
+        seededPending?: boolean;
         enqueuedOrder?: number;
         deliveredOrder?: number;
         changedOrder?: number;
@@ -868,6 +918,14 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       };
       const lifecycle = {
         inboxes: new Map<string, InboxLifecycle>(),
+        executions: [] as Array<{
+          order: number;
+          terminal: Extract<
+            OpenCodeTransportEvent,
+            { type: "execution_terminal" }
+          >;
+          inboxIDs: string[];
+        }>,
         eventOrder: 0,
         startedOrder: undefined as number | undefined,
         unsafeEvidence: undefined as string | undefined,
@@ -914,6 +972,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         if (lifecycle.settled) return;
         lifecycle.settled = true;
         lifecycle.resolve?.(result);
+        wakeLifecycleWaiters();
       };
       const inboxFor = (inboxID: string) => {
         let inbox = lifecycle.inboxes.get(inboxID);
@@ -923,6 +982,99 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
         return inbox;
       };
+      const shellCompletionFor = (
+        item?: OpenCodeInboxItem,
+      ): OpenCodeShellCompletion | undefined => {
+        const completion = item?.shellCompletion;
+        return item?.type === "synthetic" &&
+          item.delivery === "steer" &&
+          completion !== undefined &&
+          completion.shellID === completion.jobID &&
+          knownBackgroundShellIDs.has(completion.shellID)
+          ? completion
+          : undefined;
+      };
+      const sameShellCompletion = (
+        left?: OpenCodeShellCompletion,
+        right?: OpenCodeShellCompletion,
+      ) =>
+        left?.shellID === right?.shellID &&
+        left?.jobID === right?.jobID &&
+        left?.state === right?.state;
+      const sameInboxItem = (
+        left?: OpenCodeInboxItem,
+        right?: OpenCodeInboxItem,
+      ) =>
+        left?.type === right?.type &&
+        left?.delivery === right?.delivery &&
+        sameShellCompletion(left?.shellCompletion, right?.shellCompletion);
+      const setInboxItem = (inboxID: string, item?: OpenCodeInboxItem) => {
+        const inbox = inboxFor(inboxID);
+        const completion = shellCompletionFor(item);
+        if (
+          inbox.item &&
+          item &&
+          !sameInboxItem(inbox.item, item)
+        )
+          lifecycle.unsafeEvidence ??=
+            "OpenCode v2 changed the contents of an inbox across durable events; refusing to attribute work across the event boundary.";
+        if (
+          inbox.ownedShellCompletion &&
+          item &&
+          !sameShellCompletion(inbox.ownedShellCompletion, completion)
+        )
+          lifecycle.unsafeEvidence ??=
+            "OpenCode v2 changed the metadata of an owned shell notification; refusing to attribute work across the event boundary.";
+        inbox.item = item ?? inbox.item;
+        if (completion) {
+          if (inbox.cancelledOrder !== undefined)
+            lifecycle.unsafeEvidence ??=
+              "OpenCode v2 cancelled an owned shell notification before its completion could be attributed; refusing to return a potentially stale response.";
+          const consumedID = consumedShellNotificationIDs.get(
+            completion.shellID,
+          );
+          if (duplicateConsumedShellIDs.has(completion.shellID))
+            lifecycle.unsafeEvidence ??=
+              "OpenCode v2 has multiple consumed notifications for one background shell job; refusing to attribute work across the event boundary.";
+          if (consumedID && consumedID !== inboxID)
+            lifecycle.unsafeEvidence ??=
+              "OpenCode v2 reused a background shell job for another completion inbox; refusing to attribute work across the event boundary.";
+          if (inbox.deliveredOrder !== undefined) {
+            const previousDeliveredID = consumedShellNotificationIDs.get(
+              completion.shellID,
+            );
+            if (previousDeliveredID && previousDeliveredID !== inboxID)
+              lifecycle.unsafeEvidence ??=
+                "OpenCode v2 delivered more than one completion inbox for a background shell job; refusing to attribute work across the event boundary.";
+            else
+              consumedShellNotificationIDs.set(completion.shellID, inboxID);
+          }
+          const duplicate = [...lifecycle.inboxes.entries()].some(
+            ([otherID, other]) =>
+              otherID !== inboxID &&
+              other.ownedShellCompletion?.shellID === completion.shellID,
+          );
+          if (duplicate)
+            lifecycle.unsafeEvidence ??=
+              "OpenCode v2 reused a background shell completion for more than one inbox; refusing to attribute work across the event boundary.";
+          else if (!inbox.ownedShellCompletion)
+            inbox.ownedShellCompletion = completion;
+        }
+      };
+      for (const pending of pendingAfterIdle) {
+        const completion = shellCompletionFor(pending.item);
+        if (
+          pending.sessionID !== sessionId ||
+          !completion ||
+          completion.jobID !== completion.shellID
+        )
+          throw new Error(
+            "OpenCode v2 still has pending inbox work after the idle boundary; refusing to dispatch into a session with competing work",
+          );
+        const inbox = inboxFor(pending.id);
+        inbox.seededPending = true;
+        setInboxItem(pending.id, pending.item);
+      }
       const recordLifecycleEvent = (
         event: OpenCodeTransportEvent,
         cursor?: number,
@@ -934,69 +1086,120 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           const inbox = inboxFor(event.inboxID);
           inbox.enqueuedOrder ??= order;
           inbox.lastOrder = order;
+          setInboxItem(event.inboxID, event.item);
         } else if (event.type === "inbox_delivered") {
           const inbox = inboxFor(event.inboxID);
           inbox.deliveredOrder ??= order;
           inbox.lastOrder = order;
-          if (inbox.enqueuedOrder === undefined)
+          if (inbox.ownedShellCompletion) {
+            const previousID = consumedShellNotificationIDs.get(
+              inbox.ownedShellCompletion.shellID,
+            );
+            if (previousID && previousID !== event.inboxID)
+              lifecycle.unsafeEvidence ??=
+                "OpenCode v2 delivered more than one completion inbox for a background shell job; refusing to attribute work across the event boundary.";
+            else
+              consumedShellNotificationIDs.set(
+                inbox.ownedShellCompletion.shellID,
+                event.inboxID,
+              );
+          }
+          if (
+            inbox.enqueuedOrder === undefined &&
+            !inbox.seededPending
+          )
             lifecycle.unsafeEvidence ??=
               "OpenCode v2 observed an inbox delivery without its enqueue event; refusing to attribute work across the event boundary.";
         } else if (event.type === "inbox_cancelled") {
           const inbox = inboxFor(event.inboxID);
           inbox.cancelledOrder ??= order;
           inbox.lastOrder = order;
-          if (inbox.enqueuedOrder === undefined)
+          if (inbox.ownedShellCompletion || inbox.seededPending)
+            lifecycle.unsafeEvidence ??=
+              "OpenCode v2 cancelled an owned shell notification before its completion could be attributed; refusing to return a potentially stale response.";
+          if (
+            inbox.enqueuedOrder === undefined &&
+            !inbox.seededPending
+          )
             lifecycle.unsafeEvidence ??=
               "OpenCode v2 observed an inbox cancellation without its enqueue event; refusing to attribute work across the event boundary.";
         } else if (event.type === "inbox_delivery_changed") {
           const inbox = inboxFor(event.inboxID);
           inbox.changedOrder = order;
           inbox.lastOrder = order;
-          if (inbox.enqueuedOrder === undefined)
+          if (inbox.ownedShellCompletion || inbox.seededPending)
+            lifecycle.unsafeEvidence ??=
+              "OpenCode v2 changed the delivery mode of an owned shell notification; refusing to attribute work across the event boundary.";
+          if (
+            inbox.enqueuedOrder === undefined &&
+            !inbox.seededPending
+          )
             lifecycle.unsafeEvidence ??=
               "OpenCode v2 observed an inbox change without its enqueue event; refusing to attribute work across the event boundary.";
         } else if (event.type === "execution_started") {
+          if (lifecycle.startedOrder !== undefined) {
+            lifecycle.unsafeEvidence ??=
+              "OpenCode v2 started a second execution before the first reached a terminal event; refusing to attribute work across the event boundary.";
+          }
           lifecycle.startedOrder = order;
           const hasEnqueuedWork = [...lifecycle.inboxes.values()].some(
             (inbox) =>
-              inbox.enqueuedOrder !== undefined &&
-              inbox.enqueuedOrder < order &&
-              (safeBaselineCursor === undefined ||
-                order <= safeBaselineCursor ||
-                inbox.enqueuedOrder > safeBaselineCursor) &&
               inbox.cancelledOrder === undefined &&
-              inbox.completedOrder === undefined,
+              inbox.completedOrder === undefined &&
+              ((inbox.enqueuedOrder !== undefined &&
+                inbox.enqueuedOrder < order &&
+                (safeBaselineCursor === undefined ||
+                  order <= safeBaselineCursor ||
+                  inbox.enqueuedOrder > safeBaselineCursor)) ||
+                inbox.seededPending === true),
           );
           if (!hasEnqueuedWork)
             lifecycle.unsafeEvidence ??=
               "OpenCode v2 observed execution without a certified inbox enqueue; refusing to attribute work across the event boundary.";
         } else if (event.type === "execution_terminal") {
-          const candidates = [...lifecycle.inboxes.entries()]
-            .filter(
-              ([, inbox]) =>
-                inbox.completedOrder === undefined &&
-                inbox.cancelledOrder === undefined,
-            )
-            .filter(
-              ([, inbox]) =>
-                inbox.enqueuedOrder !== undefined &&
-                inbox.deliveredOrder !== undefined &&
-                lifecycle.startedOrder !== undefined &&
-                lifecycle.startedOrder > inbox.enqueuedOrder &&
-                inbox.deliveredOrder > inbox.enqueuedOrder &&
-                order > lifecycle.startedOrder! &&
-                order > inbox.deliveredOrder! &&
-                (safeBaselineCursor === undefined ||
-                  order <= safeBaselineCursor ||
-                  inbox.enqueuedOrder > safeBaselineCursor),
-            )
-            .sort(
-              (left, right) => left[1].enqueuedOrder! - right[1].enqueuedOrder!,
-            );
-          const candidate = candidates[0]?.[1];
-          if (candidate) {
-            candidate.completedOrder = order;
-            candidate.terminal = event;
+          const startedOrder = lifecycle.startedOrder;
+          const candidates = startedOrder === undefined
+            ? []
+            : [...lifecycle.inboxes.entries()]
+                .filter(([, inbox]) => {
+                  if (
+                    inbox.completedOrder !== undefined ||
+                    inbox.cancelledOrder !== undefined ||
+                    inbox.deliveredOrder === undefined ||
+                    inbox.deliveredOrder >= order
+                  )
+                    return false;
+                  const enqueuedOrder = inbox.enqueuedOrder;
+                  const enqueuedDuringOrBeforeExecution =
+                    enqueuedOrder !== undefined &&
+                    enqueuedOrder < order &&
+                    inbox.deliveredOrder > enqueuedOrder;
+                  const validOldLifecycle =
+                    enqueuedDuringOrBeforeExecution &&
+                    enqueuedOrder < startedOrder &&
+                    (safeBaselineCursor === undefined ||
+                      order <= safeBaselineCursor ||
+                      enqueuedOrder > safeBaselineCursor);
+                  const validOwnedContinuation =
+                    inbox.ownedShellCompletion !== undefined &&
+                    enqueuedDuringOrBeforeExecution;
+                  const validSeededPending =
+                    inbox.seededPending &&
+                    inbox.deliveredOrder > (safeBaselineCursor ?? -Infinity);
+                  return (
+                    validOldLifecycle ||
+                    validOwnedContinuation ||
+                    validSeededPending
+                  );
+                })
+                .map(([inboxID, inbox]) => ({ inboxID, inbox }));
+          if (candidates.length > 0) {
+            const inboxIDs = candidates.map(({ inboxID }) => inboxID);
+            for (const { inbox } of candidates) {
+              inbox.completedOrder = order;
+              inbox.terminal = event;
+            }
+            lifecycle.executions.push({ order, terminal: event, inboxIDs });
           } else
             lifecycle.unsafeEvidence ??=
               "OpenCode v2 observed an execution terminal without its inbox lifecycle; refusing to attribute work across the event boundary.";
@@ -1006,6 +1209,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       const hasUnsafeCompetingInbox = (beforeOrder?: number) =>
         [...lifecycle.inboxes.entries()].some(([inboxID, inbox]) => {
           if (inboxID === lifecycle.receiptID) return false;
+          if (inbox.ownedShellCompletion) return false;
           const appearedOrder = Math.min(
             inbox.enqueuedOrder ?? Infinity,
             inbox.deliveredOrder ?? Infinity,
@@ -1164,24 +1368,38 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           });
         await permissionReplyPending;
       };
+      const ownedContinuationPermissionBoundary = () => {
+        if (lifecycle.startedOrder === undefined) return undefined;
+        const deliveredOrders = [...lifecycle.inboxes.values()]
+          .filter(
+            (inbox) =>
+              inbox.ownedShellCompletion !== undefined &&
+              inbox.completedOrder === undefined &&
+              inbox.cancelledOrder === undefined &&
+              inbox.deliveredOrder !== undefined,
+          )
+          .map((inbox) => inbox.deliveredOrder!);
+        return deliveredOrders.length > 0
+          ? Math.min(...deliveredOrders)
+          : undefined;
+      };
       const reconcilePendingPermissionEvents = async () => {
         if (
           transport.protocol !== "v2" ||
           !lifecycle.receiptID ||
-          lifecycle.failure ||
-          lifecycle.settled
+          lifecycle.failure
         )
           return;
         checkLifecycle();
-        if (lifecycle.failure || lifecycle.settled) return;
-        const enqueuedOrder = lifecycle.inboxes.get(
-          lifecycle.receiptID,
-        )?.enqueuedOrder;
-        if (enqueuedOrder === undefined) return;
+        if (lifecycle.failure) return;
+        const permissionBoundary = lifecycle.settled
+          ? ownedContinuationPermissionBoundary()
+          : lifecycle.inboxes.get(lifecycle.receiptID)?.enqueuedOrder;
+        if (permissionBoundary === undefined) return;
         for (const [permissionId, pending] of pendingPermissionEvents) {
-          if (lifecycle.failure || lifecycle.settled) return;
+          if (lifecycle.failure) return;
           pendingPermissionEvents.delete(permissionId);
-          if (pending.order > enqueuedOrder)
+          if (pending.order > permissionBoundary)
             await replyToPermission(pending.event);
         }
       };
@@ -1192,6 +1410,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           lifecycle.failure =
             "OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.";
           finishLifecycle({ kind: "conflict", error: lifecycle.failure });
+          wakeLifecycleWaiters();
           return;
         }
         if (
@@ -1207,6 +1426,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             lifecycle.failure =
               "OpenCode v2 event history has an unaccounted durable sequence gap; the response cannot be attributed safely.";
             finishLifecycle({ kind: "conflict", error: lifecycle.failure });
+            wakeLifecycleWaiters();
             return;
           }
           lastCursor = envelope.cursor;
@@ -1227,6 +1447,20 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         } else {
           lifecycle.eventOrder = Math.max(lifecycle.eventOrder + 1, eventOrder);
           const streamEvent = event as StreamEvent;
+          if (
+            streamEvent.type === "tool" &&
+            streamEvent.sessionId === sessionId &&
+            streamEvent.messageId &&
+            streamEvent.callId &&
+            streamEvent.tool === "shell" &&
+            typeof streamEvent.metadata?.shellID === "string" &&
+            streamEvent.metadata.shellID.length > 0
+          ) {
+            rememberShellID(streamEvent.metadata.shellID);
+            for (const [inboxID, inbox] of lifecycle.inboxes) {
+              if (inbox.item) setInboxItem(inboxID, inbox.item);
+            }
+          }
           const beforeV2Dispatch =
             transport.protocol === "v2" && !v2DispatchStarted;
           if (!beforeV2Dispatch) {
@@ -1297,6 +1531,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         }
         checkLifecycle();
         await reconcilePendingPermissionEvents();
+        wakeLifecycleWaiters();
       };
       let bootstrapLifecycleRecorded = false;
       const activateV2SubscriptionObserver = async () => {
@@ -1404,6 +1639,109 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           }
         }
         return log;
+      };
+
+      const waitForLifecycleChange = async () => {
+        if (v2StreamEnded) {
+          await this.raceWithSignal(delay(200), operationSignal);
+          return;
+        }
+        let wake = () => {};
+        const changed = new Promise<void>((resolve) => {
+          wake = () => {
+            lifecycleChangeWaiters.delete(wake);
+            resolve();
+          };
+          lifecycleChangeWaiters.add(wake);
+          if (v2StreamEnded) wake();
+        });
+        try {
+          await this.raceWithSignal(changed, operationSignal);
+        } finally {
+          lifecycleChangeWaiters.delete(wake);
+        }
+      };
+
+      const findOwnedExecutionAfter = (order: number) =>
+        lifecycle.executions.find(
+          (execution) =>
+            execution.order > order &&
+            execution.inboxIDs.some((inboxID) =>
+              Boolean(lifecycle.inboxes.get(inboxID)?.ownedShellCompletion),
+            ),
+        );
+
+      const hasUnresolvedOwnedShellNotification = () =>
+        [...lifecycle.inboxes.values()].some(
+          (inbox) =>
+            inbox.ownedShellCompletion !== undefined &&
+            inbox.completedOrder === undefined &&
+            inbox.cancelledOrder === undefined &&
+            (inbox.enqueuedOrder !== undefined ||
+              inbox.deliveredOrder !== undefined ||
+              inbox.seededPending === true),
+        );
+
+      const waitForOwnedContinuationAfter = async (order: number) => {
+        while (true) {
+          if (lifecycle.failure) throw new Error(lifecycle.failure);
+          const completed = findOwnedExecutionAfter(order);
+          if (completed) return completed;
+          if (!hasUnresolvedOwnedShellNotification()) return undefined;
+
+          if (v2StreamEnded) {
+            const cursor = lastCursor;
+            if (cursor === undefined) {
+              throw new Error(
+                "OpenCode v2 history is unavailable; an owned shell continuation cannot be attributed without a durable event cursor",
+              );
+            }
+            await syncV2LifecycleLog(
+              cursor,
+              "while following an owned shell completion",
+            );
+            if (
+              !lifecycle.failure &&
+              !findOwnedExecutionAfter(order) &&
+              hasUnresolvedOwnedShellNotification()
+            )
+              await waitForLifecycleChange();
+          } else {
+            await waitForLifecycleChange();
+          }
+        }
+      };
+
+      const throwForExecutionFailure = (
+        terminal: Extract<
+          OpenCodeTransportEvent,
+          { type: "execution_terminal" }
+        >,
+      ) => {
+        if (terminal.outcome === "interrupted") {
+          const error = new Error(
+            "OpenCode interrupted the accepted prompt before it completed",
+          );
+          error.name = "OpenCodeSessionInterrupted";
+          throw error;
+        }
+        if (terminal.outcome === "failed") {
+          const summary = summarizeModelErrorForLog(
+            terminal.error,
+            getErrorMessage(terminal.error),
+          );
+          const error = new Error(
+            summary.message || "OpenCode execution failed",
+            { cause: terminal.error },
+          );
+          Object.assign(error, {
+            details: terminal.error,
+            sessionError: terminal.error,
+            modelErrorDetails: summary.details,
+          });
+          error.name = "OpenCodeSessionError";
+          throw error;
+        }
       };
 
       if (transport.protocol === "v2") {
@@ -1571,61 +1909,58 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           () => lastCursor,
           operationSignal,
         );
-        if (terminal.outcome === "interrupted") {
-          const error = new Error(
-            "OpenCode interrupted the accepted prompt before it completed",
-          );
-          error.name = "OpenCodeSessionInterrupted";
-          throw error;
-        }
-        if (terminal.outcome === "failed") {
-          const summary = summarizeModelErrorForLog(
-            terminal.error,
-            getErrorMessage(terminal.error),
-          );
-          const error = new Error(
-            summary.message || "OpenCode execution failed",
-            { cause: terminal.error },
-          );
-          Object.assign(error, {
-            details: terminal.error,
-            sessionError: terminal.error,
-            modelErrorDetails: summary.details,
-          });
-          error.name = "OpenCodeSessionError";
-          throw error;
-        }
+        throwForExecutionFailure(terminal);
         operation = "collecting the completed response";
-        const snapshot = await this.readAssistantSnapshotWithRetry(
-          sessionId,
-          undefined,
-          4,
-          75,
-          operationSignal,
-          snapshotBaselineIds,
-          directory,
-          transport,
+        const acceptedInbox = lifecycle.inboxes.get(
+          dispatched.receipt.inboxID,
         );
-        // Reconcile durable events after the snapshot too: a dropped SSE stream
-        // can hide another inbox while the newest assistant message changes.
-        await reconcileAcceptedPromptAfterSnapshot();
-        if (snapshot.responseMeta.latestAssistantWasStale) {
+        let terminalOrder = acceptedInbox?.completedOrder;
+        if (terminalOrder === undefined) {
           throw new Error(
-            "OpenCode completed the accepted prompt but the newest assistant snapshot is stale",
+            "OpenCode v2 completed the accepted prompt without a certified terminal cursor",
           );
         }
-        if (snapshot.responseMeta.latestAssistantHasError) {
-          const error = new Error(
-            snapshot.responseMeta.latestAssistantError ??
-              "OpenCode assistant response failed",
+        while (true) {
+          const snapshot = await this.readAssistantSnapshotWithRetry(
+            sessionId,
+            undefined,
+            4,
+            75,
+            operationSignal,
+            snapshotBaselineIds,
+            directory,
+            transport,
           );
-          Object.assign(error, {
-            details: snapshot.responseMeta.latestAssistantErrorInfo,
-          });
-          error.name = "OpenCodeSessionError";
-          throw error;
+          // Reconcile durable events after the snapshot too: a dropped SSE stream
+          // can hide another inbox while the newest assistant message changes.
+          await reconcileAcceptedPromptAfterSnapshot();
+          const ownedContinuation = transport.protocol === "v2"
+            ? await waitForOwnedContinuationAfter(terminalOrder)
+            : undefined;
+          if (ownedContinuation) {
+            throwForExecutionFailure(ownedContinuation.terminal);
+            terminalOrder = ownedContinuation.order;
+            continue;
+          }
+          if (snapshot.responseMeta.latestAssistantWasStale) {
+            throw new Error(
+              "OpenCode completed the accepted prompt but the newest assistant snapshot is stale",
+            );
+          }
+          if (snapshot.responseMeta.latestAssistantHasError) {
+            const error = new Error(
+              snapshot.responseMeta.latestAssistantError ??
+                "OpenCode assistant response failed",
+            );
+            Object.assign(error, {
+              details: snapshot.responseMeta.latestAssistantErrorInfo,
+            });
+            error.name = "OpenCodeSessionError";
+            throw error;
+          }
+          responseText = snapshot.responseText;
+          break;
         }
-        responseText = snapshot.responseText;
       } else if (dispatched) {
         operation = "collecting the completed response";
         const completedMessage = dispatched.message;

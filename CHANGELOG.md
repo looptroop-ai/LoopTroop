@@ -9,6 +9,16 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- Background command completion notifications no longer block the task that started them, including when continuing a preserved OpenCode session.
+- PRD coverage revisions receive the complete change-record format, reducing rejected responses caused by incomplete instructions.
+
+### Fixed
+
+- OpenCode task ownership checks distinguish completion notifications for the task's own background commands from unrelated session input. Continue applies the same ownership checks to pending notifications; unrelated or unverifiable work still blocks safely.
+- The PRD coverage revision prompt and its structured retry spell out the required epic and story change records, including before/after records and how section edits are accounted for in gap resolutions. The shared PRD format also permits explicitly requested metadata instead of contradicting that request with an exact-key restriction. Parser acceptance rules stay unchanged.
+
 ## 0.6.4 (2026-11-06)
 
 

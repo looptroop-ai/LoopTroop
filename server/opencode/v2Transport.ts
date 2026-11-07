@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import type {
   OpenCodeEventSubscription,
+  OpenCodePendingInbox,
   OpenCodePromptRequest,
   OpenCodeSessionLog,
   OpenCodeSessionUpdateOptions,
@@ -29,6 +30,7 @@ import {
   mapV2Event,
   mapV2Message,
   mapV2PermissionRules,
+  mapV2PendingInbox,
   mapV2PromptParts,
   mapV2Question,
   mapV2QuestionAnswer,
@@ -801,7 +803,7 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     sessionId: string,
     _directory?: string,
     signal?: AbortSignal,
-  ): Promise<readonly string[]> {
+  ): Promise<readonly OpenCodePendingInbox[]> {
     const response = dataOf(
       await this.request(
         `/api/session/${encodeURIComponent(sessionId)}/inbox`,
@@ -811,10 +813,12 @@ export class V2OpenCodeTransport implements OpenCodeTransport {
     if (!Array.isArray(response))
       throw new Error("OpenCode v2 returned an invalid pending inbox list");
     return response.map((item) => {
-      const inboxID = stringValue(asRecord(item)?.id);
-      if (!inboxID)
+      const inbox = mapV2PendingInbox(item);
+      if (!inbox)
         throw new Error("OpenCode v2 returned a pending inbox without an id");
-      return inboxID;
+      if (inbox.sessionID !== sessionId)
+        throw new Error("OpenCode v2 returned a pending inbox for a different session");
+      return inbox;
     });
   }
 

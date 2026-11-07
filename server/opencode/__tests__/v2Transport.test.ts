@@ -312,13 +312,60 @@ describe("OpenCode v2 fetch transport", () => {
     expect(requests[0]?.url.pathname).toBe("/api/session/session%2F1");
   });
 
-  it("validates pending inbox entries before returning their ids", async () => {
+  it("returns validated pending inbox items with only the shell completion facts", async () => {
     const valid = createTransport(() =>
-      jsonResponse({ data: [{ id: "inbox-1" }, { id: "inbox-2" }] }),
+      jsonResponse({
+        data: [
+          {
+            id: "msg_shell_1",
+            sessionID: "session/1",
+            type: "synthetic",
+            delivery: "steer",
+            payload: {
+              text: '<shell id="sh_1" state="completed" command="npm test">passed</shell>',
+              description: "npm test",
+              metadata: {
+                source: "shell",
+                shellID: "sh_1",
+                jobID: "sh_1",
+                state: "completed",
+                exit: 0,
+                truncated: false,
+              },
+            },
+            enqueuedSeq: 7,
+          },
+          {
+            id: "msg_user_shell",
+            sessionID: "session/1",
+            type: "synthetic",
+            delivery: "steer",
+            payload: {
+              text: "The following shell command was executed by the user: <shell id=\"sh_user\">done</shell>",
+              metadata: { source: "shell", shellID: "sh_user", state: "completed" },
+            },
+          },
+        ],
+      }),
     );
     await expect(
       valid.transport.listPendingInboxes("session/1"),
-    ).resolves.toEqual(["inbox-1", "inbox-2"]);
+    ).resolves.toEqual([
+      {
+        id: "msg_shell_1",
+        sessionID: "session/1",
+        item: {
+          type: "synthetic",
+          delivery: "steer",
+          shellCompletion: { shellID: "sh_1", jobID: "sh_1", state: "completed" },
+        },
+      },
+      {
+        id: "msg_user_shell",
+        sessionID: "session/1",
+        item: { type: "synthetic", delivery: "steer" },
+      },
+    ]);
     expect(valid.requests[0]?.url.pathname).toBe(
       "/api/session/session%2F1/inbox",
     );
@@ -332,6 +379,20 @@ describe("OpenCode v2 fetch transport", () => {
     await expect(
       missingId.transport.listPendingInboxes("session-1"),
     ).rejects.toThrow("pending inbox without an id");
+
+    const missingSession = createTransport(() =>
+      jsonResponse({ data: [{ id: "msg-1", type: "synthetic" }] }),
+    );
+    await expect(
+      missingSession.transport.listPendingInboxes("session-1"),
+    ).rejects.toThrow("pending inbox for a different session");
+
+    const differentSession = createTransport(() =>
+      jsonResponse({ data: [{ id: "msg-1", sessionID: "other-session", type: "synthetic" }] }),
+    );
+    await expect(
+      differentSession.transport.listPendingInboxes("session-1"),
+    ).rejects.toThrow("pending inbox for a different session");
   });
 
   it("uses the v2 routes and returns prompt acceptance with its inbox receipt", async () => {

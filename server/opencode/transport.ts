@@ -49,6 +49,24 @@ export interface PromptReceipt {
   inboxID: string;
 }
 
+export interface OpenCodeShellCompletion {
+  shellID: string;
+  jobID: string;
+  state: "completed" | "error" | "cancelled";
+}
+
+export interface OpenCodeInboxItem {
+  type?: string;
+  delivery?: "steer" | "queue";
+  shellCompletion?: OpenCodeShellCompletion;
+}
+
+export interface OpenCodePendingInbox {
+  id: string;
+  sessionID?: string;
+  item?: OpenCodeInboxItem;
+}
+
 export class OpenCodePromptReceiptUnavailableError extends Error {
   constructor(
     readonly sessionId: string,
@@ -78,7 +96,12 @@ export type PromptDispatch =
 
 export type OpenCodeTransportEvent =
   | StreamEvent
-  | { type: "inbox_enqueued"; sessionId: string; inboxID: string }
+  | {
+      type: "inbox_enqueued";
+      sessionId: string;
+      inboxID: string;
+      item?: OpenCodeInboxItem;
+    }
   | { type: "inbox_delivered"; sessionId: string; inboxID: string }
   | { type: "inbox_cancelled"; sessionId: string; inboxID: string }
   | {
@@ -189,7 +212,7 @@ export interface OpenCodeTransport {
     sessionId: string,
     directory?: string,
     signal?: AbortSignal,
-  ): Promise<readonly string[]>;
+  ): Promise<readonly OpenCodePendingInbox[]>;
   dispatchPrompt(
     request: OpenCodePromptRequest,
     signal?: AbortSignal,

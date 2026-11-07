@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OpenCodeSDKAdapter } from '../adapter'
-import type { OpenCodePromptRequest, OpenCodeTransport, OpenCodeTransportEventEnvelope, PromptDispatch } from '../transport'
+import type { OpenCodeInboxItem, OpenCodePendingInbox, OpenCodePromptRequest, OpenCodeTransport, OpenCodeTransportEventEnvelope, PromptDispatch } from '../transport'
 import type { Message, StreamEvent } from '../types'
 import { OpenCodeV1Transport, type OpenCodeV1Client } from '../v1Transport'
 import { V2OpenCodeHttpError, V2OpenCodeTransport } from '../v2Transport'
@@ -130,9 +130,17 @@ function createAdapter(transport: OpenCodeTransport): OpenCodeSDKAdapter {
   return new OpenCodeSDKAdapter('http://127.0.0.1:4096', undefined, async () => transport)
 }
 
-const inboxEvent = (type: 'inbox_enqueued' | 'inbox_delivered', inboxID: string, cursor: number): OpenCodeTransportEventEnvelope => ({
+const inboxEvent = (
+  type: 'inbox_enqueued' | 'inbox_delivered',
+  inboxID: string,
+  cursor: number,
+  item?: OpenCodeInboxItem,
+  sessionId = 'session-1',
+): OpenCodeTransportEventEnvelope => ({
   cursor,
-  event: { type, sessionId: 'session-1', inboxID },
+  event: type === 'inbox_enqueued'
+    ? { type, sessionId, inboxID, ...(item ? { item } : {}) }
+    : { type, sessionId, inboxID },
 })
 
 const inboxChangedEvent = (inboxID: string, cursor: number): OpenCodeTransportEventEnvelope => ({
@@ -146,6 +154,80 @@ const executionEvent = (type: 'execution_started' | 'execution_terminal', cursor
     ? { type, sessionId: 'session-1' }
     : { type, sessionId: 'session-1', outcome: 'succeeded' },
 })
+
+function shellCompletionItem(
+  shellID: string,
+  options: {
+    jobID?: string
+    type?: string
+    delivery?: 'steer' | 'queue'
+  } = {},
+): OpenCodeInboxItem {
+  return {
+    type: options.type ?? 'synthetic',
+    delivery: options.delivery ?? 'steer',
+    shellCompletion: {
+      shellID,
+      jobID: options.jobID ?? shellID,
+      state: 'completed',
+    },
+  }
+}
+
+function shellToolEvent(
+  shellID: string,
+  cursor: number,
+  status: 'running' | 'completed' = 'running',
+  includeShellID = true,
+): OpenCodeTransportEventEnvelope {
+  return {
+    cursor,
+    event: {
+      type: 'tool',
+      sessionId: 'session-1',
+      messageId: 'root-assistant',
+      partId: `shell-part-${shellID}`,
+      tool: 'shell',
+      callId: `shell-call-${shellID}`,
+      status,
+      ...(includeShellID ? { metadata: { shellID } } : {}),
+      complete: status === 'completed',
+    },
+  }
+}
+
+function runningShellMessage(
+  shellID: string,
+  options: {
+    infoSessionID?: string
+    partSessionID?: string
+    metadata?: Record<string, unknown>
+  } = {},
+): Message {
+  const messageID = 'root-assistant'
+  return {
+    id: messageID,
+    role: 'assistant',
+    info: {
+      id: messageID,
+      role: 'assistant',
+      sessionID: options.infoSessionID ?? 'session-1',
+    },
+    content: '',
+    parts: [{
+      id: `shell-part-${shellID}`,
+      messageID,
+      sessionID: options.partSessionID ?? 'session-1',
+      type: 'tool',
+      callID: `shell-call-${shellID}`,
+      tool: 'shell',
+      state: {
+        status: 'running',
+        metadata: options.metadata ?? { status: 'running', shellID },
+      },
+    }],
+  }
+}
 
 const idleStatusEvent = (cursor: number): OpenCodeTransportEventEnvelope => ({
   cursor,
@@ -439,6 +521,320 @@ describe('OpenCode adapter transport orchestration', () => {
     await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
       .resolves.toBe('current answer')
     expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 54, undefined)
+  })
+
+  it('accepts a shell completion delivered during its root execution using the earlier shell-ID progress event', async () => {
+    const shellID = 'shell-background-1'
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51, { type: 'user', delivery: 'steer' }),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          shellToolEvent(shellID, 54),
+          shellToolEvent(shellID, 55, 'completed', false),
+          inboxEvent('inbox_enqueued', 'inbox-shell', 56, shellCompletionItem(shellID)),
+          inboxEvent('inbox_delivered', 'inbox-shell', 57),
+          executionEvent('execution_terminal', 58),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+  })
+
+  it('lets one terminal complete multiple owned shell notifications from the same root execution', async () => {
+    const shellIDs = ['shell-background-a', 'shell-background-b']
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          shellToolEvent(shellIDs[0]!, 54),
+          shellToolEvent(shellIDs[1]!, 55),
+          inboxEvent('inbox_enqueued', 'inbox-shell-a', 56, shellCompletionItem(shellIDs[0]!)),
+          inboxEvent('inbox_enqueued', 'inbox-shell-b', 57, shellCompletionItem(shellIDs[1]!)),
+          inboxEvent('inbox_delivered', 'inbox-shell-a', 58),
+          inboxEvent('inbox_delivered', 'inbox-shell-b', 59),
+          executionEvent('execution_terminal', 60),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+  })
+
+  it.each([
+    { label: 'running-status metadata', shellID: 'shell-continue-status', metadata: { status: 'running', shellID: 'shell-continue-status' } },
+    { label: 'shell-ID-only progress metadata', shellID: 'shell-continue-progress', metadata: { shellID: 'shell-continue-progress' } },
+  ])('continues when a pending shell notification matches the root tool part with $label', async ({ shellID, metadata }) => {
+    let dispatched = false
+    const rootMessage = runningShellMessage(shellID, { metadata })
+    const pendingShell: OpenCodePendingInbox = {
+      id: 'inbox-shell-pending',
+      sessionID: 'session-1',
+      item: shellCompletionItem(shellID),
+    }
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => dispatched
+        ? [rootMessage, message('continued-assistant', 'current answer')]
+        : [rootMessage]),
+      listPendingInboxes: vi.fn(async () => [pendingShell]),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51, { type: 'user', delivery: 'steer' }),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', pendingShell.id, 53),
+          inboxEvent('inbox_delivered', 'inbox-own', 54),
+          executionEvent('execution_terminal', 55),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }]))
+      .resolves.toBe('current answer')
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    {
+      label: 'the root message belongs to another session',
+      baseline: runningShellMessage('shell-pending-foreign-message', { infoSessionID: 'session-other' }),
+      pending: [{ id: 'inbox-shell-pending', sessionID: 'session-1', item: shellCompletionItem('shell-pending-foreign-message') }],
+    },
+    {
+      label: 'the root tool part has no session identity',
+      baseline: runningShellMessage('shell-pending-foreign-part', { partSessionID: 'session-other' }),
+      pending: [{ id: 'inbox-shell-pending', sessionID: 'session-1', item: shellCompletionItem('shell-pending-foreign-part') }],
+    },
+    {
+      label: 'the pending inbox belongs to another session',
+      baseline: runningShellMessage('shell-pending-session'),
+      pending: [{ id: 'inbox-shell-pending', sessionID: 'session-other', item: shellCompletionItem('shell-pending-session') }],
+    },
+    {
+      label: 'the pending shell item has incomplete job identity',
+      baseline: runningShellMessage('shell-pending-partial'),
+      pending: [{ id: 'inbox-shell-pending', sessionID: 'session-1', item: shellCompletionItem('shell-pending-partial', { jobID: '' }) }],
+    },
+    {
+      label: 'a user inbox is mixed with a valid shell notification',
+      baseline: runningShellMessage('shell-pending-mixed'),
+      pending: [
+        { id: 'inbox-shell-pending', sessionID: 'session-1', item: shellCompletionItem('shell-pending-mixed') },
+        { id: 'inbox-user', sessionID: 'session-1', item: { type: 'user', delivery: 'steer' } },
+      ],
+    },
+  ] satisfies Array<{ label: string; baseline: Message; pending: OpenCodePendingInbox[] }>)('refuses to dispatch with pending work when $label', async ({ baseline, pending }) => {
+    const { transport, source, markDispatched } = createV2Transport({
+      getSessionMessages: vi.fn(async () => [baseline]),
+      listPendingInboxes: vi.fn(async () => pending),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          inboxEvent('inbox_delivered', 'inbox-own', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }]))
+      .rejects.toThrow()
+    expect(transport.dispatchPrompt).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'a user inbox', item: { type: 'user', delivery: 'steer' } },
+    { label: 'a user shell notice without a job identity', item: { type: 'synthetic', delivery: 'steer' } },
+    { label: 'an unknown synthetic shell job', item: shellCompletionItem('shell-unknown') },
+    { label: 'partial shell identity', item: shellCompletionItem('shell-known', { jobID: '' }) },
+    { label: 'a queued shell item', item: shellCompletionItem('shell-known', { delivery: 'queue' }) },
+  ] satisfies Array<{ label: string; item: OpenCodeInboxItem }>)('still rejects $label after observing a native shell tool', async ({ item }) => {
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          shellToolEvent('shell-known', 53),
+          inboxEvent('inbox_enqueued', 'inbox-external', 54, item),
+          inboxEvent('inbox_delivered', 'inbox-own', 55),
+          inboxEvent('inbox_delivered', 'inbox-external', 56),
+          executionEvent('execution_terminal', 57),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('Another prompt entered the OpenCode session during result attribution')
+  })
+
+  it('rejects an owned shell notification whose delivery mode changes during the execution', async () => {
+    const shellID = 'shell-delivery-change'
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          shellToolEvent(shellID, 53),
+          inboxEvent('inbox_enqueued', 'inbox-shell', 54, shellCompletionItem(shellID)),
+          {
+            cursor: 55,
+            event: { type: 'inbox_delivery_changed', sessionId: 'session-1', inboxID: 'inbox-shell', delivery: 'queue' },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 56),
+          inboxEvent('inbox_delivered', 'inbox-shell', 57),
+          executionEvent('execution_terminal', 58),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('changed the delivery mode')
+  })
+
+  it('rejects cancellation of an owned shell completion inbox', async () => {
+    const shellID = 'shell-cancelled'
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          shellToolEvent(shellID, 53),
+          inboxEvent('inbox_enqueued', 'inbox-shell', 54, shellCompletionItem(shellID)),
+          {
+            cursor: 55,
+            event: { type: 'inbox_cancelled', sessionId: 'session-1', inboxID: 'inbox-shell' },
+          },
+          inboxEvent('inbox_delivered', 'inbox-own', 56),
+          executionEvent('execution_terminal', 57),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow()
+  })
+
+  it('rejects multiple inboxes claiming completion for the same shell job', async () => {
+    const shellID = 'shell-duplicate'
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          shellToolEvent(shellID, 53),
+          inboxEvent('inbox_enqueued', 'inbox-shell-a', 54, shellCompletionItem(shellID)),
+          inboxEvent('inbox_enqueued', 'inbox-shell-b', 55, shellCompletionItem(shellID)),
+          inboxEvent('inbox_delivered', 'inbox-own', 56),
+          inboxEvent('inbox_delivered', 'inbox-shell-a', 57),
+          inboxEvent('inbox_delivered', 'inbox-shell-b', 58),
+          executionEvent('execution_terminal', 59),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .rejects.toThrow('more than one inbox')
+  })
+
+  it('accepts the existing receipt enqueue, delivery, execution-start, terminal order', async () => {
+    const { transport, source, markDispatched } = createV2Transport({
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          inboxEvent('inbox_delivered', 'inbox-own', 52),
+          executionEvent('execution_started', 53),
+          executionEvent('execution_terminal', 54),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }]))
+      .resolves.toBe('current answer')
+  })
+
+  it('keeps a proved shell completion that arrived before the message baseline out of the competitor set', async () => {
+    const shellID = 'shell-before-baseline'
+    let idleWaits = 0
+    let dispatched = false
+    let markShellEnqueued: (() => void) | undefined
+    let markShellCompleted: (() => void) | undefined
+    const shellEnqueued = new Promise<void>(resolve => { markShellEnqueued = resolve })
+    const shellCompleted = new Promise<void>(resolve => { markShellCompleted = resolve })
+    const rootMessage = runningShellMessage(shellID)
+    const { transport, source, markDispatched } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+        const events = source.events(signal)
+        return {
+          events: (async function* () {
+            for await (const envelope of events) {
+              yield envelope
+              if (envelope.cursor === 51) markShellEnqueued?.()
+              if (envelope.cursor === 54) markShellCompleted?.()
+            }
+          })(),
+          cursor: afterCursor,
+          coverageComplete: true,
+        }
+      }),
+      waitForIdle: vi.fn(async () => {
+        idleWaits += 1
+        if (idleWaits === 1) {
+          source.push(inboxEvent('inbox_enqueued', 'inbox-shell', 51, shellCompletionItem(shellID)))
+          await settleWithin(shellEnqueued, 'shell inbox enqueue')
+        } else if (idleWaits === 2) {
+          source.push(
+            executionEvent('execution_started', 52),
+            inboxEvent('inbox_delivered', 'inbox-shell', 53),
+            executionEvent('execution_terminal', 54),
+          )
+          await settleWithin(shellCompleted, 'shell execution completion')
+        }
+      }),
+      getSessionMessages: vi.fn(async () => dispatched
+        ? [rootMessage, message('continued-assistant', 'current answer')]
+        : [rootMessage]),
+      listPendingInboxes: vi.fn(async () => []),
+      dispatchPrompt: vi.fn(async () => {
+        dispatched = true
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 55),
+          executionEvent('execution_started', 56),
+          inboxEvent('inbox_delivered', 'inbox-own', 57),
+          executionEvent('execution_terminal', 58),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    await expect(createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'continue' }]))
+      .resolves.toBe('current answer')
+    expect(transport.dispatchPrompt).toHaveBeenCalledOnce()
   })
 
   it('opens and consumes v2 coverage from the original cursor before waiting idle', async () => {
@@ -1801,6 +2197,240 @@ describe('OpenCode adapter transport orchestration', () => {
     } finally {
       releaseSnapshot?.()
       controller.abort()
+    }
+  })
+
+  it('waits for a late owned shell execution and returns a snapshot read after its terminal', async () => {
+    let reads = 0
+    let markSnapshotStarted: (() => void) | undefined
+    let releaseSnapshot: (() => void) | undefined
+    let markLateTerminalObserved: (() => void) | undefined
+    const snapshotStarted = new Promise<void>(resolve => { markSnapshotStarted = resolve })
+    const delayedSnapshot = new Promise<void>(resolve => { releaseSnapshot = resolve })
+    const lateTerminalObserved = new Promise<void>(resolve => { markLateTerminalObserved = resolve })
+    const { transport, source, markDispatched } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+        const events = source.events(signal)
+        return {
+          events: (async function* () {
+            for await (const envelope of events) {
+              yield envelope
+              if (envelope.cursor === 59) markLateTerminalObserved?.()
+            }
+          })(),
+          cursor: afterCursor ?? 50,
+          coverageComplete: true,
+        }
+      }),
+      getSessionMessages: vi.fn(async () => {
+        reads += 1
+        if (reads === 1) return [message('old-assistant', 'stale answer')]
+        if (reads === 2) {
+          markSnapshotStarted?.()
+          await delayedSnapshot
+          return [message('first-terminal-assistant', 'intermediate answer')]
+        }
+        return [message('final-assistant', 'final answer')]
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          shellToolEvent('shell-late', 53),
+          inboxEvent('inbox_delivered', 'inbox-own', 54),
+          executionEvent('execution_terminal', 55),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }])
+    void prompt.catch(() => undefined)
+    try {
+      await settleWithin(snapshotStarted, 'first terminal snapshot')
+      source.push(
+        inboxEvent('inbox_enqueued', 'inbox-shell-late', 56, shellCompletionItem('shell-late')),
+        executionEvent('execution_started', 57),
+        inboxEvent('inbox_delivered', 'inbox-shell-late', 58),
+        executionEvent('execution_terminal', 59),
+      )
+      await settleWithin(lateTerminalObserved, 'owned shell terminal')
+      releaseSnapshot?.()
+
+      await expect(prompt).resolves.toBe('final answer')
+      expect(transport.getSessionMessages).toHaveBeenCalledTimes(3)
+    } finally {
+      releaseSnapshot?.()
+    }
+  })
+
+  it('auto-approves a permission from a late owned shell execution before accepting its final snapshot', async () => {
+    let reads = 0
+    let markSnapshotStarted: (() => void) | undefined
+    let releaseSnapshot: (() => void) | undefined
+    let markPermissionReplied: (() => void) | undefined
+    let markLateTerminalObserved: (() => void) | undefined
+    const snapshotStarted = new Promise<void>(resolve => { markSnapshotStarted = resolve })
+    const delayedSnapshot = new Promise<void>(resolve => { releaseSnapshot = resolve })
+    const permissionReplied = new Promise<void>(resolve => { markPermissionReplied = resolve })
+    const lateTerminalObserved = new Promise<void>(resolve => { markLateTerminalObserved = resolve })
+    const { transport, source, markDispatched } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+        const events = source.events(signal)
+        return {
+          events: (async function* () {
+            for await (const envelope of events) {
+              yield envelope
+              if (envelope.cursor === 60) markLateTerminalObserved?.()
+            }
+          })(),
+          cursor: afterCursor ?? 50,
+          coverageComplete: true,
+        }
+      }),
+      getSessionMessages: vi.fn(async () => {
+        reads += 1
+        if (reads === 1) return [message('old-assistant', 'stale answer')]
+        if (reads === 2) {
+          markSnapshotStarted?.()
+          await delayedSnapshot
+          return [message('first-terminal-assistant', 'intermediate answer')]
+        }
+        return [message('final-assistant', 'final answer')]
+      }),
+      replyPermission: vi.fn(async () => { markPermissionReplied?.() }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          shellToolEvent('shell-late-permission', 53),
+          inboxEvent('inbox_delivered', 'inbox-own', 54),
+          executionEvent('execution_terminal', 55),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    const prompt = createAdapter(transport).promptSession(
+      'session-1',
+      [{ type: 'text', content: 'prompt' }],
+      undefined,
+      { autoApprovePermissions: true },
+    )
+    void prompt.catch(() => undefined)
+    try {
+      await settleWithin(snapshotStarted, 'first terminal snapshot')
+      source.push(
+        inboxEvent('inbox_enqueued', 'inbox-shell-late', 56, shellCompletionItem('shell-late-permission')),
+        executionEvent('execution_started', 57),
+        inboxEvent('inbox_delivered', 'inbox-shell-late', 58),
+        {
+          cursor: 59,
+          event: {
+            type: 'permission',
+            sessionId: 'session-1',
+            action: 'asked',
+            permissionId: 'permission-late-shell',
+            permission: 'bash',
+          },
+        },
+      )
+      await settleWithin(permissionReplied, 'late shell permission reply')
+      expect(transport.replyPermission).toHaveBeenCalledWith(
+        'session-1',
+        'permission-late-shell',
+        'once',
+        '/worktree',
+        undefined,
+      )
+      source.push(executionEvent('execution_terminal', 60))
+      await settleWithin(lateTerminalObserved, 'late shell terminal')
+      releaseSnapshot?.()
+
+      await expect(prompt).resolves.toBe('final answer')
+      expect(transport.getSessionMessages).toHaveBeenCalledTimes(3)
+    } finally {
+      releaseSnapshot?.()
+    }
+  })
+
+  it('replays a late owned terminal after the event stream ends during snapshot collection', async () => {
+    let reads = 0
+    let markSnapshotStarted: (() => void) | undefined
+    let releaseSnapshot: (() => void) | undefined
+    let markOwnedDeliveryObserved: (() => void) | undefined
+    let markTerminalReplayRead: (() => void) | undefined
+    const snapshotStarted = new Promise<void>(resolve => { markSnapshotStarted = resolve })
+    const delayedSnapshot = new Promise<void>(resolve => { releaseSnapshot = resolve })
+    const ownedDeliveryObserved = new Promise<void>(resolve => { markOwnedDeliveryObserved = resolve })
+    const terminalReplayRead = new Promise<void>(resolve => { markTerminalReplayRead = resolve })
+    const lateTerminal = executionEvent('execution_terminal', 59)
+    const { transport, source, markDispatched } = createV2Transport({
+      subscribeToEvents: vi.fn(async (_sessionId, _directory, signal, _safetyMs, afterCursor) => {
+        const events = source.events(signal)
+        return {
+          events: (async function* () {
+            for await (const envelope of events) {
+              yield envelope
+              if (envelope.cursor === 58) markOwnedDeliveryObserved?.()
+            }
+          })(),
+          cursor: afterCursor ?? 50,
+          coverageComplete: true,
+        }
+      }),
+      readSessionLog: vi.fn(async (_sessionId, after) => {
+        if (after === undefined) return { events: [], cursor: 50, coverageComplete: false }
+        if (after === 58) {
+          markTerminalReplayRead?.()
+          return { events: [lateTerminal], cursor: 59, coverageComplete: true }
+        }
+        return { events: [], cursor: after, coverageComplete: true }
+      }),
+      getSessionMessages: vi.fn(async () => {
+        reads += 1
+        if (reads === 1) return [message('old-assistant', 'stale answer')]
+        if (reads === 2) {
+          markSnapshotStarted?.()
+          await delayedSnapshot
+          return [message('first-terminal-assistant', 'intermediate answer')]
+        }
+        return [message('final-assistant', 'final answer')]
+      }),
+      dispatchPrompt: vi.fn(async () => {
+        markDispatched()
+        source.push(
+          inboxEvent('inbox_enqueued', 'inbox-own', 51),
+          executionEvent('execution_started', 52),
+          shellToolEvent('shell-replayed', 53),
+          inboxEvent('inbox_delivered', 'inbox-own', 54),
+          executionEvent('execution_terminal', 55),
+        )
+        return { kind: 'accepted' as const, receipt: { inboxID: 'inbox-own' } }
+      }),
+    })
+
+    const prompt = createAdapter(transport).promptSession('session-1', [{ type: 'text', content: 'prompt' }])
+    void prompt.catch(() => undefined)
+    try {
+      await settleWithin(snapshotStarted, 'first terminal snapshot')
+      source.push(
+        inboxEvent('inbox_enqueued', 'inbox-shell-replayed', 56, shellCompletionItem('shell-replayed')),
+        executionEvent('execution_started', 57),
+        inboxEvent('inbox_delivered', 'inbox-shell-replayed', 58),
+      )
+      await settleWithin(ownedDeliveryObserved, 'owned shell delivery')
+      source.fail(new Error('SSE disconnected during snapshot'))
+      releaseSnapshot?.()
+      await settleWithin(terminalReplayRead, 'durable owned terminal replay')
+
+      await expect(prompt).resolves.toBe('final answer')
+      expect(transport.readSessionLog).toHaveBeenCalledWith('session-1', 58, undefined)
+      expect(transport.getSessionMessages).toHaveBeenCalledTimes(3)
+    } finally {
+      releaseSnapshot?.()
     }
   })
 

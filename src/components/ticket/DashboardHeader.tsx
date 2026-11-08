@@ -435,20 +435,20 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
       <Dialog open={isDetailsOpen} onOpenChange={(open) => { setIsDetailsOpen(open); if (open) detailsScrollInit() }}>
         <DialogContent
           closeButtonVariant="dashboard"
-          className="max-w-2xl max-h-[80vh] flex flex-col"
+          className="max-w-2xl max-h-[min(80vh,calc(100dvh-2rem))] flex flex-col overflow-y-auto"
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
-          <DialogHeader>
+          <DialogHeader className="shrink-0">
             <DialogTitle className="text-sm">Ticket Details</DialogTitle>
             <DialogDescription className="sr-only">
               Review ticket metadata, project details, file locations, and the current description.
             </DialogDescription>
           </DialogHeader>
-          <div className="relative flex-1 min-h-0 overflow-hidden">
+          <div className="relative flex min-h-24 flex-1 flex-col overflow-hidden">
           <div
             ref={scrollRef}
             onScroll={handleScroll}
-            className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm overflow-y-auto pr-1 max-h-[calc(80vh-6rem)] [scrollbar-width:thin] [scrollbar-color:transparent_transparent] hover:[scrollbar-color:var(--border)_transparent]"
+            className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto pr-1 text-sm sm:grid-cols-2 [scrollbar-width:thin] [scrollbar-color:transparent_transparent] hover:[scrollbar-color:var(--border)_transparent]"
           >
             <div className={project ? '' : 'sm:col-span-2'}>
               <span className="text-xs font-medium text-muted-foreground">Title</span>

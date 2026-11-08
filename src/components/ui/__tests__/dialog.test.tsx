@@ -26,9 +26,9 @@ describe('DialogContent viewport sizing', () => {
   })
 
   it('keeps tighter dialog limits and their inner scroll regions', () => {
-    const dialog = renderDialog('max-h-[80vh] flex flex-col')
+    const dialog = renderDialog('max-h-[min(80vh,calc(100dvh-2rem))] flex flex-col')
 
-    expect(dialog).toHaveClass('max-h-[80vh]', 'overflow-y-auto', 'flex', 'flex-col')
+    expect(dialog).toHaveClass('max-h-[min(80vh,calc(100dvh-2rem))]', 'overflow-y-auto', 'flex', 'flex-col')
     expect(dialog).not.toHaveClass('max-h-[calc(100dvh-2rem)]')
     expect(screen.getByTestId('dialog-scroll-region')).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto')
   })

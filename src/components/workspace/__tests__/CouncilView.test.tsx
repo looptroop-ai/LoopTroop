@@ -21,6 +21,18 @@ function makeArtifact(phase: string, artifactType: string, content: string | nul
   }
 }
 
+function makeAttempt(phase: string) {
+  return {
+    ticketId: TEST.ticketId,
+    phase,
+    attemptNumber: 1,
+    state: 'active',
+    archivedReason: null,
+    createdAt: TEST.timestamp,
+    archivedAt: null,
+  }
+}
+
 vi.mock('@/hooks/useTicketArtifacts', () => ({
   useTicketArtifactBundle: (...args: unknown[]) => mockUseTicketArtifacts(...args),
 }))
@@ -74,7 +86,7 @@ describe('CouncilView', () => {
       artifacts: [],
       isLoading: true,
     })
-    mockUseTicketPhaseAttempts.mockReturnValue({ data: [] })
+    mockUseTicketPhaseAttempts.mockImplementation((_ticketId: string, phase: string) => ({ data: [makeAttempt(phase)] }))
   })
 
   it('renders no source comments as visible text', () => {
@@ -105,6 +117,31 @@ describe('CouncilView', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent('Loading phase version')
     expect(screen.queryByTestId('phase-artifacts-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('phase-log-section')).not.toBeInTheDocument()
+  })
+
+  it('shows no phase version when history resolves empty', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({ data: [] })
+
+    render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('No phase version is available.')
+    expect(screen.queryByTestId('phase-artifacts-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('phase-log-section')).not.toBeInTheDocument()
+  })
+
+  it('keeps cached phase data visible when refreshing attempt history fails', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({
+      data: [makeAttempt('DRAFTING_PRD')],
+      isError: true,
+      error: new Error('history request failed'),
+    })
+
+    render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('The version history for this phase could not be loaded.')
+    expect(screen.getByTestId('phase-artifacts-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('phase-log-section')).toHaveTextContent('DRAFTING_PRD')
   })
 
   it('renders with an empty council fallback when the server sent no roster', () => {

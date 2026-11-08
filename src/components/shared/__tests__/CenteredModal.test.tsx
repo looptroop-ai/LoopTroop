@@ -27,6 +27,9 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     renderModal()
     const dialog = screen.getByRole('dialog', { name: 'Configuration' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto')
+    expect(dialog.parentElement).toHaveClass('items-start', 'overflow-y-auto', 'p-4')
+    expect(dialog.querySelector('.min-h-24.flex-1.overflow-auto')).toBeInTheDocument()
   })
 
   it('moves focus into the dialog on open', () => {

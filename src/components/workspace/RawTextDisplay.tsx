@@ -48,7 +48,7 @@ export function RawDisplayStats({ content, copyContent, copyTitle }: { content: 
 
   if (copyContent !== undefined) {
     return (
-      <div className="flex w-full min-w-0 items-center gap-2">
+      <div className="flex w-full min-w-0 items-start gap-2">
         <div className="min-w-0 flex-1">{stats}</div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <CopyButton content={copyContent} title={copyTitle} />

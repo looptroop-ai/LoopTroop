@@ -44,7 +44,7 @@ export function KeyboardShortcuts() {
   // DROPDOWN_Z_INDEX, so clearing only the modal layers is not enough.
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center overflow-y-auto bg-black/50 p-4"
+      className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-black/50 p-4"
       style={{ zIndex: SHORTCUTS_OVERLAY_Z_INDEX }}
       onClick={() => setIsOpen(false)}
     >
@@ -55,13 +55,13 @@ export function KeyboardShortcuts() {
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={handleTrapKeyDown}
-        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto outline-none"
+        className="my-auto flex max-h-[calc(100dvh-2rem)] w-full max-w-md flex-col overflow-y-auto outline-none"
         onClick={e => e.stopPropagation()}
       >
-        <CardHeader>
+        <CardHeader className="shrink-0">
           <CardTitle id={titleId} className="text-sm">Keyboard Shortcuts</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent tabIndex={0} className="min-h-24 flex-1 overflow-y-auto">
           <div className="space-y-2">
             {SHORTCUTS.map(s => (
               <div key={s.key} className="flex justify-between text-sm">

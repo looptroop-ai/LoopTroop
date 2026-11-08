@@ -755,6 +755,62 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     expect(screen.queryByText('Rejected setup draft')).not.toBeInTheDocument()
   })
 
+  it('waits for archived setup receipt artifacts before labeling the attempt and retries failures', async () => {
+    const refetch = vi.fn(async () => undefined)
+    const receipt = {
+      id: 23,
+      ticketId: TEST.ticketId,
+      phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
+      phaseAttempt: 1,
+      artifactType: 'approval_receipt',
+      filePath: null,
+      content: JSON.stringify({ approved_by: 'user', approved_at: TEST.timestamp }),
+      createdAt: TEST.timestamp,
+    }
+    let artifactResult: 'loading' | 'error' | 'loaded' = 'loading'
+    mockUseTicketArtifacts.mockImplementation((_ticketId: string, options?: { phaseAttempt?: number }) => {
+      if (options?.phaseAttempt !== 1) return { artifacts: [], isLoading: false, isError: false, refetch }
+      if (artifactResult === 'loading') return { artifacts: undefined, isLoading: true, isError: false, refetch }
+      if (artifactResult === 'error') {
+        return {
+          artifacts: undefined,
+          isLoading: false,
+          isError: true,
+          error: new Error('Archived setup artifacts unavailable.'),
+          refetch,
+        }
+      }
+      return { artifacts: [receipt], isLoading: false, isError: false, refetch }
+    })
+
+    const ticket = makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+    const view = renderWithProviders(
+      <ExecutionSetupPlanApprovalPane ticket={ticket} readOnly phaseAttempt={1} />,
+    )
+
+    expect(await screen.findByText('Loading archived setup plan status…')).toBeInTheDocument()
+    expect(screen.getByText('Archived Execution Setup Plan')).toBeInTheDocument()
+    expect(screen.queryByText('Rejected Execution Setup Draft')).not.toBeInTheDocument()
+    expect(screen.queryByText('Superseded Execution Setup Contract')).not.toBeInTheDocument()
+
+    artifactResult = 'error'
+    view.rerender(<ExecutionSetupPlanApprovalPane ticket={ticket} readOnly phaseAttempt={1} />)
+    const error = await screen.findByRole('alert')
+    expect(error).toHaveTextContent('The archived setup plan status could not be loaded.')
+    expect(error).toHaveTextContent('Archived setup artifacts unavailable.')
+    expect(screen.queryByText('Rejected Execution Setup Draft')).not.toBeInTheDocument()
+    expect(screen.queryByText('Superseded Execution Setup Contract')).not.toBeInTheDocument()
+
+    fireEvent.click(within(error).getByRole('button', { name: 'Retry' }))
+    expect(refetch).toHaveBeenCalledOnce()
+
+    artifactResult = 'loaded'
+    view.rerender(<ExecutionSetupPlanApprovalPane ticket={ticket} readOnly phaseAttempt={1} />)
+    expect(await screen.findByText('Superseded Execution Setup Contract')).toBeInTheDocument()
+    expect(screen.getByText('Superseded approved setup contract')).toBeInTheDocument()
+    expect(screen.queryByText('Rejected setup draft')).not.toBeInTheDocument()
+  })
+
   it('ignores persisted edit mode while rendering read-only setup plan review', async () => {
     mockUseTicketUIState.mockReturnValue({
       isSuccess: true,

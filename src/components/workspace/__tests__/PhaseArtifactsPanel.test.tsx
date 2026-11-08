@@ -138,6 +138,30 @@ describe('PhaseArtifactsPanel', () => {
     expect(retry).toHaveBeenCalledTimes(2)
   })
 
+  it('skips artifact loading and errors for setup approval, which has no artifact rows', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="WAITING_EXECUTION_SETUP_APPROVAL"
+        isCompleted={false}
+        ticketId={TEST.ticketId}
+        artifactState={{
+          artifacts: undefined,
+          status: 'error',
+          isLoading: false,
+          isFetching: false,
+          isError: true,
+          error: new Error('Unrelated phase artifacts failed.'),
+          refetch: vi.fn(async () => undefined),
+        }}
+      />,
+    )
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it('keeps the PRD candidate unversioned while artifacts load and when no version exists', () => {
     const refetch = vi.fn(async () => undefined)
     const { unmount } = renderWithProviders(
@@ -1789,6 +1813,9 @@ describe('PhaseArtifactsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /Coverage Report/i }))
 
     const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveClass('flex', 'flex-col', 'overflow-y-auto', 'overflow-x-hidden', 'max-h-[min(80vh,calc(100dvh-2rem))]')
+    expect(dialog.querySelector('h2')?.parentElement).toHaveClass('shrink-0')
+    expect(dialog.querySelector('.min-h-24.flex-1.overflow-y-auto')).not.toBeNull()
     // The raw fallback puts a copy button first in the dialog, and focusing it
     // would open its tooltip before the user hovered anything.
     expect(screen.getByRole('button', { name: 'Copy raw output' })).toBeInTheDocument()

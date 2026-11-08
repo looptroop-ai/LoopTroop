@@ -1,7 +1,7 @@
 import { fireEvent, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { renderWithProviders } from '@/test/renderHelpers'
-import { ExecutionSetupPlanView } from '../executionSetupViews'
+import { ExecutionSetupPlanView, ExecutionSetupReportView } from '../executionSetupViews'
 
 const defaultStep = {
   id: 'prepare-runtime',
@@ -129,5 +129,14 @@ describe('ExecutionSetupPlanView', () => {
     expect(screen.getByText('One generation warning.')).toBeInTheDocument()
     expect(screen.getByText('The plan was regenerated after review.')).toBeInTheDocument()
     expect(screen.getByText('Suggested runtime setup')).toBeInTheDocument()
+  })
+
+  it('keeps the model-output copy action beside its collapsible section title', () => {
+    renderWithProviders(<ExecutionSetupReportView content={JSON.stringify({ modelOutput: 'Runtime setup output' })} />)
+
+    const title = screen.getByRole('button', { name: 'Model Output' })
+    expect(title.parentElement).toContainElement(screen.getByRole('button', { name: 'Copy model output' }))
+    fireEvent.click(title)
+    expect(screen.getByText('Runtime setup output')).toBeInTheDocument()
   })
 })

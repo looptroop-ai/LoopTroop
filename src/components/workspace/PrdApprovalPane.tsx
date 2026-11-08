@@ -42,7 +42,6 @@ import {
   approveArtifact,
   fixCoverageGaps,
 } from './approvalHooks'
-import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import {
   findLatestArtifact,
   findLatestCompanionArtifact,
@@ -195,10 +194,8 @@ export function PrdApprovalPane({
     error: artifactsError,
     refetch: refetchArtifacts,
   } = useTicketArtifacts(ticket.id, { types: PRD_APPROVAL_ARTIFACT_TYPES })
-  // Coverage gaps live in the artifacts. A failed request made `coverageWarning`
-  // absent, which reads exactly like "no gaps" — so the button said "Approve"
-  // and the operator approved without the answer having been obtained.
-  const isCoverageUnknown = isArtifactsError && loadedArtifacts === undefined
+  // Coverage gaps live in the artifacts, so approval waits for the first result.
+  const isCoverageUnknown = loadedArtifacts === undefined
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   const rawContent = fetchedPrd?.content ?? ''
@@ -207,7 +204,6 @@ export function PrdApprovalPane({
     () => normalizePrdDocumentLike(parsePrdDocument(rawContent) ?? parsePrdDocumentContent(rawContent).document),
     [rawContent],
   )
-  const rawDisplayContent = useMemo(() => buildReadableRawDisplayContent(rawContent), [rawContent])
   const isPreparingStructuredPrd = !prdDocument && Boolean(rawContent) && isFetching
 
   const {
@@ -498,8 +494,8 @@ export function PrdApprovalPane({
       </Dialog>
 
       <Dialog open={isFullAnswersOpen} onOpenChange={setIsFullAnswersOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh]">
-          <DialogHeader>
+        <DialogContent className="max-w-2xl max-h-[min(80vh,calc(100dvh-2rem))] flex flex-col overflow-y-auto overflow-x-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle className="text-sm flex items-center gap-2">
               <FileText className="h-4 w-4" />
               Full Answers
@@ -516,7 +512,7 @@ export function PrdApprovalPane({
               </div>
             ) : null}
           </DialogHeader>
-          <div className="max-h-[60vh] overflow-auto rounded-md bg-muted p-4">
+          <div className="min-h-24 flex-1 overflow-auto rounded-md bg-muted p-4">
             {fullAnswersArtifact ? (
               <InterviewDocumentView
                 document={fullAnswersArtifact.document}
@@ -601,9 +597,13 @@ export function PrdApprovalPane({
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
-          {isCoverageUnknown ? (
+          {isCoverageUnknown && !isArtifactsError ? (
+            <div role="status" className="text-xs text-muted-foreground">Checking PRD coverage before approval…</div>
+          ) : isArtifactsError ? (
             <QueryErrorNotice
-              title="Coverage could not be checked, so this PRD cannot be approved yet."
+              title={isCoverageUnknown
+                ? 'Coverage could not be checked, so this PRD cannot be approved yet.'
+                : 'The last coverage result is still in use. Its refresh failed.'}
               error={artifactsError}
               onRetry={() => void refetchArtifacts()}
             />
@@ -676,7 +676,7 @@ export function PrdApprovalPane({
           ) : prdDocument ? (
             <PrdDocumentView document={prdDocument as PrdDocument} />
           ) : (
-            <RawArtifactBlock content={rawContent ? rawDisplayContent : ''} emptyLabel="No PRD artifact available yet." />
+            <RawArtifactBlock content={rawContent.trim() ? rawContent : ''} emptyLabel="No PRD artifact available yet." />
           )}
         </div>
       </div>

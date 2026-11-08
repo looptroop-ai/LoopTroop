@@ -765,7 +765,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
   const hasArtifacts = hasTopArtifactRow || hasFullAnswerRow || inlineSupplementalArtifacts.length > 0 || Boolean(prefixElement)
   const isArtifactLoading = resolvedArtifactState.isLoading && resolvedArtifactState.artifacts === undefined
   const isArtifactError = resolvedArtifactState.isError
-  if (!hasArtifacts && !isArtifactLoading && !isArtifactError) return null
+  if (!hasArtifacts) return null
 
   const artifactsBody = !hasArtifacts ? null : phase === 'DRAFTING_PRD' ? (
     <div>
@@ -894,12 +894,12 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
         <DialogContent
           // The dialog can hold focus itself (see focusDialogItself): a ring only
           // for keyboard focus, never the browser outline after a click.
-          className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="max-w-2xl max-h-[min(80vh,calc(100dvh-2rem))] min-w-0 flex flex-col overflow-y-auto overflow-x-hidden rounded-xl border-border/70 shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onOpenAutoFocus={focusDialogItself}
           onKeyDown={shiftTabFromDialogItself}
         >
           {/* Padded clear of the member controls, which sit over its top right. */}
-          <DialogHeader className={memberControl ? 'pr-28 sm:pr-44' : undefined}>
+          <DialogHeader className={memberControl ? 'shrink-0 pr-28 sm:pr-44' : 'shrink-0'}>
             <DialogTitle className="text-sm font-mono font-semibold flex items-center gap-2">
               {viewingArtifact?.icon ?? null}
               {viewingArtifact?.label}
@@ -909,13 +909,15 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
             </DialogDescription>
           </DialogHeader>
           {dialogMemberControlScope && selectedMemberChip ? (
-            <CouncilMemberDialogControls
-              key={selectedMemberChip.key}
-              scope={dialogMemberControlScope}
-              control={memberControl}
-            />
+            <div className="shrink-0">
+              <CouncilMemberDialogControls
+                key={selectedMemberChip.key}
+                scope={dialogMemberControlScope}
+                control={memberControl}
+              />
+            </div>
           ) : null}
-          <div className="max-h-[60vh] min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
+          <div className="min-h-24 flex-1 min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
             <div className="min-w-0 max-w-full overflow-x-hidden bg-muted/60 rounded-lg border border-border/30 p-4">
               {resolvedArtifactState.isLoading && resolvedArtifactState.artifacts === undefined ? (
                 <div className="flex items-center justify-center py-8">

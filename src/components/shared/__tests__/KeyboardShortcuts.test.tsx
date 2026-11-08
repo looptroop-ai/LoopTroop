@@ -15,8 +15,10 @@ describe('KeyboardShortcuts', () => {
     open()
     const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
-    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto')
+    expect(dialog).toHaveClass('my-auto', 'max-h-[calc(100dvh-2rem)]', 'overflow-y-auto', 'flex', 'flex-col')
     expect(dialog.parentElement).toHaveClass('overflow-y-auto')
+    expect(dialog.children[0]).toHaveClass('shrink-0')
+    expect(dialog.children[1]).toHaveClass('min-h-24', 'flex-1', 'overflow-y-auto')
   })
 
   /**
@@ -40,6 +42,17 @@ describe('KeyboardShortcuts', () => {
     open()
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('contains focus and makes the background inert while open', () => {
+    render(<><button type="button">outside</button><KeyboardShortcuts /></>)
+    fireEvent.keyDown(document.body, { key: '?' })
+
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
+    const outside = screen.getByText('outside')
+    expect(dialog).toHaveFocus()
+    expect(outside).toHaveAttribute('inert')
+    expect(outside).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('keeps panel interactions open and closes on a backdrop click', () => {

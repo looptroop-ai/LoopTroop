@@ -7,6 +7,7 @@ import type { LogContextValue, LogEntry } from "@/context/logUtils";
 import { LogProvider } from "@/context/LogContext";
 import { TEST, makeTicket } from "@/test/factories";
 import { getTicketArtifactsQueryKey } from "@/hooks/useTicketArtifacts";
+import { getTicketPhaseAttemptsQueryKey } from "@/hooks/useTicketPhaseAttempts";
 import { normalizeTicketResponse } from "@/lib/ticketNormalization";
 import {
   renderWithProviders,
@@ -20,18 +21,68 @@ function createLogEntry(
   line: string,
   timestamp: string | undefined,
   status: LogEntry["status"] = "VERIFYING_PRD_COVERAGE",
+  source = "system",
+  kind = "milestone",
+  phaseAttempt = 1,
 ): LogEntry {
   return {
     id: `${timestamp}:${line}`,
     entryId: `${timestamp}:${line}`,
     line,
-    source: "system",
+    source,
     status,
+    phaseAttempt,
     timestamp,
     audience: "all",
-    kind: "milestone",
+    kind,
     streaming: false,
     op: "append",
+  };
+}
+
+function phaseFromAttemptsUrl(url: string): string | null {
+  const phase = /\/phases\/([^/]+)\/attempts(?:\?|$)/.exec(url)?.[1]
+  return phase ? decodeURIComponent(phase) : null
+}
+
+function createPhaseAttempt(
+  phase: string,
+  attemptNumber: number,
+  state: "active" | "archived" = "active",
+  archivedReason: string | null = null,
+) {
+  return {
+    ticketId: TEST.ticketId,
+    phase,
+    attemptNumber,
+    state,
+    archivedReason,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    archivedAt: state === "archived" ? "2026-01-01T00:01:00.000Z" : null,
+  };
+}
+
+function createCoverageRevisionArtifact(
+  phase: string,
+  candidateVersion: number,
+  phaseAttempt = 1,
+  coverageRunNumber?: number,
+  maxCoveragePasses?: number,
+) {
+  return {
+    id: candidateVersion,
+    ticketId: TEST.ticketId,
+    phase,
+    phaseAttempt,
+    artifactType: phase === "VERIFYING_PRD_COVERAGE" ? "prd_coverage_revision" : "beads_coverage_revision",
+    filePath: null,
+    content: JSON.stringify({
+      candidateVersion,
+      ...(coverageRunNumber !== undefined ? { coverageRunNumber } : {}),
+      ...(maxCoveragePasses !== undefined ? { maxCoveragePasses } : {}),
+    }),
+    createdAt: "2026-01-01T00:00:03.000Z",
+    updatedAt: "2026-01-01T00:00:03.000Z",
   };
 }
 
@@ -45,37 +96,14 @@ function mockWorkspacePhaseQueries(
       url.split("?")[0]?.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)
     )
       return createJsonResponse(artifacts);
-    if (
-      retriedPhase
-        ? url.endsWith(
-            `/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/${retriedPhase}/attempts`,
-          )
-        : url.includes("/attempts")
-    ) {
-      return createJsonResponse(
-        retriedPhase
-          ? [
-              {
-                ticketId: TEST.ticketId,
-                phase: retriedPhase,
-                attemptNumber: 2,
-                state: "active",
-                archivedReason: null,
-                createdAt: "2026-01-01T00:01:00.000Z",
-                archivedAt: null,
-              },
-              {
-                ticketId: TEST.ticketId,
-                phase: retriedPhase,
-                attemptNumber: 1,
-                state: "archived",
-                archivedReason: "manual_retry_after_blocked_error",
-                createdAt: "2026-01-01T00:00:00.000Z",
-                archivedAt: "2026-01-01T00:01:00.000Z",
-              },
-            ]
-          : [],
-      );
+    const attemptPhase = phaseFromAttemptsUrl(url);
+    if (attemptPhase) {
+      return createJsonResponse(retriedPhase === attemptPhase
+        ? [
+            createPhaseAttempt(retriedPhase, 2),
+            createPhaseAttempt(retriedPhase, 1, "archived", "manual_retry_after_blocked_error"),
+          ]
+        : [createPhaseAttempt(attemptPhase, 1)]);
     }
     throw new Error(`Unhandled fetch: ${url}`);
   });
@@ -115,18 +143,9 @@ afterEach(() => {
 beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = String(input);
-    if (url.includes("/attempts")) {
-      return createJsonResponse([
-        {
-          ticketId: TEST.ticketId,
-          phase: "DRAFTING_PRD",
-          attemptNumber: 1,
-          state: "active",
-          archivedReason: null,
-          createdAt: TEST.timestamp,
-          archivedAt: null,
-        },
-      ]);
+    const attemptPhase = phaseFromAttemptsUrl(url);
+    if (attemptPhase) {
+      return createJsonResponse([createPhaseAttempt(attemptPhase, 1)]);
     }
     if (
       url.split("?")[0]?.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)
@@ -152,7 +171,12 @@ describe("WorkspacePhaseSummary", () => {
       }),
     );
 
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveClass("max-h-[min(80vh,calc(100dvh-2rem))]", "overflow-y-auto");
+    expect(screen.getByRole("heading", { name: "Council Drafting Specs" }).parentElement).toHaveClass("shrink-0");
+    expect(screen.getByRole("heading", { name: "Overview" }).parentElement?.parentElement)
+      .toHaveClass("min-h-24", "flex-1", "overflow-y-auto");
     expect(
       screen.getByText(
         /Part 1, Full Answers: For each skipped interview question/,
@@ -531,10 +555,13 @@ describe("WorkspacePhaseSummary", () => {
   it('waits for coverage artifacts before using a version from older log evidence', async () => {
     let resolveArtifacts!: (response: Response) => void;
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
-      if (String(input).split('?')[0]?.endsWith('/artifacts')) {
+      const url = String(input);
+      const attemptPhase = phaseFromAttemptsUrl(url);
+      if (attemptPhase) return createJsonResponse([createPhaseAttempt(attemptPhase, 1)]);
+      if (url.split('?')[0]?.endsWith('/artifacts')) {
         return new Promise<Response>((resolve) => { resolveArtifacts = resolve; });
       }
-      throw new Error(`Unhandled fetch: ${String(input)}`);
+      throw new Error(`Unhandled fetch: ${url}`);
     });
     const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
     const queryClient = createTestQueryClient();
@@ -565,6 +592,7 @@ describe("WorkspacePhaseSummary", () => {
       name: 'Coverage Check (PRD) (checking version 1)',
     })).not.toBeInTheDocument();
 
+    await waitFor(() => expect(resolveArtifacts).toBeTypeOf('function'));
     await act(async () => resolveArtifacts(await createJsonResponse([{
       id: 4,
       ticketId: TEST.ticketId,
@@ -584,12 +612,16 @@ describe("WorkspacePhaseSummary", () => {
     });
   });
 
-  it('waits for the first phase-log response before choosing between cached and current candidate versions', async () => {
+  it('hides cached candidate versions until the current attempt and its artifact refresh finish', async () => {
+    let resolveAttempts!: (response: Response) => void;
     let resolveArtifacts!: (response: Response) => void;
     let resolveLogs!: (response: Response) => void;
-    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input);
-      if (url.endsWith('/logs?scope=phase&view=overview&limit=20&phase=VERIFYING_PRD_COVERAGE')) {
+      if (phaseFromAttemptsUrl(url)) {
+        return new Promise<Response>((resolve) => { resolveAttempts = resolve; });
+      }
+      if (url.includes('/logs?')) {
         return new Promise<Response>((resolve) => { resolveLogs = resolve; });
       }
       if (url.split('?')[0]?.endsWith('/artifacts')) {
@@ -600,17 +632,13 @@ describe("WorkspacePhaseSummary", () => {
     const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
     const phase = 'VERIFYING_PRD_COVERAGE';
     const queryClient = createTestQueryClient();
-    queryClient.setQueryData(getTicketArtifactsQueryKey(ticket.id, { phase }), [{
-      id: 1,
-      ticketId: ticket.id,
-      phase,
-      phaseAttempt: 1,
-      artifactType: 'prd_coverage_revision',
-      filePath: null,
-      content: JSON.stringify({ candidateVersion: 1 }),
-      createdAt: '2026-01-01T00:00:03.000Z',
-      updatedAt: '2026-01-01T00:00:03.000Z',
-    }]);
+    queryClient.setQueryData(getTicketPhaseAttemptsQueryKey(ticket.id, phase), [createPhaseAttempt(phase, 1)]);
+    queryClient.setQueryData(getTicketArtifactsQueryKey(ticket.id, { phase, phaseAttempt: 1 }), [
+      createCoverageRevisionArtifact(phase, 1, 1),
+    ]);
+    queryClient.setQueryData(getTicketArtifactsQueryKey(ticket.id, { phase, phaseAttempt: 2 }), [
+      createCoverageRevisionArtifact(phase, 1, 2),
+    ]);
 
     renderWithProviders(
       <LogProvider ticketId={ticket.id} currentStatus={phase}>
@@ -619,32 +647,36 @@ describe("WorkspacePhaseSummary", () => {
       { queryClient },
     );
 
-    await waitFor(() => expect(resolveArtifacts).toBeTypeOf('function'));
-    await waitFor(() => expect(resolveLogs).toBeTypeOf('function'));
+    await waitFor(() => expect(resolveAttempts).toBeTypeOf('function'));
     expect(screen.getByRole('button', {
       name: 'Coverage Check (PRD) (loading progress)',
     })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /checking version 1/i })).not.toBeInTheDocument();
 
-    await act(async () => resolveArtifacts(await createJsonResponse([{
-      id: 4,
-      ticketId: ticket.id,
-      phase,
-      phaseAttempt: 1,
-      artifactType: 'prd_coverage_revision',
-      filePath: null,
-      content: JSON.stringify({ candidateVersion: 4 }),
-      createdAt: '2026-01-01T00:00:03.000Z',
-      updatedAt: '2026-01-01T00:00:03.000Z',
-    }])));
+    await act(async () => resolveAttempts(await createJsonResponse([
+      createPhaseAttempt(phase, 2),
+      createPhaseAttempt(phase, 1, 'archived', 'manual_retry_after_blocked_error'),
+    ])));
+    await waitFor(() => expect(resolveArtifacts).toBeTypeOf('function'));
+    await waitFor(() => expect(resolveLogs).toBeTypeOf('function'));
     await waitFor(() => expect(screen.getByRole('button', {
       name: 'Coverage Check (PRD) (loading progress)',
     })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /checking version [14]/i })).not.toBeInTheDocument();
 
+    const artifactRequest = fetchMock.mock.calls.map(([input]) => String(input))
+      .find((url) => url.split('?')[0]?.endsWith('/artifacts'));
+    expect(artifactRequest).toContain('phaseAttempt=2');
+
+    await act(async () => resolveArtifacts(await createJsonResponse([
+      createCoverageRevisionArtifact(phase, 4, 2),
+    ])));
+    expect(screen.queryByRole('button', { name: /checking version [14]/i })).not.toBeInTheDocument();
+
     await act(async () => resolveLogs(await createJsonResponse([{
       phase,
       status: phase,
+      phaseAttempt: 2,
       content: 'Auditing PRD Candidate v4.',
       timestamp: '2026-01-01T00:00:04.000Z',
     }])));
@@ -658,6 +690,8 @@ describe("WorkspacePhaseSummary", () => {
     let resolveLogs!: (response: Response) => void;
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input);
+      const attemptPhase = phaseFromAttemptsUrl(url);
+      if (attemptPhase) return createJsonResponse([createPhaseAttempt(attemptPhase, 1)]);
       if (url.includes('/logs?')) {
         return new Promise<Response>((resolve) => { resolveLogs = resolve; });
       }
@@ -693,29 +727,45 @@ describe("WorkspacePhaseSummary", () => {
     })).toBeInTheDocument());
   });
 
-  it('reports unavailable progress when phase history fails before its first successful load', async () => {
+  it('lets the user retry coverage progress after its first phase-log request fails', async () => {
+    let logRequests = 0;
+    const phase = 'VERIFYING_PRD_COVERAGE';
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input);
-      if (url.includes('/logs?')) return createJsonResponse({ error: 'offline' }, 503);
+      const attemptPhase = phaseFromAttemptsUrl(url);
+      if (attemptPhase) return createJsonResponse([createPhaseAttempt(attemptPhase, 1)]);
+      if (url.includes('/logs?')) {
+        logRequests += 1;
+        return logRequests === 1
+          ? createJsonResponse({ error: 'offline' }, 503)
+          : createJsonResponse([{
+              phase,
+              status: phase,
+              phaseAttempt: 1,
+              source: 'system',
+              kind: 'milestone',
+              content: 'Coverage check 2 of 5: auditing PRD Candidate v4.',
+              timestamp: '2026-01-01T00:00:04.000Z',
+            }]);
+      }
       if (url.split('?')[0]?.endsWith('/artifacts')) {
         return createJsonResponse([{
           id: 1,
           ticketId: TEST.ticketId,
-          phase: 'VERIFYING_PRD_COVERAGE',
+          phase,
           phaseAttempt: 1,
           artifactType: 'prd_coverage_revision',
           filePath: null,
-          content: JSON.stringify({ candidateVersion: 1 }),
+          content: JSON.stringify({ candidateVersion: 4, coverageRunNumber: 2, maxCoveragePasses: 5 }),
           createdAt: '2026-01-01T00:00:03.000Z',
           updatedAt: '2026-01-01T00:00:03.000Z',
         }]);
       }
       throw new Error(`Unhandled fetch: ${url}`);
     });
-    const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
-    const phase = 'VERIFYING_PRD_COVERAGE';
+    const ticket = makeTicket({ id: TEST.ticketId, status: phase });
     const queryClient = createTestQueryClient();
-    queryClient.setQueryData(getTicketArtifactsQueryKey(ticket.id, { phase }), [{
+    queryClient.setQueryData(getTicketArtifactsQueryKey(ticket.id, { phase, phaseAttempt: 1 }), [{
       id: 1,
       ticketId: ticket.id,
       phase,
@@ -737,18 +787,72 @@ describe("WorkspacePhaseSummary", () => {
     await waitFor(() => expect(screen.getByRole('button', {
       name: 'Coverage Check (PRD) (progress unavailable)',
     })).toBeInTheDocument());
-    expect(screen.queryByRole('button', { name: /checking version 1/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry progress' }));
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 4, pass 2 of 5)',
+    })).toBeInTheDocument());
+    expect(logRequests).toBe(2);
+  });
+
+  it('shows unavailable coverage progress and retries a failed active-attempt lookup', async () => {
+    let attemptRequests = 0;
+    const phase = 'VERIFYING_PRD_COVERAGE';
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      const attemptPhase = phaseFromAttemptsUrl(url);
+      if (attemptPhase) {
+        attemptRequests += 1;
+        return attemptRequests === 1
+          ? createJsonResponse({ error: 'offline' }, 503)
+          : createJsonResponse([createPhaseAttempt(attemptPhase, 1)]);
+      }
+      if (url.includes('/logs?')) return createJsonResponse([{
+        phase,
+        status: phase,
+        phaseAttempt: 1,
+        source: 'system',
+        kind: 'milestone',
+        content: 'Auditing PRD Candidate v4.',
+        timestamp: '2026-01-01T00:00:04.000Z',
+      }]);
+      if (url.split('?')[0]?.endsWith('/artifacts')) {
+        return createJsonResponse([createCoverageRevisionArtifact(phase, 4)]);
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    const ticket = makeTicket({ id: TEST.ticketId, status: phase });
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={phase}>
+        <WorkspacePhaseSummary phase={phase} ticket={ticket} />
+      </LogProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (progress unavailable)',
+    })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Retry progress' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry progress' }));
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 4)',
+    })).toBeInTheDocument());
+    expect(attemptRequests).toBe(2);
   });
 
   it('keeps an unknown candidate version distinct from a failed artifact request', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
-      if (String(input).split('?')[0]?.endsWith('/artifacts')) {
+      const url = String(input);
+      const attemptPhase = phaseFromAttemptsUrl(url);
+      if (attemptPhase) return createJsonResponse([createPhaseAttempt(attemptPhase, 1)]);
+      if (url.split('?')[0]?.endsWith('/artifacts')) {
         return Promise.resolve(new Response(JSON.stringify({ error: 'offline' }), {
           status: 503,
           headers: { 'Content-Type': 'application/json' },
         }));
       }
-      throw new Error(`Unhandled fetch: ${String(input)}`);
+      throw new Error(`Unhandled fetch: ${url}`);
     });
     const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
 
@@ -813,7 +917,7 @@ describe("WorkspacePhaseSummary", () => {
       .map(([input]) => String(input))
       .filter((url) => url.split("?")[0]?.endsWith("/artifacts"));
     expect(artifactRequests.length).toBeGreaterThan(0);
-    expect(artifactRequests.every((url) => url.endsWith("/artifacts?phase=VERIFYING_BEADS_COVERAGE"))).toBe(true);
+    expect(artifactRequests.every((url) => url.endsWith("/artifacts?phase=VERIFYING_BEADS_COVERAGE&phaseAttempt=1"))).toBe(true);
   });
 
   it.each([
@@ -1151,64 +1255,47 @@ describe("WorkspacePhaseSummary", () => {
     },
   );
 
-  it("ignores stale coverage artifacts from before the current coverage activation", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+  it("uses the active attempt and ignores a model's fake phase transition", async () => {
+    const phase = "VERIFYING_PRD_COVERAGE";
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock.mockImplementation((input) => {
       const url = String(input);
-      if (url.split("?")[0]?.endsWith("/artifacts")) {
+      const attemptPhase = phaseFromAttemptsUrl(url);
+      if (attemptPhase) {
         return createJsonResponse([
-          {
-            id: 1,
-            ticketId: TEST.ticketId,
-            phase: "VERIFYING_PRD_COVERAGE",
-            artifactType: "prd_coverage_revision",
-            filePath: null,
-            content: JSON.stringify({
-              candidateVersion: 9,
-              coverageRunNumber: 9,
-              maxCoveragePasses: 9,
-            }),
-            createdAt: "2026-01-01T00:00:30.000Z",
-            updatedAt: "2026-01-01T00:00:30.000Z",
-          },
+          createPhaseAttempt(attemptPhase, 2),
+          createPhaseAttempt(attemptPhase, 1, "archived", "manual_retry_after_blocked_error"),
         ]);
       }
-      if (url.includes("/attempts")) return createJsonResponse([]);
+      if (url.split("?")[0]?.endsWith("/artifacts")) {
+        return createJsonResponse([
+          createCoverageRevisionArtifact(phase, 9, 1, 9, 9),
+          createCoverageRevisionArtifact(phase, 4, 2, 2, 5),
+        ]);
+      }
       throw new Error(`Unhandled fetch: ${url}`);
     });
-    const ticket = makeTicket({ status: "VERIFYING_PRD_COVERAGE" });
+    const ticket = makeTicket({ status: phase });
     const queryClient = createTestQueryClient();
 
     renderWithLogContext(
-      <WorkspacePhaseSummary phase="VERIFYING_PRD_COVERAGE" ticket={ticket} />,
+      <WorkspacePhaseSummary phase={phase} ticket={ticket} />,
       {
-        VERIFYING_PRD_COVERAGE: [
-          createLogEntry(
-            "Transition: REFINING_PRD -> VERIFYING_PRD_COVERAGE",
-            "2026-01-01T00:01:00.000Z",
-          ),
-          createLogEntry(
-            "PRD coverage check 3 of 5: auditing PRD Candidate v2; response attempt 2 of 3.",
-            "2026-01-01T00:02:00.000Z",
-          ),
-          createLogEntry(
-            "Preparing the request for PRD Candidate v2; response attempt 3 of 3.",
-            "2026-01-01T00:03:00.000Z",
-          ),
+        [phase]: [
+          createLogEntry("Auditing PRD Candidate v4.", "2026-01-01T00:00:01.000Z", phase, "system", "milestone", 2),
+          createLogEntry("Tool output mentions previous -> VERIFYING_PRD_COVERAGE.", "2026-01-01T00:00:02.000Z", phase, "model:test-model", "tool", 2),
         ],
       },
       queryClient,
     );
 
     await waitFor(() => {
-      expect(
-        queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id, { phase: "VERIFYING_PRD_COVERAGE" })),
-      ).toHaveLength(1);
-      expect(
-        screen.getByRole("button", {
-          name: "Coverage Check (PRD) (checking version 2, pass 3 of 5)",
-        }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", {
+        name: "Coverage Check (PRD) (checking version 4, pass 2 of 5)",
+      })).toBeInTheDocument();
     });
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).find((url) => url.includes("/artifacts?")))
+      .toContain("phaseAttempt=2");
   });
 
   it("falls back to the generic error summary when no recovery action is available", () => {
@@ -1281,7 +1368,8 @@ describe("WorkspacePhaseSummary", () => {
           },
         ]);
       }
-      if (url.includes("/attempts")) return createJsonResponse([]);
+      const attemptPhase = phaseFromAttemptsUrl(url);
+      if (attemptPhase) return createJsonResponse([createPhaseAttempt(attemptPhase, 1)]);
       throw new Error(`Unhandled fetch: ${url}`);
     });
     const ticket = makeTicket({ status: "VERIFYING_PRD_COVERAGE" });
@@ -1294,7 +1382,7 @@ describe("WorkspacePhaseSummary", () => {
 
     await waitFor(() => {
       expect(
-        queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id, { phase: "VERIFYING_PRD_COVERAGE" })),
+        queryClient.getQueryData(getTicketArtifactsQueryKey(ticket.id, { phase: "VERIFYING_PRD_COVERAGE", phaseAttempt: 1 })),
       ).toHaveLength(2);
       expect(
         screen.getByRole("button", {

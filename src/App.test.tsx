@@ -199,6 +199,17 @@ function renderApp() {
   return renderAppElement()
 }
 
+async function dismissRestoreNoticeIfPresent() {
+  const continueButton = screen.queryByRole('button', { name: 'Continue' })
+  if (!continueButton) return
+
+  mockState.dismissMutation.mutate.mockImplementation((_: undefined, options?: { onSuccess?: () => void }) => {
+    options?.onSuccess?.()
+  })
+  fireEvent.click(continueButton)
+  await waitFor(() => expect(screen.queryByText('Saved data found')).not.toBeInTheDocument())
+}
+
 /**
  * The history spies, as one object with the vocabulary of the question.
  *
@@ -1185,6 +1196,7 @@ describe('App startup notices', () => {
     window.history.pushState(null, '', '/config')
 
     renderApp()
+    await dismissRestoreNoticeIfPresent()
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1204,6 +1216,7 @@ describe('App startup notices', () => {
     window.history.pushState(null, '', '/config')
 
     renderApp()
+    await dismissRestoreNoticeIfPresent()
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1225,6 +1238,7 @@ describe('App startup notices', () => {
     window.history.pushState(null, '', '/config')
 
     renderApp()
+    await dismissRestoreNoticeIfPresent()
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))

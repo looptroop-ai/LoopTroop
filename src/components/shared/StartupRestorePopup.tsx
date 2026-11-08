@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { Database, FolderOpen, Settings } from 'lucide-react'
 import { useToast } from '@/components/shared/useToast'
+import { useDialogFocus } from '@/hooks/useDialogFocus'
 import {
   useDismissStartupRestoreNotice,
   type StartupStatus,
@@ -32,8 +33,12 @@ export function StartupRestorePopup({ open, startupStatus }: StartupRestorePopup
   const depKey = `${open}-${startupStatus.storage.kind}-${startupStatus.storage.profileRestored}-${startupStatus.storage.restoredProjectCount}-${startupStatus.ui.restoreNotice.dismissedAt}`
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
   const dismissedLocally = dismissedVersion === depKey
+  const visible = open && !dismissedLocally
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  const handleTrapKeyDown = useDialogFocus(visible, panelRef)
 
-  if (!open || dismissedLocally) return null
+  if (!visible) return null
 
   const handleDismiss = () => {
     dismissRestoreNotice.mutate(undefined, {
@@ -48,12 +53,15 @@ export function StartupRestorePopup({ open, startupStatus }: StartupRestorePopup
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 px-4 py-4">
+    <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/60 p-4">
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="startup-restore-title"
-        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-y-auto rounded-2xl border border-border bg-background shadow-2xl"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={handleTrapKeyDown}
+        className="my-auto flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-y-auto rounded-2xl border border-border bg-background shadow-2xl"
       >
         <div className="shrink-0 border-b border-border px-6 py-5">
           <div className="flex items-center gap-3">
@@ -64,14 +72,14 @@ export function StartupRestorePopup({ open, startupStatus }: StartupRestorePopup
               <p className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
                 Saved data found
               </p>
-              <h2 id="startup-restore-title" className="text-lg font-semibold text-foreground">
+              <h2 id={titleId} className="text-lg font-semibold text-foreground">
                 {formatRestoreHeadline(startupStatus.storage)}
               </h2>
             </div>
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5 text-sm text-muted-foreground">
+        <div role="region" aria-labelledby={titleId} tabIndex={0} className="min-h-24 flex-1 space-y-4 overflow-y-auto px-6 py-5 text-sm text-muted-foreground">
           <p>
             At startup, LoopTroop checks its local database for a saved profile or project. This notice shows what it
             found and where the data is stored.

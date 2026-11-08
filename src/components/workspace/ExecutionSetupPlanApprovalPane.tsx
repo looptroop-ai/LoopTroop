@@ -423,7 +423,8 @@ export function ExecutionSetupPlanApprovalPane({
     ))
     return parseExecutionSetupApprovalReceipt(matchingArtifact?.content)
   }, [artifacts])
-  const isArchivedApprovedAttempt = isArchivedAttempt && approvalReceipt !== null
+  const isArchivedStatusUnknown = isArchivedAttempt && artifactState.artifacts === undefined
+  const isArchivedApprovedAttempt = isArchivedAttempt && !isArchivedStatusUnknown && approvalReceipt !== null
   const regenerateNotes = useMemo(
     () => getSetupPlanRegenerateNotes(executionSetupPlanReportContent),
     [executionSetupPlanReportContent],
@@ -820,11 +821,13 @@ export function ExecutionSetupPlanApprovalPane({
           <span className="font-semibold">
             {readOnly
               ? isArchivedAttempt
-                ? isArchivedApprovedAttempt ? 'Superseded Execution Setup Contract' : 'Rejected Execution Setup Draft'
+                ? isArchivedStatusUnknown
+                  ? 'Archived Execution Setup Plan'
+                  : isArchivedApprovedAttempt ? 'Superseded Execution Setup Contract' : 'Rejected Execution Setup Draft'
                 : 'Approved Execution Setup Plan'
               : 'Execution Setup Plan'}
           </span>
-          {readOnly ? (
+          {readOnly && (!isArchivedAttempt || !isArchivedStatusUnknown) ? (
             <span className={isArchivedAttempt
               ? isArchivedApprovedAttempt
                 ? 'rounded-full border border-sky-300 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-sky-200'
@@ -837,9 +840,13 @@ export function ExecutionSetupPlanApprovalPane({
           <span className="flex-1 text-xs text-muted-foreground">
             {readOnly
               ? isArchivedAttempt
-                ? isArchivedApprovedAttempt
-                  ? 'Review the approved setup contract archived by a runtime setup rewind.'
-                  : 'Review the superseded workspace readiness audit and setup draft.'
+                ? isArchivedStatusUnknown
+                  ? artifactState.isError
+                    ? 'The archived attempt status could not be loaded.'
+                    : 'Loading the archived attempt status.'
+                  : isArchivedApprovedAttempt
+                    ? 'Review the approved setup contract archived by a runtime setup rewind.'
+                    : 'Review the superseded workspace readiness audit and setup draft.'
                 : 'Review the approved workspace readiness audit and setup contract.'
               : 'Review the workspace readiness audit and any setup steps, edit if needed, regenerate with commentary, then approve.'}
           </span>
@@ -904,18 +911,18 @@ export function ExecutionSetupPlanApprovalPane({
         <div className="space-y-3">
           {readOnly ? (
             isArchivedAttempt ? (
-              isArchivedApprovedAttempt ? (
-                <SupersededApprovedSetupPlanBanner
-                  receipt={approvalReceipt}
-                  updatedAt={fetchedPlan?.updatedAt}
-                  reportContent={executionSetupPlanReportContent}
-                />
-              ) : (
-                <RejectedSetupPlanDraftBanner
-                  updatedAt={fetchedPlan?.updatedAt}
-                  reportContent={executionSetupPlanReportContent}
-                />
-              )
+              isArchivedStatusUnknown ? null : isArchivedApprovedAttempt ? (
+                  <SupersededApprovedSetupPlanBanner
+                    receipt={approvalReceipt}
+                    updatedAt={fetchedPlan?.updatedAt}
+                    reportContent={executionSetupPlanReportContent}
+                  />
+                ) : (
+                  <RejectedSetupPlanDraftBanner
+                    updatedAt={fetchedPlan?.updatedAt}
+                    reportContent={executionSetupPlanReportContent}
+                  />
+                )
             ) : (
               <ApprovedSetupPlanBanner
                 receipt={approvalReceipt}
@@ -923,6 +930,24 @@ export function ExecutionSetupPlanApprovalPane({
                 reportContent={executionSetupPlanReportContent}
               />
             )
+          ) : null}
+
+          {isArchivedStatusUnknown ? (
+            artifactState.isError ? (
+              <QueryErrorNotice
+                title="The archived setup plan status could not be loaded."
+                error={artifactState.error}
+                onRetry={() => void artifactState.refetch()}
+              />
+            ) : (
+              <div role="status" className="text-xs text-muted-foreground">Loading archived setup plan status…</div>
+            )
+          ) : isArchivedAttempt && artifactState.isError ? (
+            <QueryErrorNotice
+              title="The last archived setup plan status is still in use. Its refresh failed."
+              error={artifactState.error}
+              onRetry={() => void artifactState.refetch()}
+            />
           ) : null}
 
           <RegenerateCommentaryPanel notes={regenerateNotes} />

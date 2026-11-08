@@ -13,7 +13,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - OpenCode tasks recover their own background command notifications and stop old task commands before handing off the worktree, while preserving conversation history.
 - PRD coverage reviews show clearer item changes and explanations for the gaps each revision addresses.
-- Ticket artifact views wait for version evidence and keep raw-output controls beside metadata.
+- Ticket review views wait for current-attempt evidence, keep raw-output controls beside metadata, and let users retry failed artifact or log loads.
 - The startup restore notice identifies saved local data, and long dialogs stay usable on short screens.
 
 ### Changed
@@ -28,7 +28,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Continue handles owned background notifications, permissions already pending at reconnect or before a new prompt receipt, crash/restart history, and stream-loss recovery without accepting unrelated work.
 - Completed and abandoned LoopTroop tasks have their native OpenCode tools disabled before their verified background commands are stopped, including commands with receipts older than the normal response-history window. Unconfirmed cleanup retains ownership and withholds worktree reset; active Continue sessions keep their normal permissions and all conversation history is retained. Unowned interactive callers retain control of their session lifetime.
 - Coding, runtime setup, and final-test prompts run checks needed for the final outcome in the foreground, avoiding progress-only replies while those checks are still running. PRD coverage retries retain the full rejected response so valid change records can be corrected rather than recreated.
-- Ticket artifact views wait for artifact and phase-attempt data before choosing a version or showing an empty state. Cached artifacts stay visible during refreshes; empty responses, missing output, and request errors remain distinct. Version summaries appear only when version evidence is available.
+- Ticket review views wait for the active phase attempt and matching artifact/log history before showing versions or empty states. Cached artifacts and Manual QA checklists stay visible during refresh errors, with retry; PRD and Beads approval stays disabled until the first coverage result loads.
+- Archived setup-plan views use a neutral label until artifact history loads and offer retry if status could not be read. Coverage progress retries reload requested log scopes and discard stale in-flight snapshots; failed first log reads are not cached as empty.
+- Local and self-hosted API requests run even when the browser reports offline.
 
 ## 0.6.4 (2026-11-06)
 

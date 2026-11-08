@@ -148,6 +148,18 @@ function makeBeadExecutionArtifact(beadId: string, payload: Record<string, unkno
   }
 }
 
+function makePhaseAttempt(phase: string) {
+  return {
+    ticketId: TEST.ticketId,
+    phase,
+    attemptNumber: 1,
+    state: 'active',
+    archivedReason: null,
+    createdAt: TEST.timestamp,
+    archivedAt: null,
+  }
+}
+
 let fetchSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
@@ -167,6 +179,48 @@ afterEach(() => {
 })
 
 describe('CodingView', () => {
+  it('waits for phase history before showing version-scoped logs', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({ data: undefined, isPending: true })
+
+    renderCoding({ status: 'WAITING_PR_REVIEW' })
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading phase version')
+    expect(screen.queryByTestId('collapsible-log-section')).not.toBeInTheDocument()
+  })
+
+  it('shows no version and suppresses unscoped phase logs when history resolves empty', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({ data: [] })
+
+    renderCoding({ status: 'WAITING_PR_REVIEW' })
+
+    expect(screen.getByRole('status')).toHaveTextContent('No phase version is available.')
+    expect(screen.queryByTestId('phase-artifacts-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('collapsible-log-section')).not.toBeInTheDocument()
+  })
+
+  it('suppresses unscoped logs when phase history fails without cached data', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({ data: undefined, isError: true, error: new Error('history failed') })
+
+    renderCoding({ status: 'WAITING_PR_REVIEW' })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('The version history for this phase could not be loaded.')
+    expect(screen.queryByTestId('collapsible-log-section')).not.toBeInTheDocument()
+  })
+
+  it('keeps cached version-scoped logs visible when phase history refresh fails', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({
+      data: [makePhaseAttempt('WAITING_PR_REVIEW')],
+      isError: true,
+      error: new Error('history refresh failed'),
+    })
+
+    renderCoding({ status: 'WAITING_PR_REVIEW' })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('The version history for this phase could not be loaded.')
+    expect(screen.getByTestId('phase-artifacts-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('collapsible-log-section')).toHaveTextContent('WAITING_PR_REVIEW')
+  })
+
   it('stops draining a bead log after a page is refused', async () => {
     mockBeadLogHistory(fetchSpy, ['bead-1'])
 
@@ -994,6 +1048,7 @@ describe('CodingView', () => {
     expect(screen.getByText('Session session-raw-1')).toBeTruthy()
 
     const copyBtn = screen.getByRole('button', { name: 'Copy bead input' })
+    expect(copyBtn.closest('.sticky')).toHaveClass('top-0', 'z-10', 'bg-background')
     const rawHeader = copyBtn.closest('div.flex.w-full')
     expect(rawHeader).toContainElement(screen.getByText('2 Lines'))
     expect(rawHeader?.lastElementChild).toContainElement(copyBtn)
@@ -1015,6 +1070,46 @@ describe('CodingView', () => {
     expect(screen.getByRole('button', { name: 'Output' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Input' }))
     expect(screen.getByText('No raw input for this bead yet.')).toBeTruthy()
+  })
+
+  it('shows raw input and output as loading while their execution artifact is pending', () => {
+    mockUseTicketArtifacts.mockImplementation((_ticketId?: string, options?: { phase?: string }) => ({
+      artifacts: options?.phase === 'CODING' ? undefined : [],
+      isLoading: options?.phase === 'CODING',
+      isError: false,
+    }))
+
+    renderCoding({ runtime: { beads: [{ id: 'bead-1', title: 'Loading raw bead', status: 'done', iteration: 1 }] } })
+    fireEvent.click(screen.getByRole('button', { name: /Loading raw bead/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Input' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Loading raw input')
+    expect(screen.queryByText('No raw input for this bead yet.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Output' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Loading raw output')
+    expect(screen.queryByText('No model output for this bead yet.')).not.toBeInTheDocument()
+  })
+
+  it('keeps cached raw output visible and retries when the execution artifact refresh fails', () => {
+    const response = 'Cached final output'
+    const refetch = vi.fn()
+    mockUseTicketArtifacts.mockImplementation((_ticketId?: string, options?: { phase?: string }) => ({
+      artifacts: options?.phase === 'CODING'
+        ? [makeBeadExecutionArtifact('bead-1', { beadId: 'bead-1', iteration: 1, status: 'accepted', output: response })]
+        : [],
+      isError: options?.phase === 'CODING',
+      error: options?.phase === 'CODING' ? new Error('artifact refresh failed') : null,
+      refetch,
+    }))
+
+    renderCoding({ runtime: { beads: [{ id: 'bead-1', title: 'Cached raw bead', status: 'done', iteration: 1 }] } })
+    fireEvent.click(screen.getByRole('button', { name: /Cached raw bead/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Output' }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('The saved raw attempt could not be refreshed.')
+    expect(screen.getByText((text) => text.includes(response))).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(refetch).toHaveBeenCalledOnce()
   })
 
   it('defaults to the latest meaningful raw output and keeps failed previous versions clickable', () => {

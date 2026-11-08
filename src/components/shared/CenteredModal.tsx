@@ -58,7 +58,7 @@ export function CenteredModal({
 
   return (
     <div
-      className={`fixed inset-0 ${zIndexClass} flex items-center justify-center bg-black/50 backdrop-blur-[1px]`}
+      className={`fixed inset-0 ${zIndexClass} flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-[1px]`}
       onClick={(e) => {
         if (e.target !== e.currentTarget) return
         void requestClose()
@@ -71,7 +71,7 @@ export function CenteredModal({
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={handleTrapKeyDown}
-        className={`${maxWidth} w-full mx-4 bg-background rounded-xl shadow-xl border border-border flex flex-col max-h-[85vh] relative outline-none`}
+        className={`${maxWidth} my-auto w-full max-h-[calc(100dvh-2rem)] overflow-y-auto bg-background rounded-xl shadow-xl border border-border flex flex-col relative outline-none`}
       >
         <Tooltip>
                 <TooltipTrigger asChild>
@@ -87,10 +87,10 @@ export function CenteredModal({
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs text-center text-balance">Close window (Esc)</TooltipContent>
               </Tooltip>
-        <div className="flex items-center border-b border-border px-6 py-4 pr-10">
+        <div className="flex shrink-0 items-center border-b border-border px-6 py-4 pr-10">
           <h2 id={titleId} className="text-lg font-semibold text-foreground">{title}</h2>
         </div>
-        <div className="flex-1 overflow-auto p-6">
+        <div className="min-h-24 flex-1 overflow-auto p-6">
           {children}
         </div>
       </div>

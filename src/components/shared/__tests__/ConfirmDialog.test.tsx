@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfirmDialogHost } from '../ConfirmDialog'
 import { alertDialog, cancelConfirmQuestions, confirmDialog } from '@/lib/confirmDialog'
@@ -112,6 +112,26 @@ describe('confirmDialog', () => {
     expect(dialog.style.zIndex).toBe(String(CONFIRM_DIALOG_Z_INDEX))
     expect(dialog).toHaveAttribute('aria-modal', 'true')
     fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+  })
+
+  it('keeps a long message in one scroll region and leaves the title and answers fixed', async () => {
+    render(<ConfirmDialogHost />)
+    const message = 'This message needs room to scroll. '.repeat(40)
+    act(() => { void alertDialog({ title: 'Long message', message }) })
+
+    const dialog = await screen.findByRole('alertdialog', { name: 'Long message' })
+    const [header, body, footer] = Array.from(dialog.children)
+    if (!(header instanceof HTMLElement) || !(body instanceof HTMLElement) || !(footer instanceof HTMLElement)) {
+      throw new Error('Confirmation dialog is missing its header, message, or answers.')
+    }
+
+    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'flex', 'flex-col', 'overflow-y-auto')
+    expect(header).toHaveClass('shrink-0')
+    expect(body).toHaveClass('min-h-24', 'flex-1', 'overflow-y-auto')
+    expect(body).toHaveAttribute('tabindex', '0')
+    expect(footer).toHaveClass('shrink-0')
+    expect(body.textContent).toBe(message)
+    expect(footer).toContainElement(screen.getByRole('button', { name: 'OK' }))
   })
 
   it('settles everything when the host unmounts, so nothing awaits forever or comes back', async () => {

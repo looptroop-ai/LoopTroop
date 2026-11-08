@@ -15,7 +15,6 @@ import { InterviewDocumentView } from './InterviewDocumentView'
 import { PrdApprovalPane } from './PrdApprovalPane'
 import { PrdDocumentView } from './PrdDocumentView'
 import { BeadsDraftView } from './ArtifactContentViewer'
-import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { BeadsApprovalEditor } from './BeadsApprovalEditor'
 import { CoverageApprovalWarning } from './CoverageApprovalWarning'
 import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
@@ -234,14 +233,14 @@ function BeadsApprovalPane({
     refetch: refetchArtifacts,
   } = useTicketArtifacts(ticket.id, { types: BEADS_COVERAGE_ARTIFACT_TYPES })
   // See `PrdApprovalPane`: an absent coverage warning is indistinguishable from
-  // "no gaps", so approving on a failed artifact request approves an unknown.
-  const isCoverageUnknown = isArtifactsError && loadedArtifacts === undefined
+  // "no gaps", so approval waits until the first artifact result arrives.
+  const isCoverageUnknown = loadedArtifacts === undefined
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   // Cache stores array form (matching navigator expectations)
   const {
     data: fetchedBeads,
-    isLoading,
+    isPending: isBeadsPending,
     isError: isBeadsError,
     error: beadsError,
     refetch: refetchBeads,
@@ -392,7 +391,7 @@ function BeadsApprovalPane({
     // and `data` is undefined then too. Latching on that would discard the
     // draft and arm the autosave to write the defaults over the server's copy
     // — from a request that never read it. Waiting means the retry restores.
-    ready: !isLoading && isUiStateSuccess,
+    ready: !isBeadsPending && fetchedBeads !== undefined && isUiStateSuccess,
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,
@@ -441,7 +440,7 @@ function BeadsApprovalPane({
   useApprovalFocusAnchor(ticket.id, BEADS_APPROVAL_FOCUS_EVENT)
 
   const approvalAutosave = useDebouncedApprovalUiState({
-    enabled: !isLoading && restoredDraftRef.current,
+    enabled: !isBeadsPending && fetchedBeads !== undefined && restoredDraftRef.current,
     snapshot: {
       isEditMode,
       editTab,
@@ -848,9 +847,13 @@ function BeadsApprovalPane({
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
-          {isCoverageUnknown ? (
+          {isCoverageUnknown && !isArtifactsError ? (
+            <div role="status" className="text-xs text-muted-foreground">Checking beads coverage before approval…</div>
+          ) : isArtifactsError ? (
             <QueryErrorNotice
-              title="Coverage could not be checked, so this plan cannot be approved yet."
+              title={isCoverageUnknown
+                ? 'Coverage could not be checked, so this plan cannot be approved yet.'
+                : 'The last coverage result is still in use. Its refresh failed.'}
               error={artifactsError}
               onRetry={() => void refetchArtifacts()}
             />
@@ -869,7 +872,7 @@ function BeadsApprovalPane({
               error={beadsError}
               onRetry={() => void refetchBeads()}
             />
-          ) : isLoading ? (
+          ) : isBeadsPending ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">Loading beads…</div>
           ) : isEditMode ? (
             <div className="space-y-3 rounded-2xl border border-border bg-muted/20 p-3">
@@ -1051,6 +1054,7 @@ function ReadOnlyApprovalAttemptView({
     : artifactType === 'prd'
       ? (archivedAttempt ? snapshotRaw : (prdContent ?? ''))
       : (archivedAttempt ? snapshotRaw : (beadsContent ?? ''))
+  const hasMeaningfulContent = content.trim().length > 0
 
   const interviewDocument = useMemo(
     () => artifactType === 'interview'
@@ -1064,7 +1068,6 @@ function ReadOnlyApprovalAttemptView({
       : null,
     [artifactType, content],
   )
-  const rawDisplayContent = useMemo(() => buildReadableRawDisplayContent(content), [content])
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -1111,7 +1114,9 @@ function ReadOnlyApprovalAttemptView({
             {contentError ? (
               <QueryErrorNotice
                 className="mb-3"
-                title="Artifact refresh failed. Previously loaded content remains available."
+                title={hasMeaningfulContent
+                  ? 'Artifact refresh failed. Previously loaded content remains available.'
+                  : 'Artifact refresh failed. The last result contained no content.'}
                 error={contentError.error}
                 onRetry={() => void contentError.retry()}
               />
@@ -1120,15 +1125,15 @@ function ReadOnlyApprovalAttemptView({
               interviewDocument ? (
                 <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
               ) : (
-                <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No interview artifact available." />
+                <RawArtifactBlock content={hasMeaningfulContent ? content : ''} emptyLabel="No interview artifact available." />
               )
             ) : artifactType === 'prd' ? (
               prdDocument ? (
                 <PrdDocumentView document={prdDocument as PrdDocument} />
               ) : (
-                <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No PRD artifact available." />
+                <RawArtifactBlock content={hasMeaningfulContent ? content : ''} emptyLabel="No PRD artifact available." />
               )
-            ) : content.trim() ? (
+            ) : hasMeaningfulContent ? (
               <BeadsDraftView content={content} />
             ) : (
               <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No beads artifact available.</div>

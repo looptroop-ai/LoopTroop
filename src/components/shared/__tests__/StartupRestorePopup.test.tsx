@@ -1,4 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { useState } from 'react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { StartupStatus } from '@/hooks/useStartupStatus'
 import { StartupRestorePopup } from '../StartupRestorePopup'
@@ -44,10 +45,42 @@ describe('StartupRestorePopup', () => {
 
     expect(screen.getByText(/checks its local database for a saved profile or project/i)).toBeInTheDocument()
     expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto', 'flex', 'flex-col')
+    expect(dialog.parentElement).toHaveClass('items-start', 'overflow-y-auto')
     expect(header).toHaveClass('shrink-0')
-    expect(details).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto')
+    expect(details).toHaveClass('min-h-24', 'flex-1', 'overflow-y-auto')
+    expect(details).toHaveAttribute('role', 'region')
+    expect(details).toHaveAttribute('tabindex', '0')
     expect(footer).toHaveClass('shrink-0')
     expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument()
+  })
+
+  it('contains focus and restores it after Continue dismisses the notice', async () => {
+    mockState.dismiss.mutate.mockImplementationOnce((_value, callbacks) => callbacks.onSuccess())
+
+    function Harness() {
+      const [open, setOpen] = useState(false)
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Open restore notice</button>
+          <StartupRestorePopup open={open} startupStatus={startupStatus} />
+        </>
+      )
+    }
+
+    render(<Harness />)
+    const opener = screen.getByRole('button', { name: 'Open restore notice' })
+    opener.focus()
+    fireEvent.click(opener)
+
+    const dialog = screen.getByRole('dialog', { name: 'Your saved profile and 2 projects are ready.' })
+    expect(dialog).toHaveFocus()
+    expect(opener).toHaveAttribute('inert')
+    expect(opener).toHaveAttribute('aria-hidden', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(opener).not.toHaveAttribute('inert')
+    expect(opener).toHaveFocus()
   })
 
   it('keeps the one-project headline grammatical', () => {

@@ -32,8 +32,8 @@ export function ConfirmDialogHost() {
           style={LAYER}
           overlayStyle={LAYER}
           overlayClassName="backdrop-blur-[1px]"
-          // Capped to the viewport; a long message scrolls and the buttons stay in view.
-          className="max-h-[calc(100dvh-2rem)] max-w-md grid-rows-[minmax(0,1fr)_auto] gap-0 p-0 sm:p-0 rounded-xl shadow-xl"
+          // Capped to the viewport; the message scrolls while the title and answers stay in view.
+          className="max-h-[calc(100dvh-2rem)] max-w-md flex flex-col gap-0 overflow-y-auto p-0 sm:p-0 rounded-xl shadow-xl"
           // The safe answer, stated rather than left to DOM order: Cancel for a
           // question, OK for a message.
           onOpenAutoFocus={(event) => {
@@ -48,7 +48,7 @@ export function ConfirmDialogHost() {
           // A message must be read: a stray click outside does not dismiss it.
           onPointerDownOutside={(event) => { if (current.alert) event.preventDefault() }}
         >
-          <DialogHeader className="min-h-0 flex-row items-start gap-3 space-y-0 overflow-y-auto px-6 pt-6 pr-14 text-left">
+          <div className="flex shrink-0 items-start gap-3 px-6 pt-6 pr-14">
             <span
               aria-hidden="true"
               className={cn(
@@ -58,12 +58,14 @@ export function ConfirmDialogHost() {
             >
               <Icon className="h-5 w-5" />
             </span>
-            <div className="min-w-0 space-y-1.5">
+            <DialogHeader className="min-w-0 space-y-1.5 text-left">
               <DialogTitle className="leading-snug">{current.title}</DialogTitle>
-              <DialogDescription className="whitespace-pre-wrap break-words leading-relaxed">{current.message}</DialogDescription>
-            </div>
-          </DialogHeader>
-          <div className="mt-6 flex justify-end gap-2.5 border-t border-border bg-muted/30 px-6 py-4 rounded-b-xl">
+            </DialogHeader>
+          </div>
+          <div tabIndex={0} className="min-h-24 flex-1 overflow-y-auto px-6 pb-2 pl-[4.5rem]">
+            <DialogDescription className="whitespace-pre-wrap break-words leading-relaxed">{current.message}</DialogDescription>
+          </div>
+          <div className="mt-6 flex shrink-0 justify-end gap-2.5 border-t border-border bg-muted/30 px-6 py-4 rounded-b-xl">
             {!current.alert && (
               <Button
                 ref={safeButtonRef}

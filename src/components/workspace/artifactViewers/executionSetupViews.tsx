@@ -978,15 +978,13 @@ export function ExecutionSetupReportView({ content, runtimeLabel = false }: { co
         />
 
         {report.modelOutput && !failed ? (
-          <CollapsibleSection title="Model Output">
-            <div className="space-y-2">
-              <div className="flex justify-end">
-                <CopyButton content={report.modelOutput} title="Copy model output" />
-              </div>
-              <pre className="rounded-md border border-border bg-background p-3 text-[11px] font-mono whitespace-pre-wrap break-all overflow-x-auto overflow-y-hidden">
-                {report.modelOutput}
-              </pre>
-            </div>
+          <CollapsibleSection
+            title="Model Output"
+            headerActions={<CopyButton content={report.modelOutput} title="Copy model output" />}
+          >
+            <pre className="rounded-md border border-border bg-background p-3 text-[11px] font-mono whitespace-pre-wrap break-all overflow-x-auto overflow-y-hidden">
+              {report.modelOutput}
+            </pre>
           </CollapsibleSection>
         ) : null}
       </div>

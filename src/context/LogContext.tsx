@@ -10,6 +10,7 @@ import {
   serverLogCache,
   getServerLogCacheKey,
   getServerLogsUrl,
+  SERVER_LOG_REFRESH_EVENT,
   normalizeLogRecord,
   isDebugLogEntry,
   compareTimestamps,
@@ -131,7 +132,9 @@ export function LogProvider({
   const failedScopeKeysRef = useRef<Set<string>>(new Set())
   const logsByPhaseRef = useRef<Record<string, LogEntry[]>>({})
   const activePhaseRef = useRef(activePhase)
-  // Bumped whenever this provider stops owning `ticketId`, so a fetch that outlives it can tell.
+  const requestedScopesRef = useRef(new Map<string, ServerLogScope>())
+  const requestedTicketIdRef = useRef<string | undefined>(undefined)
+  // Bumped when ticket ownership or cached history changes, so older fetches cannot write back.
   const generationRef = useRef(0)
 
   useEffect(() => {
@@ -146,6 +149,7 @@ export function LogProvider({
   }, [activePhase])
 
   useEffect(() => {
+    const requestedScopes = requestedScopesRef.current
     setLogsByPhase({})
     setLoadingScopeKeys(new Set())
     setLoadedScopeKeys(new Set())
@@ -163,6 +167,10 @@ export function LogProvider({
     // ticket being left is dropped; entries for other tickets belong to their own providers.
     return () => {
       generationRef.current += 1
+      if (requestedTicketIdRef.current === ticketId) {
+        requestedTicketIdRef.current = undefined
+        requestedScopes.clear()
+      }
       if (ticketId) clearServerLogCache(ticketId)
     }
   }, [ticketId])
@@ -194,14 +202,19 @@ export function LogProvider({
     setLoadingScopeKeys(new Set(loading))
   }, [])
 
-  const setScopeLoaded = useCallback((scopeKey: string) => {
-    setLoadedScopeKeys(current => current.has(scopeKey) ? current : new Set(current).add(scopeKey))
+  const setScopeLoaded = useCallback((scopeKey: string, generation?: number) => {
+    setLoadedScopeKeys(current => {
+      if (generation !== undefined && generationRef.current !== generation) return current
+      return current.has(scopeKey) ? current : new Set(current).add(scopeKey)
+    })
   }, [])
 
-  const setScopeFailed = useCallback((scopeKey: string, failed: boolean) => {
+  const setScopeFailed = useCallback((scopeKey: string, failed: boolean, generation?: number) => {
+    if (generation !== undefined && generationRef.current !== generation) return
     if (failed) failedScopeKeysRef.current.add(scopeKey)
     else failedScopeKeysRef.current.delete(scopeKey)
     setFailedScopeKeys(current => {
+      if (generation !== undefined && generationRef.current !== generation) return current
       if (current.has(scopeKey) === failed) return current
       const next = new Set(current)
       if (failed) next.add(scopeKey)
@@ -210,11 +223,16 @@ export function LogProvider({
     })
   }, [])
 
-  const applyServerLogs = useCallback((serverLogs: Array<Record<string, unknown>>, scope: ServerLogScope) => {
+  const applyServerLogs = useCallback((
+    serverLogs: Array<Record<string, unknown>>,
+    scope: ServerLogScope,
+    generation = generationRef.current,
+  ) => {
     if (!ticketId) return
 
     startTransition(() => {
       setLogsByPhase(prev => {
+        if (generationRef.current !== generation) return prev
         const merged = { ...prev }
         let hasChanges = false
         for (const rawEntry of serverLogs) {
@@ -275,8 +293,13 @@ export function LogProvider({
   ) => {
     if (!ticketId) return
 
+    if (requestedTicketIdRef.current !== ticketId) {
+      requestedTicketIdRef.current = ticketId
+      requestedScopesRef.current.clear()
+    }
     const normalizedScope = normalizeScope(scope)
     const scopeKey = getServerLogCacheKey(ticketId, normalizedScope)
+    requestedScopesRef.current.set(scopeKey, normalizedScope)
     if (!options.force && loadedScopeKeysRef.current.has(scopeKey) && !failedScopeKeysRef.current.has(scopeKey)) {
       const cached = serverLogCache.get(scopeKey)
       if (cached) applyServerLogs(cached, normalizedScope)
@@ -320,20 +343,45 @@ export function LogProvider({
         serverLogCache.set(scopeKey, serverLogs)
         loadedScopeKeysRef.current.add(scopeKey)
         startTransition(() => {
-          setScopeLoaded(scopeKey)
-          setScopeFailed(scopeKey, false)
-          applyServerLogs(serverLogs, normalizedScope)
+          setScopeLoaded(scopeKey, generation)
+          setScopeFailed(scopeKey, false, generation)
+          applyServerLogs(serverLogs, normalizedScope, generation)
         })
       })
       .catch(() => {
         // Cached rows stay on screen; a later request retries the failed scope.
-        if (generationRef.current === generation) setScopeFailed(scopeKey, true)
+        if (generationRef.current === generation) setScopeFailed(scopeKey, true, generation)
       })
       .finally(() => {
         if (generationRef.current !== generation) return
         setScopeLoading(scopeKey, false)
       })
   }, [applyServerLogs, setScopeFailed, setScopeLoaded, setScopeLoading, ticketId])
+
+  useEffect(() => {
+    if (!ticketId) return
+    const handleRefresh = (event: Event) => {
+      const detail = (event as CustomEvent<{ ticketId?: string | null }>).detail
+      if (String(detail?.ticketId ?? '') !== String(ticketId)
+        || requestedTicketIdRef.current !== ticketId) return
+
+      // A stream gap makes every requested snapshot suspect, and any request already in flight
+      // may still return the pre-gap snapshot. Restart those scopes under a new generation.
+      generationRef.current += 1
+      loadingScopeKeysRef.current.clear()
+      loadedScopeKeysRef.current.clear()
+      failedScopeKeysRef.current.clear()
+      clearServerLogCache(ticketId)
+      setLoadingScopeKeys(new Set())
+      setLoadedScopeKeys(new Set())
+      setFailedScopeKeys(new Set())
+      for (const scope of requestedScopesRef.current.values()) {
+        requestServerLogs(scope, { force: true })
+      }
+    }
+    window.addEventListener(SERVER_LOG_REFRESH_EVENT, handleRefresh)
+    return () => window.removeEventListener(SERVER_LOG_REFRESH_EVENT, handleRefresh)
+  }, [requestServerLogs, ticketId])
 
   const addLog = useCallback((phase: string, line: string, options?: PlainLogOptions) => {
     if (!phase) return
@@ -420,6 +468,9 @@ export function LogProvider({
   const clearLogs = useCallback(() => {
     if (ticketId) clearPersistedTicketLogs(ticketId)
 
+    generationRef.current += 1
+    requestedTicketIdRef.current = ticketId ?? undefined
+    requestedScopesRef.current.clear()
     loadedScopeKeysRef.current.clear()
     loadingScopeKeysRef.current.clear()
     failedScopeKeysRef.current.clear()

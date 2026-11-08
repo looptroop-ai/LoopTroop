@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Ticket } from '@/hooks/useTickets'
 import type { InterviewDocument } from '@shared/interviewArtifact'
@@ -1763,6 +1764,7 @@ describe('read-only approval artifact content states', () => {
 
   it.each(READ_ONLY_ARTIFACT_CASES)('waits for the archived $artifactType snapshot result', async ({ artifactType, phase, marker }) => {
     const ticket = makeTicket({ status: phase })
+    const activeMarker = artifactType === 'interview' ? 'Active attempt answer.' : 'Active attempt content.'
     let snapshotLoaded = false
     const snapshotRaw = artifactType === 'interview'
       ? buildInterviewYaml(marker)
@@ -1821,6 +1823,9 @@ describe('read-only approval artifact content states', () => {
 
     expect(await screen.findByText('Loading artifact…')).toBeInTheDocument()
     expect(screen.queryByText(marker)).not.toBeInTheDocument()
+    const foundations = artifactType === 'interview' ? screen.queryAllByText('Foundation') : []
+    if (foundations.length > 0) fireEvent.click(foundations[foundations.length - 1]!.closest('button')!)
+    expect(screen.queryByText(activeMarker)).not.toBeInTheDocument()
 
     snapshotLoaded = true
     view.rerender(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
@@ -1846,7 +1851,7 @@ describe('read-only approval artifact content states', () => {
     expect(screen.queryByText('Loading artifact…')).not.toBeInTheDocument()
   })
 
-  it.each(READ_ONLY_ARTIFACT_CASES)('retries an initial $artifactType read failure', async ({ artifactType, phase, marker }) => {
+  it.each(READ_ONLY_ARTIFACT_CASES)('retries an initial $artifactType read failure', async ({ artifactType, phase, marker, emptyLabel }) => {
     const ticket = makeTicket({ status: phase })
     let reads = 0
     const refetch = vi.fn(async () => {
@@ -1877,7 +1882,7 @@ describe('read-only approval artifact content states', () => {
     const view = renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
 
     expect(await screen.findByText('This artifact could not be loaded.')).toBeInTheDocument()
-    expect(screen.queryByText('No interview artifact available.')).not.toBeInTheDocument()
+    expect(screen.queryByText(emptyLabel)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await expectReadOnlyContent(artifactType, marker)
     if (artifactType === 'interview') expect(refetch).toHaveBeenCalledOnce()
@@ -1919,6 +1924,61 @@ describe('read-only approval artifact content states', () => {
     expect(await screen.findByText('Artifact refresh failed. Previously loaded content remains available.')).toBeInTheDocument()
     expect(screen.getByText(marker)).toBeInTheDocument()
   })
+
+  it.each([
+    { artifactType: 'interview' as const, phase: 'WAITING_INTERVIEW_APPROVAL', emptyLabel: 'No interview artifact available.' },
+    { artifactType: 'prd' as const, phase: 'WAITING_PRD_APPROVAL', emptyLabel: 'No PRD artifact available.' },
+  ])('treats whitespace-only $artifactType content as empty', async ({ artifactType, phase, emptyLabel }) => {
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({ data: { raw: ' \n\t ', document: null }, isLoading: false })
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (artifactType === 'prd' && url === readOnlyEndpoint(artifactType)) {
+        return readOnlyContentResponse(artifactType, ' \n\t ')
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(<ApprovalView ticket={makeTicket({ status: phase })} artifactType={artifactType} readOnly />)
+
+    expect(await screen.findByText(emptyLabel)).toBeInTheDocument()
+  })
+
+  it.each(READ_ONLY_ARTIFACT_CASES)('keeps the empty $artifactType result visible after a refresh failure', async ({ artifactType, phase, emptyLabel }) => {
+    const ticket = makeTicket({ status: phase })
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({
+        data: { raw: '', document: null },
+        isLoading: false,
+        isError: true,
+        error: new Error('Refresh unavailable.'),
+        refetch: vi.fn(),
+      })
+    }
+    let reads = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (artifactType !== 'interview' && url === readOnlyEndpoint(artifactType)) {
+        reads += 1
+        return reads === 1
+          ? readOnlyContentResponse(artifactType)
+          : createJsonResponse({ error: 'Refresh unavailable.' }, 503)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const view = renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+    expect(await screen.findByText(emptyLabel)).toBeInTheDocument()
+    if (artifactType !== 'interview') {
+      await view.queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, artifactType, 'live'] })
+    }
+
+    expect(await screen.findByText('Artifact refresh failed. The last result contained no content.')).toBeInTheDocument()
+    expect(screen.getByText(emptyLabel)).toBeInTheDocument()
+  })
 })
 
 describe('additional beads approval paths', () => {
@@ -1934,8 +1994,136 @@ describe('additional beads approval paths', () => {
   })
 
   afterEach(() => {
+    onlineManager.setOnline(true)
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it('waits for the first beads coverage result before approval, then uses its gaps', async () => {
+    const refetch = vi.fn(async () => undefined)
+    const coverageArtifact = {
+      id: 944,
+      ticketId: TEST.ticketId,
+      phase: 'WAITING_BEADS_APPROVAL',
+      artifactType: 'beads_coverage',
+      filePath: null,
+      createdAt: TEST.timestamp,
+      content: JSON.stringify({
+        status: 'gaps',
+        summary: 'The loaded beads report still has a coverage gap.',
+        finalCandidateVersion: 2,
+        hasRemainingGaps: true,
+        remainingGaps: ['Add a check for the retry path.'],
+      }),
+    }
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: undefined, isLoading: true, isError: false, refetch })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse([{ id: 'b1', title: 'One', testCommands: [], testCommandReason: 'Reviewed manually.' }], { contentSha256: 'beads-hash' })
+      }
+      if (url.endsWith('/attempts') || url.endsWith('/artifacts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const ticket = makeTicket({ status: 'WAITING_BEADS_APPROVAL' })
+    const view = renderApprovalView(ticket, 'beads')
+
+    expect(await screen.findByText('Checking beads coverage before approval…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled())
+
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [coverageArtifact], isLoading: false, isError: false, refetch })
+    view.rerender(<ApprovalView ticket={ticket} artifactType="beads" />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Coverage Warning/i }))
+    expect(await screen.findByText('The loaded beads report still has a coverage gap.')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve with gaps' })).toBeEnabled())
+    expect(screen.queryByText('Checking beads coverage before approval…')).not.toBeInTheDocument()
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).endsWith('/beads/raw'))).toBe(true)
+  })
+
+  it('keeps cached beads coverage gaps when refreshing the report fails', async () => {
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: [{
+        id: 945,
+        ticketId: TEST.ticketId,
+        phase: 'WAITING_BEADS_APPROVAL',
+        artifactType: 'beads_coverage',
+        filePath: null,
+        createdAt: TEST.timestamp,
+        content: JSON.stringify({
+          status: 'gaps',
+          summary: 'Cached beads coverage still has a gap.',
+          finalCandidateVersion: 2,
+          hasRemainingGaps: true,
+          remainingGaps: ['Add the missing retry check.'],
+        }),
+      }],
+      isLoading: false,
+      isError: true,
+      error: new Error('Coverage refresh unavailable.'),
+      refetch: vi.fn(async () => undefined),
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse([{ id: 'b1', title: 'One', testCommands: [], testCommandReason: 'Reviewed manually.' }], { contentSha256: 'beads-hash' })
+      }
+      if (url.endsWith('/attempts') || url.endsWith('/artifacts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('The last coverage result is still in use. Its refresh failed.')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve with gaps' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: /Coverage Warning/i }))
+    expect(screen.getByText('Cached beads coverage still has a gap.')).toBeInTheDocument()
+  })
+
+  it('keeps the initial beads read pending while offline and restores its draft after reconnecting', async () => {
+    onlineManager.setOnline(false)
+    const testCommand = { mode: 'process', program: 'npm', args: ['test'], cwd: '.', env: {} }
+    const loadedRaw = `${JSON.stringify({ id: 'B-1', title: 'Original', testCommands: [testCommand] })}\n`
+    const savedDraft = `${JSON.stringify({ id: 'B-1', title: 'Saved edit', testCommands: [testCommand] })}\n`
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: {
+          isEditMode: true,
+          editTab: 'jsonl',
+          jsonlDraft: savedDraft,
+          contentSha256: 'offline-hash',
+        },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/beads/raw')) {
+        return createBeadsRawResponse([{ id: 'B-1', title: 'Original', testCommands: [testCommand] }], {
+          content: loadedRaw,
+          contentSha256: 'offline-hash',
+        })
+      }
+      if (url.endsWith('/attempts') || url.endsWith('/artifacts')) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const view = renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('Loading beads…')).toBeInTheDocument()
+    expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('YAML editor')).not.toBeInTheDocument()
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).endsWith('/beads/raw'))).toBe(false)
+
+    onlineManager.setOnline(true)
+    expect(await screen.findByLabelText('YAML editor')).toHaveValue(savedDraft)
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).endsWith('/beads/raw'))).toBe(true))
+    expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument()
+    view.unmount()
   })
 
   it('validates JSONL rows before sending a beads save', async () => {

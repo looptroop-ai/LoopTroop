@@ -412,7 +412,7 @@ describe('LogProvider', () => {
     await waitFor(() => expect(readiness()).toMatchObject({ loading: 'false', loaded: 'true', error: 'false', rows: '1' }))
   })
 
-  it('reports a failed scope and retries it instead of treating it as loaded', async () => {
+  it('retries a failed scope on a recovery event without remounting', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse({ error: 'unavailable' }, 503))
       .mockImplementationOnce(() => createJsonResponse([]))
@@ -438,7 +438,9 @@ describe('LogProvider', () => {
     act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
     await waitFor(() => expect(screen.getByTestId('scope-state').dataset).toMatchObject({ loading: 'false', loaded: 'false', error: 'true' }))
 
-    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    act(() => window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, {
+      detail: { ticketId: '1:T-scope-retry' },
+    })))
     await waitFor(() => expect(screen.getByTestId('scope-state').dataset).toMatchObject({ loading: 'false', loaded: 'true', error: 'false' }))
     expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
@@ -938,8 +940,10 @@ describe('LogProvider', () => {
     }
   })
 
-  it('does not replay restored rows into the live store on a recovery refresh', async () => {
-    vi.spyOn(globalThis, 'fetch')
+  it('clears stale cache while refreshing requested rows after a recovery event', async () => {
+    let resolveRefreshFetch!: (response: Response) => void
+    const ticketId = '1:T-99'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse([{
         type: 'info',
         phase: 'CODING',
@@ -949,44 +953,90 @@ describe('LogProvider', () => {
         entryId: 'log:initial',
         timestamp: '2026-03-13T10:00:01.000Z',
       }]))
-      .mockImplementationOnce(() => createJsonResponse([{
-        type: 'info',
-        phase: 'CODING',
-        status: 'CODING',
-        source: 'system',
-        content: 'Initial log.',
-        entryId: 'log:initial',
-        timestamp: '2026-03-13T10:00:01.000Z',
-      }, {
-        type: 'info',
-        phase: 'CODING',
-        status: 'CODING',
-        source: 'system',
-        content: 'Recovered log.',
-        entryId: 'log:recovered',
-        timestamp: '2026-03-13T10:00:02.000Z',
-      }]))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefreshFetch = resolve }))
 
     render(createElement(
       LogProvider,
       {
-        ticketId: '1:T-99',
+        ticketId,
         currentStatus: 'CODING',
-        children: createElement(LogHarness),
+        children: createElement(PassiveLogHarness),
       },
     ))
 
-    await flushMicrotasks()
-    expect(screen.getByTestId('log-count')).toHaveTextContent('1')
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    const scope = { status: 'CODING' }
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['log:initial'])
+
+    act(() => window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId } })))
+    await waitFor(() => expect(latestLogApi?.isLoadingLogScope?.(scope)).toBe(true))
+    expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(false)
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['log:initial'])
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    expect(latestLogApi?.isLoadingLogScope?.(scope)).toBe(true)
+    expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
 
     await act(async () => {
-      window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId: '1:T-99' } }))
-      await Promise.resolve()
-      await Promise.resolve()
+      resolveRefreshFetch(await createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Initial log.', entryId: 'log:initial', timestamp: '2026-03-13T10:00:01.000Z',
+      }, {
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Recovered log.', entryId: 'log:recovered', timestamp: '2026-03-13T10:00:02.000Z',
+      }]))
+      await flushMicrotasks()
     })
 
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('log-count')).toHaveTextContent('1')
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['log:initial', 'log:recovered'])
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not let a cleared in-flight request overwrite a newer response', async () => {
+    let resolveOldFetch!: (response: Response) => void
+    const ticketId = '1:T-clear-in-flight'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOldFetch = resolve }))
+      .mockImplementationOnce(() => createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'New history.', entryId: 'new-history', timestamp: '2026-03-13T10:00:02.000Z',
+      }]))
+
+    render(createElement(
+      LogProvider,
+      { ticketId, currentStatus: 'CODING', children: createElement(PassiveLogHarness) },
+    ))
+
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    const scope = { status: 'CODING' }
+    await waitFor(() => expect(latestLogApi?.isLoadingLogScope?.(scope)).toBe(true))
+
+    act(() => latestLogApi?.clearLogs())
+    expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(false)
+    expect(getCodingLogs()).toHaveLength(0)
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(getCodingLogs().map((entry) => entry.entryId)).toContain('new-history'))
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+
+    await act(async () => {
+      resolveOldFetch(await createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Old history.', entryId: 'old-history', timestamp: '2026-03-13T10:00:01.000Z',
+      }]))
+      await flushMicrotasks()
+    })
+
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['new-history'])
+    expect(serverLogCache.get(getServerLogCacheKey(ticketId, scope))).toEqual([
+      expect.objectContaining({ entryId: 'new-history' }),
+    ])
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('drops only the departing ticket from the server log cache when it unmounts', async () => {

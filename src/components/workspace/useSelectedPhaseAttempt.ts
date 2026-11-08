@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 
 /**
@@ -15,19 +15,29 @@ import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 export function useSelectedPhaseAttempt(ticketId?: string, phase?: string) {
   const {
     data: attempts = [],
+    isPending,
     isError,
     error,
     refetch,
   } = useTicketPhaseAttempts(ticketId, phase)
-  const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
+  const isLoading = Boolean(ticketId && phase && isPending)
+  const [manualSelection, setManualSelection] = useState<{
+    ticketId?: string
+    phase?: string
+    attemptNumber: number
+  } | null>(null)
+  const manualSelectedAttemptNumber = manualSelection && manualSelection.ticketId === ticketId && manualSelection.phase === phase
+    ? manualSelection.attemptNumber
+    : null
+  const setManualSelectedAttemptNumber = useCallback((attemptNumber: number | null) => {
+    setManualSelection(attemptNumber === null ? null : { ticketId, phase, attemptNumber })
+  }, [phase, ticketId])
 
-  // A choice belongs to the phase it was made in. The memo below already
-  // ignores a number the current attempts do not contain, but a coincidental
-  // match across phases would silently keep it — `CodingView` changes the phase
-  // within one mount, which is where that can happen.
+  // Returning to a phase must not resurrect the archived version picked on an
+  // earlier visit; the active version is the one the surface should reopen on.
   useEffect(() => {
-    setManualSelectedAttemptNumber(null)
-  }, [phase])
+    setManualSelection(null)
+  }, [phase, ticketId])
 
   const selectedAttemptNumber = useMemo(() => {
     if (manualSelectedAttemptNumber != null && attempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
@@ -54,6 +64,7 @@ export function useSelectedPhaseAttempt(ticketId?: string, phase?: string) {
     logPhaseAttempt: attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined,
     logMode: (archivedAttemptNumber != null ? 'snapshot' : 'live') as 'snapshot' | 'live',
     isError,
+    isLoading,
     error,
     refetch,
     /** The history failed and nothing is cached, so the version is unknown. */

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -50,10 +50,10 @@ vi.mock('@/components/ticket/TicketDashboard', () => ({
 }))
 
 vi.mock('@/components/shared/CenteredModal', () => ({
-  CenteredModal: ({ open, children, onClose, title }: { open: boolean; children: ReactNode; onClose: () => void; title: string }) => (
+  CenteredModal: ({ open, suspended, children, onClose, title }: { open: boolean; suspended?: boolean; children: ReactNode; onClose: () => void; title: string }) => (
     open
       ? (
-        <div>
+        <div style={suspended ? { display: 'none' } : undefined}>
           <button type="button" onClick={onClose}>{`Close ${title}`}</button>
           {children}
         </div>
@@ -83,9 +83,14 @@ vi.mock('@/components/project/ProjectsPanel', () => ({
 vi.mock('@/components/ticket/TicketForm', () => ({
   TicketForm: ({ onClose }: { onClose?: () => void }) => {
     const { dispatch } = useUI()
+    const [title, setTitle] = useState('')
     return (
       <>
         <div>Ticket Form</div>
+        <label>
+          Ticket title
+          <input value={title} onChange={(event) => setTitle(event.target.value)} />
+        </label>
         <button
           type="button"
           onClick={() => {
@@ -197,6 +202,25 @@ function renderAppElement(queryClient: QueryClient = createTestQueryClient()) {
 
 function renderApp() {
   return renderAppElement()
+}
+
+async function dismissRestoreNoticeIfPresent(rerenderApp: () => void) {
+  const continueButton = screen.queryByRole('button', { name: 'Continue' })
+  if (!continueButton) return
+
+  mockState.dismissMutation.mutate.mockImplementation((_: undefined, options?: { onSuccess?: () => void }) => {
+    options?.onSuccess?.()
+  })
+  fireEvent.click(continueButton)
+  await waitFor(() => expect(screen.queryByText('Saved data found')).not.toBeInTheDocument())
+  const startupStatus = mockState.startupStatus
+  if (startupStatus) {
+    mockState.startupStatus = {
+      ...startupStatus,
+      ui: { ...startupStatus.ui, restoreNotice: { shouldShow: false, dismissedAt: '2026-10-26T12:00:00.000Z' } },
+    }
+    rerenderApp()
+  }
 }
 
 /**
@@ -1184,7 +1208,8 @@ describe('App startup notices', () => {
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
     window.history.pushState(null, '', '/config')
 
-    renderApp()
+    const view = renderAppWithProbe()
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1203,7 +1228,8 @@ describe('App startup notices', () => {
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
     window.history.pushState(null, '', '/config')
 
-    renderApp()
+    const view = renderAppWithProbe()
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1224,7 +1250,8 @@ describe('App startup notices', () => {
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
     window.history.pushState(null, '', '/config')
 
-    renderApp()
+    const view = renderAppWithProbe()
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1251,7 +1278,7 @@ describe('App startup notices', () => {
 
     renderApp()
 
-    expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
   })
 
   it('does not show the restore popup for empty existing startup state', () => {
@@ -1266,7 +1293,7 @@ describe('App startup notices', () => {
 
     renderApp()
 
-    expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
   })
 
   it('waits for the welcome disclaimer to be dismissed before showing the restore popup', async () => {
@@ -1276,12 +1303,78 @@ describe('App startup notices', () => {
 
     expect(screen.getByText('Welcome to LoopTroop')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /got it, let's go!/i }))
 
-    expect(await screen.findByText('Existing Local Data Found')).toBeInTheDocument()
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a routed modal behind startup notices until they are dismissed', async () => {
+    const startupStatus = makeStartupStatus()
+    mockState.startupStatus = startupStatus
+    window.history.pushState(null, '', '/config')
+
+    const view = renderAppWithProbe()
+
+    expect(screen.getByText('Welcome to LoopTroop')).toBeInTheDocument()
+    expect(await screen.findByText('Profile Setup')).not.toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: /got it, let's go!/i }))
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
+    expect(screen.getByText('Profile Setup')).not.toBeVisible()
+
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
+
+    expect(await screen.findByText('Profile Setup')).toBeVisible()
+    expect(window.location.pathname).toBe('/config')
+  })
+
+  it('keeps About behind a restore notice discovered after Configuration opens', async () => {
+    localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
+    window.history.pushState(null, '', '/config')
+    mockState.startupStatus = null
+
+    const view = renderAppWithProbe()
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
+    expect(await screen.findByText('About Dialog')).toBeInTheDocument()
+
+    const startupStatus = makeStartupStatus()
+    mockState.startupStatus = startupStatus
+    view.rerenderApp()
+
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
+    expect(screen.getByText('Profile Setup')).not.toBeVisible()
+    expect(screen.getByText('About Dialog')).not.toBeVisible()
+
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
+
+    expect(await screen.findByText('Profile Setup')).toBeVisible()
+    expect(await screen.findByText('About Dialog')).toBeVisible()
+  })
+
+  it('preserves a New Ticket draft when a restore notice appears after typing', async () => {
+    localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
+    window.history.pushState(null, '', '/ticket/new')
+    mockState.startupStatus = null
+
+    const view = renderAppWithProbe()
+    expect(await screen.findByText('Ticket Form')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Ticket title'), { target: { value: 'Draft title' } })
+
+    const startupStatus = makeStartupStatus()
+    mockState.startupStatus = startupStatus
+    view.rerenderApp()
+
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
+    expect(screen.getByText('Ticket Form')).not.toBeVisible()
+
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
+
+    expect(await screen.findByText('Ticket Form')).toBeVisible()
+    expect(screen.getByLabelText('Ticket title')).toHaveValue('Draft title')
   })
 
   it('shows the WSL app-path warning in the welcome disclaimer when applicable', () => {
@@ -1320,7 +1413,7 @@ describe('App startup notices', () => {
       ],
     })
     const { rerender } = renderApp()
-    expect(screen.getByText('Restored your saved LoopTroop profile and 2 projects.')).toBeInTheDocument()
+    expect(screen.getByText('Your saved profile and 2 projects are ready.')).toBeInTheDocument()
 
     mockState.startupStatus = makeStartupStatus({
       profileRestored: true,
@@ -1334,7 +1427,7 @@ describe('App startup notices', () => {
         </UIProvider>
       </QueryClientProvider>,
     )
-    expect(screen.getByText('Restored your saved LoopTroop profile.')).toBeInTheDocument()
+    expect(screen.getByText('Your saved profile is ready.')).toBeInTheDocument()
 
     mockState.startupStatus = makeStartupStatus({
       profileRestored: false,
@@ -1364,7 +1457,9 @@ describe('App startup notices', () => {
         </UIProvider>
       </QueryClientProvider>,
     )
-    expect(screen.getByText('Restored 3 projects from existing local LoopTroop data.')).toBeInTheDocument()
+    expect(screen.getByText('Your 3 projects are ready.')).toBeInTheDocument()
+    expect(screen.getByText('Projects found: 3')).toBeInTheDocument()
+    expect(screen.getByText('Local data location')).toBeInTheDocument()
     expect(screen.getByText('/home/liviu/.config/looptroop/app.sqlite')).toBeInTheDocument()
     expect(screen.getByText(/Alpha/)).toBeInTheDocument()
     expect(screen.getByText(/Beta/)).toBeInTheDocument()
@@ -1374,7 +1469,7 @@ describe('App startup notices', () => {
     expect(screen.getByText('/work/gamma')).toBeInTheDocument()
 
     await waitFor(() => {
-      expect(screen.getByText('This notice is stored with your local LoopTroop app data and will not appear again after dismissal.')).toBeInTheDocument()
+      expect(screen.getByText('After you continue, this notice stays dismissed for this local database.')).toBeInTheDocument()
     })
   })
 
@@ -1394,7 +1489,7 @@ describe('App startup notices', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     await waitFor(() => {
-      expect(screen.queryByText('Existing Local Data Found')).not.toBeInTheDocument()
+      expect(screen.queryByText('Saved data found')).not.toBeInTheDocument()
     })
     mockState.startupStatus = {
       ...startupStatus,
@@ -1420,7 +1515,7 @@ describe('App startup notices', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
-    expect(screen.getByText('Existing Local Data Found')).toBeInTheDocument()
+    expect(screen.getByText('Saved data found')).toBeInTheDocument()
     expect(await screen.findByText('Failed to dismiss restore notice')).toBeInTheDocument()
   })
 

@@ -11,8 +11,10 @@ const INITIAL_CONTENT_HASH = 'a'.repeat(64)
 const SAVED_CONTENT_HASH = 'b'.repeat(64)
 let persistedUiStateData: unknown = null
 let persistedUiStateMeta: Record<string, unknown> = {}
+let interviewPending = false
 let currentRaw = ''
 let currentContentSha256 = INITIAL_CONTENT_HASH
+let currentDocument: InterviewDocument | null = null
 
 function buildInterviewDocument(answer: string): InterviewDocument {
   return {
@@ -47,20 +49,31 @@ function buildInterviewDocument(answer: string): InterviewDocument {
   }
 }
 
-const document = buildInterviewDocument('Test answer.')
+const interviewFixture = buildInterviewDocument('Test answer.')
 
 vi.mock('@/hooks/useTickets', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/useTickets')>('@/hooks/useTickets')
   return {
     ...actual,
-    useInterviewQuestions: () => ({
-      data: { raw: currentRaw, contentSha256: currentContentSha256, document },
-      isLoading: false,
-      isFetching: false,
-      isError: false,
-      error: null,
-      refetch: vi.fn(),
-    }),
+    useInterviewQuestions: () => interviewPending
+      ? {
+          data: undefined,
+          isPending: true,
+          isLoading: false,
+          isFetching: false,
+          isError: false,
+          error: null,
+          refetch: vi.fn(),
+        }
+      : {
+          data: { raw: currentRaw, contentSha256: currentContentSha256, document: currentDocument },
+          isPending: false,
+          isLoading: false,
+          isFetching: false,
+          isError: false,
+          error: null,
+          refetch: vi.fn(),
+        },
     useTicketUIState: () => ({
       isSuccess: true,
       data: { scope: 'approval_interview', exists: true, data: persistedUiStateData, updatedAt: null, ...persistedUiStateMeta },
@@ -85,8 +98,10 @@ vi.mock('../CollapsiblePhaseLogSection', () => ({
 
 describe('InterviewApprovalPane', () => {
   beforeEach(() => {
-    currentRaw = JSON.stringify(document)
+    currentRaw = JSON.stringify(interviewFixture)
     currentContentSha256 = INITIAL_CONTENT_HASH
+    currentDocument = interviewFixture
+    interviewPending = false
     persistedUiStateData = null
     persistedUiStateMeta = {}
     mockSaveUiState.mockReset()
@@ -99,7 +114,7 @@ describe('InterviewApprovalPane', () => {
         const body = JSON.parse(String(init.body)) as { content?: string }
         currentRaw = body.content ?? currentRaw
         currentContentSha256 = SAVED_CONTENT_HASH
-        return Promise.resolve(new Response(JSON.stringify({ raw: currentRaw, content: currentRaw, contentSha256: currentContentSha256, document }), {
+        return Promise.resolve(new Response(JSON.stringify({ raw: currentRaw, content: currentRaw, contentSha256: currentContentSha256, document: currentDocument }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }))
@@ -116,6 +131,23 @@ describe('InterviewApprovalPane', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('keeps an initial pending interview read in its loading state', () => {
+    interviewPending = true
+    renderWithProviders(<InterviewApprovalPane ticket={makeTicket({ status: 'WAITING_INTERVIEW_APPROVAL' })} />)
+
+    expect(screen.getByText('Fetching the latest interview artifact.')).toBeInTheDocument()
+    expect(screen.queryByText('No interview artifact available yet.')).not.toBeInTheDocument()
+  })
+
+  it('treats whitespace-only raw content as a missing interview artifact', async () => {
+    currentRaw = ' \n\t '
+    currentDocument = null
+    renderWithProviders(<InterviewApprovalPane ticket={makeTicket({ status: 'WAITING_INTERVIEW_APPROVAL' })} />)
+
+    expect(await screen.findByText('No interview artifact available yet.')).toBeInTheDocument()
+    expect(globalThis.document.querySelector('pre.raw-content-pre')).not.toBeInTheDocument()
   })
 
   it('keeps a restored dirty YAML draft tied to its original content hash', async () => {
@@ -179,7 +211,7 @@ describe('InterviewApprovalPane', () => {
 
     const later = currentRaw.replace('Test answer.', 'Later local text.')
     fireEvent.change(editor, { target: { value: later } })
-    release?.(new Response(JSON.stringify({ raw: currentRaw, content: currentRaw, contentSha256: SAVED_CONTENT_HASH, document }), {
+    release?.(new Response(JSON.stringify({ raw: currentRaw, content: currentRaw, contentSha256: SAVED_CONTENT_HASH, document: currentDocument }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }))

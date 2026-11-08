@@ -69,8 +69,16 @@ export function useDismissStartupRestoreNotice() {
 
   return useMutation({
     mutationFn: dismissStartupRestoreNotice,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: STARTUP_STATUS_QUERY_KEY })
+    onSuccess: async ({ dismissedAt }) => {
+      await queryClient.cancelQueries({ queryKey: STARTUP_STATUS_QUERY_KEY })
+      queryClient.setQueryData<StartupStatus>(STARTUP_STATUS_QUERY_KEY, (startupStatus) => startupStatus && ({
+        ...startupStatus,
+        ui: {
+          ...startupStatus.ui,
+          restoreNotice: { shouldShow: false, dismissedAt },
+        },
+      }))
+      void queryClient.invalidateQueries({ queryKey: STARTUP_STATUS_QUERY_KEY })
     },
   })
 }

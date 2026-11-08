@@ -13,16 +13,27 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - OpenCode tasks recover their own background command notifications and stop old task commands before handing off the worktree, while preserving conversation history.
 - PRD coverage reviews show clearer item changes and explanations for the gaps each revision addresses.
+- Ticket review views wait for current-attempt evidence, keep raw-output controls beside metadata, and let users retry failed artifact or log loads.
+- The startup restore notice identifies saved local data, and long dialogs stay usable on short screens.
 
 ### Changed
 
 - PRD revision instructions now ask for exact current and revised item titles, separate records for changed epics and stories, and a reason for each gap resolution. For resolved gaps, section-only changes can have no affected item references, while mixed changes keep affected stories; unresolved source contradictions use an empty list. Empty change lists remain accepted during coverage; the review can derive a diff from saved PRD versions, and supplied records keep their existing validation behavior.
+- Raw artifact views place **Copy** beside line, character, and estimated token counts. Plain text and missing-output states use the same header layout.
+- The startup restore notice explains when saved profile or project data was found, shows its local database location, and says dismissal lasts for that database.
+- Long shared dialogs and the Startup Restore, Welcome Disclaimer, and Keyboard Shortcuts overlays keep their content within the viewport and scrollable.
+- Startup notices stay above routed dialogs and hold them hidden instead of unmounting them, so a direct link such as Configuration opens after the notice without losing a draft typed in the meantime.
 
 ### Fixed
 
 - Continue handles owned background notifications, permissions already pending at reconnect or before a new prompt receipt, crash/restart history, and stream-loss recovery without accepting unrelated work.
 - Completed and abandoned LoopTroop tasks have their native OpenCode tools disabled before their verified background commands are stopped, including commands with receipts older than the normal response-history window. Unconfirmed cleanup retains ownership and withholds worktree reset; active Continue sessions keep their normal permissions and all conversation history is retained. Unowned interactive callers retain control of their session lifetime.
 - Coding, runtime setup, and final-test prompts run checks needed for the final outcome in the foreground, avoiding progress-only replies while those checks are still running. PRD coverage retries retain the full rejected response so valid change records can be corrected rather than recreated.
+- Ticket review views wait for the active phase attempt and matching artifact/log history before showing versions or empty states. Cached artifacts and Manual QA checklists stay visible during refresh errors, with retry; PRD and Beads approval stays disabled until the first coverage result loads.
+- Archived setup-plan views use a neutral label until artifact history loads and offer retry if status could not be read. Coverage progress retries reload requested log scopes and discard stale in-flight snapshots; failed first log reads are not cached as empty.
+- Clearing local logs reloads requested server history so open coverage summaries do not remain stuck loading.
+- PRD and Beads approval waits while coverage reports refresh, and stays blocked if that refresh fails until a retry succeeds, preventing approval against a cached report from an earlier attempt.
+- Local and self-hosted API requests run even when the browser reports offline.
 
 ## 0.6.4 (2026-11-06)
 

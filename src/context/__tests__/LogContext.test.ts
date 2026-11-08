@@ -1,5 +1,5 @@
 import { createElement, useEffect } from 'react'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { compareLogEntriesByTimestamp, formatLogLine, getServerLogCacheKey, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { LogProvider } from '@/context/LogContext'
@@ -24,6 +24,12 @@ function LogHarness() {
   }, [loadLogsForPhase])
 
   return createElement('div', { 'data-testid': 'log-count' }, logs.length)
+}
+
+function PassiveLogHarness() {
+  const logApi = useLogs()
+  useEffect(() => { latestLogApi = logApi }, [logApi])
+  return null
 }
 
 function getCodingLogs() {
@@ -289,6 +295,156 @@ describe('LogProvider', () => {
     await flushMicrotasks()
     expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=20&phase=DRAFTING_PRD')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('tail='))).toBe(true)
+  })
+
+  it.each([
+    ['snapshot containing rows', [{
+      type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+      content: 'Cached history.', entryId: 'cached-history', timestamp: '2026-01-01T00:00:01.000Z',
+    }]],
+    ['empty snapshot', []],
+  ])('uses a cached %s as the first successful load', async (_label, cachedRows) => {
+    const ticketId = '1:T-cache-first-load'
+    const scope = { status: 'CODING' }
+    const cacheKey = getServerLogCacheKey(ticketId, scope)
+    serverLogCache.set(cacheKey, cachedRows)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
+
+    render(createElement(
+      LogProvider,
+      { ticketId, currentStatus: 'CODING', children: createElement(PassiveLogHarness) },
+    ))
+
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+    expect(fetchSpy).not.toHaveBeenCalled()
+    if (cachedRows.length > 0) {
+      expect(getCodingLogs().map((entry) => entry.entryId)).toContain('cached-history')
+    }
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('clears local state and refreshes previously requested scopes', async () => {
+    const ticketId = '1:T-clear-log-readiness'
+    let resolveRefreshedLogs!: (response: Response) => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Existing history.', entryId: 'before-clear', timestamp: '2026-01-01T00:00:01.000Z',
+      }]))
+      .mockImplementationOnce(() => createJsonResponse({ error: 'unavailable' }, 503))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefreshedLogs = resolve }))
+      .mockImplementationOnce(() => createJsonResponse([]))
+
+    render(createElement(
+      LogProvider,
+      { ticketId, currentStatus: 'CODING', children: createElement(PassiveLogHarness) },
+    ))
+
+    const normalScope = { status: 'CODING' }
+    const debugScope = { status: 'CODING', channel: 'debug' as const }
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toContain('before-clear')
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING', { channel: 'debug' }))
+    await waitFor(() => expect(latestLogApi?.isErrorLogScope?.(debugScope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toContain('before-clear')
+
+    act(() => latestLogApi?.clearLogs())
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4))
+    expect(resolveRefreshedLogs).toBeTypeOf('function')
+    expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(false)
+    expect(latestLogApi?.isErrorLogScope?.(debugScope)).toBe(false)
+    expect(getCodingLogs()).toHaveLength(0)
+
+    await act(async () => resolveRefreshedLogs(await createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'History after clear.', entryId: 'after-clear', timestamp: '2026-01-01T00:00:02.000Z',
+      }])))
+    await waitFor(() => expect(getCodingLogs().map((entry) => entry.entryId)).toContain('after-clear'))
+    expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
+  })
+
+  it('marks an empty successful scope loaded only after its delayed rows commit', async () => {
+    let resolveFetch!: (response: Response) => void
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise((resolve) => { resolveFetch = resolve }))
+
+    function ScopeStateHarness() {
+      const api = useLogs()
+      useEffect(() => { latestLogApi = api }, [api])
+      const scope = { status: 'CODING' }
+      const loaded = api?.isLoadedLogScope?.(scope) ?? false
+      const rows = api?.getLogsForPhase('CODING').length ?? 0
+      return createElement('div', {
+        'data-testid': 'scope-state',
+        'data-loading': String(api?.isLoadingLogScope?.(scope) ?? false),
+        'data-loaded': String(loaded),
+        'data-error': String(api?.isErrorLogScope?.(scope) ?? false),
+        'data-rows': String(rows),
+      })
+    }
+
+    render(createElement(
+      LogProvider,
+      { ticketId: '1:T-scope-readiness', currentStatus: 'CODING', children: createElement(ScopeStateHarness) },
+    ))
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+
+    const readiness = () => screen.getByTestId('scope-state').dataset
+    expect(readiness()).toMatchObject({ loading: 'false', loaded: 'false', error: 'false' })
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(readiness().loading).toBe('true'))
+    expect(readiness().loaded).toBe('false')
+
+    await act(async () => {
+      resolveFetch(await createJsonResponse([{
+        phase: 'CODING',
+        status: 'CODING',
+        content: 'Historical row is committed with readiness.',
+        timestamp: '2026-01-01T00:00:01.000Z',
+      }]))
+    })
+
+    await waitFor(() => expect(readiness()).toMatchObject({ loading: 'false', loaded: 'true', error: 'false', rows: '1' }))
+  })
+
+  it('retries a failed scope on a recovery event without remounting', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({ error: 'unavailable' }, 503))
+      .mockImplementationOnce(() => createJsonResponse([]))
+
+    function ScopeStateHarness() {
+      const api = useLogs()
+      useEffect(() => { latestLogApi = api }, [api])
+      const scope = { status: 'CODING' }
+      return createElement('div', {
+        'data-testid': 'scope-state',
+        'data-loading': String(api?.isLoadingLogScope?.(scope) ?? false),
+        'data-loaded': String(api?.isLoadedLogScope?.(scope) ?? false),
+        'data-error': String(api?.isErrorLogScope?.(scope) ?? false),
+      })
+    }
+
+    render(createElement(
+      LogProvider,
+      { ticketId: '1:T-scope-retry', currentStatus: 'CODING', children: createElement(ScopeStateHarness) },
+    ))
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(screen.getByTestId('scope-state').dataset).toMatchObject({ loading: 'false', loaded: 'false', error: 'true' }))
+
+    act(() => window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, {
+      detail: { ticketId: '1:T-scope-retry' },
+    })))
+    await waitFor(() => expect(screen.getByTestId('scope-state').dataset).toMatchObject({ loading: 'false', loaded: 'true', error: 'false' }))
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it.each([
@@ -786,8 +942,10 @@ describe('LogProvider', () => {
     }
   })
 
-  it('does not replay restored rows into the live store on a recovery refresh', async () => {
-    vi.spyOn(globalThis, 'fetch')
+  it('clears stale cache while refreshing requested rows after a recovery event', async () => {
+    let resolveRefreshFetch!: (response: Response) => void
+    const ticketId = '1:T-99'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse([{
         type: 'info',
         phase: 'CODING',
@@ -797,44 +955,90 @@ describe('LogProvider', () => {
         entryId: 'log:initial',
         timestamp: '2026-03-13T10:00:01.000Z',
       }]))
-      .mockImplementationOnce(() => createJsonResponse([{
-        type: 'info',
-        phase: 'CODING',
-        status: 'CODING',
-        source: 'system',
-        content: 'Initial log.',
-        entryId: 'log:initial',
-        timestamp: '2026-03-13T10:00:01.000Z',
-      }, {
-        type: 'info',
-        phase: 'CODING',
-        status: 'CODING',
-        source: 'system',
-        content: 'Recovered log.',
-        entryId: 'log:recovered',
-        timestamp: '2026-03-13T10:00:02.000Z',
-      }]))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefreshFetch = resolve }))
 
     render(createElement(
       LogProvider,
       {
-        ticketId: '1:T-99',
+        ticketId,
         currentStatus: 'CODING',
-        children: createElement(LogHarness),
+        children: createElement(PassiveLogHarness),
       },
     ))
 
-    await flushMicrotasks()
-    expect(screen.getByTestId('log-count')).toHaveTextContent('1')
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    const scope = { status: 'CODING' }
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['log:initial'])
+
+    act(() => window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId } })))
+    await waitFor(() => expect(latestLogApi?.isLoadingLogScope?.(scope)).toBe(true))
+    expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(false)
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['log:initial'])
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    expect(latestLogApi?.isLoadingLogScope?.(scope)).toBe(true)
+    expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
 
     await act(async () => {
-      window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId: '1:T-99' } }))
-      await Promise.resolve()
-      await Promise.resolve()
+      resolveRefreshFetch(await createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Initial log.', entryId: 'log:initial', timestamp: '2026-03-13T10:00:01.000Z',
+      }, {
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Recovered log.', entryId: 'log:recovered', timestamp: '2026-03-13T10:00:02.000Z',
+      }]))
+      await flushMicrotasks()
     })
 
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('log-count')).toHaveTextContent('1')
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['log:initial', 'log:recovered'])
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not let a cleared in-flight request overwrite a newer response', async () => {
+    let resolveOldFetch!: (response: Response) => void
+    const ticketId = '1:T-clear-in-flight'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOldFetch = resolve }))
+      .mockImplementationOnce(() => createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'New history.', entryId: 'new-history', timestamp: '2026-03-13T10:00:02.000Z',
+      }]))
+
+    render(createElement(
+      LogProvider,
+      { ticketId, currentStatus: 'CODING', children: createElement(PassiveLogHarness) },
+    ))
+
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    const scope = { status: 'CODING' }
+    await waitFor(() => expect(latestLogApi?.isLoadingLogScope?.(scope)).toBe(true))
+
+    act(() => latestLogApi?.clearLogs())
+    expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(false)
+    expect(getCodingLogs()).toHaveLength(0)
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(getCodingLogs().map((entry) => entry.entryId)).toContain('new-history'))
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+
+    await act(async () => {
+      resolveOldFetch(await createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Old history.', entryId: 'old-history', timestamp: '2026-03-13T10:00:01.000Z',
+      }]))
+      await flushMicrotasks()
+    })
+
+    expect(getCodingLogs().map((entry) => entry.entryId)).toEqual(['new-history'])
+    expect(serverLogCache.get(getServerLogCacheKey(ticketId, scope))).toEqual([
+      expect.objectContaining({ entryId: 'new-history' }),
+    ])
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('drops only the departing ticket from the server log cache when it unmounts', async () => {

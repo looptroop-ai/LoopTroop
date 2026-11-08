@@ -175,6 +175,30 @@ describe('DashboardHeader', () => {
     expect(container.querySelector('img')).toHaveAttribute('src', icon)
   })
 
+  it('keeps the ticket details title visible while the details scroll', () => {
+    const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+
+    const dialog = screen.getByRole('dialog', { name: 'Ticket Details' })
+    const [header, body] = Array.from(dialog.children)
+    if (!(header instanceof HTMLElement) || !(body instanceof HTMLElement)) {
+      throw new Error('Ticket details dialog is missing its header or scroll body.')
+    }
+    const scrollRegion = body.querySelector<HTMLElement>('[class*="overflow-y-auto"]')
+    if (!scrollRegion) throw new Error('Ticket details dialog is missing its scroll region.')
+    expect(dialog).toHaveClass('max-h-[min(80vh,calc(100dvh-2rem))]', 'flex', 'flex-col', 'overflow-y-auto')
+    expect(header).toHaveClass('shrink-0')
+    expect(body).toHaveClass('relative', 'flex', 'flex-col', 'flex-1', 'min-h-24', 'overflow-hidden')
+    expect(scrollRegion).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto')
+    expect(scrollRegion).not.toHaveClass('h-full')
+  })
+
   it('saves a trimmed title on Enter and discards edits on Escape', async () => {
     const updateTicket = vi.fn().mockResolvedValue(undefined)
     mockUseUpdateTicket.mockReturnValue({ mutateAsync: updateTicket })

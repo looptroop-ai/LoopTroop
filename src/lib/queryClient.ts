@@ -7,6 +7,8 @@ export const queryClient = new QueryClient({
       staleTime: QUERY_STALE_TIME_5S,
       retry: 1,
       refetchOnWindowFocus: false,
+      networkMode: 'always',
     },
+    mutations: { networkMode: 'always' },
   },
 })

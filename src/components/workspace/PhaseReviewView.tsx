@@ -40,12 +40,14 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
     setManualSelectedAttemptNumber,
     logPhaseAttempt,
     logMode,
+    isLoading: isAttemptsLoading,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
     isPhaseVersionUnknown,
-  } = useSelectedPhaseAttempt(ticket.id, phase)
+  } = useSelectedPhaseAttempt(ticket.id, isDraft ? undefined : phase)
   const attemptNumber = selectedAttemptNumber(selectedAttempt, attempts)
+  const hasPhaseVersion = !isDraft && !isAttemptsLoading && attempts.length > 0
 
   const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
     if (!selectedAttempt) return []
@@ -58,9 +60,9 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
   }, [phase, selectedAttempt])
   const artifactState = useTicketArtifactBundle(ticket.id, artifactScopes)
 
-  if (artifactState.isLoading && !isExecutionSetupDraft) {
+  if ((isAttemptsLoading && !isDraft && !isExecutionSetupDraft) || (artifactState.isLoading && !isExecutionSetupDraft)) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div role="status" className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           <p className="text-xs text-muted-foreground">Loading phase data…</p>
@@ -74,6 +76,9 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
       <div className="p-4 space-y-3 shrink-0">
         {isAttemptsError ? (
           <PhaseAttemptsUnavailable error={attemptsError} onRetry={() => void refetchAttempts()} />
+        ) : null}
+        {!isDraft && !isAttemptsLoading && !isAttemptsError && attempts.length === 0 ? (
+          <p role="status" className="text-xs text-muted-foreground">No phase version is available.</p>
         ) : null}
         {attemptNumber !== undefined && attempts.length > 1 ? (
           <PhaseAttemptSelector
@@ -98,7 +103,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
             </div>
           </div>
         ) : null}
-        {!isDraft && !isPhaseVersionUnknown && (
+        {hasPhaseVersion && !isPhaseVersionUnknown && (
           <PhaseArtifactsPanel
             phase={phase}
             isCompleted={selectedAttempt?.state === 'archived' || ticket.status !== phase}
@@ -158,7 +163,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
             className="px-4 pb-4"
           />
         </div>
-      ) : isPhaseVersionUnknown ? null : (
+      ) : !hasPhaseVersion || isPhaseVersionUnknown ? null : (
         <CollapsiblePhaseLogSection
           key={`${phase}:${selectedAttempt?.attemptNumber ?? 'active'}`}
           phase={phase}

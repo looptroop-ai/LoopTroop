@@ -27,11 +27,38 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     renderModal()
     const dialog = screen.getByRole('dialog', { name: 'Configuration' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto')
+    expect(dialog.parentElement).toHaveClass('items-start', 'overflow-y-auto', 'p-4')
+    expect(dialog.querySelector('.min-h-24.flex-1.overflow-auto')).toBeInTheDocument()
   })
 
   it('moves focus into the dialog on open', () => {
     renderModal()
     expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Configuration' }))
+  })
+
+  it('keeps its content mounted but out of the way while suspended', () => {
+    const { rerender } = render(
+      <TooltipProvider>
+        <CenteredModal open suspended onClose={vi.fn()} title="Configuration">
+          <input aria-label="draft" defaultValue="typed" />
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    expect(screen.getByLabelText('draft')).toHaveValue('typed')
+    expect(screen.queryByRole('dialog', { name: 'Configuration' })).not.toBeInTheDocument()
+
+    rerender(
+      <TooltipProvider>
+        <CenteredModal open onClose={vi.fn()} title="Configuration">
+          <input aria-label="draft" defaultValue="typed" />
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    expect(screen.getByRole('dialog', { name: 'Configuration' })).toBeInTheDocument()
+    expect(screen.getByLabelText('draft')).toHaveValue('typed')
   })
 
   it('makes the rest of the page inert while it is open', () => {
@@ -42,6 +69,25 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     expect(outside).toHaveAttribute('inert')
     expect(outside).toHaveAttribute('aria-hidden', 'true')
     expect(screen.queryByRole('button', { name: 'outside' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a higher-layer dialog interactive when both resume together', () => {
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={vi.fn()} title="Configuration">
+          <button type="button">underneath</button>
+        </CenteredModal>
+        <CenteredModal open onClose={vi.fn()} title="About" zIndexClass="z-[80]">
+          <button type="button">on top</button>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    const configuration = screen.getByRole('dialog', { name: 'Configuration', hidden: true })
+    const about = screen.getByRole('dialog', { name: 'About' })
+    expect(configuration.parentElement).toHaveAttribute('inert')
+    expect(about.parentElement).not.toHaveAttribute('inert')
+    expect(document.activeElement).toBe(about)
   })
 
   it('releases the page and restores focus when it closes', () => {
@@ -383,7 +429,7 @@ describe('CenteredModal — picker ownership when another overlay is on top', ()
               <button type="button">Project one</button>
             </DropdownPicker>
           </CenteredModal>
-          <CenteredModal open={aboutOpen} onClose={() => setAboutOpen(false)} title="About" zIndexClass="z-[60]">
+          <CenteredModal open={aboutOpen} onClose={() => setAboutOpen(false)} title="About" zIndexClass="z-[80]">
             <p>About Dialog</p>
           </CenteredModal>
         </TooltipProvider>

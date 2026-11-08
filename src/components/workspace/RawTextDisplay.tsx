@@ -33,18 +33,31 @@ export function CopyButton({ content, className = '', title = 'Copy raw output' 
   )
 }
 
-export function RawDisplayStats({ content }: { content: string }) {
+export function RawDisplayStats({ content, copyContent, copyTitle }: { content: string; copyContent?: string; copyTitle?: string }) {
   const tokenCount = estimateTokens(content)
   const lineCount = content.split('\n').length
   const charCount = content.length
 
-  return (
+  const stats = (
     <StatPillRow>
       <StatPill>{lineCount.toLocaleString()} Lines</StatPill>
       <StatPill>{charCount.toLocaleString()} Characters</StatPill>
       <StatPill>~{tokenCount.toLocaleString()} Tokens (estimate)</StatPill>
     </StatPillRow>
   )
+
+  if (copyContent !== undefined) {
+    return (
+      <div className="flex w-full min-w-0 items-start gap-2">
+        <div className="min-w-0 flex-1">{stats}</div>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <CopyButton content={copyContent} title={copyTitle} />
+        </div>
+      </div>
+    )
+  }
+
+  return stats
 }
 
 export function RawDisplayPre({ content }: { content: string }) {
@@ -62,10 +75,7 @@ export function RawContentWithCopy({ content }: { content: string }) {
 
   return (
     <div className="space-y-3 min-w-0 max-w-full">
-      <div className="flex items-center justify-between gap-2">
-        <CopyButton content={content} />
-        <RawDisplayStats content={displayContent} />
-      </div>
+      <RawDisplayStats content={displayContent} copyContent={content} />
       <RawDisplayPre content={displayContent} />
     </div>
   )

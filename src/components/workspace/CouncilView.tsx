@@ -144,12 +144,14 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
     archivedAttemptNumber,
     logPhaseAttempt,
     logMode,
+    isLoading: isAttemptsLoading,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
     isPhaseVersionUnknown,
   } = useSelectedPhaseAttempt(ticket.id, phase)
   const attemptNumber = selectedAttemptNumber(selectedAttempt, attempts)
+  const hasPhaseVersion = !isAttemptsLoading && attempts.length > 0
   const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
     if (!selectedAttempt) return []
     if (selectedAttempt.state === 'archived') {
@@ -174,10 +176,10 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
   // Stop and Retry act on the round running now, so only while the ticket is
   // in this step and the version shown is the current one.
   const memberControlScope = useMemo<CouncilMemberControlScope | null>(
-    () => (ticket.status === phase && archivedAttemptNumber == null && isCouncilMemberControlPhase(phase)
+    () => (hasPhaseVersion && !isPhaseVersionUnknown && ticket.status === phase && archivedAttemptNumber == null && isCouncilMemberControlPhase(phase)
       ? { ticketId: ticket.id, phase }
       : null),
-    [archivedAttemptNumber, phase, ticket.id, ticket.status],
+    [archivedAttemptNumber, hasPhaseVersion, isPhaseVersionUnknown, phase, ticket.id, ticket.status],
   )
 
   return (
@@ -226,7 +228,11 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
             is failing with nothing cached, and artifacts and logs are scoped by
             it — they would be shown as the live version, which may not be the
             one the reader selected. The notice above says why they are gone. */}
-        {isPhaseVersionUnknown ? null : (
+        {isAttemptsLoading ? (
+          <p role="status" className="px-1 py-2 text-xs text-muted-foreground">Loading phase version…</p>
+        ) : isPhaseVersionUnknown ? null : !hasPhaseVersion ? (
+          <p role="status" className="px-1 py-2 text-xs text-muted-foreground">No phase version is available.</p>
+        ) : (
           <CouncilMemberControlContext.Provider value={memberControlScope}>
             <PhaseArtifactsPanel
               phase={phase}
@@ -240,7 +246,7 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
         )}
       </div>
 
-      {isPhaseVersionUnknown ? null : (
+      {hasPhaseVersion && !isPhaseVersionUnknown ? (
         <CollapsiblePhaseLogSection
           phase={phase}
           phaseAttempt={logPhaseAttempt}
@@ -248,7 +254,7 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
           ticket={ticket}
           className="px-4 pb-4"
         />
-      )}
+      ) : null}
     </div>
   )
 }

@@ -7,6 +7,12 @@ import { confirmDiscardChanges } from '@/lib/confirmDialog'
 
 interface CenteredModalProps {
   open: boolean
+  /**
+   * Keeper mounted but hidden, so a startup notice that appears above it
+   * cannot throw away a draft the user is already typing. Focus containment
+   * and Escape handling stop while suspended, and resume with the dialog.
+   */
+  suspended?: boolean
   onClose: () => void
   title: string
   children: React.ReactNode
@@ -18,6 +24,7 @@ interface CenteredModalProps {
 
 export function CenteredModal({
   open,
+  suspended = false,
   onClose,
   title,
   children,
@@ -28,7 +35,12 @@ export function CenteredModal({
 }: CenteredModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
-  const handleTrapKeyDown = useDialogFocus(open, panelRef)
+  const isVisible = open && !suspended
+  // Lets a nested dialog (About) stay out of its parent's inert sweep whichever
+  // effect runs first when both resume from behind a startup notice. Tailwind
+  // emits these as literal classes, so the layer can be read without layout.
+  const dialogLayer = Number(zIndexClass.match(/z-\[(\d+)\]/)?.[1] ?? 0)
+  const handleTrapKeyDown = useDialogFocus(isVisible, panelRef)
 
   // Every way out of a dirty window — Escape, the backdrop, the X — asks the same question.
   const requestClose = useCallback(async () => {
@@ -38,7 +50,7 @@ export function CenteredModal({
   }, [closeDisabled, isDirty, onClose])
 
   useEffect(() => {
-    if (!open) return
+    if (!isVisible) return
     const handler = (e: KeyboardEvent) => {
       if (closeDisabled) return
       if (e.key === 'Escape') {
@@ -52,13 +64,18 @@ export function CenteredModal({
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [closeDisabled, open, requestClose])
+  }, [closeDisabled, isVisible, requestClose])
 
   if (!open) return null
 
   return (
     <div
-      className={`fixed inset-0 ${zIndexClass} flex items-center justify-center bg-black/50 backdrop-blur-[1px]`}
+      hidden={suspended || undefined}
+      aria-hidden={suspended || undefined}
+      data-lt-dialog-layer={dialogLayer}
+      className={suspended
+        ? 'hidden'
+        : `fixed inset-0 ${zIndexClass} flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-[1px]`}
       onClick={(e) => {
         if (e.target !== e.currentTarget) return
         void requestClose()
@@ -71,7 +88,7 @@ export function CenteredModal({
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={handleTrapKeyDown}
-        className={`${maxWidth} w-full mx-4 bg-background rounded-xl shadow-xl border border-border flex flex-col max-h-[85vh] relative outline-none`}
+        className={`${maxWidth} my-auto w-full max-h-[calc(100dvh-2rem)] overflow-y-auto bg-background rounded-xl shadow-xl border border-border flex flex-col relative outline-none`}
       >
         <Tooltip>
                 <TooltipTrigger asChild>
@@ -87,10 +104,10 @@ export function CenteredModal({
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs text-center text-balance">Close window (Esc)</TooltipContent>
               </Tooltip>
-        <div className="flex items-center border-b border-border px-6 py-4 pr-10">
+        <div className="flex shrink-0 items-center border-b border-border px-6 py-4 pr-10">
           <h2 id={titleId} className="text-lg font-semibold text-foreground">{title}</h2>
         </div>
-        <div className="flex-1 overflow-auto p-6">
+        <div className="min-h-24 flex-1 overflow-auto p-6">
           {children}
         </div>
       </div>

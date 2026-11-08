@@ -88,6 +88,17 @@ function isInertable(node: Element, container: HTMLElement): node is HTMLElement
   return true
 }
 
+/**
+ * The explicit stacking layer of a dialog, when its wrapper declares one.
+ * A nested dialog with a higher layer must not be made inert by the dialog
+ * underneath it: when both resume in the same commit, effects run from the
+ * outer dialog inward, and the outer sweep would otherwise leave both inert.
+ */
+function dialogLayer(element: Element): number {
+  const layer = Number(element.closest<HTMLElement>('[data-lt-dialog-layer]')?.dataset.ltDialogLayer)
+  return Number.isFinite(layer) ? layer : 0
+}
+
 /** Marks one sibling inert, returning the undo for exactly what it changed. */
 function markInert(element: HTMLElement): () => void {
   const hadInert = element.hasAttribute('inert')
@@ -111,12 +122,19 @@ function markInert(element: HTMLElement): () => void {
  */
 function hideOutside(container: HTMLElement): () => void {
   const restore: Array<() => void> = []
+  const currentLayer = dialogLayer(container)
   let node: HTMLElement = container
 
   while (node.parentElement) {
     const parent = node.parentElement
     for (const child of parent.children) {
-      if (child !== node && isInertable(child, container)) restore.push(markInert(child))
+      // Only a dialog that declares its own layer may leave a higher dialog
+      // alone; overlays without one (shortcuts, startup notices, full-screen
+      // surfaces) keep the original behaviour and inert every sibling.
+      const higherDialog = currentLayer > 0 && dialogLayer(child) > currentLayer
+      if (child !== node && isInertable(child, container) && !higherDialog) {
+        restore.push(markInert(child))
+      }
     }
     node = parent
   }

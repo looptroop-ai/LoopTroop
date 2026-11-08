@@ -38,7 +38,8 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        'fixed left-[50%] top-[50%] z-[70] grid w-[calc(100%-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-border bg-background p-4 sm:p-6 shadow-lg rounded-lg',
+        // Callers with a tighter max-height must compose it with this viewport cap.
+        'fixed left-[50%] top-[50%] z-[70] grid w-[calc(100%-2rem)] max-w-lg max-h-[calc(100dvh-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto border border-border bg-background p-4 sm:p-6 shadow-lg rounded-lg',
         className,
       )}
       {...props}

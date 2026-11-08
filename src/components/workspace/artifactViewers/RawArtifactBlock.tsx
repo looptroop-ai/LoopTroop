@@ -1,3 +1,5 @@
+import { RawContentWithCopy } from '../RawTextDisplay'
+
 /**
  * The raw-artifact fallback the approval panes show when there is no structured
  * document to render: the artifact's text, or a sentence saying there is none.
@@ -10,9 +12,5 @@ export function RawArtifactBlock({ content, emptyLabel }: { content: string; emp
     return <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">{emptyLabel}</div>
   }
 
-  return (
-    <div className="raw-content-box">
-      <pre className="raw-content-pre">{content}</pre>
-    </div>
-  )
+  return <RawContentWithCopy content={content} />
 }

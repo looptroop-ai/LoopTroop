@@ -35,7 +35,7 @@ import type { PrdDocument } from '@/lib/prdDocument'
 import { isStatusAtOrPast } from '@shared/workflowMeta'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
-import { CopyButton as RawCopyButton, RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
+import { RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
 import { manualQaEvidenceUrl } from '@/hooks/useManualQA'
 import { normalizeRawAttempts, tryParseStructuredContent, type ArtifactRawAttemptData } from './phaseArtifactTypes'
 import { stripAnsiSequences } from '@shared/ansi'
@@ -968,16 +968,29 @@ function BeadRawAttemptPanel({
   attempt,
   content,
   emptyMessage,
+  isLoading = false,
+  error,
+  onRetry,
 }: {
   mode: 'input' | 'output'
   attempt: BeadRawAttempt | null
   content: string
   emptyMessage: string
+  isLoading?: boolean
+  error?: unknown
+  onRetry?: () => void
 }) {
   const displayContent = useMemo(() => buildReadableRawDisplayContent(content), [content])
 
   return (
     <div className="flex-1 min-h-0 overflow-auto p-3">
+      {error ? (
+        <QueryErrorNotice
+          title="The saved raw attempt could not be refreshed. Anything shown is the last known data."
+          error={error}
+          onRetry={onRetry}
+        />
+      ) : null}
       {content.trim() ? (
         <div className="min-w-0 max-w-full space-y-3">
           <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
@@ -985,10 +998,20 @@ function BeadRawAttemptPanel({
             {attempt?.modelId ? <span className="rounded border border-border bg-background px-2 py-1">Model {attempt.modelId}</span> : null}
             {attempt?.sessionId ? <span className="rounded border border-border bg-background px-2 py-1">Session {attempt.sessionId}</span> : null}
           </div>
-          <RawDisplayStats content={displayContent} />
+          <div className="sticky top-0 z-10 bg-background">
+            <RawDisplayStats
+              content={displayContent}
+              copyContent={content}
+              copyTitle={mode === 'input' ? 'Copy bead input' : 'Copy bead output'}
+            />
+          </div>
           <RawDisplayPre content={displayContent} />
         </div>
-      ) : (
+      ) : isLoading ? (
+        <div className="rounded-md border border-dashed border-border bg-background/60 p-4 text-xs text-muted-foreground">
+          <span role="status">Loading raw {mode}…</span>
+        </div>
+      ) : error ? null : (
         <div className="rounded-md border border-dashed border-border bg-background/60 p-4 text-xs text-muted-foreground">
           {emptyMessage || `No raw ${mode} for this bead yet.`}
         </div>
@@ -1094,21 +1117,30 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     archivedAttemptNumber,
     logPhaseAttempt,
     logMode,
+    isLoading: isPhaseAttemptsLoading,
     isError: isPhaseAttemptsError,
     error: phaseAttemptsError,
     refetch: refetchPhaseAttempts,
+    isPhaseVersionUnknown,
   } = useSelectedPhaseAttempt(
     shouldShowPhaseVersionSelector ? ticket.id : undefined,
     shouldShowPhaseVersionSelector ? phaseForView : undefined,
   )
   const attemptNumber = selectedAttemptNumber(selectedAttempt, phaseAttempts)
+  const hasPhaseVersion = !shouldShowPhaseVersionSelector || (!isPhaseAttemptsLoading && phaseAttempts.length > 0)
   const archivedArtifactState = useTicketArtifacts(
     archivedAttemptNumber != null ? ticket.id : undefined,
     archivedAttemptNumber != null
       ? { phase: phaseForView, phaseAttempt: archivedAttemptNumber }
       : undefined,
   )
-  const { artifacts: loadedCodingPhaseArtifacts } = useTicketArtifacts(
+  const {
+    artifacts: loadedCodingPhaseArtifacts,
+    isLoading: isCodingPhaseArtifactsLoading,
+    isError: isCodingPhaseArtifactsError,
+    error: codingPhaseArtifactsError,
+    refetch: refetchCodingPhaseArtifacts,
+  } = useTicketArtifacts(
     viewingBeadId ? ticket.id : undefined,
     viewingBeadId ? { phase: 'CODING' } : undefined,
   )
@@ -1308,14 +1340,11 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
       ? ticket.runtime.activeBeadIteration
       : null
   const outputContextIsTerminal = isRawAttemptTerminal(activeRawAttempt, viewedBead)
+    || Boolean(viewedBead && TERMINAL_BEAD_STATUSES.has(viewedBead.status))
     || ticket.status === 'CANCELED'
     || ticket.status === 'BLOCKED_ERROR'
-  const outputTabEnabled = Boolean(activeRawOutput.trim()) && outputContextIsTerminal
-  const activeRawCopyContent = detailTab === 'input'
-    ? activeRawInput
-    : detailTab === 'output' && outputTabEnabled
-      ? activeRawOutput
-      : ''
+  const outputTabEnabled = (Boolean(activeRawOutput.trim()) || isCodingPhaseArtifactsLoading || isCodingPhaseArtifactsError)
+    && outputContextIsTerminal
   const changesTabEnabled = viewedBead ? (viewedBead.status === 'completed' || viewedBead.status === 'skipped') : false
 
   useEffect(() => {
@@ -1388,6 +1417,16 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         </div>
       ) : null}
 
+      {shouldShowPhaseVersionSelector && isPhaseAttemptsLoading ? (
+        <div role="status" className="px-4 py-2 border-b border-border text-xs text-muted-foreground">
+          Loading phase version…
+        </div>
+      ) : null}
+
+      {shouldShowPhaseVersionSelector && !isPhaseAttemptsLoading && !isPhaseAttemptsError && phaseAttempts.length === 0 ? (
+        <div role="status" className="px-4 py-2 border-b border-border text-xs text-muted-foreground">No phase version is available.</div>
+      ) : null}
+
       {shouldShowPhaseVersionSelector && attemptNumber !== undefined && phaseAttempts.length > 1 ? (
         <div className="px-4 py-2 border-b border-border shrink-0">
           <PhaseAttemptSelector
@@ -1444,7 +1483,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         </div>
       )}
 
-      {shouldShowArtifactsPanel && (
+      {shouldShowArtifactsPanel && hasPhaseVersion && !isPhaseAttemptsLoading && !isPhaseVersionUnknown && (
         <div className="px-3 py-1.5 border-b border-border shrink-0">
           <PhaseArtifactsPanel
             phase={phaseForView}
@@ -1477,11 +1516,6 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
               <BeadDetailTabButton tab="input" activeTab={detailTab} onSelect={setDetailTab} icon={<FileInput className="h-3 w-3" />}>
                 Input
               </BeadDetailTabButton>
-              {detailTab === 'input' && activeRawCopyContent.trim() && (
-                <div className="flex items-center pr-1">
-                  <RawCopyButton content={activeRawCopyContent} title="Copy bead input" />
-                </div>
-              )}
               <BeadDetailTabButton
                 tab="output"
                 activeTab={detailTab}
@@ -1491,12 +1525,6 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
               >
                 Output
               </BeadDetailTabButton>
-              {detailTab === 'output' && activeRawCopyContent.trim() && (
-                <div className="flex items-center pr-1">
-                  <RawCopyButton content={activeRawCopyContent} title="Copy bead output" />
-                </div>
-              )}
-
               {detailTab === 'model' && (
                 <div className="ml-auto flex items-center pr-2 gap-2 text-xs text-muted-foreground">
                   {hasMultipleBeadIterations && (
@@ -1662,6 +1690,9 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                 attempt={activeRawAttempt}
                 content={activeRawInput}
                 emptyMessage="No raw input for this bead yet."
+                isLoading={isCodingPhaseArtifactsLoading}
+                error={isCodingPhaseArtifactsError ? codingPhaseArtifactsError : undefined}
+                onRetry={() => void refetchCodingPhaseArtifacts()}
               />
             ) : detailTab === 'output' ? (
               <BeadRawAttemptPanel
@@ -1669,6 +1700,9 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                 attempt={activeRawAttempt}
                 content={outputTabEnabled ? activeRawOutput : ''}
                 emptyMessage="No model output for this bead yet."
+                isLoading={isCodingPhaseArtifactsLoading}
+                error={isCodingPhaseArtifactsError ? codingPhaseArtifactsError : undefined}
+                onRetry={() => void refetchCodingPhaseArtifacts()}
               />
             ) : detailTab === 'changes' && changesTabEnabled ? (
               <div className="flex-1 min-h-0 overflow-auto">
@@ -1955,9 +1989,9 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
               </div>
             )}
           </div>
-        ) : (
+        ) : !shouldShowPhaseVersionSelector || (hasPhaseVersion && !isPhaseVersionUnknown) ? (
           <CollapsiblePhaseLogSection phase={phaseForView} phaseAttempt={logPhaseAttempt} logMode={logMode} ticket={ticket} />
-        )}
+        ) : null}
       </div>
     </div>
   )

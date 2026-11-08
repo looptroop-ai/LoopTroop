@@ -30,7 +30,6 @@ import {
   useApprovalEditMode,
   useLoadedContentHash,
 } from './approvalHooks'
-import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
@@ -110,7 +109,7 @@ export function InterviewApprovalPane({
       : null
   const {
     data: interviewData,
-    isLoading,
+    isPending: isLoading,
     isFetching,
     isError: isInterviewError,
     refetch: refetchInterview,
@@ -123,7 +122,6 @@ export function InterviewApprovalPane({
   )
   const rawContent = interviewData?.raw ?? ''
   const currentContentSha256 = interviewData?.contentSha256 ?? null
-  const rawDisplayContent = useMemo(() => buildReadableRawDisplayContent(rawContent), [rawContent])
   const hasSkippedQuestions = hasSkippedInterviewAnswers(interviewDocument)
   const isPreparingStructuredInterview = !interviewDocument && Boolean(rawContent) && isFetching
 
@@ -517,7 +515,7 @@ export function InterviewApprovalPane({
         ) : interviewDocument ? (
           <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
         ) : (
-          <RawArtifactBlock content={rawContent ? rawDisplayContent : ''} emptyLabel="No interview artifact available yet." />
+          <RawArtifactBlock content={rawContent.trim() ? rawContent : ''} emptyLabel="No interview artifact available yet." />
         )}
       </div>
 

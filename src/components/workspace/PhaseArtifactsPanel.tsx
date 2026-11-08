@@ -475,10 +475,10 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
 
       if (artifact.id === 'refined-prd') {
         const content = findDbContent(artifact)
-        const candidateVersion = content ? parseRefinementArtifact(content)?.candidateVersion ?? 1 : 1
+        const candidateVersion = content ? parseRefinementArtifact(content)?.candidateVersion : undefined
         return {
           ...artifact,
-          label: `PRD Candidate v${candidateVersion}`,
+          label: candidateVersion ? `PRD Candidate v${candidateVersion}` : 'PRD Candidate',
           description: phase === 'VERIFYING_PRD_COVERAGE'
             ? 'The PRD version currently being checked.'
             : 'Latest PRD candidate awaiting approval',
@@ -488,11 +488,11 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       if (artifact.id === 'refined-beads') {
         const content = findDbContent(artifact)
         const parsed = content ? parseRefinementArtifact(content) : null
-        const candidateVersion = parsed?.candidateVersion ?? 1
+        const candidateVersion = parsed?.candidateVersion
         const isExpandedPlanPhase = phase === 'EXPANDING_BEADS' || Boolean(parsed?.semanticPlanContent)
         return {
           ...artifact,
-          label: `${isExpandedPlanPhase ? 'Expanded Plan' : 'Implementation Plan'} v${candidateVersion}`,
+          label: `${isExpandedPlanPhase ? 'Expanded Plan' : 'Implementation Plan'}${candidateVersion ? ` v${candidateVersion}` : ''}`,
           description: phase === 'VERIFYING_BEADS_COVERAGE'
             ? 'The implementation plan version currently being checked.'
             : phase === 'EXPANDING_BEADS'
@@ -763,9 +763,11 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
   const hasTopArtifactRow = visibleMemberArtifacts.length > 0 || prominentSupplementalArtifacts.length > 0
   const hasFullAnswerRow = fullAnswerArtifacts.length > 0
   const hasArtifacts = hasTopArtifactRow || hasFullAnswerRow || inlineSupplementalArtifacts.length > 0 || Boolean(prefixElement)
+  const isArtifactLoading = resolvedArtifactState.isLoading && resolvedArtifactState.artifacts === undefined
+  const isArtifactError = resolvedArtifactState.isError
   if (!hasArtifacts) return null
 
-  const artifactsBody = phase === 'DRAFTING_PRD' ? (
+  const artifactsBody = !hasArtifacts ? null : phase === 'DRAFTING_PRD' ? (
     <div>
       <span className="text-xs font-mono font-medium text-muted-foreground uppercase tracking-wider px-1">Artifacts</span>
 
@@ -867,9 +869,14 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
           definitions, so they still render on a failed request and read as
           "not produced yet". The dialog kept the only notice, and nobody opens
           a dialog to find out why a button is empty. */}
-      {resolvedArtifactState.isError && resolvedArtifactState.artifacts === undefined ? (
+      {isArtifactLoading ? (
+        <p role="status" className="px-1 py-2 text-xs text-muted-foreground">Loading artifacts…</p>
+      ) : null}
+      {isArtifactError ? (
         <QueryErrorNotice
-          title="This phase's artifacts could not be loaded."
+          title={resolvedArtifactState.artifacts === undefined
+            ? "This phase's artifacts could not be loaded."
+            : 'Artifact refresh failed. Previously loaded content remains available.'}
           error={resolvedArtifactState.error}
           onRetry={() => void resolvedArtifactState.refetch()}
         />
@@ -887,12 +894,12 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
         <DialogContent
           // The dialog can hold focus itself (see focusDialogItself): a ring only
           // for keyboard focus, never the browser outline after a click.
-          className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="max-w-2xl max-h-[min(80vh,calc(100dvh-2rem))] min-w-0 flex flex-col overflow-y-auto overflow-x-hidden rounded-xl border-border/70 shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onOpenAutoFocus={focusDialogItself}
           onKeyDown={shiftTabFromDialogItself}
         >
           {/* Padded clear of the member controls, which sit over its top right. */}
-          <DialogHeader className={memberControl ? 'pr-28 sm:pr-44' : undefined}>
+          <DialogHeader className={memberControl ? 'shrink-0 pr-28 sm:pr-44' : 'shrink-0'}>
             <DialogTitle className="text-sm font-mono font-semibold flex items-center gap-2">
               {viewingArtifact?.icon ?? null}
               {viewingArtifact?.label}
@@ -902,13 +909,15 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
             </DialogDescription>
           </DialogHeader>
           {dialogMemberControlScope && selectedMemberChip ? (
-            <CouncilMemberDialogControls
-              key={selectedMemberChip.key}
-              scope={dialogMemberControlScope}
-              control={memberControl}
-            />
+            <div className="shrink-0">
+              <CouncilMemberDialogControls
+                key={selectedMemberChip.key}
+                scope={dialogMemberControlScope}
+                control={memberControl}
+              />
+            </div>
           ) : null}
-          <div className="max-h-[60vh] min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
+          <div className="min-h-24 flex-1 min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
             <div className="min-w-0 max-w-full overflow-x-hidden bg-muted/60 rounded-lg border border-border/30 p-4">
               {resolvedArtifactState.isLoading && resolvedArtifactState.artifacts === undefined ? (
                 <div className="flex items-center justify-center py-8">

@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPrdDocumentYaml, type PrdApprovalDraft } from '@/lib/prdDocument'
 import { makeTicket, makePrdDocument, TEST } from '@/test/factories'
@@ -171,7 +172,17 @@ describe('PrdApprovalPane', () => {
   })
 
   afterEach(() => {
+    onlineManager.setOnline(true)
     vi.restoreAllMocks()
+  })
+
+  it('keeps an initial PRD read loading while the query is paused offline', () => {
+    onlineManager.setOnline(false)
+    const view = renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+
+    expect(screen.getByText('Fetching the latest PRD artifact.')).toBeInTheDocument()
+    expect(screen.queryByText('No PRD artifact available yet.')).not.toBeInTheDocument()
+    view.unmount()
   })
 
   it('renders the dedicated PRD approval view and focuses PRD anchors on demand', async () => {
@@ -392,7 +403,10 @@ describe('PrdApprovalPane', () => {
 
     fireEvent.click(chip)
 
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveClass('flex', 'flex-col', 'overflow-y-auto', 'overflow-x-hidden', 'max-h-[min(80vh,calc(100dvh-2rem))]')
+    expect(dialog.querySelector('h2')?.parentElement).toHaveClass('shrink-0')
+    expect(dialog.querySelector('.min-h-24.flex-1.overflow-auto')).not.toBeNull()
     expect(screen.getByText('Produced by')).toBeInTheDocument()
     expect(screen.getByText('openai/gpt-5.2')).toBeInTheDocument()
     expect(screen.getByText('Which user-owned constraint matters?')).toBeInTheDocument()
@@ -554,6 +568,73 @@ describe('PrdApprovalPane', () => {
         }),
       )
     })
+  })
+
+  it('waits for PRD coverage refresh before approval, then uses its latest gaps', async () => {
+    const refetch = vi.fn(async () => undefined)
+    const coverageArtifact = buildPrdCoverageArtifact({
+      status: 'gaps',
+      summary: 'The loaded PRD report still has a coverage gap.',
+      finalCandidateVersion: 4,
+      hasRemainingGaps: true,
+      remainingGaps: ['State how the fallback path is tested.'],
+    })
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: undefined,
+      isLoading: true,
+      isFetching: true,
+      isError: false,
+      refetch,
+    })
+
+    const ticket = makeTicket({ status: 'WAITING_PRD_APPROVAL' })
+    const view = renderWithProviders(<PrdApprovalPane ticket={ticket} />)
+
+    expect(await screen.findByText('Checking PRD coverage before approval…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled())
+
+    const previousCleanReport = buildPrdCoverageArtifact({ status: 'clean', finalCandidateVersion: 3, hasRemainingGaps: false, remainingGaps: [] })
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [previousCleanReport], isLoading: false, isFetching: false, isError: false, refetch })
+    view.rerender(<PrdApprovalPane ticket={ticket} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeEnabled())
+
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [previousCleanReport], isLoading: false, isFetching: true, isError: false, refetch })
+    view.rerender(<PrdApprovalPane ticket={ticket} />)
+    expect(await screen.findByText('Checking PRD coverage before approval…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled())
+
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [coverageArtifact], isLoading: false, isFetching: false, isError: false, refetch })
+    view.rerender(<PrdApprovalPane ticket={ticket} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Coverage Warning/i }))
+    expect(await screen.findByText('The loaded PRD report still has a coverage gap.')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve with gaps' })).toBeEnabled())
+    expect(screen.queryByText('Checking PRD coverage before approval…')).not.toBeInTheDocument()
+  })
+
+  it('keeps cached PRD coverage gaps when refreshing the report fails', async () => {
+    const refetch = vi.fn(async () => undefined)
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: [buildPrdCoverageArtifact({
+        status: 'gaps',
+        summary: 'Cached PRD coverage still has a gap.',
+        finalCandidateVersion: 2,
+        hasRemainingGaps: true,
+        remainingGaps: ['Add the missing fallback check.'],
+      })],
+      isLoading: false,
+      isError: true,
+      error: new Error('Coverage refresh unavailable.'),
+      refetch,
+    })
+
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+
+    expect(await screen.findByText('The last coverage result is still shown, but its refresh failed, so approval stays blocked.')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve with gaps' })).toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: /Coverage Warning/i }))
+    expect(screen.getByText('Cached PRD coverage still has a gap.')).toBeInTheDocument()
   })
 
   it('disables approval during extra fixes, refreshes gaps, and removes the warning when clean', async () => {

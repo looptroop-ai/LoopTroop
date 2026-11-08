@@ -41,6 +41,7 @@ import { resolveManualQaSettingLabel } from '@/lib/manualQaSetting'
 import { buildCanonicalManualQaDraft, buildDefaultManualQaImprovementContext, composeManualQaImprovementPreview, validateManualQaItem, validateManualQaMergeGroups } from '@/lib/manualQaDraft'
 import { AutosaveStatus } from './AutosaveStatus'
 import { SkipReasonField } from './SkipReasonField'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 interface ManualQAViewProps {
   ticket: Ticket
@@ -162,17 +163,17 @@ function ManualQaRoundSummary({ summary }: { summary: ManualQaSummary }) {
   )
 }
 
-function ManualQaGeneration() {
+function ManualQaGeneration({ isGenerating }: { isGenerating: boolean }) {
   return (
-    <div className="flex h-full items-center justify-center p-6">
+    <div role="status" className="flex h-full items-center justify-center p-6">
       <Card className="max-w-xl">
         <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
           <div>
-            <h3 className="font-semibold">Preparing your Manual QA checklist</h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              LoopTroop is generating user-run verification steps from the approved ticket, final tests, and focused implementation evidence. No action is needed, and LoopTroop will not start or control your application.
-            </p>
+            <h3 className="font-semibold">{isGenerating ? 'Preparing your Manual QA checklist' : 'Loading your Manual QA checklist'}</h3>
+            <p className="mt-2 text-sm text-muted-foreground">{isGenerating
+              ? 'LoopTroop is generating user-run verification steps from the approved ticket, final tests, and focused implementation evidence. No action is needed, and LoopTroop will not start or control your application.'
+              : 'The saved Manual QA checklist is loading.'}</p>
           </div>
         </CardContent>
       </Card>
@@ -182,7 +183,8 @@ function ManualQaGeneration() {
 
 export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   const isGenerating = ticket.status === 'GENERATING_QA_CHECKLIST'
-  const { data: index, isLoading: indexLoading, error: indexError } = useManualQaIndex(ticket.id)
+  const indexQuery = useManualQaIndex(ticket.id)
+  const { data: index, isPending: indexLoading, error: indexError } = indexQuery
   const { data: projects = [] } = useProjects()
   const { data: profile } = useProfile()
   const projectedVersion = ticket.manualQa?.activeVersion ?? null
@@ -220,7 +222,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
       status: typeof payload?.validationError === 'string' ? 'failed' : 'completed',
     }
   }, [generationArtifacts.artifacts])
-  const { data: round, isLoading: roundLoading, error: roundError } = roundQuery
+  const { data: round, isPending: roundLoading, error: roundError } = roundQuery
   const scope = version === null ? 'manual_qa_draft:none' : `manual_qa_draft:v${version}`
   const uiState = useTicketUIState<ManualQaDraft>(ticket.id, scope, version !== null)
   const saveUiState = useSaveTicketUIState()
@@ -677,12 +679,16 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
     }
   }
 
-  if (indexLoading || (isGenerating && artifactVersions.length === 0 && selectedVersion === null) || (version !== null && roundLoading && !round)) {
-    return <ManualQaGeneration />
+  const error = indexError ?? roundError
+  const retryFailedQueries = () => {
+    if (indexError) void indexQuery.refetch()
+    if (roundError) void roundQuery.refetch()
+  }
+  if (indexLoading || (isGenerating && !indexError && artifactVersions.length === 0 && selectedVersion === null) || (version !== null && roundLoading && !round)) {
+    return <ManualQaGeneration isGenerating={isGenerating && !indexQuery.isPaused && !roundQuery.isPaused} />
   }
 
-  const error = indexError ?? roundError
-  if (error || !round || !checklist || version === null) {
+  if (!round || !checklist || version === null) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center">
         <div className="max-w-2xl space-y-4">
@@ -690,11 +696,13 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
               no checklist, so this is the one screen it can appear on — and the
               run whose failed attempts the operator's next move depends on. */}
           <ArtifactProcessingNotice structuredOutput={generation.structuredOutput} status={generation.status} />
-          <div>
-            <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
-            <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
-            <p className="mt-1 text-sm text-muted-foreground">{error instanceof Error ? error.message : 'The checklist may still be restoring.'}</p>
-          </div>
+          {error ? <QueryErrorNotice title="Manual QA artifacts could not be loaded." error={error} onRetry={retryFailedQueries} /> : (
+            <div>
+              <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
+              <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
+              <p className="mt-1 text-sm text-muted-foreground">The checklist may still be restoring.</p>
+            </div>
+          )}
         </div>
       </div>
     )
@@ -740,6 +748,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
 
       <div className="flex-1 overflow-y-auto p-4">
         <div className="mx-auto max-w-4xl space-y-4">
+          {error ? <QueryErrorNotice title="The checklist could not be refreshed. Showing the last available data." error={error} onRetry={retryFailedQueries} /> : null}
           {/* Only against the round the latest generation produced: the
               companion belongs to that generation, and pinning it to an older
               round would describe a repair that round never had. */}

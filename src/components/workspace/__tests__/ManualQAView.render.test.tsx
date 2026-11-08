@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   skip: vi.fn(),
   upload: vi.fn(),
   remove: vi.fn(),
+  refetchIndex: vi.fn(),
   refetchRound: vi.fn(),
   includeDrift: vi.fn(),
   discardDrift: vi.fn(),
@@ -132,6 +133,7 @@ describe('ManualQAView recovery behavior', () => {
       data: { activeVersion: 1, completedRounds: 0, latestOutcome: null, artifactAvailable: true, versions: [{ version: 1, status: 'waiting', artifactAvailable: true, phaseAttempt: 1 }] },
       isLoading: false,
       error: null,
+      refetch: mocks.refetchIndex,
     })
     mocks.uiState.mockReturnValue({
       data: { scope: 'manual_qa_draft:v1', exists: false, data: null, revision: 0, clientRevision: null, updatedAt: null },
@@ -161,6 +163,65 @@ describe('ManualQAView recovery behavior', () => {
     expect(screen.queryByRole('heading', { name: 'Evidence' })).not.toBeInTheDocument()
     expect(document.querySelector('textarea')).toBeNull()
     expect(document.querySelector('input[type="file"]')).toBeNull()
+  })
+
+  it.each(['index', 'round'] as const)('shows a loading state while the initial %s query is pending', (query) => {
+    if (query === 'index') {
+      mocks.index.mockReturnValue({ data: undefined, isPending: true, isLoading: false, error: null })
+    } else {
+      mocks.round.mockReturnValue({ data: undefined, isPending: true, isLoading: false, error: null, refetch: mocks.refetchRound })
+    }
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByRole('heading', { name: 'Loading your Manual QA checklist' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toBeInTheDocument()
+    expect(screen.queryByText('Manual QA artifacts are not available yet.')).not.toBeInTheDocument()
+  })
+
+  it('does not call a paused checklist query AI generation', () => {
+    const ticket = makeTicket({ status: 'GENERATING_QA_CHECKLIST' })
+    mocks.index.mockReturnValue({ data: undefined, isPending: true, isPaused: true, error: null, refetch: mocks.refetchIndex })
+
+    renderWithProviders(<ManualQAView ticket={ticket} />)
+
+    expect(screen.getByRole('heading', { name: 'Loading your Manual QA checklist' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Preparing your Manual QA checklist' })).not.toBeInTheDocument()
+  })
+
+  it.each(['index', 'round'] as const)('keeps cached checklist data visible after a %s refresh fails', (query) => {
+    if (query === 'index') {
+      mocks.index.mockReturnValue({
+        data: { activeVersion: 1, completedRounds: 0, latestOutcome: null, artifactAvailable: true, versions: [{ version: 1, status: 'waiting', artifactAvailable: true, phaseAttempt: 1 }] },
+        error: new Error('Index refresh failed'),
+        refetch: mocks.refetchIndex,
+      })
+    } else {
+      mocks.round.mockReturnValue({ data: round, error: new Error('Round refresh failed'), refetch: mocks.refetchRound })
+    }
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByRole('heading', { name: 'Manual QA' })).toBeInTheDocument()
+    expect(screen.getByText((text) => text.includes('Submit checkout'))).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Showing the last available data.')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(query === 'index' ? mocks.refetchIndex : mocks.refetchRound).toHaveBeenCalledOnce()
+  })
+
+  it.each(['index', 'round'] as const)('offers retry after the initial %s query fails', (query) => {
+    if (query === 'index') {
+      mocks.index.mockReturnValue({ data: undefined, isPending: false, error: new Error('Index request failed'), refetch: mocks.refetchIndex })
+      mocks.round.mockReturnValue({ data: undefined, isPending: false, error: null, refetch: mocks.refetchRound })
+    } else {
+      mocks.round.mockReturnValue({ data: undefined, isPending: false, error: new Error('Round request failed'), refetch: mocks.refetchRound })
+    }
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(query === 'index' ? mocks.refetchIndex : mocks.refetchRound).toHaveBeenCalledOnce()
   })
 
   it('restores a saved draft that arrives after the round', async () => {
@@ -1277,5 +1338,29 @@ describe('ManualQAView recovery behavior', () => {
     renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
 
     expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the checklist visible when the index refresh fails with a usable round cached', () => {
+    const error = new Error('Manual QA read failed.')
+    mocks.index.mockReturnValue({ data: undefined, isPending: false, isLoading: false, error, refetch: mocks.refetchIndex })
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByRole('heading', { name: 'Manual QA' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(error.message)
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText('Manual QA artifacts are not available yet.')).not.toBeInTheDocument()
+  })
+
+  it('shows a retryable load error when the round query fails without usable data', () => {
+    const error = new Error('Manual QA read failed.')
+    mocks.round.mockReturnValue({ data: undefined, isPending: false, isLoading: false, error, refetch: mocks.refetchRound })
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Manual QA artifacts could not be loaded.')
+    expect(screen.getByRole('alert')).toHaveTextContent(error.message)
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText('Manual QA artifacts are not available yet.')).not.toBeInTheDocument()
   })
 })

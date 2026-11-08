@@ -36,6 +36,10 @@ export function CenteredModal({
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const isVisible = open && !suspended
+  // Lets a nested dialog (About) stay out of its parent's inert sweep whichever
+  // effect runs first when both resume from behind a startup notice. Tailwind
+  // emits these as literal classes, so the layer can be read without layout.
+  const dialogLayer = Number(zIndexClass.match(/z-\[(\d+)\]/)?.[1] ?? 0)
   const handleTrapKeyDown = useDialogFocus(isVisible, panelRef)
 
   // Every way out of a dirty window — Escape, the backdrop, the X — asks the same question.
@@ -68,6 +72,7 @@ export function CenteredModal({
     <div
       hidden={suspended || undefined}
       aria-hidden={suspended || undefined}
+      data-lt-dialog-layer={dialogLayer}
       className={suspended
         ? 'hidden'
         : `fixed inset-0 ${zIndexClass} flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-[1px]`}

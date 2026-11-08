@@ -71,6 +71,25 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     expect(screen.queryByRole('button', { name: 'outside' })).not.toBeInTheDocument()
   })
 
+  it('keeps a higher-layer dialog interactive when both resume together', () => {
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={vi.fn()} title="Configuration">
+          <button type="button">underneath</button>
+        </CenteredModal>
+        <CenteredModal open onClose={vi.fn()} title="About" zIndexClass="z-[80]">
+          <button type="button">on top</button>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    const configuration = screen.getByRole('dialog', { name: 'Configuration', hidden: true })
+    const about = screen.getByRole('dialog', { name: 'About' })
+    expect(configuration.parentElement).toHaveAttribute('inert')
+    expect(about.parentElement).not.toHaveAttribute('inert')
+    expect(document.activeElement).toBe(about)
+  })
+
   it('releases the page and restores focus when it closes', () => {
     function Harness() {
       const [open, setOpen] = useState(false)
@@ -410,7 +429,7 @@ describe('CenteredModal — picker ownership when another overlay is on top', ()
               <button type="button">Project one</button>
             </DropdownPicker>
           </CenteredModal>
-          <CenteredModal open={aboutOpen} onClose={() => setAboutOpen(false)} title="About" zIndexClass="z-[60]">
+          <CenteredModal open={aboutOpen} onClose={() => setAboutOpen(false)} title="About" zIndexClass="z-[80]">
             <p>About Dialog</p>
           </CenteredModal>
         </TooltipProvider>

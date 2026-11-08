@@ -77,7 +77,8 @@ describe('KeyboardShortcuts', () => {
   it('keeps panel interactions open and closes on a backdrop click', () => {
     open()
     const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
-    const backdrop = dialog.parentElement!
+    const backdrop = dialog.parentElement
+    if (!backdrop) throw new Error('Keyboard shortcuts dialog has no backdrop')
 
     fireEvent.click(screen.getByText('Show keyboard shortcuts'))
     fireEvent.scroll(dialog)

@@ -84,12 +84,14 @@ describe('StartupRestorePopup', () => {
   })
 
   it('keeps the one-project headline grammatical', () => {
+    const [restoredProject] = startupStatus.storage.restoredProjects
+    if (!restoredProject) throw new Error('Startup fixture has no restored project')
     render(
       <StartupRestorePopup
         open
         startupStatus={{
           ...startupStatus,
-          storage: { ...startupStatus.storage, profileRestored: false, restoredProjectCount: 1, restoredProjects: [startupStatus.storage.restoredProjects[0]!] },
+          storage: { ...startupStatus.storage, profileRestored: false, restoredProjectCount: 1, restoredProjects: [restoredProject] },
         }}
       />,
     )

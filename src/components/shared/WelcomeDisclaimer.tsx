@@ -60,7 +60,7 @@ export function WelcomeDisclaimer({ open, onDismiss, appPathWarning }: WelcomeDi
           )}
 
           <p className="text-sm text-muted-foreground mb-5">
-            Ensure your machine won't sleep during execution and has at least 4 GB RAM and 15 GB free
+            Ensure your machine won&apos;t sleep during execution and has at least 4 GB RAM and 15 GB free
             space.
           </p>
         </div>

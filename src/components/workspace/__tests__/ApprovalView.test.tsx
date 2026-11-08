@@ -2094,8 +2094,8 @@ describe('additional beads approval paths', () => {
 
     renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
 
-    expect(await screen.findByText('The last coverage result is still in use. Its refresh failed.')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve with gaps' })).toBeEnabled())
+    expect(await screen.findByText('The last coverage result is still shown, but its refresh failed, so approval stays blocked.')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve with gaps' })).toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: /Coverage Warning/i }))
     expect(screen.getByText('Cached beads coverage still has a gap.')).toBeInTheDocument()
   })

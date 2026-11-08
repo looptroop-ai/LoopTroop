@@ -37,6 +37,30 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Configuration' }))
   })
 
+  it('keeps its content mounted but out of the way while suspended', () => {
+    const { rerender } = render(
+      <TooltipProvider>
+        <CenteredModal open suspended onClose={vi.fn()} title="Configuration">
+          <input aria-label="draft" defaultValue="typed" />
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    expect(screen.getByLabelText('draft')).toHaveValue('typed')
+    expect(screen.queryByRole('dialog', { name: 'Configuration' })).not.toBeInTheDocument()
+
+    rerender(
+      <TooltipProvider>
+        <CenteredModal open onClose={vi.fn()} title="Configuration">
+          <input aria-label="draft" defaultValue="typed" />
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    expect(screen.getByRole('dialog', { name: 'Configuration' })).toBeInTheDocument()
+    expect(screen.getByLabelText('draft')).toHaveValue('typed')
+  })
+
   it('makes the rest of the page inert while it is open', () => {
     renderModal()
     // Queried by text rather than by role: the button is hidden from assistive

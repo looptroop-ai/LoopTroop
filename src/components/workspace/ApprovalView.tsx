@@ -234,7 +234,10 @@ function BeadsApprovalPane({
     refetch: refetchArtifacts,
   } = useTicketArtifacts(ticket.id, { types: BEADS_COVERAGE_ARTIFACT_TYPES })
   // A cached report can belong to an earlier attempt while the active scope refreshes.
-  const isCoverageUnknown = loadedArtifacts === undefined || isArtifactsFetching
+  // A failed refresh leaves the report unverified too, so keep the cached warning
+  // readable but do not let it enable approval until evidence loads again.
+  const hasCachedArtifacts = loadedArtifacts !== undefined
+  const isCoverageUnknown = !hasCachedArtifacts || isArtifactsFetching || isArtifactsError
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   // Cache stores array form (matching navigator expectations)
@@ -851,9 +854,9 @@ function BeadsApprovalPane({
             <div role="status" className="text-xs text-muted-foreground">Checking beads coverage before approval…</div>
           ) : isArtifactsError ? (
             <QueryErrorNotice
-              title={isCoverageUnknown
-                ? 'Coverage could not be checked, so this plan cannot be approved yet.'
-                : 'The last coverage result is still in use. Its refresh failed.'}
+              title={hasCachedArtifacts
+                ? 'The last coverage result is still shown, but its refresh failed, so approval stays blocked.'
+                : 'Coverage could not be checked, so this plan cannot be approved yet.'}
               error={artifactsError}
               onRetry={() => void refetchArtifacts()}
             />

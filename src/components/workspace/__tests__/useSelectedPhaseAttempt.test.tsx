@@ -7,10 +7,10 @@ import { useSelectedPhaseAttempt } from '../useSelectedPhaseAttempt'
 
 const phase = 'SCANNING_RELEVANT_FILES'
 
-function attempts(ticketId: string) {
+function attempts(ticketId: string, attemptPhase = phase) {
   return [
-    { ticketId, phase, attemptNumber: 1, state: 'active', archivedReason: null, createdAt: '', archivedAt: null },
-    { ticketId, phase, attemptNumber: 2, state: 'archived', archivedReason: 'retried', createdAt: '', archivedAt: '' },
+    { ticketId, phase: attemptPhase, attemptNumber: 1, state: 'active', archivedReason: null, createdAt: '', archivedAt: null },
+    { ticketId, phase: attemptPhase, attemptNumber: 2, state: 'archived', archivedReason: 'retried', createdAt: '', archivedAt: '' },
   ]
 }
 
@@ -40,6 +40,29 @@ describe('useSelectedPhaseAttempt', () => {
 
     client.setQueryData(getTicketPhaseAttemptsQueryKey('ticket-two', phase), attempts('ticket-two'))
     rerender({ ticketId: 'ticket-two' })
+    expect(result.current.selectedAttempt?.attemptNumber).toBe(1)
+  })
+
+  it('drops an archived selection after visiting another phase', async () => {
+    const otherPhase = 'DRAFTING_PRD'
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    client.setQueryData(getTicketPhaseAttemptsQueryKey('ticket-one', phase), attempts('ticket-one'))
+    client.setQueryData(getTicketPhaseAttemptsQueryKey('ticket-one', otherPhase), attempts('ticket-one', otherPhase))
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+    const { result, rerender } = renderHook(
+      ({ currentPhase }: { currentPhase: string }) => useSelectedPhaseAttempt('ticket-one', currentPhase),
+      { initialProps: { currentPhase: phase }, wrapper },
+    )
+
+    await waitFor(() => expect(result.current.selectedAttempt?.attemptNumber).toBe(1))
+    act(() => result.current.setManualSelectedAttemptNumber(2))
+    expect(result.current.selectedAttempt?.attemptNumber).toBe(2)
+
+    rerender({ currentPhase: otherPhase })
+    await waitFor(() => expect(result.current.selectedAttempt?.attemptNumber).toBe(1))
+    rerender({ currentPhase: phase })
     expect(result.current.selectedAttempt?.attemptNumber).toBe(1)
   })
 })

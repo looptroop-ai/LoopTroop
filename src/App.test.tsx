@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -50,10 +50,10 @@ vi.mock('@/components/ticket/TicketDashboard', () => ({
 }))
 
 vi.mock('@/components/shared/CenteredModal', () => ({
-  CenteredModal: ({ open, children, onClose, title }: { open: boolean; children: ReactNode; onClose: () => void; title: string }) => (
+  CenteredModal: ({ open, suspended, children, onClose, title }: { open: boolean; suspended?: boolean; children: ReactNode; onClose: () => void; title: string }) => (
     open
       ? (
-        <div>
+        <div style={suspended ? { display: 'none' } : undefined}>
           <button type="button" onClick={onClose}>{`Close ${title}`}</button>
           {children}
         </div>
@@ -83,9 +83,14 @@ vi.mock('@/components/project/ProjectsPanel', () => ({
 vi.mock('@/components/ticket/TicketForm', () => ({
   TicketForm: ({ onClose }: { onClose?: () => void }) => {
     const { dispatch } = useUI()
+    const [title, setTitle] = useState('')
     return (
       <>
         <div>Ticket Form</div>
+        <label>
+          Ticket title
+          <input value={title} onChange={(event) => setTitle(event.target.value)} />
+        </label>
         <button
           type="button"
           onClick={() => {
@@ -1314,15 +1319,15 @@ describe('App startup notices', () => {
     const view = renderAppWithProbe()
 
     expect(screen.getByText('Welcome to LoopTroop')).toBeInTheDocument()
-    expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+    expect(await screen.findByText('Profile Setup')).not.toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: /got it, let's go!/i }))
     expect(await screen.findByText('Saved data found')).toBeInTheDocument()
-    expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+    expect(screen.getByText('Profile Setup')).not.toBeVisible()
 
     await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
-    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    expect(await screen.findByText('Profile Setup')).toBeVisible()
     expect(window.location.pathname).toBe('/config')
   })
 
@@ -1341,13 +1346,35 @@ describe('App startup notices', () => {
     view.rerenderApp()
 
     expect(await screen.findByText('Saved data found')).toBeInTheDocument()
-    expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
-    expect(screen.queryByText('About Dialog')).not.toBeInTheDocument()
+    expect(screen.getByText('Profile Setup')).not.toBeVisible()
+    expect(screen.getByText('About Dialog')).not.toBeVisible()
 
     await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
-    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
-    expect(await screen.findByText('About Dialog')).toBeInTheDocument()
+    expect(await screen.findByText('Profile Setup')).toBeVisible()
+    expect(await screen.findByText('About Dialog')).toBeVisible()
+  })
+
+  it('preserves a New Ticket draft when a restore notice appears after typing', async () => {
+    localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
+    window.history.pushState(null, '', '/ticket/new')
+    mockState.startupStatus = null
+
+    const view = renderAppWithProbe()
+    expect(await screen.findByText('Ticket Form')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Ticket title'), { target: { value: 'Draft title' } })
+
+    const startupStatus = makeStartupStatus()
+    mockState.startupStatus = startupStatus
+    view.rerenderApp()
+
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
+    expect(screen.getByText('Ticket Form')).not.toBeVisible()
+
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
+
+    expect(await screen.findByText('Ticket Form')).toBeVisible()
+    expect(screen.getByLabelText('Ticket title')).toHaveValue('Draft title')
   })
 
   it('shows the WSL app-path warning in the welcome disclaimer when applicable', () => {

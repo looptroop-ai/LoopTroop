@@ -1621,17 +1621,20 @@ describe('ticket log projection API', () => {
   it('restores model milestones and source-attributed rows once across pages and exports', async () => {
     const { ticket } = createLogTestTicket()
     const scope = { audience: 'all', kind: 'milestone', phaseAttempt: 2, beadId: 'bead-1' }
-    appendLogEvent(ticket.id, 'info', 'CODING', 'model milestone', { ...scope, modelId: 'test/model' }, 'system', 'CODING')
-    appendLogEvent(ticket.id, 'model_output', 'CODING', 'model output', { ...scope, audience: 'ai', kind: 'text', modelId: 'test/model' }, 'opencode', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'CODING', 'source milestone', scope, 'model:test/model', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'CODING', 'session milestone', { ...scope, sessionId: 'session-1' }, 'system', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'CODING', 'opencode milestone', scope, 'opencode', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'CODING', 'unrelated system row', scope, 'system', 'CODING')
-    appendLogEvent(ticket.id, 'debug', 'CODING', 'model debug row', { ...scope, modelId: 'test/model' }, 'debug', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'CODING', 'other model', { ...scope, modelId: 'test/other' }, 'model:test/model', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'CODING', 'other attempt', { ...scope, phaseAttempt: 1, modelId: 'test/model' }, 'system', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'CODING', 'other bead', { ...scope, beadId: 'bead-2', modelId: 'test/model' }, 'system', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'RUNNING_FINAL_TEST', 'other phase', { ...scope, modelId: 'test/model' }, 'system', 'RUNNING_FINAL_TEST')
+    // Explicit, increasing timestamps: this test is about paging and de-duplication,
+    // not about whichever millisecond the appends happened to land in.
+    const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`
+    appendLogEvent(ticket.id, 'info', 'CODING', 'model milestone', { ...scope, modelId: 'test/model', timestamp: at(1) }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'model_output', 'CODING', 'model output', { ...scope, audience: 'ai', kind: 'text', modelId: 'test/model', timestamp: at(2) }, 'opencode', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'source milestone', { ...scope, timestamp: at(3) }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'session milestone', { ...scope, sessionId: 'session-1', timestamp: at(4) }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'opencode milestone', { ...scope, timestamp: at(5) }, 'opencode', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'unrelated system row', { ...scope, timestamp: at(6) }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'debug', 'CODING', 'model debug row', { ...scope, modelId: 'test/model', timestamp: at(7) }, 'debug', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other model', { ...scope, modelId: 'test/other', timestamp: at(8) }, 'model:test/model', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other attempt', { ...scope, phaseAttempt: 1, modelId: 'test/model', timestamp: at(9) }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', 'other bead', { ...scope, beadId: 'bead-2', modelId: 'test/model', timestamp: at(10) }, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'RUNNING_FINAL_TEST', 'other phase', { ...scope, modelId: 'test/model', timestamp: at(11) }, 'system', 'RUNNING_FINAL_TEST')
 
     const url = `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&phaseAttempt=2&beadId=bead-1&view=ai&modelId=test%2Fmodel&limit=2`
     const response = await app.request(url)

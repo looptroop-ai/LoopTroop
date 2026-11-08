@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 
 /**
@@ -31,6 +31,12 @@ export function useSelectedPhaseAttempt(ticketId?: string, phase?: string) {
     : null
   const setManualSelectedAttemptNumber = useCallback((attemptNumber: number | null) => {
     setManualSelection(attemptNumber === null ? null : { ticketId, phase, attemptNumber })
+  }, [phase, ticketId])
+
+  // Returning to a phase must not resurrect the archived version picked on an
+  // earlier visit; the active version is the one the surface should reopen on.
+  useEffect(() => {
+    setManualSelection(null)
   }, [phase, ticketId])
 
   const selectedAttemptNumber = useMemo(() => {

@@ -22,7 +22,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Raw artifact views place **Copy** beside line, character, and estimated token counts. Plain text and missing-output states use the same header layout.
 - The startup restore notice explains when saved profile or project data was found, shows its local database location, and says dismissal lasts for that database.
 - Long shared dialogs and the Startup Restore, Welcome Disclaimer, and Keyboard Shortcuts overlays keep their content within the viewport and scrollable.
-- Startup notices finish before routed dialogs open, keeping both usable when opening a direct link such as Configuration.
+- Startup notices stay above routed dialogs and hold them hidden instead of unmounting them, so a direct link such as Configuration opens after the notice without losing a draft typed in the meantime.
 
 ### Fixed
 
@@ -32,7 +32,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Ticket review views wait for the active phase attempt and matching artifact/log history before showing versions or empty states. Cached artifacts and Manual QA checklists stay visible during refresh errors, with retry; PRD and Beads approval stays disabled until the first coverage result loads.
 - Archived setup-plan views use a neutral label until artifact history loads and offer retry if status could not be read. Coverage progress retries reload requested log scopes and discard stale in-flight snapshots; failed first log reads are not cached as empty.
 - Clearing local logs reloads requested server history so open coverage summaries do not remain stuck loading.
-- PRD and Beads approval waits while coverage reports refresh, preventing approval against a cached report from an earlier attempt.
+- PRD and Beads approval waits while coverage reports refresh, and stays blocked if that refresh fails until a retry succeeds, preventing approval against a cached report from an earlier attempt.
 - Local and self-hosted API requests run even when the browser reports offline.
 
 ## 0.6.4 (2026-11-06)

@@ -673,30 +673,30 @@ function App() {
             : <KanbanBoard />}
         </AppShell>
 
-        <CenteredModal open={activeModal === 'profile' && !startupOverlayOpen} onClose={closeModal} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen} isDirty={modalDirty.profile}>
+        <CenteredModal open={activeModal === 'profile'} suspended={startupOverlayOpen} onClose={closeModal} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen} isDirty={modalDirty.profile}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
             <ProfileSetup onClose={closeModal} onOpenAbout={openAbout} onDirtyChange={(dirty) => setModalDirty((current) => current.profile === dirty ? current : { ...current, profile: dirty })} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'prompts' && !startupOverlayOpen} onClose={closeModal} title="Prompts editor" maxWidth="max-w-[80vw]" isDirty={modalDirty.prompts}>
+        <CenteredModal open={activeModal === 'prompts'} suspended={startupOverlayOpen} onClose={closeModal} title="Prompts editor" maxWidth="max-w-[80vw]" isDirty={modalDirty.prompts}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
             <PromptsDialog onDirtyChange={(dirty) => setModalDirty((current) => current.prompts === dirty ? current : { ...current, prompts: dirty })} />
           </Suspense>
         </CenteredModal>
 
         {/* About renders above the routed modal it was opened from. */}
-        <CenteredModal open={isAboutOpen && !startupOverlayOpen} onClose={closeAbout} title="About" maxWidth="max-w-2xl" zIndexClass="z-[80]">
+        <CenteredModal open={isAboutOpen} suspended={startupOverlayOpen} onClose={closeAbout} title="About" maxWidth="max-w-2xl" zIndexClass="z-[80]">
           <AboutDialog />
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'project' && !startupOverlayOpen} onClose={closeModal} title="Projects" maxWidth="max-w-2xl" isDirty={modalDirty.project}>
+        <CenteredModal open={activeModal === 'project'} suspended={startupOverlayOpen} onClose={closeModal} title="Projects" maxWidth="max-w-2xl" isDirty={modalDirty.project}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
             <ProjectsPanel onClose={closeModal} onDirtyChange={(dirty) => setModalDirty((current) => current.project === dirty ? current : { ...current, project: dirty })} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={activeModal === 'ticket' && !startupOverlayOpen} onClose={closeModal} title={ticketModalEditing ? 'Edit Ticket' : 'New Ticket'} maxWidth="max-w-xl" isDirty={modalDirty.ticket}>
+        <CenteredModal open={activeModal === 'ticket'} suspended={startupOverlayOpen} onClose={closeModal} title={ticketModalEditing ? 'Edit Ticket' : 'New Ticket'} maxWidth="max-w-xl" isDirty={modalDirty.ticket}>
           <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
             <TicketForm onClose={closeModal} onEditingChange={setTicketModalEditing} onDirtyChange={(dirty) => setModalDirty((current) => current.ticket === dirty ? current : { ...current, ticket: dirty })} />
           </Suspense>

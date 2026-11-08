@@ -758,7 +758,13 @@ describe("WorkspacePhaseSummary", () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear logs' }));
     await waitFor(() => expect(logResponses).toHaveLength(2));
 
-    await act(async () => logResponses[1]!(await createJsonResponse([{
+    const resolveLogResponse = async (index: number, entries: unknown[]) => {
+      const resolve = logResponses[index];
+      if (!resolve) throw new Error(`Missing pending log response ${index}`);
+      await act(async () => resolve(await createJsonResponse(entries)));
+    };
+
+    await resolveLogResponse(1, [{
       phase,
       status: phase,
       phaseAttempt: 1,
@@ -766,13 +772,13 @@ describe("WorkspacePhaseSummary", () => {
       kind: 'milestone',
       content: 'Auditing PRD Candidate v4.',
       timestamp: '2026-01-01T00:00:04.000Z',
-    }])));
+    }]);
 
     await waitFor(() => expect(screen.getByRole('button', {
       name: 'Coverage Check (PRD) (checking version 4)',
     })).toBeInTheDocument());
 
-    await act(async () => logResponses[0]!(await createJsonResponse([{
+    await resolveLogResponse(0, [{
       phase,
       status: phase,
       phaseAttempt: 1,
@@ -780,7 +786,7 @@ describe("WorkspacePhaseSummary", () => {
       kind: 'milestone',
       content: 'Auditing PRD Candidate v1.',
       timestamp: '2026-01-01T00:00:01.000Z',
-    }])));
+    }]);
 
     expect(screen.getByRole('button', {
       name: 'Coverage Check (PRD) (checking version 4)',

@@ -7,6 +7,12 @@ import { confirmDiscardChanges } from '@/lib/confirmDialog'
 
 interface CenteredModalProps {
   open: boolean
+  /**
+   * Keeper mounted but hidden, so a startup notice that appears above it
+   * cannot throw away a draft the user is already typing. Focus containment
+   * and Escape handling stop while suspended, and resume with the dialog.
+   */
+  suspended?: boolean
   onClose: () => void
   title: string
   children: React.ReactNode
@@ -18,6 +24,7 @@ interface CenteredModalProps {
 
 export function CenteredModal({
   open,
+  suspended = false,
   onClose,
   title,
   children,
@@ -28,7 +35,8 @@ export function CenteredModal({
 }: CenteredModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
-  const handleTrapKeyDown = useDialogFocus(open, panelRef)
+  const isVisible = open && !suspended
+  const handleTrapKeyDown = useDialogFocus(isVisible, panelRef)
 
   // Every way out of a dirty window — Escape, the backdrop, the X — asks the same question.
   const requestClose = useCallback(async () => {
@@ -38,7 +46,7 @@ export function CenteredModal({
   }, [closeDisabled, isDirty, onClose])
 
   useEffect(() => {
-    if (!open) return
+    if (!isVisible) return
     const handler = (e: KeyboardEvent) => {
       if (closeDisabled) return
       if (e.key === 'Escape') {
@@ -52,13 +60,17 @@ export function CenteredModal({
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [closeDisabled, open, requestClose])
+  }, [closeDisabled, isVisible, requestClose])
 
   if (!open) return null
 
   return (
     <div
-      className={`fixed inset-0 ${zIndexClass} flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-[1px]`}
+      hidden={suspended || undefined}
+      aria-hidden={suspended || undefined}
+      className={suspended
+        ? 'hidden'
+        : `fixed inset-0 ${zIndexClass} flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-[1px]`}
       onClick={(e) => {
         if (e.target !== e.currentTarget) return
         void requestClose()

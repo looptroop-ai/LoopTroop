@@ -515,7 +515,7 @@ export function InterviewApprovalPane({
         ) : interviewDocument ? (
           <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
         ) : (
-          <RawArtifactBlock content={rawContent} emptyLabel="No interview artifact available yet." />
+          <RawArtifactBlock content={rawContent.trim() ? rawContent : ''} emptyLabel="No interview artifact available yet." />
         )}
       </div>
 

@@ -67,8 +67,8 @@ export interface PlainLogOptions {
 }
 
 /**
- * The half of the log context that moves as rows arrive: the rows themselves, the
- * loading flags, and the two readers over them. The readers belong here rather than
+ * The half of the log context that moves as rows arrive: the rows themselves, scope
+ * loading/readiness/error flags, and the two readers over them. The readers belong here rather than
  * with the actions because their identity is the signal a memo needs — it changes
  * when the rows change and at no other time, so `[getAllLogs]` recomputes a rendered
  * list per batch of lines instead of per render of the provider.
@@ -80,6 +80,8 @@ export interface LogStateValue {
   getLogsForPhase: (phase: string, options?: { phaseAttempt?: number }) => LogEntry[]
   getAllLogs: () => LogEntry[]
   isLoadingLogScope?: (scope: ServerLogScope) => boolean
+  isLoadedLogScope?: (scope: ServerLogScope) => boolean
+  isErrorLogScope?: (scope: ServerLogScope) => boolean
 }
 
 /**

@@ -40,11 +40,12 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
     setManualSelectedAttemptNumber,
     logPhaseAttempt,
     logMode,
+    isLoading: isAttemptsLoading,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
     isPhaseVersionUnknown,
-  } = useSelectedPhaseAttempt(ticket.id, phase)
+  } = useSelectedPhaseAttempt(ticket.id, isDraft ? undefined : phase)
   const attemptNumber = selectedAttemptNumber(selectedAttempt, attempts)
 
   const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
@@ -58,7 +59,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
   }, [phase, selectedAttempt])
   const artifactState = useTicketArtifactBundle(ticket.id, artifactScopes)
 
-  if (artifactState.isLoading && !isExecutionSetupDraft) {
+  if ((isAttemptsLoading && !isDraft) || (artifactState.isLoading && !isExecutionSetupDraft)) {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">

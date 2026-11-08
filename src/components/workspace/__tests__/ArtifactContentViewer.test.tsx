@@ -1407,6 +1407,8 @@ items:
 
     expect(screen.getByText('Epics (1)')).toBeInTheDocument()
     expect(screen.getByText('Refine the winning PRD')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PRD Candidate' })).toBeInTheDocument()
+    expect(screen.queryByText('PRD Candidate v1')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Diff(?: \(\d+\))?$/i })).not.toBeInTheDocument()
 
     // Expand the epic section to reveal user stories

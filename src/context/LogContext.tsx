@@ -120,12 +120,15 @@ export function LogProvider({
 }: LogProviderProps) {
   const [logsByPhase, setLogsByPhase] = useState<Record<string, LogEntry[]>>({})
   const [loadingScopeKeys, setLoadingScopeKeys] = useState<Set<string>>(() => new Set())
+  const [loadedScopeKeys, setLoadedScopeKeys] = useState<Set<string>>(() => new Set())
+  const [failedScopeKeys, setFailedScopeKeys] = useState<Set<string>>(() => new Set())
   const [manualActivePhase, setManualActivePhase] = useState<string | null>(null)
   const activePhase = manualActivePhase ?? currentStatus ?? null
   const isLoadingLogs = loadingScopeKeys.size > 0
   const currentStatusRef = useRef(currentStatus)
   const loadedScopeKeysRef = useRef<Set<string>>(new Set())
   const loadingScopeKeysRef = useRef<Set<string>>(new Set())
+  const failedScopeKeysRef = useRef<Set<string>>(new Set())
   const logsByPhaseRef = useRef<Record<string, LogEntry[]>>({})
   const activePhaseRef = useRef(activePhase)
   // Bumped whenever this provider stops owning `ticketId`, so a fetch that outlives it can tell.
@@ -145,9 +148,12 @@ export function LogProvider({
   useEffect(() => {
     setLogsByPhase({})
     setLoadingScopeKeys(new Set())
+    setLoadedScopeKeys(new Set())
+    setFailedScopeKeys(new Set())
     setManualActivePhase(null)
     loadedScopeKeysRef.current = new Set()
     loadingScopeKeysRef.current = new Set()
+    failedScopeKeysRef.current = new Set()
     logsByPhaseRef.current = {}
 
     // `serverLogCache` is module scope, so it outlives this provider. Nothing forces a refetch of
@@ -186,6 +192,22 @@ export function LogProvider({
       loading.delete(scopeKey)
     }
     setLoadingScopeKeys(new Set(loading))
+  }, [])
+
+  const setScopeLoaded = useCallback((scopeKey: string) => {
+    setLoadedScopeKeys(current => current.has(scopeKey) ? current : new Set(current).add(scopeKey))
+  }, [])
+
+  const setScopeFailed = useCallback((scopeKey: string, failed: boolean) => {
+    if (failed) failedScopeKeysRef.current.add(scopeKey)
+    else failedScopeKeysRef.current.delete(scopeKey)
+    setFailedScopeKeys(current => {
+      if (current.has(scopeKey) === failed) return current
+      const next = new Set(current)
+      if (failed) next.add(scopeKey)
+      else next.delete(scopeKey)
+      return next
+    })
   }, [])
 
   const applyServerLogs = useCallback((serverLogs: Array<Record<string, unknown>>, scope: ServerLogScope) => {
@@ -255,21 +277,25 @@ export function LogProvider({
 
     const normalizedScope = normalizeScope(scope)
     const scopeKey = getServerLogCacheKey(ticketId, normalizedScope)
-    if (!options.force && loadedScopeKeysRef.current.has(scopeKey)) {
+    if (!options.force && loadedScopeKeysRef.current.has(scopeKey) && !failedScopeKeysRef.current.has(scopeKey)) {
       const cached = serverLogCache.get(scopeKey)
       if (cached) applyServerLogs(cached, normalizedScope)
       return
     }
 
-    if (!options.force && serverLogCache.has(scopeKey)) {
+    if (!options.force && serverLogCache.has(scopeKey) && !failedScopeKeysRef.current.has(scopeKey)) {
       const cached = serverLogCache.get(scopeKey) ?? []
       loadedScopeKeysRef.current.add(scopeKey)
-      applyServerLogs(cached, normalizedScope)
+      startTransition(() => {
+        setScopeLoaded(scopeKey)
+        applyServerLogs(cached, normalizedScope)
+      })
       return
     }
 
     if (loadingScopeKeysRef.current.has(scopeKey)) return
 
+    setScopeFailed(scopeKey, false)
     if (options.showLoading !== false) setScopeLoading(scopeKey, true)
     const generation = generationRef.current
     fetch(getServerLogsUrl(ticketId, normalizedScope))
@@ -293,18 +319,21 @@ export function LogProvider({
           : Array.isArray(payload.entries) ? payload.entries as Array<Record<string, unknown>> : []
         serverLogCache.set(scopeKey, serverLogs)
         loadedScopeKeysRef.current.add(scopeKey)
-        applyServerLogs(serverLogs, normalizedScope)
+        startTransition(() => {
+          setScopeLoaded(scopeKey)
+          setScopeFailed(scopeKey, false)
+          applyServerLogs(serverLogs, normalizedScope)
+        })
       })
       .catch(() => {
-        // Ignore the failure here; cached rows stay on screen and the scope is
-        // left unloaded, so the next request for it actually asks the server
-        // again. The panel's own error surface is the historical-log query.
+        // Cached rows stay on screen; a later request retries the failed scope.
+        if (generationRef.current === generation) setScopeFailed(scopeKey, true)
       })
       .finally(() => {
         if (generationRef.current !== generation) return
         setScopeLoading(scopeKey, false)
       })
-  }, [applyServerLogs, setScopeLoading, ticketId])
+  }, [applyServerLogs, setScopeFailed, setScopeLoaded, setScopeLoading, ticketId])
 
   const addLog = useCallback((phase: string, line: string, options?: PlainLogOptions) => {
     if (!phase) return
@@ -378,11 +407,24 @@ export function LogProvider({
     return loadingScopeKeys.has(getServerLogCacheKey(ticketId, normalizeScope(scope)))
   }, [loadingScopeKeys, ticketId])
 
+  const isLoadedLogScope = useCallback((scope: ServerLogScope) => {
+    if (!ticketId) return false
+    return loadedScopeKeys.has(getServerLogCacheKey(ticketId, normalizeScope(scope)))
+  }, [loadedScopeKeys, ticketId])
+
+  const isErrorLogScope = useCallback((scope: ServerLogScope) => {
+    if (!ticketId) return false
+    return failedScopeKeys.has(getServerLogCacheKey(ticketId, normalizeScope(scope)))
+  }, [failedScopeKeys, ticketId])
+
   const clearLogs = useCallback(() => {
     if (ticketId) clearPersistedTicketLogs(ticketId)
 
     loadedScopeKeysRef.current.clear()
     loadingScopeKeysRef.current.clear()
+    failedScopeKeysRef.current.clear()
+    setLoadedScopeKeys(new Set())
+    setFailedScopeKeys(new Set())
     logsByPhaseRef.current = {}
     setLoadingScopeKeys(new Set())
 
@@ -393,8 +435,8 @@ export function LogProvider({
   }, [ticketId])
 
   const state = useMemo<LogStateValue>(
-    () => ({ logsByPhase, activePhase, isLoadingLogs, getLogsForPhase, getAllLogs, isLoadingLogScope }),
-    [activePhase, getAllLogs, getLogsForPhase, isLoadingLogScope, isLoadingLogs, logsByPhase],
+    () => ({ logsByPhase, activePhase, isLoadingLogs, getLogsForPhase, getAllLogs, isLoadingLogScope, isLoadedLogScope, isErrorLogScope }),
+    [activePhase, getAllLogs, getLogsForPhase, isErrorLogScope, isLoadedLogScope, isLoadingLogScope, isLoadingLogs, logsByPhase],
   )
 
   // Every member below is already identity-stable, so this memo settles once per ticket

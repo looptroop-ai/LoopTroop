@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearTicketArtifactsCache,
@@ -44,6 +44,7 @@ function setup() {
 }
 
 afterEach(() => {
+  onlineManager.setOnline(true)
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -65,6 +66,24 @@ describe('useTicketArtifacts', () => {
 
     await waitFor(() => expect(result.current.status).toBe('success'))
     expect(result.current.artifacts).toEqual([])
+  })
+
+  it('keeps an initial offline-paused request loading until data arrives', async () => {
+    onlineManager.setOnline(false)
+    const fetchMock = vi.fn(async () => response([artifact()]))
+    vi.stubGlobal('fetch', fetchMock)
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useTicketArtifacts(ticketId), { wrapper })
+
+    await waitFor(() => expect(result.current.status).toBe('loading'))
+    expect(result.current.artifacts).toBeUndefined()
+    expect(result.current.isLoading).toBe(true)
+    expect(result.current.isFetching).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await act(async () => onlineManager.setOnline(true))
+    await waitFor(() => expect(result.current.status).toBe('success'))
+    expect(result.current.artifacts).toEqual([artifact()])
   })
 
   it('reports detailed HTTP and malformed-response failures instead of empty data', async () => {
@@ -292,6 +311,30 @@ describe('useTicketArtifactBundle', () => {
     expect(result.current.status).toBe('loading')
 
     await act(async () => resolveBuild(response([{ ...artifact('built'), id: 2 }])))
+    await waitFor(() => expect(result.current.status).toBe('success'))
+    expect(result.current.artifacts).toHaveLength(2)
+  })
+
+  it('keeps the bundle loading while initial scopes are paused offline', async () => {
+    onlineManager.setOnline(false)
+    const fetchMock = vi.fn(async (url: string) => {
+      const phase = new URL(url, 'http://localhost').searchParams.get('phase') ?? 'PLAN'
+      return response([{ ...artifact(), id: phase === 'PLAN' ? 1 : 2, phase }])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { wrapper } = setup()
+    const { result } = renderHook(
+      () => useTicketArtifactBundle(ticketId, [{ phase: 'PLAN' }, { phase: 'BUILD' }]),
+      { wrapper },
+    )
+
+    await waitFor(() => expect(result.current.status).toBe('loading'))
+    expect(result.current.artifacts).toBeUndefined()
+    expect(result.current.isLoading).toBe(true)
+    expect(result.current.isFetching).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await act(async () => onlineManager.setOnline(true))
     await waitFor(() => expect(result.current.status).toBe('success'))
     expect(result.current.artifacts).toHaveLength(2)
   })

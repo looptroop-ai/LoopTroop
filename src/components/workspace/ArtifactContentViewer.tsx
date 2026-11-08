@@ -2797,8 +2797,8 @@ export function ArtifactContent({
     return <FinalPrdDraftView content={content} header={header} finalLabel="PRD Candidate v1" phase={phase} />
   }
   if (artifactId === 'refined-prd') {
-    const candidateVersion = parseRefinementArtifact(content)?.candidateVersion ?? 1
-    const label = `PRD Candidate v${candidateVersion}`
+    const candidateVersion = parseRefinementArtifact(content)?.candidateVersion
+    const label = candidateVersion ? `PRD Candidate v${candidateVersion}` : 'PRD Candidate'
     const header = <div className="text-xs font-semibold px-1">{label}</div>
     return <FinalPrdDraftView content={content} header={header} finalLabel={label} phase={phase} />
   }

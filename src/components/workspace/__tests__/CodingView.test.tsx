@@ -433,6 +433,16 @@ describe('CodingView', () => {
     expect(screen.getByTestId('collapsible-log-section')).toHaveAttribute('data-log-mode', 'live')
   })
 
+  it('does not render active phase artifacts while attempt history is pending', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({ data: undefined, isPending: true })
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [{ content: 'unresolved active artifacts' }], isLoading: false })
+
+    renderCoding({ status: 'PREPARING_EXECUTION_ENV' })
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading phase version')
+    expect(screen.queryByTestId('phase-artifacts-panel')).not.toBeInTheDocument()
+  })
+
   it('hides the phase version selector for CODING because bead retry has separate recovery', () => {
     mockUseTicketPhaseAttempts.mockReturnValue({
       data: [

@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { ChevronRight, AlertTriangle } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -342,7 +342,7 @@ function findLatestPhaseActivationTimestamp(phase: string, logLines: Array<{ lin
   for (let index = logLines.length - 1; index >= 0; index -= 1) {
     const entry = logLines[index]
     if (!entry) continue
-    if (entry.line.includes(`-> ${phase}`) || entry.line.includes(`Status ${phase} is active.`)) {
+    if (entry.line.includes(`-> ${phase}`)) {
       return entry.timestamp
     }
   }
@@ -374,12 +374,16 @@ function formatCoverageLiveLabel(
   baseLabel: string,
   candidateVersion: number | null,
   coveragePass: CoveragePassProgress | null,
+  progressStatus?: 'loading' | 'error' | 'refresh-error',
 ): string {
   const details: string[] = []
   if (candidateVersion) details.push(`checking version ${candidateVersion}`)
   if (coveragePass) {
     details.push(`pass ${coveragePass.run}${coveragePass.max ? ` of ${coveragePass.max}` : ''}`)
   }
+  if (progressStatus === 'loading') details.push('loading progress')
+  if (progressStatus === 'error') details.push('progress unavailable')
+  if (progressStatus === 'refresh-error') details.push('refresh failed')
   return details.length > 0 ? `${baseLabel} (${details.join(', ')})` : baseLabel
 }
 
@@ -518,11 +522,18 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
   // The reader, not the context: its identity moves when the rows move and at no other
   // time, so a loading flag flipping no longer recopies this phase's log.
   const getLogsForPhase = logCtx?.getLogsForPhase
+  const loadLogsForPhase = logCtx?.loadLogsForPhase
   const isLivePhase = ticket.status === phase
   const shouldTrackCoverageProgress = isLivePhase && isCoveragePhase(phase)
+  const tracksCoverageLogReadiness = shouldTrackCoverageProgress
+    && Boolean(loadLogsForPhase && logCtx?.isLoadedLogScope)
+  useEffect(() => {
+    if (shouldTrackCoverageProgress) loadLogsForPhase?.(phase)
+  }, [loadLogsForPhase, phase, shouldTrackCoverageProgress])
   const shouldTrackPhaseAttempt = isLivePhase && phase !== 'CODING' && !isCoveragePhase(phase)
   // Coverage progress only reads the current phase's coverage artifacts.
-  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id, { phase, skipFetch: !shouldTrackCoverageProgress })
+  const artifactState = useTicketArtifacts(ticket.id, { phase, skipFetch: !shouldTrackCoverageProgress })
+  const { artifacts: loadedArtifacts } = artifactState
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
   const { data: phaseAttempts = [] } = useTicketPhaseAttempts(
     shouldTrackPhaseAttempt ? ticket.id : undefined,
@@ -539,6 +550,15 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
       : [],
     [shouldTrackLogs, getLogsForPhase, phase, activeAttempt],
   )
+  const isCoverageLogLoaded = !tracksCoverageLogReadiness
+    || (logCtx?.isLoadedLogScope?.({ status: phase }) ?? false)
+  const isCoverageLogError = tracksCoverageLogReadiness
+    && (logCtx?.isErrorLogScope?.({ status: phase }) ?? false)
+  const isCoverageLogLoading = shouldTrackCoverageProgress
+    && (logCtx?.isLoadingLogScope?.({ status: phase }) ?? false)
+  const isCoverageLogPending = tracksCoverageLogReadiness
+    && !isCoverageLogLoaded
+    && !isCoverageLogError
   const phaseActivationTimestamp = shouldTrackCoverageProgress
     ? findLatestPhaseActivationTimestamp(phase, phaseLogs)
     : undefined
@@ -554,6 +574,9 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
   const summaryDescription = blockedErrorSummary?.description ?? phaseMeta?.description ?? ''
   const coverageVersion = useMemo(() => {
     if (!shouldTrackCoverageProgress || !isVersionedCoveragePhase(phase)) return null
+    // A phase retry can leave earlier candidate logs and artifacts in the same
+    // attempt. Wait for both sources before choosing which version is current.
+    if (loadedArtifacts === undefined || !isCoverageLogLoaded) return null
 
     const runArtifacts = phaseActivationTimestamp
       ? artifacts.filter((artifact) => artifact.phase !== phase || isTimestampOnOrAfter(artifact.createdAt, phaseActivationTimestamp))
@@ -564,10 +587,15 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
     const artifactVersion = extractCoverageVersionFromArtifacts(phase, runArtifacts)
     const logVersion = extractCoverageVersionFromLogs(phase, runLogs.map((entry) => entry.line))
 
-    return Math.max(artifactVersion ?? 1, logVersion ?? 1)
-  }, [artifacts, phase, phaseActivationTimestamp, phaseLogs, shouldTrackCoverageProgress])
+    return artifactVersion === null
+      ? logVersion
+      : logVersion === null
+        ? artifactVersion
+        : Math.max(artifactVersion, logVersion)
+  }, [artifacts, isCoverageLogLoaded, loadedArtifacts, phase, phaseActivationTimestamp, phaseLogs, shouldTrackCoverageProgress])
   const coveragePass = useMemo(() => {
     if (!shouldTrackCoverageProgress || !isCoveragePhase(phase)) return null
+    if (loadedArtifacts === undefined || !isCoverageLogLoaded) return null
 
     const runArtifacts = phaseActivationTimestamp
       ? artifacts.filter((artifact) => artifact.phase !== phase || isTimestampOnOrAfter(artifact.createdAt, phaseActivationTimestamp))
@@ -579,7 +607,7 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
       extractCoveragePassFromArtifacts(phase, runArtifacts),
       extractCoveragePassFromLogs(runLogs.map((entry) => entry.line)),
     ])
-  }, [artifacts, phase, phaseActivationTimestamp, phaseLogs, shouldTrackCoverageProgress])
+  }, [artifacts, isCoverageLogLoaded, loadedArtifacts, phase, phaseActivationTimestamp, phaseLogs, shouldTrackCoverageProgress])
   const phaseAttemptLabel = useMemo(() => {
     if (!activeAttempt || activeAttempt.attemptNumber <= 1) return null
     const previousAttempt = phaseAttempts.find((attempt) => attempt.attemptNumber === activeAttempt.attemptNumber - 1)
@@ -590,7 +618,14 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
     if (!isLivePhase) return basePhaseLabel
     if (phase === 'CODING') return formatCodingLiveLabel(runtime)
     if (isCoveragePhase(phase)) {
-      return formatCoverageLiveLabel(basePhaseLabel, coverageVersion, coveragePass)
+      const progressStatus = isCoverageLogPending || (isCoverageLogLoading && !isCoverageLogLoaded) || artifactState.isLoading
+        ? 'loading'
+        : (artifactState.isError && loadedArtifacts !== undefined) || (isCoverageLogError && isCoverageLogLoaded)
+          ? 'refresh-error'
+          : artifactState.isError || isCoverageLogError
+            ? 'error'
+            : undefined
+      return formatCoverageLiveLabel(basePhaseLabel, coverageVersion, coveragePass, progressStatus)
     }
     if (phase === 'PREPARING_EXECUTION_ENV') {
       const setupInfo = getExecutionSetupAttemptInfo(phaseLogs)
@@ -604,7 +639,7 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
       }
     }
     return phaseAttemptLabel ? `${basePhaseLabel} (${phaseAttemptLabel})` : basePhaseLabel
-  }, [basePhaseLabel, coveragePass, coverageVersion, isLivePhase, phase, phaseAttemptLabel, runtime, phaseLogs])
+  }, [artifactState.isError, artifactState.isLoading, basePhaseLabel, coveragePass, coverageVersion, isCoverageLogError, isCoverageLogLoaded, isCoverageLogLoading, isCoverageLogPending, isLivePhase, loadedArtifacts, phase, phaseAttemptLabel, runtime, phaseLogs])
   const showLiveCodingCountdown = ticket.status === 'CODING' && phase === 'CODING'
   const liveExecutionSetup = useMemo(
     () => ticket.status === 'PREPARING_EXECUTION_ENV' && phase === 'PREPARING_EXECUTION_ENV'

@@ -15,10 +15,12 @@ import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 export function useSelectedPhaseAttempt(ticketId?: string, phase?: string) {
   const {
     data: attempts = [],
+    isPending,
     isError,
     error,
     refetch,
   } = useTicketPhaseAttempts(ticketId, phase)
+  const isLoading = Boolean(ticketId && phase && isPending)
   const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
 
   // A choice belongs to the phase it was made in. The memo below already
@@ -54,6 +56,7 @@ export function useSelectedPhaseAttempt(ticketId?: string, phase?: string) {
     logPhaseAttempt: attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined,
     logMode: (archivedAttemptNumber != null ? 'snapshot' : 'live') as 'snapshot' | 'live',
     isError,
+    isLoading,
     error,
     refetch,
     /** The history failed and nothing is cached, so the version is unknown. */

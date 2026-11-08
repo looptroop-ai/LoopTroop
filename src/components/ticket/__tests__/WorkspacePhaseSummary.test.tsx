@@ -1,9 +1,10 @@
 import type { ReactElement } from "react";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createActor } from "xstate";
 import { ticketMachine } from "@server/machines/ticketMachine";
 import type { LogContextValue, LogEntry } from "@/context/logUtils";
+import { LogProvider } from "@/context/LogContext";
 import { TEST, makeTicket } from "@/test/factories";
 import { getTicketArtifactsQueryKey } from "@/hooks/useTicketArtifacts";
 import { normalizeTicketResponse } from "@/lib/ticketNormalization";
@@ -527,6 +528,247 @@ describe("WorkspacePhaseSummary", () => {
     });
   });
 
+  it('waits for coverage artifacts before using a version from older log evidence', async () => {
+    let resolveArtifacts!: (response: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      if (String(input).split('?')[0]?.endsWith('/artifacts')) {
+        return new Promise<Response>((resolve) => { resolveArtifacts = resolve; });
+      }
+      throw new Error(`Unhandled fetch: ${String(input)}`);
+    });
+    const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
+    const queryClient = createTestQueryClient();
+
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="VERIFYING_PRD_COVERAGE" ticket={ticket} />,
+      {
+        VERIFYING_PRD_COVERAGE: [
+          createLogEntry(
+            '[SYS] Transition: REFINING_PRD -> VERIFYING_PRD_COVERAGE',
+            '2026-01-01T00:00:00.000Z',
+          ),
+          createLogEntry(
+            'Auditing PRD Candidate v1.',
+            '2026-01-01T00:00:01.000Z',
+          ),
+        ],
+      },
+      queryClient,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: 'Coverage Check (PRD) (loading progress)',
+      })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 1)',
+    })).not.toBeInTheDocument();
+
+    await act(async () => resolveArtifacts(await createJsonResponse([{
+      id: 4,
+      ticketId: TEST.ticketId,
+      phase: 'VERIFYING_PRD_COVERAGE',
+      phaseAttempt: 1,
+      artifactType: 'prd_coverage_revision',
+      filePath: null,
+      content: JSON.stringify({ candidateVersion: 4 }),
+      createdAt: '2026-01-01T00:00:03.000Z',
+      updatedAt: '2026-01-01T00:00:03.000Z',
+    }])));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: 'Coverage Check (PRD) (checking version 4)',
+      })).toBeInTheDocument();
+    });
+  });
+
+  it('waits for the first phase-log response before choosing between cached and current candidate versions', async () => {
+    let resolveArtifacts!: (response: Response) => void;
+    let resolveLogs!: (response: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith('/logs?scope=phase&view=overview&limit=20&phase=VERIFYING_PRD_COVERAGE')) {
+        return new Promise<Response>((resolve) => { resolveLogs = resolve; });
+      }
+      if (url.split('?')[0]?.endsWith('/artifacts')) {
+        return new Promise<Response>((resolve) => { resolveArtifacts = resolve; });
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
+    const phase = 'VERIFYING_PRD_COVERAGE';
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(getTicketArtifactsQueryKey(ticket.id, { phase }), [{
+      id: 1,
+      ticketId: ticket.id,
+      phase,
+      phaseAttempt: 1,
+      artifactType: 'prd_coverage_revision',
+      filePath: null,
+      content: JSON.stringify({ candidateVersion: 1 }),
+      createdAt: '2026-01-01T00:00:03.000Z',
+      updatedAt: '2026-01-01T00:00:03.000Z',
+    }]);
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={phase}>
+        <WorkspacePhaseSummary phase={phase} ticket={ticket} />
+      </LogProvider>,
+      { queryClient },
+    );
+
+    await waitFor(() => expect(resolveArtifacts).toBeTypeOf('function'));
+    await waitFor(() => expect(resolveLogs).toBeTypeOf('function'));
+    expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (loading progress)',
+    })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /checking version 1/i })).not.toBeInTheDocument();
+
+    await act(async () => resolveArtifacts(await createJsonResponse([{
+      id: 4,
+      ticketId: ticket.id,
+      phase,
+      phaseAttempt: 1,
+      artifactType: 'prd_coverage_revision',
+      filePath: null,
+      content: JSON.stringify({ candidateVersion: 4 }),
+      createdAt: '2026-01-01T00:00:03.000Z',
+      updatedAt: '2026-01-01T00:00:03.000Z',
+    }])));
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (loading progress)',
+    })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /checking version [14]/i })).not.toBeInTheDocument();
+
+    await act(async () => resolveLogs(await createJsonResponse([{
+      phase,
+      status: phase,
+      content: 'Auditing PRD Candidate v4.',
+      timestamp: '2026-01-01T00:00:04.000Z',
+    }])));
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 4)',
+    })).toBeInTheDocument());
+  });
+
+  it('keeps saved coverage version and pass after a successful empty phase-log response', async () => {
+    let resolveLogs!: (response: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes('/logs?')) {
+        return new Promise<Response>((resolve) => { resolveLogs = resolve; });
+      }
+      if (url.split('?')[0]?.endsWith('/artifacts')) {
+        return createJsonResponse([{
+          id: 4,
+          ticketId: TEST.ticketId,
+          phase: 'VERIFYING_PRD_COVERAGE',
+          phaseAttempt: 1,
+          artifactType: 'prd_coverage_revision',
+          filePath: null,
+          content: JSON.stringify({ candidateVersion: 4, coverageRunNumber: 2, maxCoveragePasses: 5 }),
+          createdAt: '2026-01-01T00:00:03.000Z',
+          updatedAt: '2026-01-01T00:00:03.000Z',
+        }]);
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
+    const phase = 'VERIFYING_PRD_COVERAGE';
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={phase}>
+        <WorkspacePhaseSummary phase={phase} ticket={ticket} />
+      </LogProvider>,
+    );
+
+    await waitFor(() => expect(resolveLogs).toBeTypeOf('function'));
+    await act(async () => resolveLogs(await createJsonResponse([])));
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 4, pass 2 of 5)',
+    })).toBeInTheDocument());
+  });
+
+  it('reports unavailable progress when phase history fails before its first successful load', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes('/logs?')) return createJsonResponse({ error: 'offline' }, 503);
+      if (url.split('?')[0]?.endsWith('/artifacts')) {
+        return createJsonResponse([{
+          id: 1,
+          ticketId: TEST.ticketId,
+          phase: 'VERIFYING_PRD_COVERAGE',
+          phaseAttempt: 1,
+          artifactType: 'prd_coverage_revision',
+          filePath: null,
+          content: JSON.stringify({ candidateVersion: 1 }),
+          createdAt: '2026-01-01T00:00:03.000Z',
+          updatedAt: '2026-01-01T00:00:03.000Z',
+        }]);
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
+    const phase = 'VERIFYING_PRD_COVERAGE';
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(getTicketArtifactsQueryKey(ticket.id, { phase }), [{
+      id: 1,
+      ticketId: ticket.id,
+      phase,
+      phaseAttempt: 1,
+      artifactType: 'prd_coverage_revision',
+      filePath: null,
+      content: JSON.stringify({ candidateVersion: 1 }),
+      createdAt: '2026-01-01T00:00:03.000Z',
+      updatedAt: '2026-01-01T00:00:03.000Z',
+    }]);
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={phase}>
+        <WorkspacePhaseSummary phase={phase} ticket={ticket} />
+      </LogProvider>,
+      { queryClient },
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (progress unavailable)',
+    })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /checking version 1/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps an unknown candidate version distinct from a failed artifact request', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      if (String(input).split('?')[0]?.endsWith('/artifacts')) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'offline' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      throw new Error(`Unhandled fetch: ${String(input)}`);
+    });
+    const ticket = makeTicket({ id: TEST.ticketId, status: 'VERIFYING_PRD_COVERAGE' });
+
+    renderWithLogContext(
+      <WorkspacePhaseSummary phase="VERIFYING_PRD_COVERAGE" ticket={ticket} />,
+      {
+        VERIFYING_PRD_COVERAGE: [
+          createLogEntry('Auditing PRD Candidate v1.', '2026-01-01T00:00:01.000Z'),
+        ],
+      },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: 'Coverage Check (PRD) (progress unavailable)',
+      })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: /checking version 1/i })).not.toBeInTheDocument();
+  });
+
   it("shows the latest live beads coverage version and pass in the main title from coverage artifacts", async () => {
     mockWorkspacePhaseQueries([
       {
@@ -1012,7 +1254,7 @@ describe("WorkspacePhaseSummary", () => {
     expect(screen.queryByText("08:00")).not.toBeInTheDocument();
   });
 
-  it("falls back safely when stored coverage artifacts contain malformed JSON", async () => {
+  it("does not infer a candidate version from malformed coverage artifacts", async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input);
       if (url.split("?")[0]?.endsWith("/artifacts")) {
@@ -1056,7 +1298,7 @@ describe("WorkspacePhaseSummary", () => {
       ).toHaveLength(2);
       expect(
         screen.getByRole("button", {
-          name: "Coverage Check (PRD) (checking version 1)",
+          name: "Coverage Check (PRD)",
         }),
       ).toBeInTheDocument();
     });

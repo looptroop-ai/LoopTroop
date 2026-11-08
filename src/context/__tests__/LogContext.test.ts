@@ -1,5 +1,5 @@
 import { createElement, useEffect } from 'react'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { compareLogEntriesByTimestamp, formatLogLine, getServerLogCacheKey, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { LogProvider } from '@/context/LogContext'
@@ -289,6 +289,80 @@ describe('LogProvider', () => {
     await flushMicrotasks()
     expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=20&phase=DRAFTING_PRD')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('tail='))).toBe(true)
+  })
+
+  it('marks an empty successful scope loaded only after its delayed rows commit', async () => {
+    let resolveFetch!: (response: Response) => void
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise((resolve) => { resolveFetch = resolve }))
+
+    function ScopeStateHarness() {
+      const api = useLogs()
+      useEffect(() => { latestLogApi = api }, [api])
+      const scope = { status: 'CODING' }
+      const loaded = api?.isLoadedLogScope?.(scope) ?? false
+      const rows = api?.getLogsForPhase('CODING').length ?? 0
+      return createElement('div', {
+        'data-testid': 'scope-state',
+        'data-loading': String(api?.isLoadingLogScope?.(scope) ?? false),
+        'data-loaded': String(loaded),
+        'data-error': String(api?.isErrorLogScope?.(scope) ?? false),
+        'data-rows': String(rows),
+      })
+    }
+
+    render(createElement(
+      LogProvider,
+      { ticketId: '1:T-scope-readiness', currentStatus: 'CODING', children: createElement(ScopeStateHarness) },
+    ))
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+
+    const readiness = () => screen.getByTestId('scope-state').dataset
+    expect(readiness()).toMatchObject({ loading: 'false', loaded: 'false', error: 'false' })
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(readiness().loading).toBe('true'))
+    expect(readiness().loaded).toBe('false')
+
+    await act(async () => {
+      resolveFetch(await createJsonResponse([{
+        phase: 'CODING',
+        status: 'CODING',
+        content: 'Historical row is committed with readiness.',
+        timestamp: '2026-01-01T00:00:01.000Z',
+      }]))
+    })
+
+    await waitFor(() => expect(readiness()).toMatchObject({ loading: 'false', loaded: 'true', error: 'false', rows: '1' }))
+  })
+
+  it('reports a failed scope and retries it instead of treating it as loaded', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({ error: 'unavailable' }, 503))
+      .mockImplementationOnce(() => createJsonResponse([]))
+
+    function ScopeStateHarness() {
+      const api = useLogs()
+      useEffect(() => { latestLogApi = api }, [api])
+      const scope = { status: 'CODING' }
+      return createElement('div', {
+        'data-testid': 'scope-state',
+        'data-loading': String(api?.isLoadingLogScope?.(scope) ?? false),
+        'data-loaded': String(api?.isLoadedLogScope?.(scope) ?? false),
+        'data-error': String(api?.isErrorLogScope?.(scope) ?? false),
+      })
+    }
+
+    render(createElement(
+      LogProvider,
+      { ticketId: '1:T-scope-retry', currentStatus: 'CODING', children: createElement(ScopeStateHarness) },
+    ))
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(screen.getByTestId('scope-state').dataset).toMatchObject({ loading: 'false', loaded: 'false', error: 'true' }))
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(screen.getByTestId('scope-state').dataset).toMatchObject({ loading: 'false', loaded: 'true', error: 'false' }))
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it.each([

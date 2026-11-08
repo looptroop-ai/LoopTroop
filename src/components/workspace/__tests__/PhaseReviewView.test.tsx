@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode, Ref } from 'react'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent } from '@testing-library/react'
 import { LogProvider } from '@/context/LogContext'
 import { serverLogCache } from '@/context/logUtils'
 import { makeTicket } from '@/test/factories'
@@ -86,6 +86,45 @@ afterEach(() => {
 })
 
 describe('PhaseReviewView', () => {
+  it('waits for phase attempt history before loading artifacts', async () => {
+    const phase = 'COUNCIL_VOTING_INTERVIEW'
+    const ticket = makeTicket({ status: 'DRAFTING_PRD' })
+    let resolveAttempts!: (response: Response) => void
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith(`/phases/${phase}/attempts`)) {
+        return new Promise<Response>((resolve) => { resolveAttempts = resolve })
+      }
+      if (url.includes('/logs?')) return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={ticket.status}>
+        <PhaseReviewView phase={phase} ticket={ticket} />
+      </LogProvider>,
+    )
+
+    expect(screen.getByText('Loading phase data…')).toBeInTheDocument()
+    expect(mockUseTicketArtifactBundle).toHaveBeenLastCalledWith(ticket.id, [])
+
+    await act(async () => resolveAttempts(await createJsonResponse([{
+      ticketId: ticket.id,
+      phase,
+      attemptNumber: 1,
+      state: 'active',
+      archivedReason: null,
+      createdAt: '2026-08-21T10:00:00.000Z',
+      archivedAt: null,
+    }])))
+
+    await waitFor(() => expect(mockUseTicketArtifactBundle).toHaveBeenCalledWith(ticket.id, expect.arrayContaining([
+      { phase, phaseAttempt: 1 },
+      { phase: 'COUNCIL_DELIBERATING' },
+    ])))
+  })
+
   it('loads a normally completed active attempt through an exact phase scope', async () => {
     const phase = 'COUNCIL_VOTING_INTERVIEW'
     const ticket = makeTicket({ status: 'DRAFTING_PRD' })
@@ -125,7 +164,7 @@ describe('PhaseReviewView', () => {
     'COUNCIL_DELIBERATING',
     'COUNCIL_VOTING_INTERVIEW',
     'COMPILING_INTERVIEW',
-  ])('starts historical council phase %s logs expanded', (phase) => {
+  ])('starts historical council phase %s logs expanded', async (phase) => {
     const ticket = makeTicket({ status: 'WAITING_INTERVIEW_ANSWERS' })
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
@@ -145,10 +184,10 @@ describe('PhaseReviewView', () => {
       </LogProvider>,
     )
 
-    expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'true')
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'true'))
   })
 
-  it('keeps non-council historical review logs collapsed by default', () => {
+  it('keeps non-council historical review logs collapsed by default', async () => {
     const ticket = makeTicket({ status: 'SCANNING_RELEVANT_FILES' })
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
@@ -168,7 +207,7 @@ describe('PhaseReviewView', () => {
       </LogProvider>,
     )
 
-    expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'false')
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'false'))
   })
 
   it('shows a nonblank drafting surface, version selector, artifacts, and expanded log', async () => {
@@ -210,8 +249,8 @@ describe('PhaseReviewView', () => {
       </LogProvider>,
     )
 
-    expect(screen.getByText('Drafting the workspace setup plan')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Workspace Setup Plan' })).toBeInTheDocument()
+    expect(await screen.findByText('Drafting the workspace setup plan')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Workspace Setup Plan' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Generation Report' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'true')
 

@@ -1098,9 +1098,11 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     archivedAttemptNumber,
     logPhaseAttempt,
     logMode,
+    isLoading: isPhaseAttemptsLoading,
     isError: isPhaseAttemptsError,
     error: phaseAttemptsError,
     refetch: refetchPhaseAttempts,
+    isPhaseVersionUnknown,
   } = useSelectedPhaseAttempt(
     shouldShowPhaseVersionSelector ? ticket.id : undefined,
     shouldShowPhaseVersionSelector ? phaseForView : undefined,
@@ -1387,6 +1389,12 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         </div>
       ) : null}
 
+      {shouldShowPhaseVersionSelector && isPhaseAttemptsLoading ? (
+        <div role="status" className="px-4 py-2 border-b border-border text-xs text-muted-foreground">
+          Loading phase version…
+        </div>
+      ) : null}
+
       {shouldShowPhaseVersionSelector && attemptNumber !== undefined && phaseAttempts.length > 1 ? (
         <div className="px-4 py-2 border-b border-border shrink-0">
           <PhaseAttemptSelector
@@ -1443,7 +1451,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         </div>
       )}
 
-      {shouldShowArtifactsPanel && (
+      {shouldShowArtifactsPanel && !isPhaseAttemptsLoading && !isPhaseVersionUnknown && (
         <div className="px-3 py-1.5 border-b border-border shrink-0">
           <PhaseArtifactsPanel
             phase={phaseForView}

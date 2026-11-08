@@ -162,8 +162,9 @@ export function useTicketArtifacts(
 
   return {
     artifacts: enabled ? query.data : undefined,
-    status: queryStatus(enabled, query.isLoading, query.isError),
-    isLoading: enabled && query.isLoading,
+    status: queryStatus(enabled, query.isPending, query.isError),
+    // Keep an initial offline-paused query pending until it has data or fails.
+    isLoading: enabled && query.isPending,
     isFetching: enabled && query.isFetching,
     isError: enabled && query.isError,
     error: enabled ? query.error : null,
@@ -198,9 +199,9 @@ export function useTicketArtifactBundle(
     })),
   })
 
-  const isLoading = enabled && queries.some((query) => query.isLoading)
-  const isFetching = enabled && queries.some((query) => query.isFetching)
   const failedQuery = queries.find((query) => query.isError)
+  const isLoading = enabled && !failedQuery && queries.some((query) => query.isPending)
+  const isFetching = enabled && queries.some((query) => query.isFetching)
   const hasCompleteData = enabled && queries.every((query) => query.data !== undefined)
   const artifacts = hasCompleteData
     ? Array.from(new Map(queries.flatMap((query) => query.data ?? []).map((artifact) => [artifact.id, artifact])).values())

@@ -98,6 +98,15 @@ describe('CouncilView', () => {
     expect(screen.queryByText('Loading phase data…')).not.toBeInTheDocument()
   })
 
+  it('waits for attempt history before presenting live artifacts or member controls', () => {
+    mockUseTicketPhaseAttempts.mockReturnValue({ data: undefined, isPending: true })
+
+    render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading phase version')
+    expect(screen.queryByTestId('phase-artifacts-panel')).not.toBeInTheDocument()
+  })
+
   it('renders with an empty council fallback when the server sent no roster', () => {
     const partialTicket = normalizeTicketResponse({
       ...makeTicket({ status: 'COUNCIL_VOTING_INTERVIEW' }),

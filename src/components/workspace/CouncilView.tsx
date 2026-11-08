@@ -144,6 +144,7 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
     archivedAttemptNumber,
     logPhaseAttempt,
     logMode,
+    isLoading: isAttemptsLoading,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
@@ -174,10 +175,10 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
   // Stop and Retry act on the round running now, so only while the ticket is
   // in this step and the version shown is the current one.
   const memberControlScope = useMemo<CouncilMemberControlScope | null>(
-    () => (ticket.status === phase && archivedAttemptNumber == null && isCouncilMemberControlPhase(phase)
+    () => (!isAttemptsLoading && !isPhaseVersionUnknown && ticket.status === phase && archivedAttemptNumber == null && isCouncilMemberControlPhase(phase)
       ? { ticketId: ticket.id, phase }
       : null),
-    [archivedAttemptNumber, phase, ticket.id, ticket.status],
+    [archivedAttemptNumber, isAttemptsLoading, isPhaseVersionUnknown, phase, ticket.id, ticket.status],
   )
 
   return (
@@ -226,7 +227,9 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
             is failing with nothing cached, and artifacts and logs are scoped by
             it — they would be shown as the live version, which may not be the
             one the reader selected. The notice above says why they are gone. */}
-        {isPhaseVersionUnknown ? null : (
+        {isAttemptsLoading ? (
+          <p role="status" className="px-1 py-2 text-xs text-muted-foreground">Loading phase version…</p>
+        ) : isPhaseVersionUnknown ? null : (
           <CouncilMemberControlContext.Provider value={memberControlScope}>
             <PhaseArtifactsPanel
               phase={phase}

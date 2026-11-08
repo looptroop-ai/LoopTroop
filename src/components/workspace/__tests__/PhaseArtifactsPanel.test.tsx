@@ -138,6 +138,49 @@ describe('PhaseArtifactsPanel', () => {
     expect(retry).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps the PRD candidate unversioned while artifacts load and when no version exists', () => {
+    const refetch = vi.fn(async () => undefined)
+    const { unmount } = renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="VERIFYING_PRD_COVERAGE"
+        isCompleted={false}
+        artifactState={{
+          artifacts: undefined,
+          status: 'loading',
+          isLoading: true,
+          isFetching: false,
+          isError: false,
+          error: null,
+          refetch,
+        }}
+      />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading artifacts')
+    expect(screen.getByText('PRD Candidate')).toBeInTheDocument()
+    expect(screen.queryByText('PRD Candidate v1')).not.toBeInTheDocument()
+
+    unmount()
+    renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="VERIFYING_PRD_COVERAGE"
+        isCompleted={false}
+        artifactState={{
+          artifacts: [],
+          status: 'success',
+          isLoading: false,
+          isFetching: false,
+          isError: false,
+          error: null,
+          refetch,
+        }}
+      />,
+    )
+
+    expect(screen.getByText('PRD Candidate')).toBeInTheDocument()
+    expect(screen.queryByText('PRD Candidate v1')).not.toBeInTheDocument()
+  })
+
   it.each([
     [true, 'This artifact was not produced or is unavailable for this phase version.'],
     [false, 'This artifact is not available yet.'],
@@ -2551,6 +2594,7 @@ describe('PhaseArtifactsPanel', () => {
       artifactType: 'beads_refined',
       content: JSON.stringify({
         winnerId: 'openai/gpt-5.2',
+        candidateVersion: 1,
         winnerDraftContent: buildBeadsDocumentContent([
           { id: 'bead-1', title: 'Validate refinement attribution' },
         ]),

@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { KeyboardShortcuts } from '../KeyboardShortcuts'
+import { CenteredModal } from '../CenteredModal'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { DROPDOWN_Z_INDEX } from '@/lib/constants'
 
 afterEach(cleanup)
@@ -53,6 +55,23 @@ describe('KeyboardShortcuts', () => {
     expect(dialog).toHaveFocus()
     expect(outside).toHaveAttribute('inert')
     expect(outside).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('makes a routed dialog inert when it opens above one', () => {
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={() => {}} title="Configuration">
+          <button type="button">inside</button>
+        </CenteredModal>
+        <KeyboardShortcuts />
+      </TooltipProvider>,
+    )
+    fireEvent.keyDown(document.body, { key: '?' })
+
+    const configuration = screen.getByRole('dialog', { name: 'Configuration', hidden: true })
+    const shortcuts = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
+    expect(configuration.parentElement).toHaveAttribute('inert')
+    expect(shortcuts).toHaveFocus()
   })
 
   it('keeps panel interactions open and closes on a backdrop click', () => {

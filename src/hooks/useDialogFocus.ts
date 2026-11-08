@@ -128,7 +128,11 @@ function hideOutside(container: HTMLElement): () => void {
   while (node.parentElement) {
     const parent = node.parentElement
     for (const child of parent.children) {
-      if (child !== node && isInertable(child, container) && dialogLayer(child) <= currentLayer) {
+      // Only a dialog that declares its own layer may leave a higher dialog
+      // alone; overlays without one (shortcuts, startup notices, full-screen
+      // surfaces) keep the original behaviour and inert every sibling.
+      const higherDialog = currentLayer > 0 && dialogLayer(child) > currentLayer
+      if (child !== node && isInertable(child, container) && !higherDialog) {
         restore.push(markInert(child))
       }
     }

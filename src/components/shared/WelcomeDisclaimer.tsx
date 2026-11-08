@@ -70,7 +70,7 @@ export function WelcomeDisclaimer({ open, onDismiss, appPathWarning }: WelcomeDi
           onClick={onDismiss}
           className="mt-5 w-full shrink-0 bg-primary text-primary-foreground rounded-lg py-2.5 font-medium hover:bg-primary/90 transition-colors cursor-pointer"
         >
-          Got it, let's go!
+          Got it, let&apos;s go!
         </button>
       </div>
     </div>

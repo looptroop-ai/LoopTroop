@@ -95,7 +95,8 @@ describe('KeyboardShortcuts', () => {
    */
   it('stacks above every other surface, pickers included', () => {
     open()
-    const backdrop = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' }).parentElement!
+    const backdrop = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' }).parentElement
+    if (!backdrop) throw new Error('Keyboard shortcuts dialog has no backdrop')
     expect(Number(backdrop.style.zIndex)).toBeGreaterThan(DROPDOWN_Z_INDEX)
   })
 })

@@ -5,6 +5,7 @@ import { createActor } from "xstate";
 import { ticketMachine } from "@server/machines/ticketMachine";
 import type { LogContextValue, LogEntry } from "@/context/logUtils";
 import { LogProvider } from "@/context/LogContext";
+import { useLogActions } from "@/context/useLogContext";
 import { TEST, makeTicket } from "@/test/factories";
 import { getTicketArtifactsQueryKey } from "@/hooks/useTicketArtifacts";
 import { getTicketPhaseAttemptsQueryKey } from "@/hooks/useTicketPhaseAttempts";
@@ -133,6 +134,11 @@ function renderWithLogContext(
   };
 
   return renderWithProviders(withLogContext(value, ui), { queryClient });
+}
+
+function ClearLogsButton() {
+  const clearLogs = useLogActions()?.clearLogs;
+  return <button type="button" onClick={() => clearLogs?.()}>Clear logs</button>;
 }
 
 afterEach(() => {
@@ -725,6 +731,63 @@ describe("WorkspacePhaseSummary", () => {
     await waitFor(() => expect(screen.getByRole('button', {
       name: 'Coverage Check (PRD) (checking version 4, pass 2 of 5)',
     })).toBeInTheDocument());
+  });
+
+  it('reloads coverage progress after clearing logs and ignores the stale in-flight snapshot', async () => {
+    const logResponses: Array<(response: Response) => void> = [];
+    const phase = 'VERIFYING_PRD_COVERAGE';
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (phaseFromAttemptsUrl(url)) return createJsonResponse([createPhaseAttempt(phase, 1)]);
+      if (url.includes('/logs?')) {
+        return new Promise<Response>((resolve) => { logResponses.push(resolve); });
+      }
+      if (url.split('?')[0]?.endsWith('/artifacts')) return createJsonResponse([]);
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    const ticket = makeTicket({ id: TEST.ticketId, status: phase });
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={phase}>
+        <ClearLogsButton />
+        <WorkspacePhaseSummary phase={phase} ticket={ticket} />
+      </LogProvider>,
+    );
+
+    await waitFor(() => expect(logResponses).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear logs' }));
+    await waitFor(() => expect(logResponses).toHaveLength(2));
+
+    await act(async () => logResponses[1]!(await createJsonResponse([{
+      phase,
+      status: phase,
+      phaseAttempt: 1,
+      source: 'system',
+      kind: 'milestone',
+      content: 'Auditing PRD Candidate v4.',
+      timestamp: '2026-01-01T00:00:04.000Z',
+    }])));
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 4)',
+    })).toBeInTheDocument());
+
+    await act(async () => logResponses[0]!(await createJsonResponse([{
+      phase,
+      status: phase,
+      phaseAttempt: 1,
+      source: 'system',
+      kind: 'milestone',
+      content: 'Auditing PRD Candidate v1.',
+      timestamp: '2026-01-01T00:00:01.000Z',
+    }])));
+
+    expect(screen.getByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 4)',
+    })).toBeInTheDocument();
+    expect(screen.queryByRole('button', {
+      name: 'Coverage Check (PRD) (checking version 1)',
+    })).not.toBeInTheDocument();
   });
 
   it('lets the user retry coverage progress after its first phase-log request fails', async () => {

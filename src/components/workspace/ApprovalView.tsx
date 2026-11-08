@@ -228,13 +228,13 @@ function BeadsApprovalPane({
   const councilMemberCount = councilMemberNames.length || 3
   const {
     artifacts: loadedArtifacts,
+    isFetching: isArtifactsFetching,
     isError: isArtifactsError,
     error: artifactsError,
     refetch: refetchArtifacts,
   } = useTicketArtifacts(ticket.id, { types: BEADS_COVERAGE_ARTIFACT_TYPES })
-  // See `PrdApprovalPane`: an absent coverage warning is indistinguishable from
-  // "no gaps", so approval waits until the first artifact result arrives.
-  const isCoverageUnknown = loadedArtifacts === undefined
+  // A cached report can belong to an earlier attempt while the active scope refreshes.
+  const isCoverageUnknown = loadedArtifacts === undefined || isArtifactsFetching
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   // Cache stores array form (matching navigator expectations)

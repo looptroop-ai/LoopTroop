@@ -1999,7 +1999,7 @@ describe('additional beads approval paths', () => {
     vi.restoreAllMocks()
   })
 
-  it('waits for the first beads coverage result before approval, then uses its gaps', async () => {
+  it('waits for beads coverage refresh before approval, then uses its latest gaps', async () => {
     const refetch = vi.fn(async () => undefined)
     const coverageArtifact = {
       id: 944,
@@ -2016,7 +2016,16 @@ describe('additional beads approval paths', () => {
         remainingGaps: ['Add a check for the retry path.'],
       }),
     }
-    mockUseTicketArtifacts.mockReturnValue({ artifacts: undefined, isLoading: true, isError: false, refetch })
+    const previousCleanReport = {
+      id: 943,
+      ticketId: TEST.ticketId,
+      phase: 'WAITING_BEADS_APPROVAL',
+      artifactType: 'beads_coverage',
+      filePath: null,
+      createdAt: TEST.timestamp,
+      content: JSON.stringify({ status: 'clean', finalCandidateVersion: 1, hasRemainingGaps: false, remainingGaps: [] }),
+    }
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: undefined, isLoading: true, isFetching: true, isError: false, refetch })
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
       if (url.endsWith('/beads/raw')) {
@@ -2030,9 +2039,19 @@ describe('additional beads approval paths', () => {
     const view = renderApprovalView(ticket, 'beads')
 
     expect(await screen.findByText('Checking beads coverage before approval…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled())
     await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled())
 
-    mockUseTicketArtifacts.mockReturnValue({ artifacts: [coverageArtifact], isLoading: false, isError: false, refetch })
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [previousCleanReport], isLoading: false, isFetching: false, isError: false, refetch })
+    view.rerender(<ApprovalView ticket={ticket} artifactType="beads" />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeEnabled())
+
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [previousCleanReport], isLoading: false, isFetching: true, isError: false, refetch })
+    view.rerender(<ApprovalView ticket={ticket} artifactType="beads" />)
+    expect(await screen.findByText('Checking beads coverage before approval…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled())
+
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [coverageArtifact], isLoading: false, isFetching: false, isError: false, refetch })
     view.rerender(<ApprovalView ticket={ticket} artifactType="beads" />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Coverage Warning/i }))

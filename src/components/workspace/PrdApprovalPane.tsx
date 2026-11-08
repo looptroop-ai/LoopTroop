@@ -190,12 +190,13 @@ export function PrdApprovalPane({
   })
   const {
     artifacts: loadedArtifacts,
+    isFetching: isArtifactsFetching,
     isError: isArtifactsError,
     error: artifactsError,
     refetch: refetchArtifacts,
   } = useTicketArtifacts(ticket.id, { types: PRD_APPROVAL_ARTIFACT_TYPES })
-  // Coverage gaps live in the artifacts, so approval waits for the first result.
-  const isCoverageUnknown = loadedArtifacts === undefined
+  // A cached report can belong to an earlier attempt while the active scope refreshes.
+  const isCoverageUnknown = loadedArtifacts === undefined || isArtifactsFetching
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   const rawContent = fetchedPrd?.content ?? ''

@@ -470,7 +470,6 @@ export function LogProvider({
 
     generationRef.current += 1
     requestedTicketIdRef.current = ticketId ?? undefined
-    requestedScopesRef.current.clear()
     loadedScopeKeysRef.current.clear()
     loadingScopeKeysRef.current.clear()
     failedScopeKeysRef.current.clear()
@@ -483,6 +482,9 @@ export function LogProvider({
       setLogsByPhase({})
       setManualActivePhase(null)
     })
+    if (ticketId) {
+      window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId } }))
+    }
   }, [ticketId])
 
   const state = useMemo<LogStateValue>(

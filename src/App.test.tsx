@@ -199,7 +199,7 @@ function renderApp() {
   return renderAppElement()
 }
 
-async function dismissRestoreNoticeIfPresent() {
+async function dismissRestoreNoticeIfPresent(rerenderApp: () => void) {
   const continueButton = screen.queryByRole('button', { name: 'Continue' })
   if (!continueButton) return
 
@@ -208,6 +208,14 @@ async function dismissRestoreNoticeIfPresent() {
   })
   fireEvent.click(continueButton)
   await waitFor(() => expect(screen.queryByText('Saved data found')).not.toBeInTheDocument())
+  const startupStatus = mockState.startupStatus
+  if (startupStatus) {
+    mockState.startupStatus = {
+      ...startupStatus,
+      ui: { ...startupStatus.ui, restoreNotice: { shouldShow: false, dismissedAt: '2026-10-26T12:00:00.000Z' } },
+    }
+    rerenderApp()
+  }
 }
 
 /**
@@ -1195,8 +1203,8 @@ describe('App startup notices', () => {
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
     window.history.pushState(null, '', '/config')
 
-    renderApp()
-    await dismissRestoreNoticeIfPresent()
+    const view = renderAppWithProbe()
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1215,8 +1223,8 @@ describe('App startup notices', () => {
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
     window.history.pushState(null, '', '/config')
 
-    renderApp()
-    await dismissRestoreNoticeIfPresent()
+    const view = renderAppWithProbe()
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1237,8 +1245,8 @@ describe('App startup notices', () => {
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
     window.history.pushState(null, '', '/config')
 
-    renderApp()
-    await dismissRestoreNoticeIfPresent()
+    const view = renderAppWithProbe()
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
@@ -1296,6 +1304,50 @@ describe('App startup notices', () => {
 
     expect(await screen.findByText('Saved data found')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open LoopTroop assistant' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a routed modal behind startup notices until they are dismissed', async () => {
+    const startupStatus = makeStartupStatus()
+    mockState.startupStatus = startupStatus
+    window.history.pushState(null, '', '/config')
+
+    const view = renderAppWithProbe()
+
+    expect(screen.getByText('Welcome to LoopTroop')).toBeInTheDocument()
+    expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /got it, let's go!/i }))
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
+    expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/config')
+  })
+
+  it('keeps About behind a restore notice discovered after Configuration opens', async () => {
+    localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
+    window.history.pushState(null, '', '/config')
+    mockState.startupStatus = null
+
+    const view = renderAppWithProbe()
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
+    expect(await screen.findByText('About Dialog')).toBeInTheDocument()
+
+    const startupStatus = makeStartupStatus()
+    mockState.startupStatus = startupStatus
+    view.rerenderApp()
+
+    expect(await screen.findByText('Saved data found')).toBeInTheDocument()
+    expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+    expect(screen.queryByText('About Dialog')).not.toBeInTheDocument()
+
+    await dismissRestoreNoticeIfPresent(view.rerenderApp)
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    expect(await screen.findByText('About Dialog')).toBeInTheDocument()
   })
 
   it('shows the WSL app-path warning in the welcome disclaimer when applicable', () => {

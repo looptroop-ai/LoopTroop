@@ -327,18 +327,17 @@ describe('LogProvider', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('clears rows and readiness flags, then refetches the cleared scope', async () => {
+  it('clears local state and refreshes previously requested scopes', async () => {
     const ticketId = '1:T-clear-log-readiness'
+    let resolveRefreshedLogs!: (response: Response) => void
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse([{
         type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
         content: 'Existing history.', entryId: 'before-clear', timestamp: '2026-01-01T00:00:01.000Z',
       }]))
       .mockImplementationOnce(() => createJsonResponse({ error: 'unavailable' }, 503))
-      .mockImplementationOnce(() => createJsonResponse([{
-        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
-        content: 'History after clear.', entryId: 'after-clear', timestamp: '2026-01-01T00:00:02.000Z',
-      }]))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefreshedLogs = resolve }))
+      .mockImplementationOnce(() => createJsonResponse([]))
 
     render(createElement(
       LogProvider,
@@ -357,16 +356,19 @@ describe('LogProvider', () => {
     expect(getCodingLogs().map((entry) => entry.entryId)).toContain('before-clear')
 
     act(() => latestLogApi?.clearLogs())
-    await waitFor(() => {
-      expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(false)
-      expect(latestLogApi?.isErrorLogScope?.(debugScope)).toBe(false)
-      expect(getCodingLogs()).toHaveLength(0)
-    })
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4))
+    expect(resolveRefreshedLogs).toBeTypeOf('function')
+    expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(false)
+    expect(latestLogApi?.isErrorLogScope?.(debugScope)).toBe(false)
+    expect(getCodingLogs()).toHaveLength(0)
 
-    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await act(async () => resolveRefreshedLogs(await createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'History after clear.', entryId: 'after-clear', timestamp: '2026-01-01T00:00:02.000Z',
+      }])))
     await waitFor(() => expect(getCodingLogs().map((entry) => entry.entryId)).toContain('after-clear'))
     expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(true)
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
   })
 
   it('marks an empty successful scope loaded only after its delayed rows commit', async () => {

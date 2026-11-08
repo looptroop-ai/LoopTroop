@@ -570,7 +570,7 @@ describe('PrdApprovalPane', () => {
     })
   })
 
-  it('waits for the first PRD coverage result before approval, then uses its gaps', async () => {
+  it('waits for PRD coverage refresh before approval, then uses its latest gaps', async () => {
     const refetch = vi.fn(async () => undefined)
     const coverageArtifact = buildPrdCoverageArtifact({
       status: 'gaps',
@@ -582,6 +582,7 @@ describe('PrdApprovalPane', () => {
     mockUseTicketArtifacts.mockReturnValue({
       artifacts: undefined,
       isLoading: true,
+      isFetching: true,
       isError: false,
       refetch,
     })
@@ -590,9 +591,20 @@ describe('PrdApprovalPane', () => {
     const view = renderWithProviders(<PrdApprovalPane ticket={ticket} />)
 
     expect(await screen.findByText('Checking PRD coverage before approval…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled())
     await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled())
 
-    mockUseTicketArtifacts.mockReturnValue({ artifacts: [coverageArtifact], isLoading: false, isError: false, refetch })
+    const previousCleanReport = buildPrdCoverageArtifact({ status: 'clean', finalCandidateVersion: 3, hasRemainingGaps: false, remainingGaps: [] })
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [previousCleanReport], isLoading: false, isFetching: false, isError: false, refetch })
+    view.rerender(<PrdApprovalPane ticket={ticket} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeEnabled())
+
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [previousCleanReport], isLoading: false, isFetching: true, isError: false, refetch })
+    view.rerender(<PrdApprovalPane ticket={ticket} />)
+    expect(await screen.findByText('Checking PRD coverage before approval…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled())
+
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [coverageArtifact], isLoading: false, isFetching: false, isError: false, refetch })
     view.rerender(<PrdApprovalPane ticket={ticket} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Coverage Warning/i }))

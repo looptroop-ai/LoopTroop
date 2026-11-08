@@ -163,6 +163,19 @@ describe('ManualQAView recovery behavior', () => {
     expect(document.querySelector('input[type="file"]')).toBeNull()
   })
 
+  it.each(['index', 'round'] as const)('keeps the checklist loading while the initial %s query is pending', (query) => {
+    if (query === 'index') {
+      mocks.index.mockReturnValue({ data: undefined, isPending: true, isLoading: false, error: null })
+    } else {
+      mocks.round.mockReturnValue({ data: undefined, isPending: true, isLoading: false, error: null, refetch: mocks.refetchRound })
+    }
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByRole('heading', { name: 'Preparing your Manual QA checklist' })).toBeInTheDocument()
+    expect(screen.queryByText('Manual QA artifacts are not available yet.')).not.toBeInTheDocument()
+  })
+
   it('restores a saved draft that arrives after the round', async () => {
     // Switching tickets remounts this view, so the round can be served from cache while the saved
     // draft is still on the wire. The load-bearing assertion is the final one: Pass is the saved
@@ -1277,5 +1290,20 @@ describe('ManualQAView recovery behavior', () => {
     renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
 
     expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
+  })
+
+  it.each(['index', 'round'] as const)('uses a load-error headline when the %s query fails', (query) => {
+    const error = new Error('Manual QA read failed.')
+    if (query === 'index') {
+      mocks.index.mockReturnValue({ data: undefined, isPending: false, isLoading: false, error })
+    } else {
+      mocks.round.mockReturnValue({ data: undefined, isPending: false, isLoading: false, error, refetch: mocks.refetchRound })
+    }
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByText('Manual QA artifacts could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByText(error.message)).toBeInTheDocument()
+    expect(screen.queryByText('Manual QA artifacts are not available yet.')).not.toBeInTheDocument()
   })
 })

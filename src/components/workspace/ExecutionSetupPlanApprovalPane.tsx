@@ -379,7 +379,7 @@ export function ExecutionSetupPlanApprovalPane({
     : apiTicketPath(ticket.id, 'execution-setup-plan')
   const {
     data: fetchedPlan,
-    isLoading,
+    isPending: isLoading,
     isFetching,
     isError: isPlanError,
     error: planError,

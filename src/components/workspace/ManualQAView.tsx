@@ -182,7 +182,7 @@ function ManualQaGeneration() {
 
 export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   const isGenerating = ticket.status === 'GENERATING_QA_CHECKLIST'
-  const { data: index, isLoading: indexLoading, error: indexError } = useManualQaIndex(ticket.id)
+  const { data: index, isPending: indexLoading, error: indexError } = useManualQaIndex(ticket.id)
   const { data: projects = [] } = useProjects()
   const { data: profile } = useProfile()
   const projectedVersion = ticket.manualQa?.activeVersion ?? null
@@ -220,7 +220,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
       status: typeof payload?.validationError === 'string' ? 'failed' : 'completed',
     }
   }, [generationArtifacts.artifacts])
-  const { data: round, isLoading: roundLoading, error: roundError } = roundQuery
+  const { data: round, isPending: roundLoading, error: roundError } = roundQuery
   const scope = version === null ? 'manual_qa_draft:none' : `manual_qa_draft:v${version}`
   const uiState = useTicketUIState<ManualQaDraft>(ticket.id, scope, version !== null)
   const saveUiState = useSaveTicketUIState()
@@ -692,7 +692,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
           <ArtifactProcessingNotice structuredOutput={generation.structuredOutput} status={generation.status} />
           <div>
             <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
-            <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
+            <p className="mt-3 font-medium">{error ? 'Manual QA artifacts could not be loaded.' : 'Manual QA artifacts are not available yet.'}</p>
             <p className="mt-1 text-sm text-muted-foreground">{error instanceof Error ? error.message : 'The checklist may still be restoring.'}</p>
           </div>
         </div>

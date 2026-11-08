@@ -110,7 +110,7 @@ export function InterviewApprovalPane({
       : null
   const {
     data: interviewData,
-    isLoading,
+    isPending: isLoading,
     isFetching,
     isError: isInterviewError,
     refetch: refetchInterview,

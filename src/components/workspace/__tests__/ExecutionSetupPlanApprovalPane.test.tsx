@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeTicket, TEST } from '@/test/factories'
 import { createTestQueryClient, renderWithProviders } from '@/test/renderHelpers'
@@ -300,7 +301,17 @@ describe('ExecutionSetupPlanApprovalPane', () => {
   })
 
   afterEach(() => {
+    onlineManager.setOnline(true)
     vi.restoreAllMocks()
+  })
+
+  it('keeps an initial setup plan read loading while the query is paused offline', () => {
+    onlineManager.setOnline(false)
+    const view = renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+
+    expect(screen.getByText('Loading the setup plan.')).toBeInTheDocument()
+    expect(screen.queryByText('No generation report was published. Regenerate the setup plan to start a new version.')).not.toBeInTheDocument()
+    view.unmount()
   })
 
   it('keeps setup logs expanded until the generated plan is displayed', async () => {

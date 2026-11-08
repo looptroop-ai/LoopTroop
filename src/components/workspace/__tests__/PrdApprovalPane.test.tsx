@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPrdDocumentYaml, type PrdApprovalDraft } from '@/lib/prdDocument'
 import { makeTicket, makePrdDocument, TEST } from '@/test/factories'
@@ -171,7 +172,17 @@ describe('PrdApprovalPane', () => {
   })
 
   afterEach(() => {
+    onlineManager.setOnline(true)
     vi.restoreAllMocks()
+  })
+
+  it('keeps an initial PRD read loading while the query is paused offline', () => {
+    onlineManager.setOnline(false)
+    const view = renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+
+    expect(screen.getByText('Fetching the latest PRD artifact.')).toBeInTheDocument()
+    expect(screen.queryByText('No PRD artifact available yet.')).not.toBeInTheDocument()
+    view.unmount()
   })
 
   it('renders the dedicated PRD approval view and focuses PRD anchors on demand', async () => {

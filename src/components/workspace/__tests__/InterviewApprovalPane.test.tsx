@@ -11,6 +11,7 @@ const INITIAL_CONTENT_HASH = 'a'.repeat(64)
 const SAVED_CONTENT_HASH = 'b'.repeat(64)
 let persistedUiStateData: unknown = null
 let persistedUiStateMeta: Record<string, unknown> = {}
+let interviewPending = false
 let currentRaw = ''
 let currentContentSha256 = INITIAL_CONTENT_HASH
 
@@ -53,14 +54,25 @@ vi.mock('@/hooks/useTickets', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/useTickets')>('@/hooks/useTickets')
   return {
     ...actual,
-    useInterviewQuestions: () => ({
-      data: { raw: currentRaw, contentSha256: currentContentSha256, document },
-      isLoading: false,
-      isFetching: false,
-      isError: false,
-      error: null,
-      refetch: vi.fn(),
-    }),
+    useInterviewQuestions: () => interviewPending
+      ? {
+          data: undefined,
+          isPending: true,
+          isLoading: false,
+          isFetching: false,
+          isError: false,
+          error: null,
+          refetch: vi.fn(),
+        }
+      : {
+          data: { raw: currentRaw, contentSha256: currentContentSha256, document },
+          isPending: false,
+          isLoading: false,
+          isFetching: false,
+          isError: false,
+          error: null,
+          refetch: vi.fn(),
+        },
     useTicketUIState: () => ({
       isSuccess: true,
       data: { scope: 'approval_interview', exists: true, data: persistedUiStateData, updatedAt: null, ...persistedUiStateMeta },
@@ -87,6 +99,7 @@ describe('InterviewApprovalPane', () => {
   beforeEach(() => {
     currentRaw = JSON.stringify(document)
     currentContentSha256 = INITIAL_CONTENT_HASH
+    interviewPending = false
     persistedUiStateData = null
     persistedUiStateMeta = {}
     mockSaveUiState.mockReset()
@@ -116,6 +129,14 @@ describe('InterviewApprovalPane', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('keeps an initial pending interview read in its loading state', () => {
+    interviewPending = true
+    renderWithProviders(<InterviewApprovalPane ticket={makeTicket({ status: 'WAITING_INTERVIEW_APPROVAL' })} />)
+
+    expect(screen.getByText('Fetching the latest interview artifact.')).toBeInTheDocument()
+    expect(screen.queryByText('No interview artifact available yet.')).not.toBeInTheDocument()
   })
 
   it('keeps a restored dirty YAML draft tied to its original content hash', async () => {

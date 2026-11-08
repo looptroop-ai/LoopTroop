@@ -176,7 +176,7 @@ export function PrdApprovalPane({
     : persistedUiStateFlushMeta?.flushPending
       ? 'pending' as const
       : null
-  const { data: fetchedPrd, isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
+  const { data: fetchedPrd, isPending: isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', 'approval'],
     queryFn: async ({ signal }) => {
       const response = await fetch(apiFilePath(ticket.id, 'prd'), { signal })

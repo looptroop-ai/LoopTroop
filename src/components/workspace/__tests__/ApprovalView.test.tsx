@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Ticket } from '@/hooks/useTickets'
 import type { InterviewDocument } from '@shared/interviewArtifact'
@@ -309,6 +309,56 @@ function buildSkippedInterviewPayload() {
   }
 }
 
+const READ_ONLY_ARTIFACT_CASES = [
+  {
+    artifactType: 'interview',
+    phase: 'WAITING_INTERVIEW_APPROVAL',
+    marker: 'Loaded interview answer.',
+    emptyLabel: 'No interview artifact available.',
+  },
+  {
+    artifactType: 'prd',
+    phase: 'WAITING_PRD_APPROVAL',
+    marker: 'Loaded PRD content.',
+    emptyLabel: 'No PRD artifact available.',
+  },
+  {
+    artifactType: 'beads',
+    phase: 'WAITING_BEADS_APPROVAL',
+    marker: 'Loaded beads content.',
+    emptyLabel: 'No beads artifact available.',
+  },
+] as const
+
+function readOnlyContentResponse(artifactType: typeof READ_ONLY_ARTIFACT_CASES[number]['artifactType'], marker?: string) {
+  if (artifactType === 'prd') return createJsonResponse({ content: marker ?? '' })
+  if (artifactType === 'beads') {
+    return createJsonResponse(marker ? [{ id: 'loaded-bead', title: marker, status: 'pending' }] : [])
+  }
+  return createJsonResponse(marker ? buildInterviewPayload(marker) : {
+    winnerId: null,
+    raw: '',
+    document: null,
+    session: null,
+    questions: [],
+  })
+}
+
+function readOnlyEndpoint(artifactType: typeof READ_ONLY_ARTIFACT_CASES[number]['artifactType']) {
+  return artifactType === 'prd'
+    ? `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`
+    : `/api/tickets/${encodeURIComponent(TEST.ticketId)}/${artifactType}`
+}
+
+async function expectReadOnlyContent(artifactType: typeof READ_ONLY_ARTIFACT_CASES[number]['artifactType'], marker: string) {
+  if (artifactType === 'interview') {
+    await screen.findByText('Foundation')
+    const foundations = screen.getAllByText('Foundation')
+    fireEvent.click(foundations[foundations.length - 1]!.closest('button')!)
+  }
+  expect(await screen.findByText(marker)).toBeInTheDocument()
+}
+
 describe('Interview approval UI', () => {
   let interviewPayload = buildInterviewPayload('Protect the import pipeline.')
 
@@ -472,6 +522,43 @@ describe('Interview approval UI', () => {
     renderApprovalView(makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' }), 'execution_setup_plan')
 
     expect(screen.getByTestId('execution-setup-plan-approval-pane')).toBeInTheDocument()
+  })
+
+  it('waits for phase history before choosing a read-only approval version', async () => {
+    let resolveAttempts!: (response: Response) => void
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) {
+        return new Promise<Response>((resolve) => { resolveAttempts = resolve })
+      }
+      if (url.endsWith('/interview')) return createJsonResponse(buildInterviewPayload('Protect the import pipeline.'))
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <ApprovalView
+        ticket={makeTicket({ status: 'WAITING_INTERVIEW_APPROVAL' })}
+        artifactType="interview"
+        readOnly
+      />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading phase version')
+    expect(screen.queryByText('Protect the import pipeline.')).not.toBeInTheDocument()
+
+    await act(async () => resolveAttempts(await createJsonResponse([{
+      ticketId: TEST.ticketId,
+      phase: 'WAITING_INTERVIEW_APPROVAL',
+      attemptNumber: 1,
+      state: 'active',
+      archivedReason: null,
+      createdAt: TEST.timestamp,
+      archivedAt: null,
+    }])))
+
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+    openFoundationSection()
+    expect(await screen.findByText('Protect the import pipeline.')).toBeInTheDocument()
   })
 
   it('shows the Interview cascade warning copy after PRD and Beads planning have started', async () => {
@@ -1628,6 +1715,209 @@ describe('Approval surfaces on a failed request', () => {
         expect(String((put![1] as RequestInit).body)).toContain('Draft from H1')
       })
     })
+  })
+})
+
+describe('read-only approval artifact content states', () => {
+  beforeEach(() => {
+    mockUseInterviewQuestions.mockReset().mockReturnValue({ data: undefined, isLoading: false })
+    mockUseTicketUIState.mockReturnValue({ isSuccess: true, data: undefined })
+    mockUseTicketArtifacts.mockReset().mockReturnValue({ artifacts: [], isLoading: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it.each(READ_ONLY_ARTIFACT_CASES)('waits for the first live $artifactType result', async ({ artifactType, phase, marker, emptyLabel }) => {
+    let finishRead: ((response: Response) => void) | undefined
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({ data: undefined, isLoading: true })
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (artifactType !== 'interview' && url === readOnlyEndpoint(artifactType)) {
+        return new Promise<Response>((resolve) => { finishRead = resolve })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const ticket = makeTicket({ status: phase })
+    const view = renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+
+    expect(await screen.findByText('Loading artifact…')).toBeInTheDocument()
+    expect(screen.queryByText(emptyLabel)).not.toBeInTheDocument()
+    expect(screen.queryByText(marker)).not.toBeInTheDocument()
+
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({ data: buildInterviewPayload(marker), isLoading: false })
+      view.rerender(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+    } else {
+      await act(async () => finishRead!(await readOnlyContentResponse(artifactType, marker)))
+    }
+
+    await expectReadOnlyContent(artifactType, marker)
+  })
+
+  it.each(READ_ONLY_ARTIFACT_CASES)('waits for the archived $artifactType snapshot result', async ({ artifactType, phase, marker }) => {
+    const ticket = makeTicket({ status: phase })
+    let snapshotLoaded = false
+    const snapshotRaw = artifactType === 'interview'
+      ? buildInterviewYaml(marker)
+      : artifactType === 'prd'
+        ? marker
+        : JSON.stringify({ id: 'archived-bead', title: marker, status: 'pending' })
+    const snapshot = {
+      id: 1,
+      ticketId: ticket.id,
+      phase,
+      artifactType: `approval_snapshot:${artifactType}`,
+      filePath: null,
+      createdAt: TEST.timestamp,
+      content: JSON.stringify({ raw: snapshotRaw }),
+    }
+    mockUseTicketArtifacts.mockImplementation((_ticketId: string, options?: { phaseAttempt?: number }) => ({
+      artifacts: options?.phaseAttempt === 1
+        ? (snapshotLoaded ? [snapshot] : undefined)
+        : [],
+      isLoading: options?.phaseAttempt === 1 && !snapshotLoaded,
+    }))
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({ data: buildInterviewPayload('Active attempt answer.'), isLoading: false })
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([
+        {
+          ticketId: ticket.id,
+          phase,
+          attemptNumber: 1,
+          state: 'archived',
+          archivedReason: 'superseded_by_edit',
+          createdAt: TEST.timestamp,
+          archivedAt: TEST.timestamp,
+        },
+        {
+          ticketId: ticket.id,
+          phase,
+          attemptNumber: 2,
+          state: 'active',
+          archivedReason: null,
+          createdAt: TEST.timestamp,
+          archivedAt: null,
+        },
+      ])
+      if (artifactType !== 'interview' && url === readOnlyEndpoint(artifactType)) {
+        return readOnlyContentResponse(artifactType, 'Active attempt content.')
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const view = renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+    const selector = await screen.findByRole('combobox', { name: /version/i })
+    fireEvent.change(selector, { target: { value: '1' } })
+
+    expect(await screen.findByText('Loading artifact…')).toBeInTheDocument()
+    expect(screen.queryByText(marker)).not.toBeInTheDocument()
+
+    snapshotLoaded = true
+    view.rerender(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+    await expectReadOnlyContent(artifactType, marker)
+  })
+
+  it.each(READ_ONLY_ARTIFACT_CASES)('shows a successful empty $artifactType result as empty', async ({ artifactType, phase, emptyLabel }) => {
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({ data: { raw: '', document: null }, isLoading: false })
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (artifactType !== 'interview' && url === readOnlyEndpoint(artifactType)) {
+        return readOnlyContentResponse(artifactType)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(<ApprovalView ticket={makeTicket({ status: phase })} artifactType={artifactType} readOnly />)
+
+    expect(await screen.findByText(emptyLabel)).toBeInTheDocument()
+    expect(screen.queryByText('Loading artifact…')).not.toBeInTheDocument()
+  })
+
+  it.each(READ_ONLY_ARTIFACT_CASES)('retries an initial $artifactType read failure', async ({ artifactType, phase, marker }) => {
+    const ticket = makeTicket({ status: phase })
+    let reads = 0
+    const refetch = vi.fn(async () => {
+      mockUseInterviewQuestions.mockReturnValue({ data: buildInterviewPayload(marker), isLoading: false, isError: false, refetch })
+      view.rerender(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+    })
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        error: new Error('Artifact store unavailable.'),
+        refetch,
+      })
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (artifactType !== 'interview' && url === readOnlyEndpoint(artifactType)) {
+        reads += 1
+        return reads === 1
+          ? createJsonResponse({ error: 'Artifact store unavailable.' }, 503)
+          : readOnlyContentResponse(artifactType, marker)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const view = renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+
+    expect(await screen.findByText('This artifact could not be loaded.')).toBeInTheDocument()
+    expect(screen.queryByText('No interview artifact available.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await expectReadOnlyContent(artifactType, marker)
+    if (artifactType === 'interview') expect(refetch).toHaveBeenCalledOnce()
+    else expect(reads).toBe(2)
+  })
+
+  it.each(READ_ONLY_ARTIFACT_CASES)('keeps cached $artifactType content visible after a refresh failure', async ({ artifactType, phase, marker }) => {
+    const ticket = makeTicket({ status: phase })
+    let reads = 0
+    if (artifactType === 'interview') {
+      mockUseInterviewQuestions.mockReturnValue({
+        data: buildInterviewPayload(marker),
+        isLoading: false,
+        isError: true,
+        error: new Error('Refresh unavailable.'),
+        refetch: vi.fn(),
+      })
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (artifactType !== 'interview' && url === readOnlyEndpoint(artifactType)) {
+        reads += 1
+        return reads === 1
+          ? readOnlyContentResponse(artifactType, marker)
+          : createJsonResponse({ error: 'Refresh unavailable.' }, 503)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const view = renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} readOnly />)
+    if (artifactType === 'interview') {
+      await expectReadOnlyContent(artifactType, marker)
+    } else {
+      await expectReadOnlyContent(artifactType, marker)
+      await view.queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, artifactType, 'live'] })
+    }
+
+    expect(await screen.findByText('Artifact refresh failed. Previously loaded content remains available.')).toBeInTheDocument()
+    expect(screen.getByText(marker)).toBeInTheDocument()
   })
 })
 

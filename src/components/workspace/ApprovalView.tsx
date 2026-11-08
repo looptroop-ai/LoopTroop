@@ -987,7 +987,12 @@ function ReadOnlyApprovalAttemptView({
   // The interview endpoint answers for the interview artifact only. Left always
   // enabled, opening a read-only PRD or beads attempt still called it, and its
   // failure then surfaced against an artifact type it says nothing about.
-  const { data: interviewData, isError: isInterviewError, error: interviewError, refetch: refetchInterview } =
+  const {
+    data: interviewData,
+    isError: isInterviewError,
+    error: interviewError,
+    refetch: refetchInterview,
+  } =
     useInterviewQuestions(ticket.id, {
       enabled: Boolean(ticket.id) && artifactType === 'interview' && !archivedAttempt,
     })
@@ -1024,15 +1029,22 @@ function ReadOnlyApprovalAttemptView({
     staleTime: QUERY_STALE_TIME_5M,
   })
 
-  // An archived attempt reads its content from the artifact snapshot, so only a
-  // live attempt can fail here.
   const contentError = archivedAttempt
-    ? null
+    ? (artifactState.isError ? { error: artifactState.error, retry: artifactState.refetch } : null)
     : artifactType === 'interview'
       ? (isInterviewError ? { error: interviewError, retry: refetchInterview } : null)
       : artifactType === 'prd'
         ? (isPrdError ? { error: prdError, retry: refetchPrd } : null)
         : (isBeadsError ? { error: beadsError, retry: refetchBeads } : null)
+
+  const hasContentResult = archivedAttempt
+    ? artifactState.artifacts !== undefined
+    : artifactType === 'interview'
+      ? interviewData !== undefined
+      : artifactType === 'prd'
+        ? prdContent !== undefined
+        : beadsContent !== undefined
+  const contentPending = !hasContentResult && !contentError
 
   const content = artifactType === 'interview'
     ? (archivedAttempt ? snapshotRaw : (interviewData?.raw ?? ''))
@@ -1083,29 +1095,45 @@ function ReadOnlyApprovalAttemptView({
       </div>
 
       <div className="flex-1 min-h-0 px-4 pb-2 overflow-auto">
-        {contentError ? (
+        {contentPending ? (
+          <div role="status" className="flex items-center justify-center py-8 text-xs text-muted-foreground">
+            Loading artifact…
+          </div>
+        ) : contentError && !hasContentResult ? (
           <QueryErrorNotice
             className="py-8"
             title="This artifact could not be loaded."
             error={contentError.error}
             onRetry={() => void contentError.retry()}
           />
-        ) : artifactType === 'interview' ? (
-          interviewDocument ? (
-            <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
-          ) : (
-            <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No interview artifact available." />
-          )
-        ) : artifactType === 'prd' ? (
-          prdDocument ? (
-            <PrdDocumentView document={prdDocument as PrdDocument} />
-          ) : (
-            <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No PRD artifact available." />
-          )
-        ) : content ? (
-          <BeadsDraftView content={content} />
         ) : (
-          <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No beads artifact available.</div>
+          <>
+            {contentError ? (
+              <QueryErrorNotice
+                className="mb-3"
+                title="Artifact refresh failed. Previously loaded content remains available."
+                error={contentError.error}
+                onRetry={() => void contentError.retry()}
+              />
+            ) : null}
+            {artifactType === 'interview' ? (
+              interviewDocument ? (
+                <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
+              ) : (
+                <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No interview artifact available." />
+              )
+            ) : artifactType === 'prd' ? (
+              prdDocument ? (
+                <PrdDocumentView document={prdDocument as PrdDocument} />
+              ) : (
+                <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No PRD artifact available." />
+              )
+            ) : content.trim() ? (
+              <BeadsDraftView content={content} />
+            ) : (
+              <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No beads artifact available.</div>
+            )}
+          </>
         )}
       </div>
 
@@ -1139,9 +1167,11 @@ export function ApprovalView({ ticket, phase, artifactType, readOnly }: Approval
     archivedAttemptNumber,
     logPhaseAttempt,
     logMode,
+    isLoading: isAttemptsLoading,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
+    isPhaseVersionUnknown,
   } = useSelectedPhaseAttempt(ticket.id, resolvedPhase)
   const attemptNumber = selectedAttemptNumber(selectedAttempt, attempts)
   const selector = isAttemptsError ? (
@@ -1157,6 +1187,21 @@ export function ApprovalView({ ticket, phase, artifactType, readOnly }: Approval
       />
     </div>
   ) : null
+
+  if (readOnly && isAttemptsLoading) {
+    return (
+      <div className="h-full flex flex-col min-h-0">
+        {selector}
+        <div role="status" className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
+          Loading phase version…
+        </div>
+      </div>
+    )
+  }
+
+  if (readOnly && isPhaseVersionUnknown) {
+    return <div className="h-full flex flex-col min-h-0">{selector}</div>
+  }
 
   if (artifactType === 'execution_setup_plan') {
     const isArchivedAttempt = archivedAttemptNumber != null

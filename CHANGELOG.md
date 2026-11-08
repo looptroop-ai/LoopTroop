@@ -13,16 +13,22 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - OpenCode tasks recover their own background command notifications and stop old task commands before handing off the worktree, while preserving conversation history.
 - PRD coverage reviews show clearer item changes and explanations for the gaps each revision addresses.
+- Ticket artifact views wait for version evidence and keep raw-output controls beside metadata.
+- The startup restore notice identifies saved local data, and long dialogs stay usable on short screens.
 
 ### Changed
 
 - PRD revision instructions now ask for exact current and revised item titles, separate records for changed epics and stories, and a reason for each gap resolution. For resolved gaps, section-only changes can have no affected item references, while mixed changes keep affected stories; unresolved source contradictions use an empty list. Empty change lists remain accepted during coverage; the review can derive a diff from saved PRD versions, and supplied records keep their existing validation behavior.
+- Raw artifact views place **Copy** beside line, character, and estimated token counts. Plain text and missing-output states use the same header layout.
+- The startup restore notice explains when saved profile or project data was found, shows its local database location, and says dismissal lasts for that database.
+- Long shared dialogs and the Startup Restore, Welcome Disclaimer, and Keyboard Shortcuts overlays keep their content within the viewport and scrollable.
 
 ### Fixed
 
 - Continue handles owned background notifications, permissions already pending at reconnect or before a new prompt receipt, crash/restart history, and stream-loss recovery without accepting unrelated work.
 - Completed and abandoned LoopTroop tasks have their native OpenCode tools disabled before their verified background commands are stopped, including commands with receipts older than the normal response-history window. Unconfirmed cleanup retains ownership and withholds worktree reset; active Continue sessions keep their normal permissions and all conversation history is retained. Unowned interactive callers retain control of their session lifetime.
 - Coding, runtime setup, and final-test prompts run checks needed for the final outcome in the foreground, avoiding progress-only replies while those checks are still running. PRD coverage retries retain the full rejected response so valid change records can be corrected rather than recreated.
+- Ticket artifact views wait for artifact and phase-attempt data before choosing a version or showing an empty state. Cached artifacts stay visible during refreshes; empty responses, missing output, and request errors remain distinct. Version summaries appear only when version evidence is available.
 
 ## 0.6.4 (2026-11-06)
 

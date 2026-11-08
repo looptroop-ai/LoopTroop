@@ -42,6 +42,19 @@ describe('KeyboardShortcuts', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
+  it('keeps panel interactions open and closes on a backdrop click', () => {
+    open()
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
+    const backdrop = dialog.parentElement!
+
+    fireEvent.click(screen.getByText('Show keyboard shortcuts'))
+    fireEvent.scroll(dialog)
+    expect(screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })).toBeInTheDocument()
+
+    fireEvent.click(backdrop)
+    expect(screen.queryByRole('dialog', { name: 'Keyboard Shortcuts' })).not.toBeInTheDocument()
+  })
+
   /**
    * The ticket view is `z-[60]`, routed modals are `z-[70]`, About is `z-[80]`,
    * and the two portaled pickers are higher still. Keeping the shortcuts window

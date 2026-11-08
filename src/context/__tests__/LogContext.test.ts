@@ -26,6 +26,12 @@ function LogHarness() {
   return createElement('div', { 'data-testid': 'log-count' }, logs.length)
 }
 
+function PassiveLogHarness() {
+  const logApi = useLogs()
+  useEffect(() => { latestLogApi = logApi }, [logApi])
+  return null
+}
+
 function getCodingLogs() {
   return latestLogApi?.getLogsForPhase('CODING') ?? []
 }
@@ -289,6 +295,78 @@ describe('LogProvider', () => {
     await flushMicrotasks()
     expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=20&phase=DRAFTING_PRD')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('tail='))).toBe(true)
+  })
+
+  it.each([
+    ['snapshot containing rows', [{
+      type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+      content: 'Cached history.', entryId: 'cached-history', timestamp: '2026-01-01T00:00:01.000Z',
+    }]],
+    ['empty snapshot', []],
+  ])('uses a cached %s as the first successful load', async (_label, cachedRows) => {
+    const ticketId = '1:T-cache-first-load'
+    const scope = { status: 'CODING' }
+    const cacheKey = getServerLogCacheKey(ticketId, scope)
+    serverLogCache.set(cacheKey, cachedRows)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
+
+    render(createElement(
+      LogProvider,
+      { ticketId, currentStatus: 'CODING', children: createElement(PassiveLogHarness) },
+    ))
+
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(scope)).toBe(true))
+    expect(fetchSpy).not.toHaveBeenCalled()
+    if (cachedRows.length > 0) {
+      expect(getCodingLogs().map((entry) => entry.entryId)).toContain('cached-history')
+    }
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('clears rows and readiness flags, then refetches the cleared scope', async () => {
+    const ticketId = '1:T-clear-log-readiness'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'Existing history.', entryId: 'before-clear', timestamp: '2026-01-01T00:00:01.000Z',
+      }]))
+      .mockImplementationOnce(() => createJsonResponse({ error: 'unavailable' }, 503))
+      .mockImplementationOnce(() => createJsonResponse([{
+        type: 'info', phase: 'CODING', status: 'CODING', source: 'system',
+        content: 'History after clear.', entryId: 'after-clear', timestamp: '2026-01-01T00:00:02.000Z',
+      }]))
+
+    render(createElement(
+      LogProvider,
+      { ticketId, currentStatus: 'CODING', children: createElement(PassiveLogHarness) },
+    ))
+
+    const normalScope = { status: 'CODING' }
+    const debugScope = { status: 'CODING', channel: 'debug' as const }
+    await waitFor(() => expect(latestLogApi).not.toBeNull())
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toContain('before-clear')
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING', { channel: 'debug' }))
+    await waitFor(() => expect(latestLogApi?.isErrorLogScope?.(debugScope)).toBe(true))
+    expect(getCodingLogs().map((entry) => entry.entryId)).toContain('before-clear')
+
+    act(() => latestLogApi?.clearLogs())
+    await waitFor(() => {
+      expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(false)
+      expect(latestLogApi?.isErrorLogScope?.(debugScope)).toBe(false)
+      expect(getCodingLogs()).toHaveLength(0)
+    })
+
+    act(() => latestLogApi?.loadLogsForPhase?.('CODING'))
+    await waitFor(() => expect(getCodingLogs().map((entry) => entry.entryId)).toContain('after-clear'))
+    expect(latestLogApi?.isLoadedLogScope?.(normalScope)).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
   })
 
   it('marks an empty successful scope loaded only after its delayed rows commit', async () => {

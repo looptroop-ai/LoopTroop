@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.13 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.105.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.105.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.105.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.105.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `@ungap/structured-clone` | 1.4.0 | ISC | Copyright (c) 2021, Andrea Giammarchi, @WebReflection |
 | `argparse` | 3.0.4 | PSF-2.0 | - |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
@@ -78,7 +78,7 @@ frontend packages inlined into the client bundle.
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
 | `hast-util-to-jsx-runtime` | 2.3.6 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `hast-util-whitespace` | 3.0.0 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
-| `hono` | 4.13.14 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
+| `hono` | 4.13.16 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `html-url-attributes` | 3.0.1 | MIT | Copyright (c) Titus Wormer |
 | `inline-style-parser` | 0.2.7 | MIT | Copyright (c) 2012 TJ Holowaychuk <tj@vision-media.ca> |
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
@@ -405,7 +405,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.105.0`, `@tanstack/react-query@5.105.0`
+Applies to: `@tanstack/query-core@5.105.1`, `@tanstack/react-query@5.105.1`
 
 ```text
 MIT License
@@ -1071,7 +1071,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `hono@4.13.14`
+Applies to: `hono@4.13.16`
 
 ```text
 MIT License

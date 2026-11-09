@@ -15,6 +15,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - PRD coverage reviews show clearer item changes and explanations for the gaps each revision addresses.
 - Ticket review views wait for current-attempt evidence, keep raw-output controls beside metadata, and let users retry failed artifact or log loads.
 - The startup restore notice identifies saved local data, and long dialogs stay usable on short screens.
+- The README demo and screenshot gallery show the current app, including manual QA, AI questions and the assistant chat.
 
 ### Changed
 
@@ -34,6 +35,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Clearing local logs reloads requested server history so open coverage summaries do not remain stuck loading.
 - PRD and Beads approval waits while coverage reports refresh, and stays blocked if that refresh fails until a retry succeeds, preventing approval against a cached report from an earlier attempt.
 - Local and self-hosted API requests run even when the browser reports offline.
+
+### Documentation
+
+- The README demo GIF is a new 85-second recording of the current UI. It follows one ticket from Configuration through the council's drafts and vote, the interview, specs, beads and per-bead diffs, then an AI question during coding, manual QA, the pull request and the assistant chat, with a caption for each step. The GIF links to an MP4 copy on the website, which opens in the browser's video player so you can pause and scrub. At 4.4 MB the GIF is smaller than the 28-second one it replaces.
+- The eight screenshots in the README and website galleries were retaken from the current UI.
 
 ## 0.6.4 (2026-11-06)
 

@@ -38,8 +38,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Documentation
 
-- The README demo GIF is a new 85-second recording of the current UI. It follows one ticket from Configuration through the council's drafts and vote, the interview, specs, beads and per-bead diffs, then an AI question during coding, manual QA, the pull request and the assistant chat, with a caption for each step. The GIF links to an MP4 copy on the website, which opens in the browser's video player so you can pause and scrub. At 4.4 MB the GIF is smaller than the 28-second one it replaces.
-- The eight screenshots in the README and website galleries were retaken from the current UI.
+- The README demo GIF is a new 92-second recording of the current UI. It follows one finished ticket from the main implementer and council settings through the council's drafts and vote, the interview, specs, beads, per-bead diffs, manual QA, the pull request and the assistant chat, then shows the AI asking a question on a ticket that is still coding. Each step has a caption, and a glowing ring marks the part the caption is about. The GIF links to an MP4 copy on the website, which opens in the browser's video player so you can pause and scrub. At 4.7 MB the GIF is smaller than the 28-second one it replaces.
+- The eight screenshots in the README and website galleries were retaken from the current UI. The two bead error screenshots now show real beads that failed and then passed on a later attempt, with the notes from each failed attempt.
 
 ## 0.6.4 (2026-11-06)
 

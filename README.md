@@ -24,7 +24,7 @@ Instead of trusting a single, endless AI chat session, where the conversation hi
 **Start here:** [Docs](https://www.looptroop.ovh/docs/) | [Getting Started](https://www.looptroop.ovh/docs/getting-started) | [Ticket Lifecycle Screenshots](https://www.looptroop.ovh/docs/ticket-lifecycle-screenshots) | [LLM Council](https://www.looptroop.ovh/docs/llm-council) | [Context Engineering](https://www.looptroop.ovh/docs/context-engineering) | [Execution](https://www.looptroop.ovh/docs/beads)
 
 [![LoopTroop workflow demo](https://raw.githubusercontent.com/looptroop-ai/LoopTroop-Website/main/docs/media/20261109-demo-captions.gif)](https://www.looptroop.ovh/media/20261109-demo-captions.mp4)
-*One ticket from configuration to pull request, including the interview, an AI question during coding, manual QA and the assistant chat. Click the GIF to open it as a video you can pause and scrub.*
+*One ticket from configuration to pull request, including the interview, manual QA, the assistant chat and an AI question during coding. Click the GIF to open it as a video you can pause and scrub.*
 
 ### 📸 Screenshots
 

@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.13 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.105.3 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.105.3 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.106.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.106.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `@ungap/structured-clone` | 1.4.0 | ISC | Copyright (c) 2021, Andrea Giammarchi, @WebReflection |
 | `argparse` | 3.0.4 | PSF-2.0 | - |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
@@ -84,7 +84,7 @@ frontend packages inlined into the client bundle.
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.5.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.67.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.69.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `mdast-util-from-markdown` | 2.1.0 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-hast` | 13.2.1 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-string` | 4.0.0 | MIT | Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com> |
@@ -405,7 +405,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.105.3`, `@tanstack/react-query@5.105.3`
+Applies to: `@tanstack/query-core@5.106.0`, `@tanstack/react-query@5.106.0`
 
 ```text
 MIT License
@@ -1187,7 +1187,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.67.0`
+Applies to: `lucide-react@1.69.0`
 
 ```text
 ISC License

@@ -105,7 +105,7 @@
     "@hono/node-server": "^2.1.6",
     "@opencode-ai/sdk": "^1.19.5",
     "drizzle-orm": "1.0.0-rc.5",
-    "hono": "^4.13.16",
+    "hono": "^4.13.17",
     "js-yaml": "^5.5.0",
     "xstate": "^5.33.3",
     "zod": "^4.6.7"
@@ -126,7 +126,7 @@
     "@radix-ui/react-slot": "^1.5.0",
     "@radix-ui/react-tooltip": "^1.4.1",
     "@tailwindcss/vite": "^4.3.4",
-    "@tanstack/react-query": "^5.106.1",
+    "@tanstack/react-query": "^5.107.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.19.2",

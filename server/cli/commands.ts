@@ -26,6 +26,19 @@ const READY_TIMEOUT_MS = 60_000
 export interface StopBudgets {
   /** Waiting on the daemon's own graceful shutdown. */
   gracefulMs: number
+  /**
+   * Extra waiting after the daemon has recorded `shutdownPending`.
+   *
+   * A daemon that accepted the request has committed to finishing its own
+   * cleanup. Stopping an owned OpenCode tree is bounded at up to 15 s on
+   * Windows (the taskkill timeout plus the exit wait), and a slow first attempt
+   * is retried after a short backoff. A failed attempt followed by a full retry
+   * is therefore about 31 s. `gracefulMs` alone expires while that retry is
+   * still finishing, which reports an incomplete shutdown moments before the
+   * daemon clears its records. This window, added to `gracefulMs`, covers that
+   * sequence without making `stop` wait forever on a wedged generation.
+   */
+  cleanupMs: number
   /** Waiting on SIGTERM, which the daemon handles the same way. */
   signalMs: number
   /** Waiting on the kill, which the OS does not negotiate. */
@@ -34,6 +47,7 @@ export interface StopBudgets {
 
 export const DEFAULT_STOP_BUDGETS: StopBudgets = {
   gracefulMs: 15_000,
+  cleanupMs: 25_000,
   signalMs: 10_000,
   forceMs: 5_000,
 }
@@ -736,39 +750,53 @@ export async function stopRunningDaemon(
     const fresh = readDaemonState(options.configDir)
     return fresh?.instanceId === state.instanceId && fresh.shutdownPending === true
   }
+  const isShutdownPending = (fresh: DaemonState | null): boolean => (
+    fresh?.instanceId === state.instanceId
+      ? fresh.shutdownPending === true
+      : state.shutdownPending === true
+  )
+  /**
+   * A close can have dropped the listener after marking this generation
+   * pending but before its owned Git/process cleanup finished. Leader exit
+   * alone is not proof that those descendants are gone, so preserve the retry
+   * boundary instead of clearing the records here. Otherwise finish the stop:
+   * a successful in-process retry clears daemon.json itself, and finishStop
+   * clears anything the vanished generation left behind.
+   */
+  const outcomeAfterExit = async (fresh: DaemonState | null): Promise<StopOutcome> => {
+    if (fresh?.instanceId === state.instanceId && fresh.shutdownPending) {
+      return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+    }
+    return finishStop(state, options.configDir, false)
+  }
 
   const accepted = await requestShutdown(state)
   if (accepted) {
-    if (await waitForExit(state.pid, budgets.gracefulMs)) {
-      // A close can have dropped the listener after marking this generation
-      // pending but before its owned Git/process cleanup finished. Leader exit
-      // alone is not proof that those descendants are gone, so preserve the
-      // retry boundary instead of clearing the records here.
-      const fresh = readDaemonState(options.configDir)
-      if (fresh?.instanceId === state.instanceId && fresh.shutdownPending) {
-        return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
-      }
-      // A successful in-process retry clears daemon.json itself. Do not let a
-      // stale input snapshot turn that success back into an incomplete result.
-      if (state.shutdownPending && fresh === null) return { kind: 'stopped', forced: false }
-      return finishStop(state, options.configDir, false)
+    let exited = await waitForExit(state.pid, budgets.gracefulMs)
+    let fresh = readDaemonState(options.configDir)
+    let shutdownPending = isShutdownPending(fresh)
+
+    // A daemon that has published the pending marker is in its own bounded
+    // cleanup, which can legitimately outlast `gracefulMs` when a Windows
+    // taskkill is slow and gets retried. Keep waiting instead of reporting an
+    // incomplete shutdown that the daemon is about to finish.
+    if (!exited && shutdownPending) {
+      exited = await waitForExit(state.pid, budgets.cleanupMs)
+      fresh = readDaemonState(options.configDir)
+      shutdownPending = isShutdownPending(fresh)
     }
+
+    if (exited) return outcomeAfterExit(fresh)
     // The daemon acknowledged the authenticated request and is still alive.
     // Its supervisor may be retaining an OpenCode child deliberately; do not
     // escalate to a blind SIGKILL or clear the records that make retry safe.
-    const fresh = readDaemonState(options.configDir)
-    const shutdownPending = fresh?.instanceId === state.instanceId
-      ? fresh.shutdownPending === true
-      : state.shutdownPending === true
     return shutdownPending
       ? { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
       : { kind: 'incomplete', pid: state.pid }
   }
 
   const freshAfterFailedRequest = readDaemonState(options.configDir)
-  const shutdownPending = freshAfterFailedRequest?.instanceId === state.instanceId
-    ? freshAfterFailedRequest.shutdownPending === true
-    : state.shutdownPending === true
+  const shutdownPending = isShutdownPending(freshAfterFailedRequest)
   if (shutdownPending) {
     // This generation already began an in-process shutdown. Once its listener
     // is gone, force escalation would destroy the only retry boundary. POSIX
@@ -789,6 +817,13 @@ export async function stopRunningDaemon(
       } else if (identity !== 'gone') {
         return { kind: 'not-ours', pid: state.pid, reason: identity.reason }
       }
+    }
+    // A retry can arrive after the daemon has closed its listener but while
+    // its own runtime drain is still finishing. Keep waiting for that drain,
+    // without force-killing it, instead of returning incomplete moments
+    // before it clears the records.
+    if (await waitForExit(state.pid, budgets.cleanupMs)) {
+      return outcomeAfterExit(readDaemonState(options.configDir))
     }
     return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
   }

@@ -3,7 +3,7 @@ import { readProcessStartToken } from '../server/lib/processIdentity'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { readRunningDaemon, stopRunningDaemon, type StopBudgets } from '../server/cli/commands'
@@ -33,7 +33,8 @@ describe('stopping a running daemon', () => {
   })
 
   /** Short enough that the escalation ladder is exercised in milliseconds. */
-  const FAST_BUDGETS: StopBudgets = { gracefulMs: 400, signalMs: 400, forceMs: 5_000 }
+  const FAST_BUDGETS: StopBudgets = { gracefulMs: 400, cleanupMs: 0, signalMs: 400, forceMs: 5_000 }
+  const PENDING_CLEANUP_BUDGETS: StopBudgets = { gracefulMs: 100, cleanupMs: 5_000, signalMs: 100, forceMs: 1_000 }
 
   function makeConfigDir(): string {
     const dir = mkdtempSync(join(tmpdir(), 'looptroop-stop-'))
@@ -162,6 +163,77 @@ describe('stopping a running daemon', () => {
     // under a surviving process.
     expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
     expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
+  })
+
+  interface PendingStopFixture {
+    configDir: string
+    pid: number
+    fake: FakeDaemon
+    startToken?: string
+    state: DaemonState
+  }
+
+  /** A live stand-in daemon whose shutdown the test can delay or disconnect. */
+  async function startPendingStopFixture(options: {
+    onShutdown?: (context: { fake: FakeDaemon; configDir: string; pid: number; startToken?: string }) => void
+    closeListener?: boolean
+  } = {}): Promise<PendingStopFixture> {
+    const configDir = makeConfigDir()
+    const pid = await spawnReadyStandIn()
+    const startToken = readProcessStartToken(pid) ?? undefined
+    expect(startToken).toBeDefined()
+    const fake = await startFakeDaemon({
+      instanceId: 'instance-under-test',
+      apiToken: 'test-api-token',
+      onShutdown: () => options.onShutdown?.({ fake, configDir, pid, startToken }),
+    })
+    writeLock(configDir, pid)
+    if (options.closeListener) {
+      const server = servers[servers.length - 1]
+      if (server === undefined) throw new Error('fake daemon server is missing')
+      await new Promise<void>((done) => { server.close(() => done()) })
+    }
+    return { configDir, pid, fake, startToken, state: makeState({ pid, port: fake.port, startToken }) }
+  }
+
+  /** What a slow Windows taskkill retry looks like: cleanup finishes later. */
+  function finishPendingDaemon(pid: number, configDir: string, delayMs: number): void {
+    const timer = setTimeout(() => {
+      rmSync(getDaemonStatePath(configDir), { force: true })
+      process.kill(pid, 'SIGKILL')
+    }, delayMs)
+    timer.unref()
+  }
+
+  async function expectPendingStopSucceeds(configDir: string, state: DaemonState): Promise<void> {
+    const outcome = await stopRunningDaemon(state, { configDir, budgets: PENDING_CLEANUP_BUDGETS })
+    expect(outcome).toEqual({ kind: 'stopped', forced: false })
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  }
+
+  it('waits for a pending daemon cleanup that outlasts the graceful budget', async () => {
+    const fixture = await startPendingStopFixture({
+      onShutdown: ({ fake, configDir, pid, startToken }) => {
+        writeDaemonState(makeState({ pid, port: fake.port, startToken, shutdownPending: true }), configDir)
+        finishPendingDaemon(pid, configDir, 300)
+      },
+    })
+    writeDaemonState(fixture.state, fixture.configDir)
+
+    await expectPendingStopSucceeds(fixture.configDir, fixture.state)
+  })
+
+  it('waits for cleanup when a retry cannot reach the closed shutdown listener', async () => {
+    // A daemon closes its listener before the owned runtime drain finishes.
+    // The retry cannot authenticate, but the pending record still names work
+    // that is in progress.
+    const fixture = await startPendingStopFixture({ closeListener: true })
+    const pending = { ...fixture.state, shutdownPending: true }
+    writeDaemonState(pending, fixture.configDir)
+    finishPendingDaemon(fixture.pid, fixture.configDir, 1_000)
+
+    await expectPendingStopSucceeds(fixture.configDir, pending)
   })
 
   it('never force-kills a generation whose runtime close is already pending', async () => {

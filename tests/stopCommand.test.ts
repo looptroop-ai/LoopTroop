@@ -3,7 +3,7 @@ import { readProcessStartToken } from '../server/lib/processIdentity'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { readRunningDaemon, stopRunningDaemon, type StopBudgets } from '../server/cli/commands'
@@ -33,7 +33,7 @@ describe('stopping a running daemon', () => {
   })
 
   /** Short enough that the escalation ladder is exercised in milliseconds. */
-  const FAST_BUDGETS: StopBudgets = { gracefulMs: 400, signalMs: 400, forceMs: 5_000 }
+  const FAST_BUDGETS: StopBudgets = { gracefulMs: 400, cleanupMs: 0, signalMs: 400, forceMs: 5_000 }
 
   function makeConfigDir(): string {
     const dir = mkdtempSync(join(tmpdir(), 'looptroop-stop-'))
@@ -162,6 +162,43 @@ describe('stopping a running daemon', () => {
     // under a surviving process.
     expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
     expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
+  })
+
+  it('waits for a pending daemon cleanup that outlasts the graceful budget', async () => {
+    const configDir = makeConfigDir()
+    const pid = spawnStandIn(true)
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
+    const fake = await startFakeDaemon({
+      instanceId: 'instance-under-test',
+      apiToken: 'test-api-token',
+      onShutdown: () => {
+        writeDaemonState(makeState({
+          pid,
+          port: fake.port,
+          startToken: startToken ?? undefined,
+          shutdownPending: true,
+        }), configDir)
+        // What a slow Windows taskkill retry looks like: the daemon publishes
+        // its pending marker, then needs longer than `gracefulMs` to finish.
+        const timer = setTimeout(() => {
+          rmSync(getDaemonStatePath(configDir), { force: true })
+          process.kill(pid, 'SIGKILL')
+        }, 300)
+        timer.unref()
+      },
+    })
+    writeLock(configDir, pid)
+    const state = makeState({ pid, port: fake.port, startToken: startToken ?? undefined })
+    writeDaemonState(state, configDir)
+
+    const outcome = await stopRunningDaemon(state, {
+      configDir,
+      budgets: { gracefulMs: 100, cleanupMs: 5_000, signalMs: 100, forceMs: 1_000 },
+    })
+
+    expect(outcome).toEqual({ kind: 'stopped', forced: false })
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
   })
 
   it('never force-kills a generation whose runtime close is already pending', async () => {

@@ -34,6 +34,7 @@ describe('stopping a running daemon', () => {
 
   /** Short enough that the escalation ladder is exercised in milliseconds. */
   const FAST_BUDGETS: StopBudgets = { gracefulMs: 400, cleanupMs: 0, signalMs: 400, forceMs: 5_000 }
+  const PENDING_CLEANUP_BUDGETS: StopBudgets = { gracefulMs: 100, cleanupMs: 5_000, signalMs: 100, forceMs: 1_000 }
 
   function makeConfigDir(): string {
     const dir = mkdtempSync(join(tmpdir(), 'looptroop-stop-'))
@@ -164,76 +165,73 @@ describe('stopping a running daemon', () => {
     expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
   })
 
-  it('waits for a pending daemon cleanup that outlasts the graceful budget', async () => {
+  interface PendingStopFixture {
+    configDir: string
+    pid: number
+    fake: FakeDaemon
+    startToken?: string
+    state: DaemonState
+  }
+
+  /** A live stand-in daemon whose shutdown the test can delay or disconnect. */
+  async function startPendingStopFixture(options: {
+    onShutdown?: (context: { fake: FakeDaemon; configDir: string; pid: number; startToken?: string }) => void
+    closeListener?: boolean
+  } = {}): Promise<PendingStopFixture> {
     const configDir = makeConfigDir()
-    const pid = spawnStandIn(true)
-    const startToken = readProcessStartToken(pid)
-    expect(startToken).not.toBeNull()
+    const pid = await spawnReadyStandIn()
+    const startToken = readProcessStartToken(pid) ?? undefined
+    expect(startToken).toBeDefined()
     const fake = await startFakeDaemon({
       instanceId: 'instance-under-test',
       apiToken: 'test-api-token',
-      onShutdown: () => {
-        writeDaemonState(makeState({
-          pid,
-          port: fake.port,
-          startToken: startToken ?? undefined,
-          shutdownPending: true,
-        }), configDir)
-        // What a slow Windows taskkill retry looks like: the daemon publishes
-        // its pending marker, then needs longer than `gracefulMs` to finish.
-        const timer = setTimeout(() => {
-          rmSync(getDaemonStatePath(configDir), { force: true })
-          process.kill(pid, 'SIGKILL')
-        }, 300)
-        timer.unref()
-      },
+      onShutdown: () => options.onShutdown?.({ fake, configDir, pid, startToken }),
     })
     writeLock(configDir, pid)
-    const state = makeState({ pid, port: fake.port, startToken: startToken ?? undefined })
-    writeDaemonState(state, configDir)
+    if (options.closeListener) {
+      await new Promise<void>((done) => { servers[servers.length - 1].close(() => done()) })
+    }
+    return { configDir, pid, fake, startToken, state: makeState({ pid, port: fake.port, startToken }) }
+  }
 
-    const outcome = await stopRunningDaemon(state, {
-      configDir,
-      budgets: { gracefulMs: 100, cleanupMs: 5_000, signalMs: 100, forceMs: 1_000 },
-    })
-
-    expect(outcome).toEqual({ kind: 'stopped', forced: false })
-    expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
-    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
-  })
-
-  it('waits for cleanup when a retry cannot reach the closed shutdown listener', async () => {
-    const configDir = makeConfigDir()
-    const pid = await spawnReadyStandIn()
-    const startToken = readProcessStartToken(pid)
-    expect(startToken).not.toBeNull()
-    const fake = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
-    writeLock(configDir, pid)
-    const state = makeState({
-      pid,
-      port: fake.port,
-      startToken: startToken ?? undefined,
-      shutdownPending: true,
-    })
-    writeDaemonState(state, configDir)
-    // A daemon closes its listener before the owned runtime drain finishes.
-    // The retry cannot authenticate, but the pending record still names work
-    // that is in progress.
-    await new Promise<void>((done) => { servers[servers.length - 1].close(() => done()) })
+  /** What a slow Windows taskkill retry looks like: cleanup finishes later. */
+  function finishPendingDaemon(pid: number, configDir: string, delayMs: number): void {
     const timer = setTimeout(() => {
       rmSync(getDaemonStatePath(configDir), { force: true })
       process.kill(pid, 'SIGKILL')
-    }, 1_000)
+    }, delayMs)
     timer.unref()
+  }
 
-    const outcome = await stopRunningDaemon(state, {
-      configDir,
-      budgets: { gracefulMs: 100, cleanupMs: 5_000, signalMs: 100, forceMs: 1_000 },
-    })
-
+  async function expectPendingStopSucceeds(configDir: string, state: DaemonState): Promise<void> {
+    const outcome = await stopRunningDaemon(state, { configDir, budgets: PENDING_CLEANUP_BUDGETS })
     expect(outcome).toEqual({ kind: 'stopped', forced: false })
     expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
     expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  }
+
+  it('waits for a pending daemon cleanup that outlasts the graceful budget', async () => {
+    const fixture = await startPendingStopFixture({
+      onShutdown: ({ fake, configDir, pid, startToken }) => {
+        writeDaemonState(makeState({ pid, port: fake.port, startToken, shutdownPending: true }), configDir)
+        finishPendingDaemon(pid, configDir, 300)
+      },
+    })
+    writeDaemonState(fixture.state, fixture.configDir)
+
+    await expectPendingStopSucceeds(fixture.configDir, fixture.state)
+  })
+
+  it('waits for cleanup when a retry cannot reach the closed shutdown listener', async () => {
+    // A daemon closes its listener before the owned runtime drain finishes.
+    // The retry cannot authenticate, but the pending record still names work
+    // that is in progress.
+    const fixture = await startPendingStopFixture({ closeListener: true })
+    const pending = { ...fixture.state, shutdownPending: true }
+    writeDaemonState(pending, fixture.configDir)
+    finishPendingDaemon(fixture.pid, fixture.configDir, 1_000)
+
+    await expectPendingStopSucceeds(fixture.configDir, pending)
   })
 
   it('never force-kills a generation whose runtime close is already pending', async () => {

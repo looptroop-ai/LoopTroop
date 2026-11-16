@@ -189,7 +189,9 @@ describe('stopping a running daemon', () => {
     })
     writeLock(configDir, pid)
     if (options.closeListener) {
-      await new Promise<void>((done) => { servers[servers.length - 1].close(() => done()) })
+      const server = servers[servers.length - 1]
+      if (server === undefined) throw new Error('fake daemon server is missing')
+      await new Promise<void>((done) => { server.close(() => done()) })
     }
     return { configDir, pid, fake, startToken, state: makeState({ pid, port: fake.port, startToken }) }
   }

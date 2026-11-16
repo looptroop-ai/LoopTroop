@@ -32,10 +32,11 @@ export interface StopBudgets {
    * A daemon that accepted the request has committed to finishing its own
    * cleanup. Stopping an owned OpenCode tree is bounded at up to 15 s on
    * Windows (the taskkill timeout plus the exit wait), and a slow first attempt
-   * is retried after a short backoff. `gracefulMs` alone expires while that
-   * retry is still finishing, which reports an incomplete shutdown moments
-   * before the daemon clears its records. This window outlasts the daemon's
-   * cleanup without making `stop` wait forever on a wedged generation.
+   * is retried after a short backoff. A failed attempt followed by a full retry
+   * is therefore about 31 s. `gracefulMs` alone expires while that retry is
+   * still finishing, which reports an incomplete shutdown moments before the
+   * daemon clears its records. This window, added to `gracefulMs`, covers that
+   * sequence without making `stop` wait forever on a wedged generation.
    */
   cleanupMs: number
   /** Waiting on SIGTERM, which the daemon handles the same way. */
@@ -46,7 +47,7 @@ export interface StopBudgets {
 
 export const DEFAULT_STOP_BUDGETS: StopBudgets = {
   gracefulMs: 15_000,
-  cleanupMs: 20_000,
+  cleanupMs: 25_000,
   signalMs: 10_000,
   forceMs: 5_000,
 }
@@ -779,8 +780,8 @@ export async function stopRunningDaemon(
         return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
       }
       // A successful in-process retry clears daemon.json itself. Do not let a
-      // stale input snapshot turn that success back into an incomplete result.
-      if (state.shutdownPending && fresh === null) return { kind: 'stopped', forced: false }
+      // stale input snapshot turn that success back into an incomplete result;
+      // finishStop clears anything the vanished generation left behind.
       return finishStop(state, options.configDir, false)
     }
     // The daemon acknowledged the authenticated request and is still alive.
@@ -815,6 +816,17 @@ export async function stopRunningDaemon(
       } else if (identity !== 'gone') {
         return { kind: 'not-ours', pid: state.pid, reason: identity.reason }
       }
+    }
+    // A retry can arrive after the daemon has closed its listener but while
+    // its own runtime drain is still finishing. Keep waiting for that drain,
+    // without force-killing it, instead of returning incomplete moments
+    // before it clears the records.
+    if (await waitForExit(state.pid, budgets.cleanupMs)) {
+      const fresh = readDaemonState(options.configDir)
+      if (fresh?.instanceId === state.instanceId && fresh.shutdownPending) {
+        return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
+      }
+      return finishStop(state, options.configDir, false)
     }
     return { kind: 'incomplete', pid: state.pid, context: 'shutdown-pending' }
   }

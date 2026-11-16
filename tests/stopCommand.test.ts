@@ -199,6 +199,41 @@ describe('stopping a running daemon', () => {
 
     expect(outcome).toEqual({ kind: 'stopped', forced: false })
     expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+  })
+
+  it('waits for cleanup when a retry cannot reach the closed shutdown listener', async () => {
+    const configDir = makeConfigDir()
+    const pid = await spawnReadyStandIn()
+    const startToken = readProcessStartToken(pid)
+    expect(startToken).not.toBeNull()
+    const fake = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
+    writeLock(configDir, pid)
+    const state = makeState({
+      pid,
+      port: fake.port,
+      startToken: startToken ?? undefined,
+      shutdownPending: true,
+    })
+    writeDaemonState(state, configDir)
+    // A daemon closes its listener before the owned runtime drain finishes.
+    // The retry cannot authenticate, but the pending record still names work
+    // that is in progress.
+    await new Promise<void>((done) => { servers[servers.length - 1].close(() => done()) })
+    const timer = setTimeout(() => {
+      rmSync(getDaemonStatePath(configDir), { force: true })
+      process.kill(pid, 'SIGKILL')
+    }, 1_000)
+    timer.unref()
+
+    const outcome = await stopRunningDaemon(state, {
+      configDir,
+      budgets: { gracefulMs: 100, cleanupMs: 5_000, signalMs: 100, forceMs: 1_000 },
+    })
+
+    expect(outcome).toEqual({ kind: 'stopped', forced: false })
+    expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
   })
 
   it('never force-kills a generation whose runtime close is already pending', async () => {

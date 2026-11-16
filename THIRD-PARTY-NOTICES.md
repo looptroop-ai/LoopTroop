@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.13 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.106.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.106.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.107.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.107.1 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `@ungap/structured-clone` | 1.4.0 | ISC | Copyright (c) 2021, Andrea Giammarchi, @WebReflection |
 | `argparse` | 3.0.4 | PSF-2.0 | - |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
@@ -78,7 +78,7 @@ frontend packages inlined into the client bundle.
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
 | `hast-util-to-jsx-runtime` | 2.3.6 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `hast-util-whitespace` | 3.0.0 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
-| `hono` | 4.13.16 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
+| `hono` | 4.13.17 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `html-url-attributes` | 3.0.1 | MIT | Copyright (c) Titus Wormer |
 | `inline-style-parser` | 0.2.7 | MIT | Copyright (c) 2012 TJ Holowaychuk <tj@vision-media.ca> |
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
@@ -115,7 +115,7 @@ frontend packages inlined into the client bundle.
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.20 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.21 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `remark-parse` | 11.0.0 | MIT | Copyright (c) 2014 Titus Wormer <tituswormer@gmail.com> |
 | `remark-rehype` | 11.1.2 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `scheduler` | 0.28.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
@@ -141,7 +141,7 @@ frontend packages inlined into the client bundle.
 | `vfile-message` | 4.0.3 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `w3c-keyname` | 2.2.8 | MIT | Copyright (C) 2016 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `which` | 2.0.2 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
-| `xstate` | 5.33.3 | MIT | Copyright (c) 2015 David Khourshid |
+| `xstate` | 5.33.4 | MIT | Copyright (c) 2015 David Khourshid |
 | `zod` | 4.6.7 | MIT | Copyright (c) 2025 Colin McDonnell |
 
 ## Licence Texts
@@ -405,7 +405,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.106.1`, `@tanstack/react-query@5.106.1`
+Applies to: `@tanstack/query-core@5.107.1`, `@tanstack/react-query@5.107.1`
 
 ```text
 MIT License
@@ -1071,7 +1071,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `hono@4.13.16`
+Applies to: `hono@4.13.17`
 
 ```text
 MIT License
@@ -1294,7 +1294,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.20`
+Applies to: `react-virtuoso@4.18.21`
 
 ```text
 MIT License
@@ -1609,7 +1609,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `xstate@5.33.3`
+Applies to: `xstate@5.33.4`
 
 ```text
 The MIT License (MIT)

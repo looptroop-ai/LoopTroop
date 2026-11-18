@@ -189,25 +189,17 @@ export async function handleGetTicketSize(c: Context) {
     return list.sort((a, b) => b.size - a.size)
   }
 
-  // `getTicketPaths` already rejects a ticket id that could leave the project,
-  // but this stat is the first filesystem access in the handler. Resolve the
-  // contained path again so the path that is checked and the path that is
-  // stat'ed are the same one.
-  let exists = false
-  try {
-    exists = await stat(resolveContainedPath(projectRoot, worktreePath, { allowMissingParents: true }))
-      .then(() => true)
-      .catch(() => false)
-  } catch {
-    // A stored worktree path that no longer resolves inside the project is
-    // reported as missing, not as an error.
-  }
+  // `getTicketPaths` audits the worktree, but this handler then reads it
+  // several times. Resolve the contained path once and use it for the stat and
+  // every worktree scan, so the path that is checked is the path that is read.
+  const resolvedWorktreePath = resolveContainedPath(projectRoot, worktreePath, { allowMissingParents: true })
+  const exists = await stat(resolvedWorktreePath).then(() => true).catch(() => false)
   if (!exists) {
     return c.json({ size: 0, exists: false })
   }
 
   const [totalSize, ticketDirSize, execLogSize, debugLogSize, aiLogSize] = await Promise.all([
-    getDirectorySize(worktreePath),
+    getDirectorySize(resolvedWorktreePath),
     ticketDir ? getDirectorySize(ticketDir) : Promise.resolve(0),
     executionLogPath ? getFileSize(executionLogPath) : Promise.resolve(0),
     debugLogPath ? getFileSize(debugLogPath) : Promise.resolve(0),
@@ -226,7 +218,7 @@ export async function handleGetTicketSize(c: Context) {
 
   const [artifactsList, sourceList] = await Promise.all([
     getArtifactsChildren(),
-    getDirectoryChildren(worktreePath, ['.ticket']),
+    getDirectoryChildren(resolvedWorktreePath, ['.ticket']),
   ])
 
   return c.json({

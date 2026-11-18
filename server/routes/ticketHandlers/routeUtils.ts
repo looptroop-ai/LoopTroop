@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { lstatSync } from 'node:fs'
 import { TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
-import { logSafe } from '../../lib/logSafe'
+import { logSafe, logSafeError } from '../../lib/logSafe'
 import { db as appDb } from '../../db/index'
 import { profiles } from '../../db/schema'
 import {
@@ -66,7 +66,7 @@ export function logTicketOperationError(
   error: unknown,
   trailing?: string,
 ): void {
-  console.error(`[tickets] ${logSafe(action)} ${logSafe(ticketId)}${trailing ? ` ${logSafe(trailing)}` : ''}:`, error)
+  console.error(`[tickets] ${logSafe(action)} ${logSafe(ticketId)}${trailing ? ` ${logSafe(trailing)}` : ''}:`, logSafeError(error))
 }
 
 export function respondWithState(c: Context, ticketId: string, message: string) {

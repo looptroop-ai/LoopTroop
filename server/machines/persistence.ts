@@ -6,7 +6,7 @@ import { PROFILE_DEFAULTS } from '../db/defaults'
 import { attachWorkflowRunner } from '../workflow/runner'
 import { broadcaster } from '../sse/broadcaster'
 import { appendLogEvent, createLogEvent } from '../log/executionLog'
-import { logSafe } from '../lib/logSafe'
+import { logSafe, logSafeError } from '../lib/logSafe'
 import {
   ensureActivePhaseAttempt,
   findTicketRefByLocalId,
@@ -719,9 +719,9 @@ export function hydrateAllTickets() {
           continue
         }
       } catch (blockErr) {
-        console.error(`[persistence] Failed to block ticket ${ticket.externalId} after snapshot recovery failure:`, blockErr)
+        console.error(`[persistence] Failed to block ticket ${logSafe(ticket.externalId)} after snapshot recovery failure:`, logSafeError(blockErr))
       }
-      console.error(`[persistence] Failed to hydrate ticket ${ticket.externalId}:`, err)
+      console.error(`[persistence] Failed to hydrate ticket ${logSafe(ticket.externalId)}:`, logSafeError(err))
     }
   }
 

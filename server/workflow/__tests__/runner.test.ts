@@ -773,7 +773,7 @@ describe('attachWorkflowRunner', () => {
       attachWorkflowRunner(TEST.ticketId, actor, vi.fn())
 
       await vi.waitFor(() => expect(removeFolder).toHaveBeenCalledOnce())
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not remove the execution setup folder'), expect.any(Error))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not remove the execution setup folder'), expect.stringContaining('EACCES'))
       expect(actor.getSnapshot().value).toBe('CANCELED')
       actor.stop()
     } finally {

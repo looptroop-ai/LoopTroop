@@ -1,4 +1,5 @@
 import { getErrorMessage } from '@shared/typeGuards'
+import { logSafe } from '../lib/logSafe'
 import { listWaitingPullRequestTicketRefs } from '../storage/tickets'
 import { emitRoutePhaseLog } from '../routes/ticketHandlers/routeUtils'
 import { syncWaitingPullRequestTicket } from './mergeCompletion'
@@ -35,12 +36,12 @@ export function startMergePoller(): () => Promise<void> {
             emitRoutePhaseLog(ticketId, 'WAITING_PR_REVIEW', 'info',
               `Pull request sync failed; retrying in ${delay / 1000} seconds: ${getErrorMessage(error)}`)
           } catch (logError) {
-            console.warn(`[merge-poller] Could not log failure for ${ticketId}: ${getErrorMessage(logError)}`)
+            console.warn(`[merge-poller] Could not log failure for ${logSafe(ticketId)}: ${logSafe(getErrorMessage(logError))}`)
           }
         }
       }
     } catch (error) {
-      console.warn(`[merge-poller] Could not check waiting tickets: ${getErrorMessage(error)}`)
+      console.warn(`[merge-poller] Could not check waiting tickets: ${logSafe(getErrorMessage(error))}`)
     } finally {
       if (!stopped) schedule(POLL_INTERVAL_MS)
     }

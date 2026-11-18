@@ -1,7 +1,7 @@
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PhaseIntermediateData } from './types'
-import { logSafe } from '../../lib/logSafe'
+import { logSafe, logSafeError } from '../../lib/logSafe'
 import { clearTicketWorkBudget } from '../workBudget'
 import { forgetTicketQuestionMemory } from '../questionWindows'
 import { clearTicketSessionContinuations } from '../../opencode/sessionContinuation'
@@ -120,7 +120,7 @@ export function markTicketCancellationPending(ticketId: string): void {
     // unavailable. A restart cannot recover this guard without the marker, so
     // durable session rows remain the only restart evidence; never infer
     // ownership from an arbitrary project file.
-    console.warn(`[workflow] Could not persist cancellation pending marker for ticket ${logSafe(ticketId)}:`, error)
+    console.warn(`[workflow] Could not persist cancellation pending marker for ticket ${logSafe(ticketId)}:`, logSafeError(error))
   }
 }
 
@@ -147,7 +147,7 @@ export function isTicketCancellationPending(ticketId: string): boolean {
   } catch (error) {
     // A malformed or unreadable marker is uncertainty about an outstanding
     // cancellation, not evidence that it is safe to start work again.
-    console.warn(`[workflow] Could not read cancellation pending marker for ticket ${logSafe(ticketId)}:`, error)
+    console.warn(`[workflow] Could not read cancellation pending marker for ticket ${logSafe(ticketId)}:`, logSafeError(error))
     return true
   }
 }
@@ -156,7 +156,7 @@ export function clearTicketCancellationPending(ticketId: string): boolean {
   try {
     if (!removeTicketFile(ticketId, CANCELLATION_PENDING_ARTIFACT)) return false
   } catch (error) {
-    console.warn(`[workflow] Could not clear cancellation pending marker for ticket ${logSafe(ticketId)}:`, error)
+    console.warn(`[workflow] Could not clear cancellation pending marker for ticket ${logSafe(ticketId)}:`, logSafeError(error))
     return false
   }
   cancellationPendingTickets.delete(ticketId)

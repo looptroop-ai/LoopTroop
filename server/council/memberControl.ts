@@ -28,7 +28,7 @@ import type {
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
 import { CancelledError, type MemberOutcome } from './types'
-import { logSafe } from '../lib/logSafe'
+import { logSafe, logSafeError } from '../lib/logSafe'
 
 export class CouncilMemberControlError extends Error {
   readonly code: CouncilMemberControlErrorCode
@@ -367,7 +367,7 @@ export class CouncilRound<T> {
       try {
         this.options.onFailed?.(slot.memberId, error)
       } catch (reportError) {
-        console.warn(`[council] Could not record why ${slot.memberId} left the round:`, reportError)
+        console.warn(`[council] Could not record why ${logSafe(slot.memberId)} left the round:`, logSafeError(reportError))
       }
     }
     this.closeIfIdle()

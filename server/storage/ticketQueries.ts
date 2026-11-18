@@ -7,6 +7,7 @@ import { lstatSync } from 'node:fs'
 import { readFileNoFollowSync } from '../io/readFile'
 import { removeFile } from '../io/removal'
 import { ContainedPathError } from '../lib/containedPath'
+import { containsControlCharacters, logSafe } from '../lib/logSafe'
 import { db as appDb } from '../db/index'
 import { PROFILE_DEFAULTS } from '../db/defaults'
 import { getProjectContextById, getProjectById, listProjects } from './projects'
@@ -118,7 +119,7 @@ function truncateLoggedValue(value: string, maxLength = 200): string {
 }
 
 function warnInvalidDbJson(fieldName: string, raw: string, detail: string): void {
-  console.warn(`[tickets] Invalid ${fieldName} JSON in database: ${truncateLoggedValue(raw)} (${detail})`)
+  console.warn(`[tickets] Invalid ${logSafe(fieldName)} JSON in database: ${logSafe(truncateLoggedValue(raw))} (${logSafe(detail)})`)
 }
 
 export type TicketErrorResolutionStatus = 'RETRIED' | 'CONTINUED' | 'CANCELED'
@@ -307,9 +308,15 @@ export function buildTicketRef(projectId: number, externalId: string): string {
 export function parseTicketRef(ticketRef: string): { projectId: number; externalId: string } | null {
   const separator = ticketRef.indexOf(':')
   if (separator <= 0) return null
-  const projectId = Number(ticketRef.slice(0, separator))
+  // `Number()` accepts whitespace, signs, decimals, hex and exponent forms.
+  // Require digits and then canonicalize, so `01:TICKET` remains a supported
+  // alias while a newline or other control character cannot ride along.
+  const projectIdText = ticketRef.slice(0, separator)
+  if (!/^\d+$/.test(projectIdText)) return null
+  const projectId = Number(projectIdText)
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) return null
   const externalId = ticketRef.slice(separator + 1)
-  if (Number.isNaN(projectId) || !externalId) return null
+  if (!externalId || containsControlCharacters(externalId)) return null
   return { projectId, externalId }
 }
 
@@ -1466,7 +1473,7 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
     // visible while refusing to follow the path, as the other public runtime
     // fields do for an unsafe workspace.
     if (error instanceof ContainedPathError) {
-      console.warn(`[tickets] Refusing runtime beads outside the ticket worktree for ${externalId}.`)
+      console.warn(`[tickets] Refusing runtime beads outside the ticket worktree for ${logSafe(externalId)}.`)
       return {
         beads: [],
         diagnostics: {
@@ -1485,7 +1492,7 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
       worktreePath = getTicketWorktreePath(projectRoot, externalId)
     } catch (error) {
       if (!(error instanceof ContainedPathError)) throw error
-      console.warn(`[tickets] Could not resolve the runtime worktree for ${externalId}; treating bead targets as external.`)
+      console.warn(`[tickets] Could not resolve the runtime worktree for ${logSafe(externalId)}; treating bead targets as external.`)
       worktreePath = null
     }
     const beads = result.beads.map((bead) => {
@@ -1514,7 +1521,7 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { beads: [], diagnostics: null }
     const readError = getErrorMessage(error)
-    console.warn(`[tickets] Failed to read runtime beads for ${externalId}: ${readError}`)
+    console.warn(`[tickets] Failed to read runtime beads for ${logSafe(externalId)}: ${logSafe(readError)}`)
     return {
       beads: [],
       diagnostics: {
@@ -1597,7 +1604,7 @@ export function listWaitingPullRequestTicketRefs(): string[] {
       )).all()
       refs.push(...waiting.map(ticket => buildTicketRef(attached.id, ticket.externalId)))
     } catch (error) {
-      console.warn(`[merge-poller] Could not discover waiting tickets for project ${attached.id}: ${getErrorMessage(error)}`)
+      console.warn(`[merge-poller] Could not discover waiting tickets for project ${attached.id}: ${logSafe(getErrorMessage(error))}`)
     }
   }
   return refs

@@ -19,6 +19,9 @@ dialect = "typescript"
 style_guide = "airbnb"
 module_system = "es-modules"
 cyclomatic_complexity_threshold = "low"
+# The server runs under Node. The default also enables browser globals, which
+# raises browser-only rules against server code, notably every console call.
+environment = ["nodejs"]
 
 [[analyzers]]
 name = "shell"

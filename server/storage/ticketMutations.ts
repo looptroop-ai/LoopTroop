@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { runGitMutationOrThrow } from '../git/runCommand'
 import { queueAssistantSessionCleanup } from '../assistant/sessionCleanup'
 import { assertSafeRefName } from '../git/ref'
-import { logSafe } from '../lib/logSafe'
+import { logSafe, logSafeError } from '../lib/logSafe'
 import { z } from 'zod'
 import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
@@ -115,20 +115,20 @@ function parseDiagnostics(raw: string | null | undefined): BlockedErrorDiagnosti
     const parsed = JSON.parse(raw) as unknown
     const result = BlockedErrorDiagnosticsSchema.safeParse(parsed)
     if (!result.success) {
-      console.warn(`[tickets] Invalid stored diagnostics JSON: ${truncateLoggedValue(raw)} (${result.error.message})`)
+      console.warn(`[tickets] Invalid stored diagnostics JSON: ${logSafe(truncateLoggedValue(raw))} (${logSafe(result.error.message)})`)
       return null
     }
 
     const diagnostics = normalizeBlockedErrorDiagnostics(result.data)
     if (!diagnostics) {
-      console.warn(`[tickets] Invalid stored diagnostics payload: ${truncateLoggedValue(raw)}`)
+      console.warn(`[tickets] Invalid stored diagnostics payload: ${logSafe(truncateLoggedValue(raw))}`)
       return null
     }
 
     return diagnostics
   } catch (error) {
     const detail = getErrorMessage(error)
-    console.warn(`[tickets] Failed to parse stored diagnostics JSON: ${truncateLoggedValue(raw)} (${detail})`)
+    console.warn(`[tickets] Failed to parse stored diagnostics JSON: ${logSafe(truncateLoggedValue(raw))} (${detail})`)
     return null
   }
 }
@@ -831,7 +831,7 @@ export async function deleteTicket(ticketRef: string): Promise<boolean> {
   try {
     await removeTicketFilesystem(projectRoot, externalId, branchName)
   } catch (err) {
-    console.warn(`[ticketMutations] Filesystem cleanup failed for ${logSafe(ticketRef)} after DB deletion:`, err)
+    console.warn(`[ticketMutations] Filesystem cleanup failed for ${logSafe(ticketRef)} after DB deletion:`, logSafeError(err))
   }
 
   return true

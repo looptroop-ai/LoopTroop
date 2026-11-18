@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { buildOpenCodeQuestionLogIdentity, type OpenCodeQuestionLogAction } from '@shared/logIdentity'
 import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
+import { logSafe, logSafeError } from '../../lib/logSafe'
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import { broadcaster } from '../../sse/broadcaster'
 import { appendLogEvent, createLogEvent, shouldSkipLogEmission } from '../../log/executionLog'
@@ -133,7 +134,7 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
         if (session) successfullyListedSessionIds.add(session.sessionId)
         return result.value
       }
-      console.warn(`[questions] Could not list pending questions for session ${session?.sessionId ?? 'unknown'}:`, result.reason)
+      console.warn(`[questions] Could not list pending questions for session ${logSafe(session?.sessionId ?? 'unknown')}:`, logSafeError(result.reason))
       return []
     })
     const live = pending.filter((request) => sessionsById.has(request.sessionID))

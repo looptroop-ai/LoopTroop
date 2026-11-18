@@ -5,12 +5,37 @@ import { dirname, join } from 'node:path'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
 import { createTicket, ensureActivePhaseAttempt, upsertLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, listNonTerminalTicketRefs, listTicketRefs, listTickets, listWaitingPullRequestTicketRefs, readTicketFile, resolveTicketContainedPath } from '../tickets'
-import { DISPLAY_ONLY_MOCK_BRANCH_NAME, resolveReviewCutoffStatus } from '../ticketQueries'
+import { DISPLAY_ONLY_MOCK_BRANCH_NAME, parseTicketRef, resolveReviewCutoffStatus } from '../ticketQueries'
 import { opencodeSessions, phaseArtifacts, questionWaits, ticketErrorOccurrences, ticketStatusHistory, tickets } from '../../db/schema'
 import { canRetryWithExtraNote } from '../../workflow/retryNotes'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
 
 const runtimeRepoManager = createTestRepoManager('ticket-runtime-qa-origin-')
+
+describe('parseTicketRef', () => {
+  it('accepts the canonical project id and external id', () => {
+    expect(parseTicketRef('16:LOOP-1')).toEqual({ projectId: 16, externalId: 'LOOP-1' })
+  })
+
+  it('canonicalizes a leading-zero project id alias', () => {
+    expect(parseTicketRef('01:LOOP-1')).toEqual({ projectId: 1, externalId: 'LOOP-1' })
+  })
+
+  it.each([
+    ':LOOP-1',
+    '1:',
+    '0:LOOP-1',
+    '1.0:LOOP-1',
+    '+1:LOOP-1',
+    '1e0:LOOP-1',
+    '0x1:LOOP-1',
+    '1\n:LOOP-1',
+    '1:LOOP\n-1',
+    '1:LOOP\u2028-1',
+  ])('rejects a non-canonical reference: %j', (ticketRef) => {
+    expect(parseTicketRef(ticketRef)).toBeNull()
+  })
+})
 
 describe('resolveReviewCutoffStatus', () => {
   it('uses the pre-error phase when a canceled ticket was canceled from BLOCKED_ERROR', () => {

@@ -1,7 +1,7 @@
 import { resolvePhaseAttempt } from '../../storage/ticketPhaseAttempts'
 import { expirePhaseRetryNote } from '../retryNotes'
 import { OpenCodeUnavailableError, TicketWorkspaceNotInitializedError } from '../../lib/workflowErrors'
-import { logSafe } from '../../lib/logSafe'
+import { logSafe, logSafeError } from '../../lib/logSafe'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { DraftResult, MemberOutcome, Vote, VotePresentationOrder } from '../../council/types'
 import { CancelledError, throwIfAborted, VOTING_RUBRIC_INTERVIEW } from '../../council/types'
@@ -780,7 +780,7 @@ export function releaseInterviewBatch(ticketId: string, token?: string): void {
         : eq(interviewBatchClaims.ticketId, context.localTicketId))
       .run()
   } catch (error) {
-    console.warn(`[interview] Could not release the answer-batch claim for ${logSafe(ticketId)}; it expires on its own.`, error)
+    console.warn(`[interview] Could not release the answer-batch claim for ${logSafe(ticketId)}; it expires on its own.`, logSafeError(error))
   }
 }
 
@@ -2520,7 +2520,7 @@ export function processInterviewBatchAsync(
           console.warn(`[runner] Not reverting the interview session for ${logSafe(ticketId)}: it has moved on since this batch wrote it.`)
         }
       } catch (revertErr) {
-        console.error(`[runner] Failed to revert interview snapshot for ${logSafe(ticketId)}:`, revertErr)
+        console.error(`[runner] Failed to revert interview snapshot for ${logSafe(ticketId)}:`, logSafeError(revertErr))
       }
       throw err
     })

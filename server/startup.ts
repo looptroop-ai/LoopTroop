@@ -1,5 +1,6 @@
 import { eq, inArray } from 'drizzle-orm'
 import { initializeDatabase } from './db/init'
+import { logSafe, logSafeError } from './lib/logSafe'
 import { startWalCheckpoint } from './db/index'
 import { createIndexes } from './db/indexes'
 import { initPromptTemplates } from './prompts/templateStore'
@@ -61,12 +62,12 @@ export function recoverTicketRuntimeArtifacts() {
             repairedExecutionLogs += 1
           }
         } catch (error) {
-          console.warn(`[startup] Skipped log recovery for ${logPath}: ${getErrorMessage(error)}`)
+          console.warn(`[startup] Skipped log recovery for ${logPath}: ${logSafe(getErrorMessage(error))}`)
         }
       }
     } catch (error) {
       if (error instanceof RecoveryBlockedError) throw error
-      console.warn(`[startup] Skipped artifact recovery for ${ticketId}: ${getErrorMessage(error)}`)
+      console.warn(`[startup] Skipped artifact recovery for ${logSafe(ticketId)}: ${logSafe(getErrorMessage(error))}`)
     }
   }
 
@@ -104,7 +105,7 @@ export async function reconcileOpenCodeSessions(
     for (const ticket of ticketRefs) {
       const ticketRef = buildTicketRef(project.id, ticket.externalId)
       if (!recoverPendingOpenCodeSessionOwnership(ticketRef)) {
-        console.warn(`[startup] Could not recover pending OpenCode ownership for ticket ${ticketRef}; retaining it for cleanup`)
+        console.warn(`[startup] Could not recover pending OpenCode ownership for ticket ${logSafe(ticketRef)}; retaining it for cleanup`)
       }
     }
 
@@ -264,7 +265,7 @@ export async function reconcileOpenCodeQuestions(
       if (result.unverified > 0) questionReconciliationVerified = false
     } catch (err) {
       questionReconciliationVerified = false
-      console.warn(`[startup] Failed to reconcile AI questions for ${project.name}:`, err)
+      console.warn(`[startup] Failed to reconcile AI questions for ${logSafe(project.name)}:`, logSafeError(err))
     }
 
     // A wait is opened by the process that saw the question and closed by the
@@ -314,7 +315,7 @@ export async function startupSequence(): Promise<void> {
     .then((removed) => {
       if (removed > 0) console.log(`[startup] Removed ${removed} execution setup folders left by canceled tickets`)
     })
-    .catch((error) => console.warn(`[startup] Could not sweep execution setup folders of canceled tickets: ${getErrorMessage(error)}`))
+    .catch((error) => console.warn(`[startup] Could not sweep execution setup folders of canceled tickets: ${logSafe(getErrorMessage(error))}`))
 
   console.log('[startup] Step 3: Start WAL checkpoint timer')
   startWalCheckpoint()

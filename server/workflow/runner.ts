@@ -3,7 +3,7 @@ import { removeCanceledExecutionSetupFolder } from '../phases/executionSetup/sto
 import { ticketMachine } from '../machines/ticketMachine'
 import type { TicketContext, TicketEvent } from '../machines/types'
 import { isCancellationError } from '../lib/abort'
-import { logSafe } from '../lib/logSafe'
+import { logSafe, logSafeError } from '../lib/logSafe'
 import { isMockOpenCodeMode } from '../opencode/factory'
 import {
   appendBlockedErrorDiagnosticsSummary,
@@ -254,7 +254,7 @@ async function releaseCanceledTicketSetupFolder(ticketId: string): Promise<void>
     await removeCanceledExecutionSetupFolder(ticketId)
   } catch (error) {
     // Startup retries leftovers of canceled tickets (`sweepCanceledExecutionSetupFolders`).
-    console.warn(`[workflow] Could not remove the execution setup folder of canceled ticket ${logSafe(ticketId)}:`, error)
+    console.warn(`[workflow] Could not remove the execution setup folder of canceled ticket ${logSafe(ticketId)}:`, logSafeError(error))
   }
 }
 
@@ -349,13 +349,13 @@ async function attemptCancellationCleanup(
         })
       }
     } catch (error) {
-      console.warn(`[workflow] Could not send CANCEL after confirmed cleanup for ticket ${logSafe(ticketId)}; retaining pending marker:`, error)
+      console.warn(`[workflow] Could not send CANCEL after confirmed cleanup for ticket ${logSafe(ticketId)}; retaining pending marker:`, logSafeError(error))
       scheduleCancellationCleanupRetry(ticketId, () => {
         void attemptCancellationCleanup(ticketId, actor, sendEvent)
       })
     }
   } catch (error) {
-    console.warn(`[workflow] Cancellation cleanup failed for ticket ${logSafe(ticketId)}; retaining remote-session state:`, error)
+    console.warn(`[workflow] Cancellation cleanup failed for ticket ${logSafe(ticketId)}; retaining remote-session state:`, logSafeError(error))
     scheduleCancellationCleanupRetry(ticketId, () => {
       void attemptCancellationCleanup(ticketId, actor, sendEvent)
     })

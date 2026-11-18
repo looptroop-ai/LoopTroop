@@ -16,6 +16,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Ticket review views wait for current-attempt evidence, keep raw-output controls beside metadata, and let users retry failed artifact or log loads.
 - The startup restore notice identifies saved local data, and long dialogs stay usable on short screens.
 - The README demo and screenshot gallery show the current app, including manual QA, AI questions and the assistant chat.
+- Security hardening: the ticket-size scan resolves containment before reading, and request-derived values on affected console logs are escaped.
 
 ### Changed
 
@@ -39,7 +40,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Security
 
-- Ticket references and other request-derived values are escaped before they reach line-oriented console logs, and the ticket-size endpoint stats only a path already proven to stay inside the project.
+- The ticket-size endpoint resolves the worktree's contained path once and uses it for the stat and the size scans, so a path cannot be checked and then read through a different spelling. Request-derived values on the affected console lines are escaped before interpolation, including logged errors, which are rendered as one escaped line.
 
 ### Documentation
 

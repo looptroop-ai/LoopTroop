@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import type { Database, Statement } from '../db/sqliteShim'
 import { getProjectDatabase } from '../db/project'
+import { logSafe } from '../lib/logSafe'
 import { getTicketContext, getTicketStorageContext } from '../storage/tickets'
 import { getTicketAiLogPath, getTicketDebugLogPath, getTicketExecutionLogPath } from '../storage/paths'
 import { extractLogFingerprint } from '@shared/logIdentity'
@@ -357,7 +358,7 @@ export function queueProjectionAppend(ticketId: string, channel: PersistedLogCha
       indexEntry(ticketId, channel, raw, offset, length, storage)
       storage.statements.advanceCursor.run(storage.context.localTicketId, channel, offset + length)
     } catch (error) {
-      console.warn(`[logs] projection append deferred for ${ticketId}: ${getErrorMessage(error)}`)
+      console.warn(`[logs] projection append deferred for ${logSafe(ticketId)}: ${logSafe(getErrorMessage(error))}`)
     }
   })
 }

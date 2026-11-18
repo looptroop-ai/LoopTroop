@@ -146,7 +146,7 @@
     "fast-check": "4.10.2",
     "globals": "^17.14.0",
     "jsdom": "^31.0.0",
-    "lucide-react": "^1.70.0",
+    "lucide-react": "^1.72.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

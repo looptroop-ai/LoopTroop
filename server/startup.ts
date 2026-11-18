@@ -62,7 +62,7 @@ export function recoverTicketRuntimeArtifacts() {
             repairedExecutionLogs += 1
           }
         } catch (error) {
-          console.warn(`[startup] Skipped log recovery for ${logPath}: ${logSafe(getErrorMessage(error))}`)
+          console.warn(`[startup] Skipped log recovery for ${logSafe(logPath)}: ${logSafe(getErrorMessage(error))}`)
         }
       }
     } catch (error) {

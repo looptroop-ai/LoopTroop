@@ -54,6 +54,23 @@ describe('logSafeError', () => {
   it('escapes a thrown string', () => {
     expect(logSafeError('plain\nline')).toBe('plain\\nline')
   })
+
+  it('keeps the cause chain on one escaped line', () => {
+    const error = new Error('fetch failed', { cause: new Error('connect ECONNREFUSED\n::1') })
+    const rendered = logSafeError(error)
+
+    expect(rendered).toContain('fetch failed')
+    expect(rendered).toContain('connect ECONNREFUSED\\n')
+    expect(rendered).not.toContain('\n')
+  })
+
+  it('keeps the fields of a plain rejection object', () => {
+    const rendered = logSafeError({ code: 'EACCES', path: '/tmp/a\nb' })
+
+    expect(rendered).toContain("code: 'EACCES'")
+    expect(rendered).toContain('/tmp/a\\nb')
+    expect(rendered).not.toContain('\n')
+  })
 })
 
 describe('containsControlCharacters', () => {

@@ -1,3 +1,5 @@
+import { inspect } from 'node:util'
+
 /**
  * Escapes control characters in a value before it is interpolated into a log
  * message.
@@ -67,10 +69,18 @@ export const containsControlCharacters = (value: string): boolean => {
   return false
 }
 
-/** Renders an error, including its stack, as one escaped log line. */
+/**
+ * Renders an error or rejection value as one escaped log line.
+ *
+ * `util.inspect` keeps the stack, the `cause` chain and the fields of plain
+ * objects, which the previous raw console argument showed. Strings stay
+ * unquoted so an ordinary error message reads the same as before.
+ */
 export const logSafeError = (value: unknown): string => {
-  if (value instanceof Error) {
-    return logSafe(value.stack ?? `${value.name}: ${value.message}`)
+  if (typeof value === 'string') return logSafe(value)
+  try {
+    return logSafe(inspect(value, { depth: 4, breakLength: Infinity }))
+  } catch {
+    return logSafe(value)
   }
-  return logSafe(value)
 }

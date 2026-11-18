@@ -1,4 +1,5 @@
 import { runGitSync } from '../../git/runCommand'
+import { logSafe, logSafeError } from '../../lib/logSafe'
 import { parseGitPathListZ } from '../../git/statusPorcelain'
 import { lstatSync, readdirSync, rmSync } from 'node:fs'
 import { lstat, rm } from 'node:fs/promises'
@@ -179,7 +180,7 @@ export async function sweepCanceledExecutionSetupFolders(
       if (!shouldRemove(ticketRef)) continue
       if (await removeCanceledExecutionSetupFolder(ticketRef)) removed += 1
     } catch (error) {
-      console.warn(`[startup] Could not remove the execution setup folder of canceled ticket ${ticketRef}:`, error)
+      console.warn(`[startup] Could not remove the execution setup folder of canceled ticket ${logSafe(ticketRef)}:`, logSafeError(error))
     }
   }
   return removed

@@ -3,6 +3,7 @@ import type { Context } from 'hono'
 /** Room for the bookkeeping around the AI call itself, not for the call. */
 const BATCH_PROCESSING_MARGIN_MS = 60_000
 import { readFileNoFollowSync } from '../../io/readFile'
+import { logSafe, logSafeError } from '../../lib/logSafe'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import { abortTicketSessions } from '../../opencode/sessionManager'
 import { isMockOpenCodeMode } from '../../opencode/factory'
@@ -362,7 +363,7 @@ export async function handleSkipTicket(c: Context) {
     try {
       sessionsStopped = await abortTicketSessions(ticketId)
     } catch (err) {
-      console.warn(`[tickets] Failed to retry abort for ${ticketId} before skip-all:`, err)
+      console.warn(`[tickets] Failed to retry abort for ${logSafe(ticketId)} before skip-all:`, logSafeError(err))
     }
     if (!sessionsStopped) {
       return c.json({ error: 'Could not confirm the interview stopped; try again shortly' }, 409)
@@ -395,7 +396,7 @@ export async function handleSkipTicket(c: Context) {
       try {
         sessionsStopped = await abortTicketSessions(ticketId)
       } catch (err) {
-        console.warn(`[tickets] Failed to abort interview sessions for ${ticketId} after skip-all:`, err)
+        console.warn(`[tickets] Failed to abort interview sessions for ${logSafe(ticketId)} after skip-all:`, logSafeError(err))
       }
       if (!sessionsStopped) {
         return c.json({ error: 'Could not confirm the interview stopped; try again shortly' }, 409)
@@ -542,7 +543,7 @@ export async function handleAnswerBatch(c: Context) {
     try {
       sessionsStopped = await abortTicketSessions(ticketId)
     } catch (err) {
-      console.warn(`[tickets] Failed to retry abort for ${ticketId} before answer-batch retry:`, err)
+      console.warn(`[tickets] Failed to retry abort for ${logSafe(ticketId)} before answer-batch retry:`, logSafeError(err))
     }
     if (!sessionsStopped) {
       return c.json({ error: 'Could not confirm the interview stopped; try again shortly' }, 409)
@@ -587,7 +588,7 @@ export async function handleAnswerBatch(c: Context) {
               ? restoreInterviewBatchAfterFailure(ticketId, asyncSession, persistedReceipt, claimToken)
               : false
           } catch (error) {
-            console.warn(`[tickets] Failed to restore the interview batch for ${ticketId} after timeout:`, error)
+            console.warn(`[tickets] Failed to restore the interview batch for ${logSafe(ticketId)} after timeout:`, logSafeError(error))
           }
           const markedPending = markInterviewBatchStopPending(ticketId, claimToken, 'answer')
           const pendingStopToken = markedPending
@@ -609,7 +610,7 @@ export async function handleAnswerBatch(c: Context) {
                 ? restoreInterviewBatchAfterFailure(ticketId, asyncSession, persistedReceipt, pendingStopToken)
                 : false
             } catch (error) {
-              console.warn(`[tickets] Failed to restore the interview batch for ${ticketId} after retaining its stop:`, error)
+              console.warn(`[tickets] Failed to restore the interview batch for ${logSafe(ticketId)} after retaining its stop:`, logSafeError(error))
             }
           }
           if (!restored) {
@@ -637,7 +638,7 @@ export async function handleAnswerBatch(c: Context) {
               reject(new Error('Async batch processing timed out'))
             })
             .catch((error) => {
-              console.warn(`[tickets] Failed to confirm interview stop for ${ticketId} after timeout:`, error)
+              console.warn(`[tickets] Failed to confirm interview stop for ${logSafe(ticketId)} after timeout:`, logSafeError(error))
               reject(new Error('Could not confirm the interview stopped; the batch remains locked for retry'))
             })
         }, batchTimeoutMs)

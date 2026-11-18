@@ -25,6 +25,7 @@ import {
   updateProject,
 } from '../storage/projects'
 import { getGitHubRepoWriteAccess, parseGitHubRemoteUrl, type GitHubRepoWriteAccess } from '../git/github'
+import { logSafe } from '../lib/logSafe'
 import { buildRuntimeStatus } from '../runtime'
 import { normalizeFolderPath } from '../storage/paths'
 import { buildWslProjectMountedDriveWarning, isWslWindowsMountPath } from '../../shared/wslPerformance'
@@ -139,7 +140,7 @@ async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
   if (!(await existsAsync(resolved))) {
     // POSIX permits control bytes, including newlines, in a filename. Keep a
     // diagnostic path readable without allowing one path to forge log records.
-    console.warn(`[getGitRepoInfo] Path does not exist: ${JSON.stringify(resolved)} (original: ${JSON.stringify(folderPath)})`)
+    console.warn(`[getGitRepoInfo] Path does not exist: ${logSafe(JSON.stringify(resolved))} (original: ${logSafe(JSON.stringify(folderPath))})`)
     return { isGit: false }
   }
 

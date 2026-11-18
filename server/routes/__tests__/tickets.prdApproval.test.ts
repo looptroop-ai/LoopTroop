@@ -1054,7 +1054,7 @@ describe('ticketRouter PRD approval routes', () => {
       expect(writeSkipReceipt).toHaveBeenCalledOnce()
       expect(error).toHaveBeenCalledWith(
         expect.stringContaining('Failed to record the gap acknowledgement'),
-        expect.objectContaining({ message: 'Skip receipt storage is unavailable' }),
+        expect.stringContaining('Skip receipt storage is unavailable'),
       )
       expect(listSkipEvents(ticket.id)).toHaveLength(0)
     } finally {

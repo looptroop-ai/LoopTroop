@@ -6,6 +6,7 @@ import { PROFILE_DEFAULTS } from '../db/defaults'
 import { attachWorkflowRunner } from '../workflow/runner'
 import { broadcaster } from '../sse/broadcaster'
 import { appendLogEvent, createLogEvent } from '../log/executionLog'
+import { logSafe, logSafeError } from '../lib/logSafe'
 import {
   ensureActivePhaseAttempt,
   findTicketRefByLocalId,
@@ -213,7 +214,7 @@ function reconcileSnapshotForTicket(
   // checked on its own here: a bad one falls back to its default and says so,
   // rather than being dropped along with a session that is otherwise fine.
   const dropInvalidField = (field: string, reason: string) => {
-    console.warn(`[runner] Ticket ${ticketRef} restored with an invalid ${field} (${reason}); using the default.`)
+    console.warn(`[runner] Ticket ${logSafe(ticketRef)} restored with an invalid ${logSafe(field)} (${logSafe(reason)}); using the default.`)
   }
   // Zero is a real value here: the executor reads `maxIterations > 0` and treats
   // 0 as no cap, so only a negative or non-integer is invalid.
@@ -718,9 +719,9 @@ export function hydrateAllTickets() {
           continue
         }
       } catch (blockErr) {
-        console.error(`[persistence] Failed to block ticket ${ticket.externalId} after snapshot recovery failure:`, blockErr)
+        console.error(`[persistence] Failed to block ticket ${logSafe(ticket.externalId)} after snapshot recovery failure:`, logSafeError(blockErr))
       }
-      console.error(`[persistence] Failed to hydrate ticket ${ticket.externalId}:`, err)
+      console.error(`[persistence] Failed to hydrate ticket ${logSafe(ticket.externalId)}:`, logSafeError(err))
     }
   }
 

@@ -1,5 +1,6 @@
 import type { Context } from 'hono'
 import { ContainedPathError } from '../../lib/containedPath'
+import { logSafe } from '../../lib/logSafe'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import {
   findProjectExecutionBandConflict,
@@ -380,7 +381,7 @@ function recordGapAcknowledgement(input: {
       // object silently produces a receipt with numeric keys, or none at all.
       const parsed: unknown = JSON.parse(receipt.content)
       if (!isRecord(parsed)) {
-        console.warn(`[approvals] Approval receipt for ${input.ticketId} is not an object; leaving it unchanged.`)
+        console.warn(`[approvals] Approval receipt for ${logSafe(input.ticketId)} is not an object; leaving it unchanged.`)
         return
       }
       upsertLatestPhaseArtifact(input.ticketId, 'approval_receipt', input.phase, JSON.stringify({

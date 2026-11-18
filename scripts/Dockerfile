@@ -129,7 +129,7 @@
 # as by tag: a tag is a mutable pointer, so two builds of the same commit can
 # otherwise disagree about what they were built on. The digest is the multi-arch
 # index, so one value serves both amd64 and arm64. Renovate updates it.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS build
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS build
 
 ARG TARBALL
 ARG LOCKFILE=package-lock.json
@@ -157,7 +157,7 @@ RUN mkdir -p /opt/looptroop/lib/node_modules/looptroop /opt/looptroop/bin \
   && rm /build/package.tgz
 
 
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS runtime
 
 # Passed by the build so the image can say what it is without a second source of
 # truth for the version. Declared here rather than at the top because build args

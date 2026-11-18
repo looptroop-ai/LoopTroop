@@ -192,7 +192,14 @@ export async function handleGetTicketSize(c: Context) {
   // `getTicketPaths` audits the worktree, but this handler then reads it
   // several times. Resolve the contained path once and use it for the stat and
   // every worktree scan, so the path that is checked is the path that is read.
-  const resolvedWorktreePath = resolveContainedPath(projectRoot, worktreePath, { allowMissingParents: true })
+  // A path that stopped resolving after collection is reported as missing,
+  // matching the old stat behavior; never fall back to the unresolved path.
+  let resolvedWorktreePath: string
+  try {
+    resolvedWorktreePath = resolveContainedPath(projectRoot, worktreePath, { allowMissingParents: true })
+  } catch {
+    return c.json({ size: 0, exists: false })
+  }
   const exists = await stat(resolvedWorktreePath).then(() => true).catch(() => false)
   if (!exists) {
     return c.json({ size: 0, exists: false })

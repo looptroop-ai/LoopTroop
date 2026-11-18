@@ -157,7 +157,7 @@ describe('execution setup storage tracking', () => {
     })).resolves.toBe(1)
 
     expect(existsSync(folders['TEST-2']!)).toBe(false)
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('1:BROKEN-1'), expect.any(Error))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('1:BROKEN-1'), expect.stringContaining('Path escapes root'))
     // TEST-3 has no folder, so it is never asked about (no synchronous checks).
     expect(asked).toEqual(['1:BROKEN-1', '1:TEST-2'])
   })

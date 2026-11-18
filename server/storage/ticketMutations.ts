@@ -128,7 +128,7 @@ function parseDiagnostics(raw: string | null | undefined): BlockedErrorDiagnosti
     return diagnostics
   } catch (error) {
     const detail = getErrorMessage(error)
-    console.warn(`[tickets] Failed to parse stored diagnostics JSON: ${logSafe(truncateLoggedValue(raw))} (${detail})`)
+    console.warn(`[tickets] Failed to parse stored diagnostics JSON: ${logSafe(truncateLoggedValue(raw))} (${logSafe(detail)})`)
     return null
   }
 }

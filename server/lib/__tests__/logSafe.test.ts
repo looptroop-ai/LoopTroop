@@ -21,6 +21,8 @@ describe('logSafe', () => {
     ['zero-width space', '\u200b', '\\u200b'],
     ['right-to-left override', '\u202e', '\\u202e'],
     ['left-to-right isolate', '\u2066', '\\u2066'],
+    ['word joiner', '\u2060', '\\u2060'],
+    ['byte order mark', '\ufeff', '\\ufeff'],
     ['Arabic letter mark', '\u061c', '\\u061c'],
   ])('escapes %s', (_name, input, escaped) => {
     expect(logSafe(`a${input}b`)).toBe(`a${escaped}b`)
@@ -70,6 +72,26 @@ describe('logSafeError', () => {
     expect(rendered).toContain("code: 'EACCES'")
     expect(rendered).toContain('/tmp/a\\nb')
     expect(rendered).not.toContain('\n')
+  })
+
+  it('renders fields instead of a custom inspection string', () => {
+    const value = {
+      code: 'EACCES',
+      [Symbol.for('nodejs.util.inspect.custom')]: () => 'request failed',
+    }
+
+    expect(logSafeError(value)).toContain("code: 'EACCES'")
+  })
+
+  it('does not throw when an error stack getter throws', () => {
+    const error = new Error('boom')
+    Object.defineProperty(error, 'stack', {
+      get() {
+        throw new Error('no stack')
+      },
+    })
+
+    expect(() => logSafeError(error)).not.toThrow()
   })
 })
 

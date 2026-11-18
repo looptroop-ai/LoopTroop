@@ -925,7 +925,7 @@ describe('ticketRouter interview approval routes', () => {
       expect(writeSkipReceipt).toHaveBeenCalledOnce()
       expect(error).toHaveBeenCalledWith(
         expect.stringContaining('Failed to record approval skip receipts for'),
-        expect.any(Error),
+        expect.stringContaining('Skip receipt storage is unavailable'),
       )
       expect(listSkipEvents(ticket.id)).toHaveLength(0)
     } finally {

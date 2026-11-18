@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { runGitMutationOrThrow } from '../git/runCommand'
 import { queueAssistantSessionCleanup } from '../assistant/sessionCleanup'
 import { assertSafeRefName } from '../git/ref'
+import { logSafe } from '../lib/logSafe'
 import { z } from 'zod'
 import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
@@ -830,7 +831,7 @@ export async function deleteTicket(ticketRef: string): Promise<boolean> {
   try {
     await removeTicketFilesystem(projectRoot, externalId, branchName)
   } catch (err) {
-    console.warn(`[ticketMutations] Filesystem cleanup failed for ${ticketRef} after DB deletion:`, err)
+    console.warn(`[ticketMutations] Filesystem cleanup failed for ${logSafe(ticketRef)} after DB deletion:`, err)
   }
 
   return true

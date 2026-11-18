@@ -189,7 +189,19 @@ export async function handleGetTicketSize(c: Context) {
     return list.sort((a, b) => b.size - a.size)
   }
 
-  const exists = await stat(worktreePath).then(() => true).catch(() => false)
+  // `getTicketPaths` already rejects a ticket id that could leave the project,
+  // but this stat is the first filesystem access in the handler. Resolve the
+  // contained path again so the path that is checked and the path that is
+  // stat'ed are the same one.
+  let exists = false
+  try {
+    exists = await stat(resolveContainedPath(projectRoot, worktreePath, { allowMissingParents: true }))
+      .then(() => true)
+      .catch(() => false)
+  } catch {
+    // A stored worktree path that no longer resolves inside the project is
+    // reported as missing, not as an error.
+  }
   if (!exists) {
     return c.json({ size: 0, exists: false })
   }

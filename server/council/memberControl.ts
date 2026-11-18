@@ -28,6 +28,7 @@ import type {
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
 import { CancelledError, type MemberOutcome } from './types'
+import { logSafe } from '../lib/logSafe'
 
 export class CouncilMemberControlError extends Error {
   readonly code: CouncilMemberControlErrorCode
@@ -428,7 +429,7 @@ function registerRound(ticketId: string, phase: WorkflowPhaseId, round: CouncilR
   // A replaced round is one whose handler already left without closing it. It
   // can no longer be reached, so the newer round takes the key.
   if (previous && previous !== round && !previous.isClosed) {
-    console.warn(`[council] A second ${phase} round started for ${ticketId}; the newer one takes the controls`)
+    console.warn(`[council] A second ${logSafe(phase)} round started for ${logSafe(ticketId)}; the newer one takes the controls`)
   }
   rounds.set(key, round)
 }

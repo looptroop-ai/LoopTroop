@@ -37,6 +37,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - PRD and Beads approval waits while coverage reports refresh, and stays blocked if that refresh fails until a retry succeeds, preventing approval against a cached report from an earlier attempt.
 - Local and self-hosted API requests run even when the browser reports offline.
 
+### Security
+
+- Ticket references and other request-derived values are escaped before they reach line-oriented console logs, and the ticket-size endpoint stats only a path already proven to stay inside the project.
+
 ### Documentation
 
 - The README demo GIF is a new 93-second recording of the current UI. It follows one finished ticket from the main implementer and council settings through the council's drafts and each model's vote scores, the interview, specs, beads, one bead's details, code changes and log, manual QA, the pull request and the assistant chat. It ends with the AI stopping to ask a question. Each step has a caption, and a glowing ring marks the part the caption is about. The GIF links to an MP4 copy on the website, which opens in the browser's video player so you can pause and scrub. At 4.6 MB the GIF is smaller than the 28-second one it replaces.

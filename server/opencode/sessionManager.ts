@@ -6,6 +6,7 @@ import type { OpenCodeSessionCreateOptions, Session } from './types'
 import { getOpenCodeAdapter } from './factory'
 import { getProjectContextById, listProjects } from '../storage/projects'
 import { getExistingProjectDatabase } from '../db/project'
+import { logSafe } from '../lib/logSafe'
 import { buildTicketRef, getTicketByRef, getTicketContext } from '../storage/tickets'
 import { readTicketFile, resolveTicketContainedPath, writeTicketFile } from '../storage/ticketQueries'
 import { emitOpenCodeSessionEnded } from './sessionEvents'
@@ -173,7 +174,7 @@ function readPendingSessionOwnership(ticketId: string): PendingSessionOwnershipR
   try {
     raw = readTicketFile(ticketId, PENDING_SESSION_OWNERSHIP_ARTIFACT)
   } catch (error) {
-    console.warn(`[sessionManager] Could not read pending ownership for ticket ${ticketId}:`, error)
+    console.warn(`[sessionManager] Could not read pending ownership for ticket ${logSafe(ticketId)}:`, error)
     return { records: [], readable: false }
   }
   if (raw === null) return { records: [], readable: true }
@@ -208,7 +209,7 @@ function readPendingSessionOwnership(ticketId: string): PendingSessionOwnershipR
     })
     return { records, readable: true }
   } catch (error) {
-    console.warn(`[sessionManager] Could not parse pending ownership for ticket ${ticketId}:`, error)
+    console.warn(`[sessionManager] Could not parse pending ownership for ticket ${logSafe(ticketId)}:`, error)
     return { records: [], readable: false }
   }
 }
@@ -224,7 +225,7 @@ function writePendingSessionOwnership(ticketId: string, records: PendingSessionO
     writeTicketFile(ticketId, PENDING_SESSION_OWNERSHIP_ARTIFACT, `${JSON.stringify(records, null, 2)}\n`)
     return true
   } catch (error) {
-    console.warn(`[sessionManager] Could not write pending ownership for ticket ${ticketId}:`, error)
+    console.warn(`[sessionManager] Could not write pending ownership for ticket ${logSafe(ticketId)}:`, error)
     return false
   }
 }
@@ -456,7 +457,7 @@ export function recoverPendingOpenCodeSessionOwnership(ticketId: string): boolea
       }
     }
   } catch (error) {
-    console.warn(`[sessionManager] Could not recover pending OpenCode ownership for ticket ${ticketId}:`, error)
+    console.warn(`[sessionManager] Could not recover pending OpenCode ownership for ticket ${logSafe(ticketId)}:`, error)
     return false
   }
 
@@ -914,7 +915,7 @@ export class SessionManager {
 export async function abortTicketSessions(ticketId: string): Promise<boolean> {
   const context = getTicketContext(ticketId)
   if (!context) {
-    console.warn(`[sessionManager] Could not resolve ticket ${ticketId}; refusing cleanup success`)
+    console.warn(`[sessionManager] Could not resolve ticket ${logSafe(ticketId)}; refusing cleanup success`)
     return false
   }
   const ownershipTicketId = canonicalOwnershipTicketId(context)
@@ -954,13 +955,13 @@ export async function abortTicketSessions(ticketId: string): Promise<boolean> {
   let allConfirmed = pendingOwnership.readable
     && pendingCreationCount === 0
   if (!pendingOwnership.readable) {
-    console.warn(`[sessionManager] Pending ownership for ticket ${ticketId} is unreadable; refusing cleanup success`)
+    console.warn(`[sessionManager] Pending ownership for ticket ${logSafe(ticketId)} is unreadable; refusing cleanup success`)
   }
   if (unpersistedOnlySessionIds.length > 0) {
-    console.warn(`[sessionManager] Ticket ${ticketId} has ownership that was not persisted; refusing cleanup success until this process confirms it`)
+    console.warn(`[sessionManager] Ticket ${logSafe(ticketId)} has ownership that was not persisted; refusing cleanup success until this process confirms it`)
   }
   if (pendingCreationCount > 0) {
-    console.warn(`[sessionManager] Ticket ${ticketId} has ${pendingCreationCount} OpenCode session creation(s) still in flight; refusing cleanup success`)
+    console.warn(`[sessionManager] Ticket ${logSafe(ticketId)} has ${pendingCreationCount} OpenCode session creation(s) still in flight; refusing cleanup success`)
   }
 
   await Promise.allSettled(
@@ -1054,12 +1055,12 @@ export async function abortTicketSessions(ticketId: string): Promise<boolean> {
   // asynchronous boundary so no later snapshot can be mistaken for proof that
   // every managed session stopped.
   if (hasCurrentSessionOwnership(ownershipTicketId, context)) {
-    console.warn(`[sessionManager] Ticket ${ticketId} gained or retained OpenCode ownership during cleanup; refusing cleanup success`)
+    console.warn(`[sessionManager] Ticket ${logSafe(ticketId)} gained or retained OpenCode ownership during cleanup; refusing cleanup success`)
     return false
   }
 
   if (confirmedAborts > 0) {
-    console.log(`[sessionManager] Confirmed abort for ${confirmedAborts} session(s) for ticket ${ticketId}`)
+    console.log(`[sessionManager] Confirmed abort for ${confirmedAborts} session(s) for ticket ${logSafe(ticketId)}`)
   }
   return allConfirmed
 }

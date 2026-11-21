@@ -242,6 +242,13 @@ function clearCancellationCleanupRetry(ticketId: string) {
   cancellationCleanupRetryAttempts.delete(ticketId)
 }
 
+/** Tests reuse one ticket id, and an armed retry timer makes the runner skip the next cleanup. */
+export function clearAllCancellationCleanupStateForTests(): void {
+  for (const ticketId of cancellationCleanupRetryTimers.keys()) clearCancellationCleanupRetry(ticketId)
+  cancellationCleanupRetryAttempts.clear()
+  cancellationCleanupInFlight.clear()
+}
+
 type WorkflowActor = ReturnType<typeof createActor<typeof ticketMachine>>
 
 /**

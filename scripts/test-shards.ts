@@ -72,6 +72,9 @@ export function toTestFile(root: string, absolutePath: string): TestFile {
   return relative(root, absolutePath).split(sep).join('/')
 }
 
+/** Code-unit order, which every machine shares; `localeCompare` follows the runner's locale, and both shards must agree. */
+export const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+
 /**
  * Longest-processing-time-first: the slowest file goes to the least loaded
  * shard, then the next. Ties break on the path and the lower shard index, so
@@ -81,14 +84,14 @@ export function toTestFile(root: string, absolutePath: string): TestFile {
  */
 export function assignShards(files: readonly TestFile[], timings: Timings, count: number): TestFile[][] {
   if (!Number.isInteger(count) || count < 1) throw new Error(`Shard count must be a positive integer, not ${count}.`)
-  const unique = [...new Set(files)].sort()
+  const unique = [...new Set(files)].sort(byCodeUnit)
   const usable = (value: number | undefined): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
   const known = unique.map((file) => timings[file]).filter(usable)
   const fallback = known.length === 0 ? 1 : median(known)
   const weighted = unique.map((file) => {
     const recorded = timings[file]
     return { file, weight: usable(recorded) ? recorded : fallback }
-  }).sort((a, b) => b.weight - a.weight || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
+  }).sort((a, b) => b.weight - a.weight || byCodeUnit(a.file, b.file))
   const shards = Array.from({ length: count }, () => ({ total: 0, files: [] as TestFile[] }))
   for (const { file, weight } of weighted) {
     let target = shards[0]!
@@ -96,7 +99,7 @@ export function assignShards(files: readonly TestFile[], timings: Timings, count
     target.files.push(file)
     target.total += weight
   }
-  return shards.map((shard) => shard.files.sort())
+  return shards.map((shard) => shard.files.sort(byCodeUnit))
 }
 
 function median(values: number[]): number {
@@ -122,7 +125,7 @@ export function readTimings(path: string | undefined): Timings {
 export function readShardResults(directory: string): ShardResult[] {
   if (!existsSync(directory)) return []
   const results: ShardResult[] = []
-  for (const entry of readdirSync(directory).sort()) {
+  for (const entry of readdirSync(directory).sort(byCodeUnit)) {
     const path = join(directory, entry)
     if (!statSync(path).isDirectory()) continue
     const plan = readJson<ShardPlan>(join(path, SHARD_PLAN_FILE))
@@ -215,7 +218,7 @@ export function mergeTimings(results: readonly ShardResult[]): Timings {
       if (Number.isFinite(file.durationMs) && file.durationMs >= 0) timings[file.file] = Math.round(file.durationMs)
     }
   }
-  return Object.fromEntries(Object.entries(timings).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+  return Object.fromEntries(Object.entries(timings).sort(([a], [b]) => byCodeUnit(a, b)))
 }
 
 export function writeJson(path: string, value: unknown): void {

@@ -250,7 +250,11 @@ describe('release workflow policy', () => {
       return index
     })
     expect(indices).toEqual([...indices].sort((a, b) => a - b))
-    expect(steps.some((candidate) => String(candidate.run ?? '').includes('server/lib/__tests__/executablePath.test.ts'))).toBe(true)
+    // The root run writes Vite's caches as root, so anything after it that
+    // writes them as the runner user, the build first of all, would fail.
+    const asRoot = steps.findIndex((candidate) => String(candidate.run ?? '').includes('server/lib/__tests__/executablePath.test.ts'))
+    expect(String(steps[asRoot]?.run)).toMatch(/^sudo /)
+    expect(asRoot, 'the root-only test runs last').toBe(steps.length - 1)
 
     // One failure must not hide the next: every check after the checkout runs
     // unless the run was cancelled, and waits only for what it needs.
@@ -267,9 +271,12 @@ describe('release workflow policy', () => {
     expect(installCheck['runs-on']).toBe('ubuntu-latest')
     expect(scripts['licenses:check']).toBeDefined()
     const installIndex = (installCheck.steps ?? []).findIndex((candidate) => candidate.uses === './.github/actions/npm-ci')
+    const clientIndex = (installCheck.steps ?? []).findIndex((candidate) => candidate.run === 'npm run build:client')
     const noticesIndex = (installCheck.steps ?? []).findIndex((candidate) => candidate.run === 'npm run licenses:check')
     expect(installIndex).toBeGreaterThan(-1)
-    expect(noticesIndex).toBeGreaterThan(installIndex)
+    // The notices check reads the client bundle's list of inlined packages.
+    expect(clientIndex, 'the client is built before the notices are checked').toBeGreaterThan(installIndex)
+    expect(noticesIndex).toBeGreaterThan(clientIndex)
     const cleanTree = steps.find((candidate) => candidate.name === 'Verify working tree is clean after build')
     expect(cleanTree).toBeDefined()
     const cleanTreeCommand = String(cleanTree?.run ?? '')

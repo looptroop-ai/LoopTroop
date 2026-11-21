@@ -63,6 +63,12 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/npm-ci
 
+      # The notices check reads the list of packages the client bundle inlines,
+      # which only the client build writes; without it the check refuses to run
+      # rather than silently leave their licences out.
+      - name: Build the client bundle
+        run: npm run build:client
+
       # A redistributed package must declare a licence. The check also fails
       # when the committed file is out of date.
       - name: Verify third-party notices are current
@@ -189,12 +195,6 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run typecheck
 
-      # Exercises real filesystem chownSync and private directory traversal checks
-      # as root on Linux, which would otherwise skip on unprivileged runners.
-      - name: Test executable resolver as root
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: sudo --preserve-env=PATH env "PATH=$PATH" npm test -- server/lib/__tests__/executablePath.test.ts
-
       - name: Build application
         id: build
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -286,6 +286,16 @@ jobs:
       - name: Audit production dependencies
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm audit --omit=dev || true
+
+      # Exercises real filesystem chownSync and private directory traversal checks
+      # as root on Linux, which would otherwise skip on unprivileged runners.
+      #
+      # Last, because it writes Vite's and Vitest's caches as root: run any
+      # earlier and it creates `node_modules/.vite-temp` owned by root, and the
+      # build, running as the runner user, then fails to write there.
+      - name: Test executable resolver as root
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: sudo --preserve-env=PATH env "PATH=$PATH" npm test -- server/lib/__tests__/executablePath.test.ts
 
   test-matrix:
     # Every lane here blocks. There is deliberately no advisory lane and no
@@ -1525,13 +1535,12 @@ jobs:
         run: |
           set -euo pipefail
           next=$(( $(sed 's/^v//; s/\..*//' .nvmrc) + 1 ))
-          version=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
-            https://nodejs.org/download/release/index.json \
-            | NEXT="${next}" node -e '
-              const releases = JSON.parse(require("node:fs").readFileSync(0, "utf8"))
-              const found = releases.find((release) => release.version.startsWith(`v${process.env.NEXT}.`))
-              process.stdout.write(found ? found.version.slice(1) : "")
-            ')
+          # Saved and read as data: nothing downloaded is ever run.
+          index=$(mktemp)
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+            https://nodejs.org/download/release/index.json > "${index}"
+          # The index lists newest first, so this is the latest release of that major.
+          version=$(jq -r --arg prefix "v${next}." 'first(.[].version | select(startswith($prefix))) // "" | ltrimstr("v")' "${index}")
           if [ -z "${version}" ]; then version="${next}-nightly"; fi
           echo "Early warning on Node ${version}."
           echo "node=${version}" >> "$GITHUB_OUTPUT"

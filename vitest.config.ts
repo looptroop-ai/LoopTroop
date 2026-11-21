@@ -8,6 +8,7 @@ import { getBackendOrigin, getDocsBaseUrl } from './shared/appConfig.ts'
 import { readPackageVersion } from './scripts/package-version.ts'
 import {
   assignShards,
+  byCodeUnit,
   readTimings,
   SHARD_PLAN_FILE,
   SHARD_REPORT_FILE,
@@ -375,7 +376,7 @@ class TimedShardSequencer extends BaseSequencer {
     const { root, shard } = this.ctx.config
     if (!shard || !shardDir) return super.shard(specs)
     const fileOf = (spec: TestSpecification) => toTestFile(root, spec.moduleId)
-    const all = [...new Set(specs.map(fileOf))].sort()
+    const all = [...new Set(specs.map(fileOf))].sort(byCodeUnit)
     const files = assignShards(all, readTimings(process.env.VITEST_SHARD_TIMINGS), shard.count)[shard.index - 1] ?? []
     const plan: ShardPlan = { version: 1, index: shard.index, count: shard.count, all, files }
     writeJson(join(shardDir, SHARD_PLAN_FILE), plan)

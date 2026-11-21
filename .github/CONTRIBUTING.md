@@ -43,7 +43,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` after the dev server starts.
+Open `http://localhost:5173` after the dev server starts. The tests need Git 2.28 or newer: their fixture repositories are created with `git init --initial-branch`.
 
 Running the stack over a tunnel or a remote link? The dev server sends every
 source file as a separate request, and each one pays the round trip. Serve the
@@ -271,7 +271,9 @@ request's older run; a run on `main` always finishes.
   `npx vitest run --sequence.shuffle --sequence.seed=<seed>`.
 - A job that GitHub never gave a machine to is re-run automatically, at most
   twice, by `rerun-unacquired.yml`, unless a newer commit already replaced the
-  run. A job that ran and failed is never re-run: a failure is a finding.
+  run. Nothing that failed on its own is re-run: a failure is a finding. A gate
+  that failed only because such a job never ran is re-run with it, and an
+  advisory job's failure (Codecov, the next-Node lane) does not stop that.
 - Verify lints the workflows with actionlint and audits them with zizmor. A
   zizmor finding fails the check unless `.github/zizmor.yml`, or a
   `# zizmor: ignore[...]` comment beside the line, excuses it with a reason.

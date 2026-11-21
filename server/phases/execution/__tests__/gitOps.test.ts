@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
@@ -25,8 +25,8 @@ const BRANCH = TEST.externalId
 // Helpers for integration tests — real git repos in OS temp directories
 // ---------------------------------------------------------------------------
 
-function createGitRepo(): string {
-  const dir = makeTempDir('gitops-test-')
+function buildGitRepo(): string {
+  const dir = makeTempDir('gitops-template-')
   execFileSync('git', ['-C', dir, 'init'], { stdio: 'pipe' })
   pinGitLineEndings(dir)
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
@@ -34,6 +34,26 @@ function createGitRepo(): string {
   writeFileSync(join(dir, 'hello.ts'), 'const x = 1\n')
   execFileSync('git', ['-C', dir, 'add', '.'], { stdio: 'pipe' })
   execFileSync('git', ['-C', dir, 'commit', '-m', 'initial'], { stdio: 'pipe' })
+  return dir
+}
+
+let templateRepo: string | undefined
+
+afterAll(() => {
+  if (templateRepo) removeTempDir(templateRepo)
+})
+
+/**
+ * A fresh repository per test, copied from one built once per file: a build
+ * is seven git processes, a copy is one. The repository records no absolute
+ * path (no remote, no worktree), so the copy differs only in its files' stat
+ * data, and refreshing the index makes it match them as a fresh build would.
+ */
+function createGitRepo(): string {
+  templateRepo ??= buildGitRepo()
+  const dir = makeTempDir('gitops-test-')
+  cpSync(templateRepo, dir, { recursive: true })
+  execFileSync('git', ['-C', dir, 'update-index', '--refresh'], { stdio: 'pipe' })
   return dir
 }
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { clearProjectDatabaseCache } from '../db/project'
 import { canonicalTmpdir } from './tempDir'
@@ -26,16 +26,16 @@ function writeFixtureFiles(rootDir: string, files: Record<string, string>) {
 }
 
 function initializeGitRepo(repoDir: string) {
-  execFileSync('git', ['-C', repoDir, 'init'], { stdio: 'pipe' })
-  execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
-  execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'LoopTroop Tests'], { stdio: 'pipe' })
+  execFileSync('git', ['-C', repoDir, 'init', '--initial-branch=main'], { stdio: 'pipe' })
+  // Appended rather than set with `git config`, which takes one process per key.
   // Git for Windows defaults to autocrlf=true and would rewrite fixture content
   // on checkout, so byte-for-byte assertions fail there and nowhere else.
-  execFileSync('git', ['-C', repoDir, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
-  execFileSync('git', ['-C', repoDir, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
+  appendFileSync(
+    join(repoDir, '.git', 'config'),
+    '[user]\n\temail = test@example.com\n\tname = LoopTroop Tests\n[core]\n\tautocrlf = false\n\teol = lf\n',
+  )
   execFileSync('git', ['-C', repoDir, 'add', '.'], { stdio: 'pipe' })
   execFileSync('git', ['-C', repoDir, 'commit', '-m', 'init'], { stdio: 'pipe' })
-  execFileSync('git', ['-C', repoDir, 'branch', '-M', 'main'], { stdio: 'pipe' })
 }
 
 /** Windows holds briefly onto files just released, so removal needs retries. */

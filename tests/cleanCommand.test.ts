@@ -1,6 +1,7 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { describe, it, expect, afterAll, afterEach, beforeEach, vi } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import {
   cleanCommand,
   inspectOrphanedOpenCode,
@@ -80,23 +81,53 @@ describe('clean command', () => {
     return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   }
 
-  function makeTempDir(label: string): string {
+  /** Removed after the whole file rather than after each test. */
+  const templateDirs: string[] = []
+
+  afterAll(() => {
+    for (const dir of templateDirs) removeTempDir(dir)
+  })
+
+  function makeTempDir(label: string, owner = tempDirs): string {
     const dir = mkdtempSync(join(tmpdir(), `looptroop-clean-${label}-`))
-    tempDirs.push(dir)
+    owner.push(dir)
     return normalizeFolderPath(dir)
   }
+
+  /** What every makeProject call copies, built by the first one. */
+  let projectTemplate: { remote: string; root: string } | undefined
 
   /**
    * A project repository with an "origin" it can push to, so the upstream checks
    * have something real to answer rather than being skipped, and with LoopTroop's
    * own ignore rules committed exactly as attaching a project writes them —
    * without those, `.ticket/` reads as untracked work in every worktree.
+   *
+   * Each call copies one pair built per file: building it is eight git
+   * processes and a push, a copy is one. The only absolute path git recorded
+   * is the remote's, in the origin URL, and both remotes share a parent, so
+   * swapping the directory name there gives what `git remote add` would write.
    */
   function makeProject(rootLabel = 'project'): string {
+    if (!projectTemplate) {
+      const template = { remote: makeTempDir('remote', templateDirs), root: makeTempDir('template', templateDirs) }
+      buildProject(template.remote, template.root)
+      projectTemplate = template
+    }
     const remote = makeTempDir('remote')
+    const root = makeTempDir(rootLabel)
+    cpSync(projectTemplate.remote, remote, { recursive: true })
+    cpSync(projectTemplate.root, root, { recursive: true })
+    const config = resolve(root, '.git', 'config')
+    writeFileSync(config, readFileSync(config, 'utf8').replaceAll(basename(projectTemplate.remote), basename(remote)))
+    // Copied files carry new stat data; refresh so the index matches them.
+    git(root, ['update-index', '--refresh'])
+    return root
+  }
+
+  function buildProject(remote: string, root: string): void {
     git(remote, ['init', '--bare', '--initial-branch=main'])
 
-    const root = makeTempDir(rootLabel)
     git(root, ['init', '--initial-branch=main'])
     git(root, ['config', 'user.email', 'test@example.com'])
     git(root, ['config', 'user.name', 'Test'])
@@ -106,7 +137,6 @@ describe('clean command', () => {
     git(root, ['commit', '-m', 'initial'])
     git(root, ['remote', 'add', 'origin', remote])
     git(root, ['push', '-u', 'origin', 'main'])
-    return root
   }
 
   /** A real git worktree under the managed root, with its ownership marker. */

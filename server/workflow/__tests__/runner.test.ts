@@ -3,7 +3,7 @@ import * as executionSetupStorage from '../../phases/executionSetup/storage'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TicketContext } from '../../machines/types'
 import { ticketMachine } from '../../machines/ticketMachine'
-import { attachWorkflowRunner } from '../runner'
+import { attachWorkflowRunner, clearAllCancellationCleanupStateForTests } from '../runner'
 import { handleCleanup as handleCleanupPhase } from '../phases/cleanupPhase'
 import * as phaseHelpers from '../phases/helpers'
 import * as questionWindows from '../questionWindows'
@@ -181,6 +181,7 @@ describe('attachWorkflowRunner', () => {
     hasInterviewRecoveryRequestedMock.mockReset().mockReturnValue(false)
     expirePhaseRetryNoteMock.mockReset()
     clearAllPendingSessionContinuationsForTests()
+    clearAllCancellationCleanupStateForTests()
     phaseIntermediate.clear()
     interviewQASessions.clear()
   })

@@ -1,0 +1,22 @@
+# Reviewed decisions for the workflow security audit that the Verify job in
+# ci.yml runs on every pull request. Anything not listed here fails it.
+rules:
+  # GitHub's `$/` syntax for actions in the workflow's own repository. The
+  # pinned actionlint, which the same job runs, predates it, and `./` is
+  # resolved against a checkout this repository makes itself in every job that
+  # uses a local action. Revisit when actionlint understands `$/`.
+  self-repository:
+    disable: true
+
+  # These three read the state of other repositories at the time of the run —
+  # a version tag that moved since the pin, an advisory published since, an
+  # action gone stale — so they would turn an unrelated pull request red on the
+  # day an upstream project releases. A required check that fails for reasons
+  # outside the change is noise. Renovate moves the pins and their version
+  # comments, and the advisories reach the repository through it.
+  ref-version-mismatch:
+    disable: true
+  known-vulnerable-actions:
+    disable: true
+  stale-action-refs:
+    disable: true

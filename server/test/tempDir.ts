@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { requireTrustedExecutablePath } from '../lib/executablePath'
@@ -98,4 +98,23 @@ export function pinGitLineEndings(repoDir: string): void {
     : ['--git-dir', repoDir]
   execFileSync(git, [...gitLocator, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
   execFileSync(git, [...gitLocator, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
+}
+
+/**
+ * Turns off git's background maintenance in a repository that tests copy.
+ *
+ * After a commit, merge or received push, git starts `git maintenance run
+ * --auto --detach`, which can still hold `objects/maintenance.lock` after the
+ * command has returned. A copy made then lists the lock and finds it gone when
+ * it gets to it (macOS: `ENOENT … .git/objects` from `cpSync`). Call it right
+ * after `git init`, on a repository or a bare one; a linked worktree shares its
+ * main repository's config, so call it there. Appending to the config costs no
+ * git process, and the leading newline keeps the section off a last line that
+ * has none.
+ */
+export function disableGitAutoMaintenance(repoDir: string): void {
+  const dotGit = statSync(join(repoDir, '.git'), { throwIfNoEntry: false })
+  if (dotGit?.isFile()) throw new Error(`${repoDir} is a linked worktree; disable maintenance on its main repository`)
+  const gitDir = dotGit ? join(repoDir, '.git') : repoDir
+  appendFileSync(join(gitDir, 'config'), '\n[maintenance]\n\tauto = false\n')
 }

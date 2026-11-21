@@ -29,7 +29,9 @@ describe.runIf(process.platform === 'linux')('terminateProcessTreeWithEscalation
     readProcessStartTokenMock.mockImplementation((pid: number) => tokenForPid.get(pid) ?? null)
     readProcessStartTokenMock.mockClear()
     readFileSyncMock.mockClear()
-    readdirSyncMock.mockClear()
+    // Reset, not clear: tests replace the process listing, and a cleared mock
+    // keeps the last one for the next test.
+    readdirSyncMock.mockReset()
     processKill = vi.spyOn(process, 'kill').mockImplementation(() => undefined as never)
 
     vi.doMock('../processIdentity', () => ({ readProcessStartToken: readProcessStartTokenMock }))

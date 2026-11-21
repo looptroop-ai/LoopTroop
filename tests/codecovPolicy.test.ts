@@ -94,32 +94,60 @@ describe('coverage and Codecov policy', () => {
     expect(missing).toEqual([])
   })
 
-  it('collects coverage in Verify and keeps the OIDC upload separate', () => {
-    const verify = requiredJob('verify')
+  /**
+   * The Ubuntu toolchain lane runs the suite once, under coverage. Verify used
+   * to run the whole suite a second time on the same runner type to collect
+   * it. The lane reads the pull request head, the commit Codecov attributes
+   * coverage to; every other lane keeps the merge ref.
+   */
+  it('collects coverage once, in the Ubuntu toolchain test lane, and keeps the OIDC upload separate', () => {
+    const matrix = requiredJob('test-matrix') as Job & { strategy?: { matrix?: { include?: Array<Record<string, unknown>> } } }
     const upload = requiredJob('codecov')
     expect(ci.jobs.coverage).toBeUndefined()
-    expect(verify['runs-on']).toBe('ubuntu-latest')
-    expect(verify.permissions).toEqual({ contents: 'read' })
-    const collectionCheckout = step(verify, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
+    const coverageLanes = (matrix.strategy?.matrix?.include ?? []).filter((entry) => entry.coverage === true)
+    expect(coverageLanes).toEqual([{ os: 'ubuntu-latest', label: 'toolchain floor', coverage: true }])
+    const collectionCheckout = step(matrix, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
     expect(collectionCheckout.with).toEqual({
+      ref: "${{ matrix.coverage && (github.event.pull_request.head.sha || github.sha) || '' }}",
+      'persist-credentials': false,
+    })
+    expect(step(matrix, (candidate) => candidate.uses?.startsWith('actions/setup-node@') ?? false).with)
+      .toMatchObject({ 'node-version-file': '.nvmrc', 'package-manager-cache': false })
+    expect(matrix.steps?.some((candidate) => candidate.uses === './.github/actions/npm-ci')).toBe(true)
+    const collect = step(matrix, (candidate) => candidate.run === 'npm run test:coverage') as Step & { if?: string }
+    expect(collect.if).toBe('${{ matrix.coverage }}')
+    const plain = step(matrix, (candidate) => candidate.run === 'npm run test') as Step & { if?: string }
+    expect(plain.if, 'the coverage lane does not also run the plain suite').toBe('${{ !matrix.coverage && !matrix.shuffle }}')
+    const artifact = step(matrix, (candidate) => candidate.uses?.startsWith('actions/upload-artifact@') ?? false) as Step & { if?: string }
+    expect(artifact.if).toBe('${{ matrix.coverage }}')
+    expect(artifact.with).toMatchObject({
+      name: 'coverage-report', path: 'coverage/', 'if-no-files-found': 'error', 'retention-days': 7,
+    })
+    for (const job of ['verify', 'test-windows']) {
+      expect(requiredJob(job).steps?.some((candidate) => /test:coverage/.test(candidate.run ?? '')), job).toBe(false)
+    }
+    // Nor the plain suite: Verify runs it no second time. (Its targeted root run
+    // of one test file is not the suite.)
+    expect(requiredJob('verify').steps?.some((candidate) => candidate.run === 'npm run test' || candidate.run === 'npm test'), 'verify').toBe(false)
+
+    expect(upload.needs).toBe('test-matrix')
+    // Waits for the matrix, not for its success: a failed or never-started Mac
+    // lane must not keep the Ubuntu lane's report from Codecov. Without a report
+    // (the coverage lane failed, and says so) nothing is uploaded.
+    expect((upload as Job & { if?: string }).if).toBe('${{ !cancelled() }}')
+    const download = step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false) as Step & { id?: string; 'continue-on-error'?: boolean }
+    expect(download.id).toBe('coverage')
+    expect(download['continue-on-error']).toBe(true)
+    for (const later of upload.steps?.slice((upload.steps ?? []).indexOf(download) + 1) ?? []) {
+      expect((later as Step & { if?: string }).if, later.name).toBe("steps.coverage.outcome == 'success'")
+    }
+    expect(upload.permissions).toEqual({ contents: 'read', 'id-token': 'write' })
+    const uploadCheckout = step(upload, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
+    // The same commit the coverage lane collected from.
+    expect(uploadCheckout.with).toEqual({
       ref: '${{ github.event.pull_request.head.sha || github.sha }}',
       'persist-credentials': false,
     })
-    expect(step(verify, (candidate) => candidate.uses?.startsWith('actions/setup-node@') ?? false).with)
-      .toMatchObject({ 'node-version-file': '.nvmrc', cache: 'npm' })
-    expect(verify.steps?.some((candidate) => candidate.run === 'node scripts/pin-npm.mjs')).toBe(true)
-    expect(verify.steps?.some((candidate) => candidate.run === 'npm ci')).toBe(true)
-    expect(verify.steps?.some((candidate) => candidate.run === 'npm run test')).toBe(false)
-    expect(verify.steps?.some((candidate) => candidate.run === 'npm run test:coverage')).toBe(true)
-    expect(step(verify, (candidate) => candidate.uses?.startsWith('actions/upload-artifact@') ?? false).with)
-      .toMatchObject({
-        name: 'coverage-report', path: 'coverage/', 'if-no-files-found': 'error', 'retention-days': 7,
-      })
-
-    expect(upload.needs).toBe('verify')
-    expect(upload.permissions).toEqual({ contents: 'read', 'id-token': 'write' })
-    const uploadCheckout = step(upload, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
-    expect(uploadCheckout.with).toEqual(collectionCheckout.with)
     expect(step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false).with)
       .toMatchObject({ name: 'coverage-report', 'skip-decompress': true, 'digest-mismatch': 'error' })
     expect(upload.steps?.some((candidate) => candidate.uses?.startsWith('./'))).toBe(false)

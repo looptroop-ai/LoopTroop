@@ -117,6 +117,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # Blank resolves to the newest stable release. That is what makes the
       # temporary push trigger usable at all: a push event carries no inputs.
@@ -242,6 +243,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm to the declared version
         run: node scripts/pin-npm.mjs
@@ -256,10 +258,14 @@ jobs:
       - name: Install the node manager
         if: matrix.channel == 'bun' || matrix.channel == 'pnpm' || matrix.channel == 'yarn'
         shell: bash
+        # Through the environment, never spliced into the script: the matrix
+        # comes from the plan job's output, so it is data, not code.
+        env:
+          CHANNEL: ${{ matrix.channel }}
         run: |
           set -euo pipefail
-          npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/${{ matrix.channel }}
-          node .ci-tools-source/scripts/setup-ci-tool.cjs ${{ matrix.channel }}
+          npm ci --ignore-scripts --prefix .ci-tools-source/scripts/ci-tools/"${CHANNEL}"
+          node .ci-tools-source/scripts/setup-ci-tool.cjs "${CHANNEL}"
 
           # Each manager keeps its global installs somewhere of its own, and
           # only puts that directory on PATH as part of its *own* installer —
@@ -273,7 +279,7 @@ jobs:
           # Yarn needs nothing here: the driver resolves its global bin from
           # `yarn global bin`, because the documentation tells users to put that
           # on PATH themselves and that instruction is part of the install.
-          case "${{ matrix.channel }}" in
+          case "${CHANNEL}" in
             bun)
               echo "${BUN_INSTALL:-$HOME/.bun}/bin" >> "$GITHUB_PATH"
               ;;

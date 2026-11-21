@@ -132,6 +132,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # A draft is not a release: its assets are not anonymously downloadable,
       # so a descriptor pointing at one would install for nobody.
@@ -273,6 +274,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # Homebrew is installed on the ubuntu images but deliberately kept off PATH,
       # so `brew` is not a command here until this runs.
@@ -337,6 +339,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Push the manifest
         env:
@@ -386,6 +389,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Is this version on the feed already?
         id: feed
@@ -525,6 +529,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Submit the manifests
         shell: bash

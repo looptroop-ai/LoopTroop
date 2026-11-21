@@ -49,6 +49,8 @@ const TOOLCHAIN = formatNodeVersion(parseNodeVersion(readFileSync(join(repo, '.n
 /** The standalone builder's embedded runtime. Confined to binary jobs by the test that pins it. */
 const EMBEDDED_BUILDER = '26.9.0'
 const PLATFORMS = ['macos-latest', 'ubuntu-latest', 'windows-latest']
+/** The gate step every aggregate job in ci.yml shares; rerun-unacquired.yml reads failures of it as consequences. */
+const GATE_STEP = 'Require every needed job to have succeeded'
 
 type MatrixEntry = Record<string, unknown>
 
@@ -147,7 +149,7 @@ function executeNodeFloorGate(run: string, before: string, after: string, checke
       env: {
         ...process.env,
         AFTER: after,
-        BASE_REF: 'base-ref',
+        DIFF_BASE: 'base-ref',
         BEFORE: before,
         CHECKER_CALLS: checkerCalls,
         CHECKER_STATUS: String(checkerStatus),
@@ -183,25 +185,42 @@ describe('release workflow policy', () => {
 
   it('requires dependency review on every CI event before Packaging can pass', () => {
     const ci = workflows.get('ci.yml')!.jobs!
-    const review = ci['dependency-review'] as Job & { if?: string }
-    expect(review.if).toBeUndefined()
-    const action = review.steps!.find((step) => String(step.uses).startsWith('actions/dependency-review-action@')) as SetupStep
+    const verify = ci.verify as Job & { if?: string }
+    expect(verify.if).toBeUndefined()
+    const action = verify.steps!.find((step) => String(step.uses).startsWith('actions/dependency-review-action@')) as SetupStep
+    expect(action.if, 'no event skips the review, and an earlier failure does not hide it').toBe('${{ !cancelled() }}')
     expect(action.with).toMatchObject({
       'fail-on-scopes': 'runtime,development,unknown',
-      'base-ref': '${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}',
+      'base-ref': '${{ env.DIFF_BASE }}',
       'head-ref': '${{ github.event.pull_request.head.sha || github.sha }}',
     })
-    expect((ci.packaging as Job & { needs: string[] }).needs).toContain('dependency-review')
+    expect((ci.packaging as Job & { needs: string[] }).needs).toContain('verify')
     expect((ci.packaging as Job & { if: string }).if).toBe('always()')
-    const gate = ci.packaging!.steps!.find((step) => step.run !== undefined)!
+    const gate = ci.packaging!.steps!.find((step) => step.name === GATE_STEP)!
     for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
-      const results = { 'dependency-review': { result }, 'test-matrix': { result: 'success' } }
-      const run = spawnSync('bash', ['-euo', 'pipefail', '-c', String(gate.run)], {
+      const results = { verify: { result }, 'test-matrix': { result: 'success' } }
+      const run = spawnSync('bash', ['-euo', 'pipefail', '-c', `gh() { printf '{"jobs":[]}'; }\n${String(gate.run)}`], {
         encoding: 'utf8',
-        env: { ...process.env, RESULTS: JSON.stringify(results) },
+        env: { ...process.env, ...gate.env, RESULTS: JSON.stringify(results), GITHUB_REPOSITORY: 'looptroop-ai/LoopTroop', GITHUB_RUN_ID: '42' },
       })
       expect(run.status, `${result}: ${run.stderr}`).toBe(result === 'success' ? 0 : 1)
     }
+  })
+
+  /**
+   * A push to main used to be compared with main, which by then is the pushed
+   * commit: the dependency diff was empty and the floor never changed, so both
+   * gates passed without checking anything. A push compares with the commit
+   * it replaced.
+   */
+  it('compares a push with the commit it replaced, not with itself', () => {
+    const verify = workflows.get('ci.yml')!.jobs!.verify as Job & { env?: Record<string, string> }
+    expect(verify.env?.DIFF_BASE).toBe(
+      "${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.event.repository.default_branch }}",
+    )
+    const floor = verify.steps!.find((step) => step.name === 'Check every feed offers a changed Node floor')!
+    expect(String(floor.run)).toContain('git fetch --no-tags --depth=1 origin "${DIFF_BASE}"')
+    expect(JSON.stringify(verify.steps)).not.toContain('github.event.repository.default_branch')
   })
 
   it('runs the workflow, shell, and local verification gates in blocking CI jobs', () => {
@@ -209,33 +228,37 @@ describe('release workflow policy', () => {
     const scripts = (JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>
     }).scripts
-    const workflowLint = ci.workflows as Job & { 'runs-on'?: string; 'continue-on-error'?: unknown }
-    expect(workflowLint['runs-on']).toBe('ubuntu-latest')
-    expect(Object.hasOwn(workflowLint, 'continue-on-error')).toBe(false)
-
-    const lintSteps = workflowLint.steps ?? []
-    const installer = lintSteps.find((candidate) => candidate.name === 'Install actionlint')
-    const lintCommand = lintSteps.find((candidate) => candidate.name === 'Lint the workflows')?.run
-    expect(String(installer?.run)).toMatch(/version=\d+\.\d+\.\d+/)
-    expect(String(installer?.run)).toMatch(/sha256=[a-f0-9]{64}/)
-    expect(lintSteps.some((candidate) => candidate.run === 'shellcheck --version')).toBe(true)
-    expect(String(lintCommand)).toContain('/tmp/actionlint -color -shellcheck="shellcheck -S warning"')
-
     const verify = ci.verify as (Job & { 'continue-on-error'?: unknown }) | undefined
     if (!verify) throw new Error('ci.yml: verify job missing')
+    expect(verify['runs-on']).toBe('ubuntu-latest')
     expect(Object.hasOwn(verify, 'continue-on-error'), 'the required Verify job must remain blocking').toBe(false)
+
+    const steps = verify.steps ?? []
+    const installer = steps.find((candidate) => candidate.name === 'Install actionlint')
+    const lintCommand = steps.find((candidate) => candidate.name === 'Lint the workflows')?.run
+    expect(String(installer?.run)).toMatch(/version=\d+\.\d+\.\d+/)
+    expect(String(installer?.run)).toMatch(/sha256=[a-f0-9]{64}/)
+    expect(steps.some((candidate) => candidate.run === 'shellcheck --version')).toBe(true)
+    expect(String(lintCommand)).toContain('/tmp/actionlint -color -shellcheck="shellcheck -S warning"')
+
+    // zizmor is pinned and verified like actionlint, and audits every workflow and local action.
+    const zizmor = steps.find((candidate) => candidate.name === 'Install zizmor')
+    expect(String(zizmor?.run)).toMatch(/version=\d+\.\d+\.\d+/)
+    expect(String(zizmor?.run)).toMatch(/sha256=[a-f0-9]{64}/)
+    expect(String(zizmor?.run)).toContain('sha256sum --check --status')
+    const audit = steps.find((candidate) => candidate.name === 'Audit the workflows for security problems')
+    expect(audit?.run).toBe('/tmp/zizmor --format github --no-progress .github')
+    expect(audit?.env?.GH_TOKEN).toBe('${{ github.token }}')
+
     const verificationCommands = [
       ['npm run lint', 'lint'],
       ['npm run typecheck', 'typecheck'],
-      ['npm run test:coverage', 'test:coverage'],
       ['npm run build', 'build'],
       ['npm run verify:no-native-addons', 'verify:no-native-addons'],
       ['npm run verify:package', 'verify:package'],
       ['npm run verify:version', 'verify:version'],
       ['npm run verify:strip-types', 'verify:strip-types'],
-      ['npm run licenses:check', 'licenses:check'],
     ] as const
-    const steps = verify.steps ?? []
     const indices = verificationCommands.map(([command, script]) => {
       expect(scripts[script], `${script} is an npm script`).toBeDefined()
       const index = steps.findIndex((candidate) => candidate.run === command)
@@ -243,11 +266,33 @@ describe('release workflow policy', () => {
       return index
     })
     expect(indices).toEqual([...indices].sort((a, b) => a - b))
-    const coverageStep = steps.find((candidate) => candidate.run === 'npm run test:coverage')
-    expect(coverageStep).toBeDefined()
-    expect(Object.hasOwn(coverageStep!, 'if'), 'coverage must run in the Verify job').toBe(false)
-    expect(Object.hasOwn(coverageStep!, 'continue-on-error'), 'coverage failures must fail Verify').toBe(false)
-    expect(steps.some((candidate) => String(candidate.run ?? '').includes('server/lib/__tests__/executablePath.test.ts'))).toBe(true)
+    // The root run writes Vite's caches as root, so anything after it that
+    // writes them as the runner user, the build first of all, would fail.
+    const asRoot = steps.findIndex((candidate) => String(candidate.run ?? '').includes('server/lib/__tests__/executablePath.test.ts'))
+    expect(String(steps[asRoot]?.run)).toMatch(/^sudo /)
+    expect(asRoot, 'the root-only test runs last').toBe(steps.length - 1)
+
+    // One failure must not hide the next: every check after the checkout runs
+    // unless the run was cancelled, and waits only for what it needs.
+    const checkout = steps.findIndex((candidate) => String(candidate.uses ?? '').startsWith('actions/checkout@'))
+    for (const candidate of steps.slice(checkout + 1).filter((step) => step.name !== 'Install actionlint')) {
+      expect(String(candidate.if ?? ''), `Verify: ${String(candidate.name ?? candidate.uses)} runs after an earlier failure`).toContain('!cancelled()')
+    }
+    for (const command of ['npm run verify:no-native-addons', 'npm run verify:package']) {
+      expect(steps.find((candidate) => candidate.run === command)?.if, command).toBe("${{ !cancelled() && steps.build.outcome == 'success' }}")
+    }
+
+    // The license notices are the install check's to verify, before any Mac or Windows job starts.
+    const installCheck = ci['install-check']!
+    expect(installCheck['runs-on']).toBe('ubuntu-latest')
+    expect(scripts['licenses:check']).toBeDefined()
+    const installIndex = (installCheck.steps ?? []).findIndex((candidate) => candidate.uses === './.github/actions/npm-ci')
+    const clientIndex = (installCheck.steps ?? []).findIndex((candidate) => candidate.run === 'npm run build:client')
+    const noticesIndex = (installCheck.steps ?? []).findIndex((candidate) => candidate.run === 'npm run licenses:check')
+    expect(installIndex).toBeGreaterThan(-1)
+    // The notices check reads the client bundle's list of inlined packages.
+    expect(clientIndex, 'the client is built before the notices are checked').toBeGreaterThan(installIndex)
+    expect(noticesIndex).toBeGreaterThan(clientIndex)
     const cleanTree = steps.find((candidate) => candidate.name === 'Verify working tree is clean after build')
     expect(cleanTree).toBeDefined()
     const cleanTreeCommand = String(cleanTree?.run ?? '')
@@ -319,7 +364,7 @@ describe('release workflow policy', () => {
    * The only typed versions are named exceptions: the standalone builder's
    * embedded runtime, which the binary-job test below confines to those jobs;
    * the declared-floor lanes, which read `engines.node` at run time; and the
-   * Node 26 early-warning lane, which floats on purpose.
+   * early-warning lane, which works out the major after `.nvmrc`'s at run time.
    */
   it('types no copy of the toolchain Node into any workflow', () => {
     const typed = [...source].flatMap(([file, text]) =>
@@ -427,7 +472,7 @@ describe('release workflow policy', () => {
   /**
    * A typed selector must be a named exception. An expression is the floor lane
    * reading `engines.node`; a concrete version is held by the test above; a
-   * bare major floats to whatever shipped this week, which only the Node 26
+   * bare major floats to whatever shipped this week, which only the
    * early-warning lane may do.
    */
   function expectNamedNodeSelector({ where, steps, index }: SetupNodeStep) {
@@ -474,63 +519,75 @@ describe('release workflow policy', () => {
    * finishes Renovate's floor pull requests could not push anyway.
    *
    * Four ways the promise can quietly stop being kept. The switch can stop
-   * reading the floor. A platform can be dropped, so the operating systems are
-   * asserted as a set, and an `include` or `exclude` could add or remove a
-   * combination unseen, so neither is allowed. And the job can be made
-   * advisory — `continue-on-error` reports success however the job went.
+   * reading the floor. A platform can be dropped, so the lanes are asserted as
+   * a set across the two jobs that run them, and an `include` could add a
+   * combination unseen, so it may only add keys to an existing one; `exclude`
+   * is not allowed at all. And a job can be made advisory —
+   * `continue-on-error` reports success however the job went.
    */
-  it('runs the declared floor, read from engines.node, on every platform, and blocks on it', () => {
-    const job = workflows.get('ci.yml')?.jobs?.['test-matrix'] as (Job & {
-      'continue-on-error'?: unknown
-      strategy?: { matrix?: Record<string, unknown> }
-    }) | undefined
-    if (!job) throw new Error('ci.yml: test-matrix job missing')
-    expect(Object.hasOwn(job, 'continue-on-error'), 'test-matrix continue-on-error').toBe(false)
-    expect(job.name, 'pull_request keeps the required matrix contexts; push uses separate contexts')
-      .toBe("Test (${{ matrix.os }}, ${{ matrix.label }})${{ github.event_name == 'push' && matrix.os == 'ubuntu-latest' && matrix.label == 'toolchain floor' && ' [push]' || '' }}")
+  it('runs both floors on every platform, reads the declared one from engines.node, and blocks on them', () => {
+    type TestJob = Job & { 'continue-on-error'?: unknown; strategy?: { matrix?: Record<string, unknown> } }
+    const jobs = workflows.get('ci.yml')!.jobs!
+    const matrixJob = jobs['test-matrix'] as TestJob
+    const windows = jobs['test-windows'] as TestJob
+    const windowsResult = jobs['test-windows-result'] as TestJob
+    for (const [name, job] of Object.entries({ 'test-matrix': matrixJob, 'test-windows': windows, 'test-windows-result': windowsResult })) {
+      if (!job) throw new Error(`ci.yml: ${name} job missing`)
+      expect(Object.hasOwn(job, 'continue-on-error'), `${name} continue-on-error`).toBe(false)
+    }
+    // The names branch protection matches on, for every platform.
+    expect(matrixJob.name).toBe('Test (${{ matrix.os }}, ${{ matrix.label }})')
+    expect(windowsResult.name).toBe('Test (windows-latest, ${{ matrix.lane }} floor)')
 
-    const matrix = job.strategy?.matrix ?? {}
-    expect(Object.keys(matrix).sort(), 'test-matrix axes').toEqual(['label', 'os'])
-    expect([...(matrix.os as string[])].sort(), 'test-matrix platforms').toEqual(PLATFORMS)
-    expect([...(matrix.label as string[])].sort(), 'test-matrix lanes').toEqual(['declared floor', 'toolchain floor'])
+    const matrix = matrixJob.strategy?.matrix ?? {}
+    expect(Object.keys(matrix).sort(), 'test-matrix axes').toEqual(['include', 'label', 'os'])
+    const combinations = (matrix.os as string[]).flatMap((os) => (matrix.label as string[]).map((label) => `${os}, ${label}`))
+    for (const entry of matrix.include as MatrixEntry[]) {
+      expect(combinations, 'an include only adds keys to an existing lane').toContain(`${String(entry.os)}, ${String(entry.label)}`)
+    }
+    const windowsMatrix = windows.strategy?.matrix ?? {}
+    expect(windowsMatrix).toEqual({ lane: ['toolchain', 'declared'], shard: [1, 2] })
+    expect(windowsResult.strategy?.matrix).toEqual({ lane: ['toolchain', 'declared'] })
+    const lanes = [...combinations, ...(windowsMatrix.lane as string[]).map((lane) => `windows-latest, ${lane} floor`)]
+    expect(lanes.sort(), 'every platform runs both floors').toEqual(
+      PLATFORMS.flatMap((os) => ['declared floor', 'toolchain floor'].map((label) => `${os}, ${label}`)).sort())
 
-    const steps = (job.steps ?? []) as Array<Step & { id?: unknown; if?: unknown; with?: Record<string, unknown> }>
-    const floorOnly = "matrix.label == 'declared floor'"
-    const read = steps.findIndex((step) => step.id === 'floor')
-    const switchTo = steps.findIndex((step) =>
-      String(step.uses ?? '').startsWith('actions/setup-node@') && step.with?.['node-version'] === '${{ steps.floor.outputs.node }}')
-    expect(read, 'the floor is read from engines.node').toBeGreaterThan(-1)
-    expect(switchTo, 'the floor is read before switching to it').toBeGreaterThan(read)
-    expect(steps[read]?.if).toBe(floorOnly)
-    expect(steps[switchTo]?.if).toBe(floorOnly)
-    expect(String(steps[read]?.run), 'the floor is parsed by the shared parser').toContain('parseNodeFloor')
+    for (const [name, job, floorOnly] of [
+      ['test-matrix', matrixJob, "matrix.label == 'declared floor'"],
+      ['test-windows', windows, "matrix.lane == 'declared'"],
+    ] as const) {
+      const steps = (job.steps ?? []) as Array<Step & { id?: unknown; with?: Record<string, unknown> }>
+      const read = steps.findIndex((step) => step.id === 'floor')
+      const switchTo = steps.findIndex((step) =>
+        String(step.uses ?? '').startsWith('actions/setup-node@') && step.with?.['node-version'] === '${{ steps.floor.outputs.node }}')
+      expect(read, `${name}: the floor is read from engines.node`).toBeGreaterThan(-1)
+      expect(switchTo, `${name}: the floor is read before switching to it`).toBeGreaterThan(read)
+      expect(steps[read]?.if).toBe(floorOnly)
+      expect(steps[switchTo]?.if).toBe(floorOnly)
+      expect(String(steps[read]?.run), 'the floor is parsed by the shared parser').toContain('parseNodeFloor')
+      const install = steps.findIndex((step) => step.uses === './.github/actions/npm-ci')
+      expect(install, `${name}: dependencies are installed on the Node the lane tests`).toBeGreaterThan(switchTo)
+      const suites = steps.flatMap((step, index) => /^npm run test(?::coverage)?(?:\s|$)/.test(String(step.run ?? '')) ? [index] : [])
+      expect(suites.length, `${name}: runs the suite`).toBeGreaterThan(0)
+      for (const suite of suites) expect(suite, `${name}: the suite runs after the install`).toBeGreaterThan(install)
+    }
 
+    // Exactly one suite per lane: the coverage lane and the shuffled lane replace the plain run, never add to it.
+    const steps = matrixJob.steps ?? []
+    const conditions = steps.filter((step) => /^\s*npm run test/m.test(String(step.run ?? ''))).map((step) => step.if)
+    expect(conditions).toEqual(['${{ !matrix.coverage && !matrix.shuffle }}', '${{ matrix.coverage }}', '${{ matrix.shuffle }}'])
+    expect((matrix.include as MatrixEntry[]).map((entry) => Object.keys(entry).filter((key) => key !== 'os' && key !== 'label')))
+      .toEqual([['coverage'], ['shuffle']])
+    const shuffled = steps.find((step) => step.if === '${{ matrix.shuffle }}')
+    expect(shuffled?.env?.SEED, 'a red shuffled run can be reproduced').toBe('${{ github.run_id }}')
+    expect(String(shuffled?.run)).toContain('npm run test -- --sequence.shuffle --sequence.seed="${SEED}"')
+    expect(String(shuffled?.run)).toContain('GITHUB_STEP_SUMMARY')
+
+    // Only the coverage lane reads the PR head (Codecov's commit); every other lane tests the merge result.
     const checkout = steps.find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
-    expect(checkout, 'test-matrix checks out the event ref').toBeDefined()
-    expect(checkout?.with?.ref, 'test-matrix keeps the default PR merge ref').toBeUndefined()
-
-    const test = steps.findIndex((step) => step.run === 'npm run test')
-    expect(test, 'the suite runs after the switch').toBeGreaterThan(switchTo)
-    expect(steps[test]?.if, 'only pushes skip the Ubuntu toolchain suite already covered by Verify')
-      .toBe("github.event_name != 'push' || matrix.os != 'ubuntu-latest' || matrix.label != 'toolchain floor'")
-
-    const verify = workflows.get('ci.yml')?.jobs?.verify as (Job & { steps?: Array<Step & { if?: unknown; with?: Record<string, unknown> }> }) | undefined
-    expect(verify?.['runs-on'], 'the overlapping suite runs on Ubuntu').toBe('ubuntu-latest')
-    expect(Object.hasOwn(verify ?? {}, 'if'), 'Verify itself stays unconditional').toBe(false)
-    expect(verify?.steps?.some((step) => step.with?.['node-version-file'] === '.nvmrc'), 'the overlapping suite uses the toolchain floor')
-      .toBe(true)
-    const coverage = verify?.steps?.find((step) => step.run === 'npm run test:coverage')
-    expect(coverage, 'the overlapping suite still runs under coverage').toBeDefined()
-    expect(Object.hasOwn(coverage!, 'if'), 'the overlapping coverage suite stays unconditional').toBe(false)
-    const verifySteps = verify?.steps ?? []
-    const verifyCheckout = verifySteps.find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
-    expect(verifyCheckout?.with?.ref, 'Verify attributes PR coverage to the PR head').toBe('${{ github.event.pull_request.head.sha || github.sha }}')
-    const toolchainSetup = verifySteps.findIndex((step) =>
-      String(step.uses ?? '').startsWith('actions/setup-node@') && step.with?.['node-version-file'] === '.nvmrc')
-    const coverageIndex = verifySteps.findIndex((step) => step.run === 'npm run test:coverage')
-    expect(toolchainSetup, 'Verify reads the toolchain Node from .nvmrc').toBeGreaterThan(-1)
-    expect(verifySteps[toolchainSetup]?.if, 'the .nvmrc toolchain setup stays unconditional').toBeUndefined()
-    expect(toolchainSetup, '.nvmrc is installed before the coverage suite').toBeLessThan(coverageIndex)
+    expect(checkout?.with?.ref).toBe("${{ matrix.coverage && (github.event.pull_request.head.sha || github.sha) || '' }}")
+    const windowsCheckout = (windows.steps ?? []).find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
+    expect(windowsCheckout?.with?.ref, 'Windows tests the merge result').toBeUndefined()
   })
 
   /**
@@ -559,12 +616,42 @@ describe('release workflow policy', () => {
     expect(steps.findIndex((step) => step.id === 'floor'), 'floor is read before switching to it').toBeLessThan(floor)
     expect(steps[floor]?.with?.['node-version']).toBe('${{ steps.floor.outputs.node }}')
 
-    const pins = steps.flatMap((step, index) => text(step).includes('scripts/pin-npm.mjs') ? [index] : [])
+    // The shared install action pins npm too, so it counts as a pin here.
+    const pins = steps.flatMap((step, index) =>
+      text(step).includes('scripts/pin-npm.mjs') || step.uses === './.github/actions/npm-ci' ? [index] : [])
     expect(pins.length, 'pin-npm before the dependency install').toBeGreaterThan(0)
     for (const pin of pins) expect(pin, 'no npm pin after switching to the floor').toBeLessThan(floor)
 
     const smoke = steps.findIndex((step) => text(step).includes('node scripts/smoke-install.mjs'))
     expect(smoke, 'the smoke runs on the floor runtime').toBeGreaterThan(floor)
+
+    // Every other install path runs on the toolchain Node, before the switch —
+    // except Homebrew, which puts its own directory first on PATH and so comes last.
+    for (const script of ['scripts/smoke-installer.mjs', 'scripts/smoke-bundle.mjs', 'scripts/smoke-node-manager.mjs', 'scripts/audit-formula.ts']) {
+      const index = steps.findIndex((step) => text(step).includes(script))
+      expect(index, `${script} runs in this job`).toBeGreaterThan(-1)
+      expect(index, `${script} runs before the switch to the floor`).toBeLessThan(floor)
+    }
+    const linuxbrew = steps.findIndex((step) => step.name === 'Put Linuxbrew on PATH')
+    const homebrew = steps.findIndex((step) => text(step).includes('scripts/smoke-channel.ts'))
+    expect(linuxbrew, 'Homebrew changes PATH only after every other step').toBeGreaterThan(smoke)
+    expect(homebrew).toBeGreaterThan(linuxbrew)
+    expect(homebrew, 'Homebrew is the last step').toBe(steps.length - 1)
+
+    // One failed install path must not hide the others: each step after the build runs unless the run was cancelled.
+    const buildStep = steps.findIndex((step) => step.run === 'npm run build')
+    for (const step of steps.slice(buildStep + 1)) {
+      expect(String(step.if ?? ''), `smoke-install: ${String(step.name ?? step.id)} runs after an earlier failure`).toContain('!cancelled()')
+    }
+    // A failed bundle must not hide them either: the job starts once the install
+    // check passed, and only the bundle's own steps wait for the bundle job.
+    expect((job as Job & { if?: string }).if).toBe("${{ !cancelled() && needs.install-check.result == 'success' }}")
+    const download = steps.find((step) => step.name === 'Download the bundle')
+    expect(download?.if).toBe("${{ !cancelled() && runner.os != 'Windows' && needs.bundle.result == 'success' }}")
+    expect(steps.find((step) => step.id === 'brew-update')?.if).toContain("steps.bundle.outcome == 'success'")
+    for (const step of steps.filter((candidate) => text(candidate).includes('RUNNER_TEMP}"/bundle/'))) {
+      expect(step.if, `${String(step.name)} waits for the bundle`).toMatch(/steps\.(?:bundle|brew-update)\.outcome == 'success'/)
+    }
 
     // Step order is not enough on Windows, where npm's launcher prefers any npm
     // in the shared global prefix — and the build step pinned npm 12 there. The
@@ -597,11 +684,43 @@ describe('release workflow policy', () => {
       expect((text.match(/^\s*node-version:\s*26\.9\.0\s*$/gm) ?? []).length, `${file}: only binary jobs pin Node 26.9.0`).toBe(1)
     }
 
-    const earlyWarning = source.get('ci.yml')!.slice(
-      source.get('ci.yml')!.indexOf('  early-warning:'),
-    )
-    expect(earlyWarning).toContain('continue-on-error: true')
-    expect(earlyWarning).toContain('node-version: 26')
+    const earlyWarning = workflows.get('ci.yml')!.jobs!['early-warning']!
+    expect(earlyWarning['continue-on-error']).toBe(true)
+    const setup = (earlyWarning.steps ?? []).find((step) => String(step.uses ?? '').startsWith('actions/setup-node@')) as SetupStep
+    expect(setup.with?.['node-version'], 'the next major is worked out, never typed').toBe('${{ steps.next.outputs.node }}')
+  })
+
+  /**
+   * The early-warning lane typed its Node major ("26") and kept testing it for
+   * three weeks after the toolchain itself moved to 26, warning about nothing.
+   * It now works out "the major after .nvmrc's" at run time: the newest release
+   * of it (Node's alphas are releases), or its nightly builds when there is no
+   * release of it yet.
+   */
+  it.skipIf(process.platform === 'win32')('points the early-warning lane at the major after the toolchain', () => {
+    const pick = workflows.get('ci.yml')!.jobs!['early-warning']!.steps!.find((step) => step.name === 'Pick the next Node major')
+    const run = String(pick?.run)
+    expect(run).toContain('https://nodejs.org/download/release/index.json')
+    const choose = (nvmrc: string, releases: string[]) => {
+      const directory = mkdtempSync(join(tmpdir(), 'looptroop-next-node-'))
+      try {
+        writeFileSync(join(directory, '.nvmrc'), `${nvmrc}\n`)
+        const output = join(directory, 'output')
+        const index = JSON.stringify(releases.map((version) => ({ version })))
+        const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `curl() { printf '%s' "$INDEX"; }\n${run}`], {
+          cwd: directory,
+          encoding: 'utf8',
+          env: { ...process.env, INDEX: index, GITHUB_OUTPUT: output },
+        })
+        expect(result.status, result.stderr).toBe(0)
+        return readFileSync(output, 'utf8').trim()
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    }
+    expect(choose('26.13.1', ['v27.0.0-alpha.0.1.1', 'v27.0.0-alpha.0.1.0', 'v26.13.1'])).toBe('node=27.0.0-alpha.0.1.1')
+    expect(choose('v26.13.1', ['v26.13.1', 'v26.12.0'])).toBe('node=27-nightly')
+    expect(choose('27.2.0', ['v28.0.0-alpha.0.0.1', 'v27.2.0', 'v270.0.0'])).toBe('node=28.0.0-alpha.0.0.1')
   })
 
   it('keeps OIDC and attestation permissions off dependency/build jobs', () => {
@@ -679,15 +798,40 @@ describe('release workflow policy', () => {
     expect(installSteps[1]!.run).toContain("if ($env:PIN) { $smokeArgs += '--pin' }")
   })
 
+  it('decides on Linux whether the Windows gate runs, and runs it only when affected', () => {
+    const jobs = workflows.get('ci.yml')!.jobs!
+    const scope = jobs['windows-gate-scope'] as Job & { outputs?: Record<string, unknown> }
+    const gate = jobs['windows-gate'] as Job & { needs?: string[] }
+    expect(scope['runs-on']).toBe('ubuntu-latest')
+    expect(scope.outputs).toEqual({ affected: '${{ steps.scope.outputs.affected || steps.manual.outputs.affected }}' })
+    // A manual run is a full run: it has no pull request to scope, so the profile runs.
+    const manual = (scope.steps ?? []).find((step) => (step as Step & { id?: string }).id === 'manual')
+    expect(manual?.if).toBe("github.event_name == 'workflow_dispatch'")
+    expect(manual?.run).toBe('echo "affected=true" >> "$GITHUB_OUTPUT"')
+    expect(gate['runs-on']).toBe('windows-latest')
+    expect(gate.needs).toContain('windows-gate-scope')
+    expect(gate.if).toBe("needs.windows-gate-scope.outputs.affected == 'true'")
+    expect((gate.steps ?? []).some((step) => String(step.name ?? '').includes('affected')), 'the Windows job no longer scopes itself').toBe(false)
+    const checkout = (scope.steps ?? []).find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
+    expect(checkout?.with).toMatchObject({ 'fetch-depth': 0, filter: 'blob:none', 'persist-credentials': false })
+  })
+
   it('executes the Windows affected-file scope against affected and unrelated paths', () => {
-    const windowsGate = workflows.get('ci.yml')!.jobs?.['windows-gate']
+    const windowsGate = workflows.get('ci.yml')!.jobs?.['windows-gate-scope']
     const scope = windowsGate?.steps?.find((step) => step.name === 'Check whether the Windows profile is affected')?.run
     if (typeof scope !== 'string') throw new Error('Windows gate scope script missing')
-    expect(scope).toContain('changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"')
+    // Three dots: what the pull request changed, not what main gained since;
+    // --no-renames: a renamed watched file lists its old path too.
+    expect(scope).toContain('changed="$(git diff --name-only --no-renames "${BASE_SHA}...${HEAD_SHA}")"')
     expect(scope).toContain('done <<< "${changed}"')
     expect(scope).not.toContain('< <(git diff')
 
-    for (const path of ['scripts/smoke-lib.mjs', 'scripts/installer-core.mjs', 'scripts/smoke-installer.mjs']) {
+    // The gate installs through the shared action, so a change to it is a change to the gate.
+    // ...and the modules the gated smoke script and tests import.
+    for (const path of [
+      'scripts/smoke-lib.mjs', 'scripts/installer-core.mjs', 'scripts/smoke-installer.mjs', '.github/actions/npm-ci/action.yml',
+      'server/cli/processControl.ts', 'server/lib/processIdentity.ts', 'scripts/package-manifests.ts', 'server/test/tempDir.ts',
+    ]) {
       const affected = executeWindowsScope(scope, [path])
       expect(affected.status).toBe(0)
       expect(affected.output).toBe('affected=true\n')
@@ -714,6 +858,12 @@ describe('release workflow policy', () => {
     const push = releasePr.slice(releasePr.indexOf('  - name: Push the release branch'), releasePr.indexOf('  - name: Open the pull request'))
     expect(push).toContain('unset RELEASE_TOKEN')
     expect(push).toContain('core.hooksPath=/dev/null')
+    // Every push from a workflow skips repository hooks, not only that one.
+    for (const [file, text] of source) {
+      for (const line of text.split('\n').filter((candidate) => /\bgit\b.*\bpush\b/.test(candidate) && !candidate.trim().startsWith('#'))) {
+        expect(line, `${file}: ${line.trim()}`).toContain('core.hooksPath=/dev/null')
+      }
+    }
   })
 
   it('bounds npm network retries without adding a test retry loop', () => {
@@ -875,16 +1025,17 @@ describe('release workflow policy', () => {
     const verify = (ci.verify?.steps ?? []) as Array<Step & { if?: unknown }>
     const gate = verify.find((step) => step.name === 'Check every feed offers a changed Node floor')
     expect(gate, 'Verify checks the feeds when the floor changes').toBeDefined()
-    // Push and pull request both report this required name for one commit, so
-    // both must reach the same verdict: no event may skip the step.
-    expect(gate?.if, 'the feed gate runs on every event').toBeUndefined()
-    expect(gate?.env?.BASE_REF).toBe('${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}')
+    // No event may skip the step, and an earlier failure in Verify must not hide it.
+    expect(gate?.if, 'the feed gate runs on every event').toBe('${{ !cancelled() }}')
+    expect(gate?.env?.BASE_REF, 'the job-level DIFF_BASE decides the comparison').toBeUndefined()
     expect(String(gate?.run)).toContain('node scripts/check-node-feeds.ts')
     expect(String(gate?.run)).toContain('engines.node')
     expect(gate?.env?.GITHUB_TOKEN).toBe('${{ github.token }}')
 
     const packaging = ci.packaging as (Job & { needs?: unknown }) | undefined
     expect(packaging?.needs, 'Packaging waits on the declared-floor lanes').toContain('test-matrix')
+    expect(packaging?.needs, 'Packaging waits on the Windows lanes, and on their completeness checks').toEqual(
+      expect.arrayContaining(['test-windows', 'test-windows-result']))
   })
 
   it('skips the networked Node-feed verifier for an unchanged floor and propagates failures for a changed floor', () => {
@@ -1190,5 +1341,311 @@ describe('release workflow policy', () => {
     expect(commit?.run).toContain('core.hooksPath=/dev/null')
     expect(authenticatedPush?.run).toContain('unset RELEASE_TOKEN')
     expect(authenticatedPush?.run).toContain('core.hooksPath=/dev/null')
+  })
+
+  /**
+   * One run per commit. A branch push used to start a full run beside its pull
+   * request's, doubling every job against an account limit of 20 jobs and 5
+   * Macs at a time, with both copies reporting under the same required names.
+   */
+  it('runs CI once per commit: for pull requests, for pushes to main, and on demand', () => {
+    const ci = workflows.get('ci.yml') as Workflow & { on?: Record<string, unknown>; concurrency?: Record<string, unknown> }
+    expect(Object.keys(ci.on ?? {}).sort()).toEqual(['pull_request', 'push', 'workflow_dispatch'])
+    expect(ci.on?.pull_request).toBeNull()
+    expect(ci.on?.push).toEqual({ branches: ['main'] })
+    // A newer commit cancels a pull request's older run; a push to main, which
+    // saves what pull requests read, gets a group of its own, since GitHub
+    // keeps one pending run per group and a third push replaced the second's.
+    expect(ci.concurrency).toEqual({
+      group: "ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}",
+      'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
+    })
+    // Nothing in the workflow tells a push copy apart from a pull request copy any more.
+    expect(source.get('ci.yml')).not.toContain('[push]')
+  })
+
+  /**
+   * setup-node caches by itself whenever package.json names a packageManager,
+   * including in jobs that never install. Those finished first and saved an
+   * empty cache under the key every later job restored; a saved key is never
+   * replaced, so macOS jobs restored 1 KB and downloaded everything. The shared
+   * install action owns npm's cache instead: restored everywhere, saved only
+   * after a successful `npm ci`, and only on pushes to main.
+   */
+  it('leaves npm caching to the shared install action, which saves only on main', () => {
+    for (const [file, workflow] of workflows) {
+      for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+        for (const step of (job.steps ?? []) as SetupStep[]) {
+          if (!String(step.uses ?? '').startsWith('actions/setup-node@')) continue
+          expect(step.with?.['package-manager-cache'], `${file}: ${name} turns setup-node's caching off`).toBe(false)
+          expect(step.with?.cache, `${file}: ${name} caches nothing through setup-node`).toBeUndefined()
+        }
+      }
+    }
+    const action = yaml.load(readFileSync(join(repo, '.github/actions/npm-ci/action.yml'), 'utf8')) as {
+      runs: { steps: Array<Step & { id?: string }> }
+    }
+    const steps = action.runs.steps
+    const index = (predicate: (step: Step & { id?: string }) => boolean) => steps.findIndex(predicate)
+    const restore = index((step) => String(step.uses ?? '').startsWith('actions/cache/restore@'))
+    const install = index((step) => step.run === 'npm ci')
+    const save = index((step) => String(step.uses ?? '').startsWith('actions/cache/save@'))
+    expect(restore).toBeGreaterThan(-1)
+    expect(install).toBeGreaterThan(restore)
+    expect(save, 'saves only what a successful npm ci downloaded').toBeGreaterThan(install)
+    expect(steps[save]?.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'")
+    expect(steps[restore]?.with?.['restore-keys'], 'a changed lockfile still starts from main\'s newest cache').toBe('npm-${{ runner.os }}-${{ runner.arch }}-')
+    expect(steps[save]?.with?.key).toBe(steps[restore]?.with?.key)
+    for (const file of ['release.yml', 'channel-republish.yml', 'container-republish.yml']) {
+      expect(source.get(file), `${file} restores no cache`).not.toMatch(/actions\/cache|\.\/\.github\/actions\/npm-ci/)
+    }
+  })
+
+  /**
+   * A commit that cannot install would otherwise start every Mac and Windows
+   * job only for each to fail at its own install; the install check runs first
+   * and those jobs wait for it. Derived from where each job runs, so a new Mac
+   * or Windows job is held to it the moment it is added.
+   */
+  it('makes every Mac and Windows job wait for the install check', () => {
+    const jobs = workflows.get('ci.yml')!.jobs!
+    const usesMacOrWindows = (job: Job) => /macos|windows/.test(JSON.stringify([job['runs-on'], (job as { strategy?: unknown }).strategy]))
+    const held = Object.entries(jobs).filter(([, job]) => usesMacOrWindows(job))
+    expect(held.map(([name]) => name).sort()).toEqual(
+      ['binary', 'channel-windows', 'smoke-install', 'test-matrix', 'test-windows', 'windows-gate'])
+    for (const [name, job] of held) {
+      const needs = (job as { needs?: string | string[] }).needs
+      expect([needs].flat(), `${name} waits for the install check`).toContain('install-check')
+    }
+    expect((jobs['install-check'] as { needs?: unknown }).needs).toBeUndefined()
+  })
+
+  /**
+   * Each Windows lane runs on two machines, split by the file times main
+   * recorded; the result job fails unless both halves passed and together ran
+   * every file. Its gate step shares Packaging's name, which is how the
+   * re-run workflow tells a consequence from a finding.
+   */
+  it('splits each Windows lane by recorded times and proves the halves ran every file', () => {
+    const jobs = workflows.get('ci.yml')!.jobs!
+    const shards = (jobs['test-windows'] as Job & { strategy: { matrix: { shard: number[] } } }).strategy.matrix.shard
+    const steps = jobs['test-windows']!.steps ?? []
+    // The shards read the run's one snapshot, never the cache: a cache entry
+    // saved on Linux never restores on Windows, and two separate restores can
+    // pick different snapshots, so the halves would split differently.
+    expect(steps.some((step) => String(step.uses ?? '').startsWith('actions/cache/')), 'no cache on the Windows shards').toBe(false)
+    const timings = steps.find((step) => step.name === "Download this run's test timings")
+    expect(timings?.uses).toBe('./.github/actions/download-artifact')
+    expect(timings?.with).toEqual({ name: 'test-timings-windows', path: '${{ runner.temp }}/test-timings' })
+    const test = steps.find((step) => step.name === 'Test')
+    expect(test?.env).toMatchObject({
+      SHARD: '${{ matrix.shard }}',
+      VITEST_SHARD_DIR: '${{ runner.temp }}/test-shard',
+      VITEST_SHARD_TIMINGS: '${{ runner.temp }}/test-timings/windows-${{ matrix.lane }}.json',
+    })
+    expect(test?.run).toBe(`npm run test -- --shard="\${SHARD}/${shards.length}"`)
+    const upload = steps.find((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@'))
+    expect(upload?.if, 'a failed or timed-out shard still reports what it planned').toBe('always()')
+    expect(upload?.with?.name).toBe('test-windows-${{ matrix.lane }}-shard-${{ matrix.shard }}')
+
+    // install-check restores each lane's times on Linux, from the very path
+    // the result job saves them to on Linux, and hands them on.
+    const install = jobs['install-check']!.steps ?? []
+    const saved = (jobs['test-windows-result']!.steps ?? []).find((step) => step.name === 'Save the file timings')
+    expect(saved?.with).toEqual({
+      path: '${{ runner.temp }}/test-timings/windows-${{ matrix.lane }}.json',
+      key: 'test-timings-windows-${{ matrix.lane }}-${{ github.run_id }}',
+    })
+    for (const lane of ['toolchain', 'declared']) {
+      const restore = install.find((step) => String(step.uses ?? '').startsWith('actions/cache/restore@') && String(step.with?.key).includes(`-${lane}-`))
+      expect(restore?.with, lane).toEqual({
+        path: `\${{ runner.temp }}/test-timings/windows-${lane}.json`,
+        key: `test-timings-windows-${lane}-\${{ github.run_id }}`,
+        'restore-keys': `test-timings-windows-${lane}-`,
+      })
+    }
+    expect(jobs['test-windows-result']!['runs-on'], 'saved on the OS install-check restores on').toBe(jobs['install-check']!['runs-on'])
+    const handOff = install.find((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@'))
+    expect(handOff?.with).toMatchObject({ name: 'test-timings-windows', path: '${{ runner.temp }}/test-timings/', 'if-no-files-found': 'error', overwrite: true })
+
+    const result = jobs['test-windows-result']!
+    expect((result as { needs?: unknown }).needs).toBe('test-windows')
+    expect(result.if).toBe('always()')
+    const resultSteps = result.steps ?? []
+    const download = resultSteps.find((step) => step.name === 'Download the shard reports')
+    expect(download?.with?.pattern).toBe('test-windows-${{ matrix.lane }}-shard-*')
+    expect(download?.['continue-on-error'], 'a missing shard is reported by the next step, by name').toBe(true)
+    const require = resultSteps.find((step) => step.name === GATE_STEP)
+    expect(require?.run).toBe(`node scripts/test-shards.ts require --dir "\${RUNNER_TEMP}/shards" --count ${shards.length}`)
+    const cover = resultSteps.find((step) => step.name === 'Check the shards together ran every test file')
+    expect(cover?.run).toBe(`node scripts/test-shards.ts cover --dir "\${RUNNER_TEMP}/shards" --count ${shards.length}`)
+    expect(cover?.if, 'coverage is judged only once every shard reported').toBe("${{ !cancelled() && steps.require.outcome == 'success' }}")
+    const record = resultSteps.find((step) => step.name === 'Record the file timings for the next run')
+    expect(record?.if, 'only main records the timings everyone splits by').toBe("github.event_name == 'push' && github.ref == 'refs/heads/main' && success()")
+    expect((record as Step & { 'continue-on-error'?: boolean })['continue-on-error'], 'failing to record times costs balance, not the required check').toBe(true)
+    expect(record?.run).toBe('node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings/windows-${LANE}.json"')
+    expect(record?.env).toEqual({ LANE: '${{ matrix.lane }}' })
+    expect(jobs.packaging!.steps!.some((step) => step.name === GATE_STEP)).toBe(true)
+  })
+
+  /**
+   * Chocolatey and Scoop share one Windows job now. A Chocolatey check that
+   * fails after installing never reaches its own uninstall, and its shim on
+   * PATH would answer the Scoop check's `looptroop` instead.
+   */
+  it('clears a failed Chocolatey install before the Scoop check in the same job', () => {
+    const steps = workflows.get('ci.yml')!.jobs!['channel-windows']!.steps ?? []
+    const index = (name: string) => steps.findIndex((step) => step.name === name)
+    const choco = index('Install it with Chocolatey, run it, and uninstall it again')
+    const cleanup = index('Remove what a failed Chocolatey check left installed')
+    expect(choco).toBeGreaterThan(-1)
+    expect(cleanup).toBe(choco + 1)
+    expect(index('Install Scoop')).toBeGreaterThan(cleanup)
+    expect((steps[choco] as Step & { id?: string }).id).toBe('choco')
+    expect(steps[cleanup]!.if).toBe("${{ !cancelled() && steps.choco.outcome == 'failure' }}")
+  })
+
+  /**
+   * GitHub's macOS shortage cancels jobs that never got a machine, which turns
+   * a run red for nothing. This re-runs a run's failed jobs, at most twice, when
+   * every failure is either such a job or a gate repeating one; anything that
+   * ran and failed is a finding and is left alone.
+   */
+  it('re-runs only jobs that never got a machine, at most twice, holding nothing but actions: write', () => {
+    const workflow = workflows.get('rerun-unacquired.yml') as (Workflow & { on?: Record<string, unknown> }) | undefined
+    if (!workflow) throw new Error('rerun-unacquired.yml missing')
+    expect(workflow.on).toEqual({ workflow_run: { workflows: ['CI'], types: ['completed'] } })
+    expect(workflow.permissions).toEqual({})
+    const job = workflow.jobs!.rerun!
+    expect(job.if).toBe("github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3")
+    expect(job.permissions).toEqual({ actions: 'write' })
+    expect((job.steps ?? []).filter((step) => step.uses !== undefined), 'checks nothing out, runs nothing from the run').toEqual([])
+    expect(JSON.stringify(job)).not.toContain('secrets.')
+    const step = job.steps![0]!
+    expect(step.env?.GATE_STEP).toBe(GATE_STEP)
+
+    // Each API call answers with what its --jq would have extracted.
+    const stub = [
+      'gh() {',
+      '  if [ "$1" != api ]; then printf "%s\\n" "$*" >> "$GH_CALLS"; return; fi',
+      '  case "$*" in',
+      '    *"/attempts/"*) printf "%s" "$FIXTURE" ;;',
+      '    *"/workflows/"*) printf "%s" "$NEWEST" ;;',
+      '    *) printf "%s" "$CURRENT_ATTEMPT" ;;',
+      '  esac',
+      '}',
+      '',
+    ].join('\n')
+    const execute = (jobsInRun: unknown[], state: { newest?: string; currentAttempt?: string } = {}) => {
+      const directory = mkdtempSync(join(tmpdir(), 'looptroop-rerun-'))
+      const calls = join(directory, 'calls')
+      try {
+        const result = spawnSync('bash', ['-euo', 'pipefail', '-c', stub + String(step.run)], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            FIXTURE: JSON.stringify([{ jobs: jobsInRun }]),
+            NEWEST: state.newest ?? '42',
+            CURRENT_ATTEMPT: state.currentAttempt ?? '1',
+            GH_CALLS: calls,
+            GH_REPO: 'looptroop-ai/LoopTroop',
+            RUN_ID: '42',
+            ATTEMPT: '1',
+            WORKFLOW_ID: '7',
+            HEAD_BRANCH: 'topic',
+            HEAD_REPO: 'looptroop-ai/LoopTroop',
+            EVENT: 'pull_request',
+            GATE_STEP,
+            NOT_GATED: String(step.env?.NOT_GATED),
+          },
+        })
+        expect(result.status, result.stderr).toBe(0)
+        return { output: result.stdout, calls: existsSync(calls) ? readFileSync(calls, 'utf8') : '' }
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    }
+    const unacquired = { name: 'Test (macos-latest, toolchain floor)', conclusion: 'cancelled', runner_name: '', steps: [] }
+    const gate = { name: 'Packaging', conclusion: 'failure', runner_name: 'runner-1', steps: [{ name: GATE_STEP, conclusion: 'failure' }] }
+    const finding = { name: 'Verify (ubuntu, toolchain floor)', conclusion: 'failure', runner_name: 'runner-2', steps: [{ name: 'Lint', conclusion: 'failure' }] }
+    const timedOut = { name: 'Test shard 1/2 (windows-latest, toolchain floor)', conclusion: 'cancelled', runner_name: 'runner-3', steps: [{ name: 'Test', conclusion: 'cancelled' }] }
+    const passed = { name: 'Bundle (build)', conclusion: 'success', runner_name: 'runner-4', steps: [{ name: 'Build', conclusion: 'success' }] }
+
+    const lost = execute([unacquired, gate, passed])
+    expect(lost.calls).toBe('run rerun 42 --failed\n')
+    expect(lost.output).toContain('No runner ever picked up: Test (macos-latest, toolchain floor).')
+    const mixed = execute([unacquired, gate, finding])
+    expect(mixed.calls, 'a real failure in the same run is never re-run').toBe('')
+    expect(mixed.output).toContain('left as it is: Verify (ubuntu, toolchain floor); never got a machine: Test (macos-latest, toolchain floor).')
+    expect(execute([unacquired, timedOut]).calls, 'a timeout is a finding').toBe('')
+    const ran = execute([finding, gate])
+    expect(ran.calls).toBe('')
+    expect(ran.output, 'an ordinary failure is named as one').toContain('Jobs failed on their own, so run 42 is left as it is: Verify (ubuntu, toolchain floor).')
+
+    // An advisory job's failure decides no merge, so it does not stop a re-run;
+    // the next-Node lane reports `failure` although it continues on error.
+    const advisory = (name: string) => ({ name, conclusion: 'failure', runner_name: 'runner-5', steps: [{ name: 'Test', conclusion: 'failure' }] })
+    expect(execute([unacquired, gate, advisory('Early warning (ubuntu, next Node major)'), advisory('Codecov')]).calls).toBe('run rerun 42 --failed\n')
+    const onlyAdvisory = execute([advisory('Codecov')])
+    expect(onlyAdvisory.calls).toBe('')
+    expect(onlyAdvisory.output).toContain('nothing to re-run')
+    // A startup failure with no runner and no steps is the same no-code-ran kind.
+    expect(execute([{ ...unacquired, conclusion: 'startup_failure' }, gate]).calls).toBe('run rerun 42 --failed\n')
+    // The advisory names are ci.yml's own display names.
+    const ci = workflows.get('ci.yml')!.jobs! as Record<string, Job & { name?: string }>
+    expect(JSON.parse(String(step.env?.NOT_GATED))).toEqual([ci.codecov!.name, ci['early-warning']!.name])
+
+    const replaced = execute([unacquired, gate], { newest: '43' })
+    expect(replaced.calls, 'a newer run for the branch would be cancelled by the re-run').toBe('')
+    expect(replaced.output).toContain('replaced by run 43')
+    const moved = execute([unacquired, gate], { currentAttempt: '2' })
+    expect(moved.calls, 'a later attempt decides for itself').toBe('')
+    expect(moved.output).toContain('already at attempt 2')
+    expect(step.env?.HEAD_BRANCH, 'a fork-chosen name reaches the script only through the environment').toBe('${{ github.event.workflow_run.head_branch }}')
+    expect(String(step.run)).not.toContain('${{')
+    // "Newest" among this repository's runs: a fork can push a branch of the same name.
+    expect(step.env?.HEAD_REPO).toBe('${{ github.event.workflow_run.head_repository.full_name }}')
+    expect(String(step.run)).toContain('select(.head_repository.full_name == env.HEAD_REPO)')
+    // A re-run someone else started meanwhile is refused; that must not turn this run red.
+    const refused = spawnSync('bash', ['-euo', 'pipefail', '-c', `${stub.replace('if [ "$1" != api ]; then printf "%s\\n" "$*" >> "$GH_CALLS"; return; fi', 'if [ "$1" != api ]; then return 1; fi')}${String(step.run)}`], {
+      encoding: 'utf8',
+      env: {
+        ...process.env, FIXTURE: JSON.stringify([{ jobs: [unacquired, gate] }]), NEWEST: '42', CURRENT_ATTEMPT: '1',
+        GH_REPO: 'looptroop-ai/LoopTroop', RUN_ID: '42', ATTEMPT: '1', WORKFLOW_ID: '7', HEAD_BRANCH: 'topic', HEAD_REPO: 'looptroop-ai/LoopTroop',
+        EVENT: 'pull_request', GATE_STEP, NOT_GATED: String(step.env?.NOT_GATED),
+      },
+    })
+    expect(refused.status, refused.stderr).toBe(0)
+    expect(refused.stdout).toContain('::warning::GitHub refused to re-run run 42')
+  })
+
+  /**
+   * Renovate used to rebase every open pull request of its own after every
+   * merge to main, and every rebase was a full CI run, mostly for pull requests
+   * that would be rebased again before anyone merged them; it made up two
+   * thirds of all CI runs. Now it rebases only on a conflict, and whoever
+   * merges ticks the rebase box first, because main requires an up-to-date
+   * branch.
+   */
+  it('lets Renovate rebase only on conflict', () => {
+    const renovate = JSON.parse(readFileSync(join(repo, '.github/renovate.json'), 'utf8')) as { rebaseWhen?: string }
+    expect(renovate.rebaseWhen).toBe('conflicted')
+    expect(readFileSync(join(repo, '.github/CONTRIBUTING.md'), 'utf8')).toContain('tick the rebase box')
+  })
+
+  /**
+   * The workflow security audit fails Verify on any finding it is not told to
+   * excuse, so what it is told to excuse is a reviewed list, here, kept short.
+   */
+  it('excuses only reviewed zizmor rules, and only the ones that read other repositories\' state', () => {
+    const config = yaml.load(readFileSync(join(repo, '.github/zizmor.yml'), 'utf8')) as { rules: Record<string, { disable?: boolean }> }
+    expect(Object.entries(config.rules).map(([rule, settings]) => [rule, settings.disable])).toEqual([
+      ['self-repository', true],
+      ['ref-version-mismatch', true],
+      ['known-vulnerable-actions', true],
+      ['stale-action-refs', true],
+    ])
+    const ignores = [...source].flatMap(([file, text]) => [...text.matchAll(/zizmor: ignore\[([a-z-]+)\]/g)].map((match) => `${file}: ${match[1]}`))
+    expect(ignores.sort()).toEqual(['release.yml: artipacked', 'rerun-unacquired.yml: dangerous-triggers'])
   })
 })

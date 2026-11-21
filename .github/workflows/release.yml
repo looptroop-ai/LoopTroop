@@ -111,6 +111,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -259,7 +260,7 @@ jobs:
           # 26.9.0. The release/package jobs keep the `.nvmrc` toolchain pin,
           # which is above the `engines.node` floor users are held to.
           node-version: 26.9.0
-          cache: npm
+          package-manager-cache: false
 
       - name: Pin npm to the declared version
         run: node scripts/pin-npm.mjs
@@ -478,6 +479,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -735,6 +737,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -798,6 +801,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -863,6 +867,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1077,6 +1082,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Check the bundled npm client
         run: npm --version
@@ -1299,6 +1305,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1360,7 +1367,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
+      # Keeps the token on purpose: this job's one write is `git push` of the
+      # release tag, with exactly this job's contents: write. It uploads no
+      # artifact, so the credential cannot leave through one.
+      - name: Checkout # zizmor: ignore[artipacked]
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
@@ -1422,7 +1432,9 @@ jobs:
                 -c user.email='release@looptroop.ovh' \
                 tag -a "v${VERSION}" "${TARGET}" \
                 -m "LoopTroop v${VERSION}"
-            git push origin "refs/tags/v${VERSION}"
+            # No repository hook runs in the one job holding a write token, as
+            # in every other workflow that pushes.
+            git -c core.hooksPath=/dev/null push origin "refs/tags/v${VERSION}"
           fi
 
       # --verify-tag refuses to publish if the tag is missing, rather than
@@ -1495,6 +1507,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -1767,6 +1780,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # `merge-multiple` because the two legs uploaded one file each under
       # different artefact names; this flattens both into the working directory.
@@ -1939,6 +1953,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # Read with no credentials at all, which is the point: a private Docker Hub
       # repository is inspectable by the account that pushed to it and by nobody
@@ -2052,6 +2067,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # Read, spliced, written back. Between the two markers is the script's
       # territory and everything outside them is left exactly as the changelog
@@ -2149,6 +2165,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Prepare an isolated artifact download
         id: artifact_raw_1
@@ -2248,6 +2265,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Prepare an isolated artifact download
         id: artifact_raw_1
@@ -2320,6 +2338,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Prepare an isolated artifact download
         id: artifact_raw_1
@@ -2440,6 +2459,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Prepare an isolated artifact download
         id: artifact_raw_1
@@ -2560,6 +2580,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Prepare an isolated artifact download
         id: artifact_raw_1

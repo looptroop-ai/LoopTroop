@@ -37,6 +37,12 @@ import { handleBeadsExpansion, handleCoverageVerification, performCoverageExtraF
 
 const repoManager = createTestRepoManager('beads-refine')
 
+// At file level: both suites copy this fixture, and a shuffled run can order
+// either one last.
+afterAll(() => {
+  repoManager.cleanup()
+})
+
 function buildPrdContent() {
   return [
     'schema_version: 1',
@@ -1196,7 +1202,6 @@ describe('handleBeadsExpansion', () => {
 
   afterAll(() => {
     resetTestDb()
-    repoManager.cleanup()
   })
 
   it('emits EXPANDED and persists beads_expanded under EXPANDING_BEADS on success', async () => {

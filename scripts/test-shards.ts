@@ -72,6 +72,25 @@ export function toTestFile(root: string, absolutePath: string): TestFile {
   return relative(root, absolutePath).split(sep).join('/')
 }
 
+/** The phases of one file's run, as Vitest's `TestModule.diagnostic()` reports them, in milliseconds. */
+export interface FileDiagnostic {
+  environmentSetupDuration: number
+  prepareDuration: number
+  setupDuration: number
+  collectDuration: number
+  duration: number
+}
+
+/**
+ * A file's whole time on its worker. `duration` alone is only its tests and
+ * hooks; the environment, the test harness, the setup files and importing the
+ * file itself are separate, and on Windows they are most of the cost.
+ */
+export function fileDuration(diagnostic: FileDiagnostic): number {
+  return diagnostic.environmentSetupDuration + diagnostic.prepareDuration + diagnostic.setupDuration
+    + diagnostic.collectDuration + diagnostic.duration
+}
+
 /** Code-unit order, which every machine shares; `localeCompare` follows the runner's locale, and both shards must agree. */
 export const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 
@@ -80,7 +99,9 @@ export const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b 
  * shard, then the next. Ties break on the path and the lower shard index, so
  * every machine computes the same split from the same inputs. A file with no
  * recorded time counts as the median recorded file, and as 1 ms when nothing
- * is recorded at all, which degrades to an even split by count.
+ * is recorded at all, which degrades to an even split by count. Every file
+ * weighs at least 1 ms: a 0 would leave the least loaded shard least loaded,
+ * and every zero-time file would pile onto it.
  */
 export function assignShards(files: readonly TestFile[], timings: Timings, count: number): TestFile[][] {
   if (!Number.isInteger(count) || count < 1) throw new Error(`Shard count must be a positive integer, not ${count}.`)
@@ -90,7 +111,7 @@ export function assignShards(files: readonly TestFile[], timings: Timings, count
   const fallback = known.length === 0 ? 1 : median(known)
   const weighted = unique.map((file) => {
     const recorded = timings[file]
-    return { file, weight: usable(recorded) ? recorded : fallback }
+    return { file, weight: Math.max(1, usable(recorded) ? recorded : fallback) }
   }).sort((a, b) => b.weight - a.weight || byCodeUnit(a.file, b.file))
   const shards = Array.from({ length: count }, () => ({ total: 0, files: [] as TestFile[] }))
   for (const { file, weight } of weighted) {
@@ -121,10 +142,17 @@ export function readTimings(path: string | undefined): Timings {
   }
 }
 
-/** Each downloaded artifact directory that holds a plan, keyed by the shard index the plan states. */
+/**
+ * Each downloaded artifact directory that holds a plan, keyed by the shard index
+ * the plan states. A pattern download that matches a single artifact lands
+ * directly in the directory instead of in a folder of its own, so a plan there
+ * counts too: that is the case where the other shard never ran.
+ */
 export function readShardResults(directory: string): ShardResult[] {
   if (!existsSync(directory)) return []
   const results: ShardResult[] = []
+  const flat = readJson<ShardPlan>(join(directory, SHARD_PLAN_FILE))
+  if (flat) results.push({ index: flat.index, plan: flat, report: readJson<ShardReport>(join(directory, SHARD_REPORT_FILE)) })
   for (const entry of readdirSync(directory).sort(byCodeUnit)) {
     const path = join(directory, entry)
     if (!statSync(path).isDirectory()) continue
@@ -167,6 +195,7 @@ export function checkShardsPassed(results: readonly ShardResult[], count: number
     if (report.unhandledErrors > 0) problems.push(`Shard ${index}/${count} had ${report.unhandledErrors} unhandled error(s).`)
     for (const file of report.files) {
       if (file.state === 'failed') problems.push(`Shard ${index}/${count}: ${file.file} failed.`)
+      else if (file.state !== 'passed' && file.state !== 'skipped') problems.push(`Shard ${index}/${count}: ${file.file} never finished (${file.state}).`)
     }
   }
   return problems
@@ -179,7 +208,13 @@ export function checkShardsPassed(results: readonly ShardResult[], count: number
 export function checkShardCoverage(results: readonly ShardResult[], count: number): string[] {
   const problems: string[] = []
   const plans = results.map((result) => result.plan).filter((plan): plan is ShardPlan => plan !== undefined)
-  if (plans.length !== count) return [`Expected ${count} shard plans, found ${plans.length}.`]
+  // Exactly one plan per shard 1..count, so the check also holds when run on its own, without `require` first.
+  const indices = plans.map((plan) => plan.index).sort((a, b) => a - b)
+  if (indices.length !== count || indices.some((index, position) => index !== position + 1)) {
+    return [`Expected one plan for each shard 1 to ${count}, found ${indices.length === 0 ? 'none' : indices.join(', ')}.`]
+  }
+  for (const plan of plans) if (plan.count !== count) problems.push(`Shard ${plan.index} was planned as one of ${plan.count} shards.`)
+  for (const { index, plan, report } of results) if (plan && !report) problems.push(`Shard ${index} wrote a plan but no report.`)
   const all = plans[0]!.all
   if (all.length === 0) problems.push('The shards collected no test files at all.')
   for (const plan of plans) {

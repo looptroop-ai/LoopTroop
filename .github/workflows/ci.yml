@@ -20,9 +20,12 @@ on:
 permissions:
   contents: read
 
+# A newer commit cancels a pull request's older run, which it supersedes. A
+# push to main is never cancelled: each one saves the npm cache, the Windows
+# test timings and Codecov's base, and is the record of that commit.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Silences npm's funding/update chatter so failures stand out in logs.
@@ -40,8 +43,9 @@ jobs:
   # `npm ci` — a broken dependency update did exactly that twelve times in one
   # week — and Renovate's branches, which fail on stale third-party notices
   # until a workflow commits regenerated ones, would hold Mac and Windows
-  # machines for a run that is about to be replaced. Linux jobs start straight
-  # away; they are the cheap ones.
+  # machines for a run that is about to be replaced. Other Linux jobs start
+  # straight away; they are the cheap ones. The test matrix waits as a whole,
+  # its Ubuntu lanes too, since `needs` cannot differ between matrix legs.
   install-check:
     name: Install check (ubuntu)
     runs-on: ubuntu-latest
@@ -74,6 +78,49 @@ jobs:
       - name: Verify third-party notices are current
         run: npm run licenses:check
 
+      # One snapshot per run of the per-file times main recorded for the
+      # Windows test lanes, handed to all four halves as an artifact. Both
+      # halves of a lane, and a re-run of either, then split the same way even
+      # when main records new times in between; and the cache stays on Linux,
+      # because an entry saved on Linux never restores on Windows (the paths
+      # and archive formats differ, and so does the cache version). A lane
+      # with nothing recorded gets {}: the split falls back to file count.
+      - name: Restore the toolchain lane's Windows test timings
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/test-timings/windows-toolchain.json
+          key: test-timings-windows-toolchain-${{ github.run_id }}
+          restore-keys: test-timings-windows-toolchain-
+
+      - name: Restore the declared lane's Windows test timings
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/test-timings/windows-declared.json
+          key: test-timings-windows-declared-${{ github.run_id }}
+          restore-keys: test-timings-windows-declared-
+
+      - name: Fill in a lane with no recorded times
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/test-timings"
+          for lane in toolchain declared; do
+            file="${RUNNER_TEMP}/test-timings/windows-${lane}.json"
+            if [ ! -f "${file}" ]; then
+              echo '{}' > "${file}"
+              echo "No recorded times for the ${lane} lane; it splits by file count this run."
+            fi
+          done
+
+      - name: Hand the timings to the Windows lanes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-timings-windows
+          path: ${{ runner.temp }}/test-timings/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
   verify:
     # Named for the lane's purpose, not for the version it happens to pin. This
     # name is what branch protection matches on, so putting the toolchain
@@ -93,6 +140,13 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # What this run's changes are compared with: a pull request's base; for a
+      # push, the commit it replaced, since by now the default branch is the
+      # pushed commit and comparing it with itself would check nothing; for a
+      # manual run, the default branch. A branch's first push has no previous
+      # commit (all zeros) and compares with the default branch too.
+      DIFF_BASE: ${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.event.repository.default_branch }}
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
@@ -168,9 +222,9 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-scopes: runtime,development,unknown
-          # Push and manual runs must enforce the same dependency gate as PRs.
-          # Use exact PR commits, or the default branch and head for other events.
-          base-ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          # Push and manual runs enforce the same dependency gate as pull
+          # requests, against the base the job's DIFF_BASE describes.
+          base-ref: ${{ env.DIFF_BASE }}
           head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -248,19 +302,19 @@ jobs:
       # someone added it to the branch ruleset. Every other pull request skips
       # the network entirely, so no unrelated change waits on a third party.
       #
-      # A pull request compares with its base, a push to main or a manual run
-      # with the default branch. No event skips the step.
+      # Compares with the job's DIFF_BASE: a pull request's base, the commit a
+      # push replaced, or the default branch for a manual run. No event skips
+      # the step.
       - name: Check every feed offers a changed Node floor
         if: ${{ !cancelled() }}
         shell: bash
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
           # Read-only; the winget listing comes from GitHub's API, which
           # rate-limits anonymous callers by IP.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin "${BASE_REF}"
+          git fetch --no-tags --depth=1 origin "${DIFF_BASE}"
           before=$(git show FETCH_HEAD:package.json | node -p "JSON.parse(require('node:fs').readFileSync(0, 'utf8')).engines.node")
           after=$(node -p "require('./package.json').engines.node")
           if [ "${before}" = "${after}" ]; then
@@ -468,27 +522,26 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/npm-ci
 
-      # Written by this lane's result job on every push to main. A miss only
-      # costs balance: the split falls back to an even split by file count.
-      - name: Restore the test timings main recorded
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The snapshot install-check took for this run (see there), so the two
+      # halves of the lane split the same way.
+      - name: Download this run's test timings
+        uses: ./.github/actions/download-artifact
         with:
-          path: ${{ runner.temp }}/test-timings.json
-          key: test-timings-windows-${{ matrix.lane }}-${{ github.run_id }}
-          restore-keys: test-timings-windows-${{ matrix.lane }}-
+          name: test-timings-windows
+          path: ${{ runner.temp }}/test-timings
 
       - name: Test
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}
           VITEST_SHARD_DIR: ${{ runner.temp }}/test-shard
-          VITEST_SHARD_TIMINGS: ${{ runner.temp }}/test-timings.json
+          VITEST_SHARD_TIMINGS: ${{ runner.temp }}/test-timings/windows-${{ matrix.lane }}.json
         run: npm run test -- --shard="${SHARD}/2"
 
-      # Whatever happened, so the result job can tell a failed shard from one
-      # that never ran.
+      # Whatever happened, a timeout included, so the result job can tell a
+      # shard that failed or stopped from one that never ran.
       - name: Upload the shard's plan and report
-        if: ${{ !cancelled() }}
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-windows-${{ matrix.lane }}-shard-${{ matrix.shard }}
@@ -554,19 +607,28 @@ jobs:
       - name: Record the file timings for the next run
         id: timings
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && success()
-        run: node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings.json"
+        env:
+          LANE: ${{ matrix.lane }}
+        run: node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings/windows-${LANE}.json"
 
+      # Saved on Linux at the path install-check restores it from: a cache
+      # entry only restores on the same OS and path it was saved with.
       - name: Save the file timings
         if: steps.timings.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/test-timings.json
+          path: ${{ runner.temp }}/test-timings/windows-${{ matrix.lane }}.json
           key: test-timings-windows-${{ matrix.lane }}-${{ github.run_id }}
 
+  # Waits for the whole test matrix but not for its success: only the Ubuntu
+  # toolchain lane makes the coverage report, and a Mac lane that failed or
+  # never got a machine must not keep that report from Codecov. Without a
+  # report (the coverage lane itself failed, and says so) nothing is uploaded.
   codecov:
     name: Codecov
     runs-on: ubuntu-latest
     needs: test-matrix
+    if: ${{ !cancelled() }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -589,6 +651,8 @@ jobs:
           PY
 
       - name: Download coverage report
+        id: coverage
+        continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-report
@@ -598,6 +662,7 @@ jobs:
           digest-mismatch: error
 
       - name: Extract verified artifacts without repository code
+        if: steps.coverage.outcome == 'success'
         shell: bash
         env:
           ARTIFACT_RAW: ${{ steps.artifact_raw_1.outputs.path }}
@@ -653,6 +718,7 @@ jobs:
           PY
 
       - name: Upload coverage to Codecov
+        if: steps.coverage.outcome == 'success'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           use_oidc: true
@@ -678,7 +744,7 @@ jobs:
         with:
           egress-policy: audit
 
-      # Full history for the two-commit diff, without the file contents.
+      # Full history for the merge-base diff, without the file contents.
       - name: Checkout the pull request
         if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -694,13 +760,16 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # Three dots: only what the pull request itself changed. Two dots also
+        # counted every change main gained since the branch was cut, so a
+        # branch behind main ran the gate for files it never touched.
         run: |
           set -euo pipefail
           affected=false
-          changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"
+          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
           while IFS= read -r path; do
             case "${path}" in
-              .github/workflows/*|package.json|package-lock.json|scripts/install.sh|scripts/install.ps1|\
+              .github/workflows/*|.github/actions/*|package.json|package-lock.json|scripts/install.sh|scripts/install.ps1|\
               scripts/installer-core.mjs|scripts/installer-core.d.mts|scripts/smoke-installer.mjs|\
               scripts/smoke-lib.mjs|scripts/smoke-lib.d.mts|scripts/smoke-published.mjs|scripts/smoke-published.d.mts|scripts/tool-path.ts|\
               server/lib/executablePath.ts|server/lib/__tests__/executablePath.test.ts|\
@@ -1078,9 +1147,18 @@ jobs:
           --out "${RUNNER_TEMP}/choco"
 
       - name: Install it with Chocolatey, run it, and uninstall it again
+        id: choco
         if: ${{ !cancelled() && steps.choco-pack.outcome == 'success' }}
         shell: bash
         run: node scripts/smoke-choco.ts --nupkg "$(ls "${RUNNER_TEMP}"/choco/*.nupkg)"
+
+      # A Chocolatey check that failed after installing never reached its own
+      # uninstall, and its shim would stay on PATH: the Scoop check below would
+      # then find Chocolatey's `looptroop` and fail for a reason not its own.
+      - name: Remove what a failed Chocolatey check left installed
+        if: ${{ !cancelled() && steps.choco.outcome == 'failure' }}
+        shell: bash
+        run: choco uninstall looptroop --yes --no-progress || echo "Nothing of Chocolatey's to remove."
 
       # Last, because Scoop's shims go on PATH for the rest of the job. Not
       # preinstalled on the Windows runners, unlike Chocolatey. `-RunAsAdmin`
@@ -1667,16 +1745,29 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # To read each job's own conclusion; see the gate step.
+    permissions:
+      actions: read
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: audit
 
+      # `needs` alone is not enough: GitHub reports a matrix job as `success`
+      # there even when one of its legs never got a machine and was cancelled
+      # (github.com/orgs/community/discussions/211624), which is the macOS
+      # shortage this workflow is built around. So every job's own conclusion
+      # is read from the API as well. Both checks stay in this one step, the
+      # one rerun-unacquired.yml recognises.
       - name: Require every needed job to have succeeded
         env:
           RESULTS: ${{ toJSON(needs) }}
           MAY_SKIP: windows-gate
+          GH_TOKEN: ${{ github.token }}
+          # The same jobs by their display names, as the jobs API reports them.
+          NOT_GATED: '["Packaging", "Codecov", "Early warning (ubuntu, next Node major)"]'
+          MAY_SKIP_NAME: Windows gate profile (affected files)
         run: |
           set -euo pipefail
           bad=$(printf '%s' "${RESULTS}" | jq -r --arg may_skip "${MAY_SKIP}" '
@@ -1685,6 +1776,21 @@ jobs:
             | select(.value.result != "success")
             | select((.value.result == "skipped" and (.key as $job | $optional | index($job) != null)) | not)
             | "\(.key): \(.value.result)"')
+          for attempt in 1 2 3; do
+            jobs=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100") && break
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::Could not list this run's jobs, so a leg that never ran cannot be ruled out."
+              exit 1
+            fi
+            sleep 5
+          done
+          legs=$(printf '%s' "${jobs}" | jq -rs --argjson not_gated "${NOT_GATED}" --arg may_skip "${MAY_SKIP_NAME}" '
+            [.[].jobs[]][]
+            | select(.name as $name | $not_gated | index($name) | not)
+            | select(.conclusion != "success")
+            | select((.conclusion == "skipped" and .name == $may_skip) | not)
+            | "\(.name): \(.conclusion // .status)"')
+          bad=$(printf '%s\n%s\n' "${bad}" "${legs}" | sed '/^$/d')
           if [ -n "${bad}" ]; then
             echo "::error::Not mergeable:"
             printf '%s\n' "${bad}"

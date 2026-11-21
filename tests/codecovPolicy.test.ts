@@ -128,6 +128,16 @@ describe('coverage and Codecov policy', () => {
     }
 
     expect(upload.needs).toBe('test-matrix')
+    // Waits for the matrix, not for its success: a failed or never-started Mac
+    // lane must not keep the Ubuntu lane's report from Codecov. Without a report
+    // (the coverage lane failed, and says so) nothing is uploaded.
+    expect((upload as Job & { if?: string }).if).toBe('${{ !cancelled() }}')
+    const download = step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false) as Step & { id?: string; 'continue-on-error'?: boolean }
+    expect(download.id).toBe('coverage')
+    expect(download['continue-on-error']).toBe(true)
+    for (const later of upload.steps?.slice((upload.steps ?? []).indexOf(download) + 1) ?? []) {
+      expect((later as Step & { if?: string }).if, later.name).toBe("steps.coverage.outcome == 'success'")
+    }
     expect(upload.permissions).toEqual({ contents: 'read', 'id-token': 'write' })
     const uploadCheckout = step(upload, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
     // The same commit the coverage lane collected from.

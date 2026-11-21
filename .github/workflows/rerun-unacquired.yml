@@ -39,6 +39,10 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          # Through the environment, never into the script: a fork names its own branch.
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT: ${{ github.event.workflow_run.event }}
           # The gate step every aggregate job in ci.yml uses; its failure only
           # repeats the result of the jobs it waits on.
           GATE_STEP: Require every needed job to have succeeded
@@ -58,8 +62,21 @@ jobs:
               else "rerun\t" + ($lost | join(", ")) end')
           case "${report%%$'\t'*}" in
             rerun)
-              echo "No runner ever picked up: ${report#*$'\t'}. Re-running the failed jobs of run ${RUN_ID}."
-              gh run rerun "${RUN_ID}" --failed
+              # Re-run only what was judged, and only while it still matters: a
+              # later attempt was started by someone else and decides for
+              # itself, and re-running a run a newer commit replaced would join
+              # its concurrency group and cancel that newer run.
+              current=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" --jq '.run_attempt')
+              newest=$(gh api -X GET "repos/${GH_REPO}/actions/workflows/${WORKFLOW_ID}/runs" \
+                -f branch="${HEAD_BRANCH}" -f event="${EVENT}" -F per_page=1 --jq '.workflow_runs[0].id')
+              if [ "${current}" != "${ATTEMPT}" ]; then
+                echo "Run ${RUN_ID} is already at attempt ${current}, not ${ATTEMPT}; that attempt decides for itself."
+              elif [ "${newest}" != "${RUN_ID}" ]; then
+                echo "Run ${RUN_ID} was replaced by run ${newest}; re-running it would cancel the newer one."
+              else
+                echo "No runner ever picked up: ${report#*$'\t'}. Re-running the failed jobs of run ${RUN_ID}."
+                gh run rerun "${RUN_ID}" --failed
+              fi
               ;;
             findings)
               echo "Jobs failed on their own, so run ${RUN_ID} is left as it is: ${report#*$'\t'}."

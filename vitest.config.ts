@@ -9,6 +9,7 @@ import { readPackageVersion } from './scripts/package-version.ts'
 import {
   assignShards,
   byCodeUnit,
+  fileDuration,
   readTimings,
   SHARD_PLAN_FILE,
   SHARD_REPORT_FILE,
@@ -385,7 +386,7 @@ class TimedShardSequencer extends BaseSequencer {
   }
 }
 
-/** What actually ran on this shard, with each file's full duration (setup and imports included). */
+/** What actually ran on this shard, and how long each file took. */
 class ShardReporter implements Reporter {
   private root = ''
 
@@ -402,7 +403,7 @@ class ShardReporter implements Reporter {
       files: testModules.map((testModule) => ({
         file: toTestFile(this.root, testModule.moduleId),
         state: testModule.state(),
-        durationMs: testModule.diagnostic().duration,
+        durationMs: fileDuration(testModule.diagnostic()),
       })),
     }
     writeJson(join(shardDir, SHARD_REPORT_FILE), report)
@@ -419,7 +420,14 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    ...(shardDir ? { sequence: { sequencer: TimedShardSequencer }, reporters: ['default', new ShardReporter()] } : {}),
+    // Overriding `reporters` drops the GitHub annotations Vitest adds by default
+    // in Actions, so they are named again here.
+    ...(shardDir
+      ? {
+          sequence: { sequencer: TimedShardSequencer },
+          reporters: ['default', ...(process.env.GITHUB_ACTIONS === 'true' ? ['github-actions'] : []), new ShardReporter()],
+        }
+      : {}),
     // Every mock's call history is cleared before each test, so no test can
     // pass or fail on calls an earlier one recorded. Vitest 5 made this the
     // default; it is stated here so the choice survives the next default.

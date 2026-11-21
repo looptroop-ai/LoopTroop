@@ -6,6 +6,7 @@ import {
   assignShards,
   checkShardCoverage,
   checkShardsPassed,
+  fileDuration,
   main,
   mergeTimings,
   readShardResults,
@@ -92,6 +93,13 @@ describe('assignShards', () => {
     expect(shards.every((shard) => shard.length === 1)).toBe(true)
   })
 
+  // At 0 ms a file leaves the least loaded shard least loaded, so every
+  // zero-time file would land there.
+  it('weighs every file at least 1 ms, so zero-time files still spread out', () => {
+    const zero = { 'a.test.ts': 0, 'b.test.ts': 0, 'c.test.ts': 0, 'd.test.ts': 0 }
+    expect(assignShards(Object.keys(zero), zero, 2)).toEqual([['a.test.ts', 'c.test.ts'], ['b.test.ts', 'd.test.ts']])
+  })
+
   it.each([0, -1, 1.5, Number.NaN])('refuses a shard count of %s', (count) => {
     expect(() => assignShards(['a'], {}, count)).toThrow('Shard count must be a positive integer')
   })
@@ -142,6 +150,8 @@ describe('checkShardsPassed', () => {
       report: { version: 1, reason: 'interrupted', unhandledErrors: 2, files: [
         { file: 'a.test.ts', state: 'failed', durationMs: 1 },
         { file: 'b.test.ts', state: 'skipped', durationMs: 1 },
+        { file: 'c.test.ts', state: 'pending', durationMs: 0 },
+        { file: 'd.test.ts', state: 'queued', durationMs: 0 },
       ] },
     }
     expect(checkShardsPassed([failing, result(2, ['c.test.ts'])], 2)).toEqual([
@@ -149,6 +159,8 @@ describe('checkShardsPassed', () => {
       'Shard 1/2 finished as "interrupted".',
       'Shard 1/2 had 2 unhandled error(s).',
       'Shard 1/2: a.test.ts failed.',
+      'Shard 1/2: c.test.ts never finished (pending).',
+      'Shard 1/2: d.test.ts never finished (queued).',
     ])
   })
 })
@@ -158,8 +170,21 @@ describe('checkShardCoverage', () => {
     expect(checkShardCoverage([result(1, ['a.test.ts', 'c.test.ts']), result(2, ['b.test.ts', 'd.test.ts'])], 2)).toEqual([])
   })
 
-  it('fails when a plan is missing', () => {
-    expect(checkShardCoverage([result(1, ALL)], 2)).toEqual(['Expected 2 shard plans, found 1.'])
+  it('fails when a plan is missing, doubled, or numbered outside 1 to count', () => {
+    expect(checkShardCoverage([result(1, ALL)], 2)).toEqual(['Expected one plan for each shard 1 to 2, found 1.'])
+    expect(checkShardCoverage([result(1, ['a.test.ts', 'c.test.ts']), result(1, ['b.test.ts', 'd.test.ts'])], 2))
+      .toEqual(['Expected one plan for each shard 1 to 2, found 1, 1.'])
+    expect(checkShardCoverage([result(1, ['a.test.ts', 'c.test.ts']), result(3, ['b.test.ts', 'd.test.ts'])], 2))
+      .toEqual(['Expected one plan for each shard 1 to 2, found 1, 3.'])
+    expect(checkShardCoverage([], 2)).toEqual(['Expected one plan for each shard 1 to 2, found none.'])
+  })
+
+  // `require` catches both first in CI; on its own, cover must not pass them.
+  it('fails a plan made for another count, and a plan with no report', () => {
+    const otherCount: ShardResult = { index: 2, plan: plan(2, ['b.test.ts', 'd.test.ts'], ALL, 3), report: report(['b.test.ts', 'd.test.ts']) }
+    expect(checkShardCoverage([result(1, ['a.test.ts', 'c.test.ts']), otherCount], 2)).toEqual(['Shard 2 was planned as one of 3 shards.'])
+    const noReport: ShardResult = { index: 2, plan: plan(2, ['b.test.ts', 'd.test.ts']) }
+    expect(checkShardCoverage([result(1, ['a.test.ts', 'c.test.ts']), noReport], 2)).toEqual(['Shard 2 wrote a plan but no report.'])
   })
 
   it('fails when nothing was collected', () => {
@@ -209,6 +234,21 @@ describe('mergeTimings and the artifact layout', () => {
       { index: 2, plan: plan(2, ['b.test.ts']), report: undefined },
     ])
     expect(readShardResults(join(root, 'absent'))).toEqual([])
+  })
+
+  // A pattern download that matches one artifact extracts it without a folder.
+  it('reads a lone artifact extracted straight into the directory', () => {
+    const root = scratch()
+    writeJson(join(root, SHARD_PLAN_FILE), plan(2, ['b.test.ts']))
+    writeJson(join(root, SHARD_REPORT_FILE), report(['b.test.ts']))
+    expect(readShardResults(root)).toEqual([{ index: 2, plan: plan(2, ['b.test.ts']), report: report(['b.test.ts']) }])
+    expect(checkShardsPassed(readShardResults(root), 2)).toEqual([
+      'Shard 1/2 never reported: the job did not run, was cancelled, or stopped before Vitest started.',
+    ])
+  })
+
+  it('times a file from its environment setup to its last test', () => {
+    expect(fileDuration({ environmentSetupDuration: 400, prepareDuration: 30, setupDuration: 200, collectDuration: 1500, duration: 70 })).toBe(2200)
   })
 
   it('writes paths relative to the project root with forward slashes', () => {

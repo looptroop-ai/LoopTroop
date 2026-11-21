@@ -149,7 +149,7 @@ function executeNodeFloorGate(run: string, before: string, after: string, checke
       env: {
         ...process.env,
         AFTER: after,
-        BASE_REF: 'base-ref',
+        DIFF_BASE: 'base-ref',
         BEFORE: before,
         CHECKER_CALLS: checkerCalls,
         CHECKER_STATUS: String(checkerStatus),
@@ -191,7 +191,7 @@ describe('release workflow policy', () => {
     expect(action.if, 'no event skips the review, and an earlier failure does not hide it').toBe('${{ !cancelled() }}')
     expect(action.with).toMatchObject({
       'fail-on-scopes': 'runtime,development,unknown',
-      'base-ref': '${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}',
+      'base-ref': '${{ env.DIFF_BASE }}',
       'head-ref': '${{ github.event.pull_request.head.sha || github.sha }}',
     })
     expect((ci.packaging as Job & { needs: string[] }).needs).toContain('verify')
@@ -199,12 +199,28 @@ describe('release workflow policy', () => {
     const gate = ci.packaging!.steps!.find((step) => step.run !== undefined)!
     for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
       const results = { verify: { result }, 'test-matrix': { result: 'success' } }
-      const run = spawnSync('bash', ['-euo', 'pipefail', '-c', String(gate.run)], {
+      const run = spawnSync('bash', ['-euo', 'pipefail', '-c', `gh() { printf '{"jobs":[]}'; }\n${String(gate.run)}`], {
         encoding: 'utf8',
-        env: { ...process.env, RESULTS: JSON.stringify(results), MAY_SKIP: String(gate.env?.MAY_SKIP) },
+        env: { ...process.env, ...gate.env, RESULTS: JSON.stringify(results), GITHUB_REPOSITORY: 'looptroop-ai/LoopTroop', GITHUB_RUN_ID: '42' },
       })
       expect(run.status, `${result}: ${run.stderr}`).toBe(result === 'success' ? 0 : 1)
     }
+  })
+
+  /**
+   * A push to main used to be compared with main, which by then is the pushed
+   * commit: the dependency diff was empty and the floor never changed, so both
+   * gates passed without checking anything. A push compares with the commit
+   * it replaced.
+   */
+  it('compares a push with the commit it replaced, not with itself', () => {
+    const verify = workflows.get('ci.yml')!.jobs!.verify as Job & { env?: Record<string, string> }
+    expect(verify.env?.DIFF_BASE).toBe(
+      "${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.event.repository.default_branch }}",
+    )
+    const floor = verify.steps!.find((step) => step.name === 'Check every feed offers a changed Node floor')!
+    expect(String(floor.run)).toContain('git fetch --no-tags --depth=1 origin "${DIFF_BASE}"')
+    expect(JSON.stringify(verify.steps)).not.toContain('github.event.repository.default_branch')
   })
 
   it('runs the workflow, shell, and local verification gates in blocking CI jobs', () => {
@@ -791,11 +807,13 @@ describe('release workflow policy', () => {
     const windowsGate = workflows.get('ci.yml')!.jobs?.['windows-gate-scope']
     const scope = windowsGate?.steps?.find((step) => step.name === 'Check whether the Windows profile is affected')?.run
     if (typeof scope !== 'string') throw new Error('Windows gate scope script missing')
-    expect(scope).toContain('changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"')
+    // Three dots: what the pull request changed, not what main gained since.
+    expect(scope).toContain('changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"')
     expect(scope).toContain('done <<< "${changed}"')
     expect(scope).not.toContain('< <(git diff')
 
-    for (const path of ['scripts/smoke-lib.mjs', 'scripts/installer-core.mjs', 'scripts/smoke-installer.mjs']) {
+    // The gate installs through the shared action, so a change to it is a change to the gate.
+    for (const path of ['scripts/smoke-lib.mjs', 'scripts/installer-core.mjs', 'scripts/smoke-installer.mjs', '.github/actions/npm-ci/action.yml']) {
       const affected = executeWindowsScope(scope, [path])
       expect(affected.status).toBe(0)
       expect(affected.output).toBe('affected=true\n')
@@ -985,7 +1003,7 @@ describe('release workflow policy', () => {
     expect(gate, 'Verify checks the feeds when the floor changes').toBeDefined()
     // No event may skip the step, and an earlier failure in Verify must not hide it.
     expect(gate?.if, 'the feed gate runs on every event').toBe('${{ !cancelled() }}')
-    expect(gate?.env?.BASE_REF).toBe('${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}')
+    expect(gate?.env?.BASE_REF, 'the job-level DIFF_BASE decides the comparison').toBeUndefined()
     expect(String(gate?.run)).toContain('node scripts/check-node-feeds.ts')
     expect(String(gate?.run)).toContain('engines.node')
     expect(gate?.env?.GITHUB_TOKEN).toBe('${{ github.token }}')
@@ -1311,7 +1329,12 @@ describe('release workflow policy', () => {
     expect(Object.keys(ci.on ?? {}).sort()).toEqual(['pull_request', 'push', 'workflow_dispatch'])
     expect(ci.on?.pull_request).toBeNull()
     expect(ci.on?.push).toEqual({ branches: ['main'] })
-    expect(ci.concurrency).toEqual({ group: 'ci-${{ github.workflow }}-${{ github.ref }}', 'cancel-in-progress': true })
+    // A newer commit cancels a pull request's older run; a run on main, which
+    // saves what pull requests read, always finishes.
+    expect(ci.concurrency).toEqual({
+      group: 'ci-${{ github.workflow }}-${{ github.ref }}',
+      'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
+    })
     // Nothing in the workflow tells a push copy apart from a pull request copy any more.
     expect(source.get('ci.yml')).not.toContain('[push]')
   })
@@ -1382,21 +1405,43 @@ describe('release workflow policy', () => {
     const jobs = workflows.get('ci.yml')!.jobs!
     const shards = (jobs['test-windows'] as Job & { strategy: { matrix: { shard: number[] } } }).strategy.matrix.shard
     const steps = jobs['test-windows']!.steps ?? []
-    const restore = steps.find((step) => String(step.uses ?? '').startsWith('actions/cache/restore@'))
-    expect(restore?.with).toMatchObject({
-      key: 'test-timings-windows-${{ matrix.lane }}-${{ github.run_id }}',
-      'restore-keys': 'test-timings-windows-${{ matrix.lane }}-',
-    })
+    // The shards read the run's one snapshot, never the cache: a cache entry
+    // saved on Linux never restores on Windows, and two separate restores can
+    // pick different snapshots, so the halves would split differently.
+    expect(steps.some((step) => String(step.uses ?? '').startsWith('actions/cache/')), 'no cache on the Windows shards').toBe(false)
+    const timings = steps.find((step) => step.name === "Download this run's test timings")
+    expect(timings?.uses).toBe('./.github/actions/download-artifact')
+    expect(timings?.with).toEqual({ name: 'test-timings-windows', path: '${{ runner.temp }}/test-timings' })
     const test = steps.find((step) => step.name === 'Test')
     expect(test?.env).toMatchObject({
       SHARD: '${{ matrix.shard }}',
       VITEST_SHARD_DIR: '${{ runner.temp }}/test-shard',
-      VITEST_SHARD_TIMINGS: '${{ runner.temp }}/test-timings.json',
+      VITEST_SHARD_TIMINGS: '${{ runner.temp }}/test-timings/windows-${{ matrix.lane }}.json',
     })
     expect(test?.run).toBe(`npm run test -- --shard="\${SHARD}/${shards.length}"`)
     const upload = steps.find((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@'))
-    expect(upload?.if, 'a failed shard still reports').toBe('${{ !cancelled() }}')
+    expect(upload?.if, 'a failed or timed-out shard still reports what it planned').toBe('always()')
     expect(upload?.with?.name).toBe('test-windows-${{ matrix.lane }}-shard-${{ matrix.shard }}')
+
+    // install-check restores each lane's times on Linux, from the very path
+    // the result job saves them to on Linux, and hands them on.
+    const install = jobs['install-check']!.steps ?? []
+    const saved = (jobs['test-windows-result']!.steps ?? []).find((step) => step.name === 'Save the file timings')
+    expect(saved?.with).toEqual({
+      path: '${{ runner.temp }}/test-timings/windows-${{ matrix.lane }}.json',
+      key: 'test-timings-windows-${{ matrix.lane }}-${{ github.run_id }}',
+    })
+    for (const lane of ['toolchain', 'declared']) {
+      const restore = install.find((step) => String(step.uses ?? '').startsWith('actions/cache/restore@') && String(step.with?.key).includes(`-${lane}-`))
+      expect(restore?.with, lane).toEqual({
+        path: `\${{ runner.temp }}/test-timings/windows-${lane}.json`,
+        key: `test-timings-windows-${lane}-\${{ github.run_id }}`,
+        'restore-keys': `test-timings-windows-${lane}-`,
+      })
+    }
+    expect(jobs['test-windows-result']!['runs-on'], 'saved on the OS install-check restores on').toBe(jobs['install-check']!['runs-on'])
+    const handOff = install.find((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@'))
+    expect(handOff?.with).toMatchObject({ name: 'test-timings-windows', path: '${{ runner.temp }}/test-timings/', 'if-no-files-found': 'error', overwrite: true })
 
     const result = jobs['test-windows-result']!
     expect((result as { needs?: unknown }).needs).toBe('test-windows')
@@ -1412,7 +1457,26 @@ describe('release workflow policy', () => {
     expect(cover?.if, 'coverage is judged only once every shard reported').toBe("${{ !cancelled() && steps.require.outcome == 'success' }}")
     const record = resultSteps.find((step) => step.name === 'Record the file timings for the next run')
     expect(record?.if, 'only main records the timings everyone splits by').toBe("github.event_name == 'push' && github.ref == 'refs/heads/main' && success()")
+    expect(record?.run).toBe('node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings/windows-${LANE}.json"')
+    expect(record?.env).toEqual({ LANE: '${{ matrix.lane }}' })
     expect(jobs.packaging!.steps!.some((step) => step.name === GATE_STEP)).toBe(true)
+  })
+
+  /**
+   * Chocolatey and Scoop share one Windows job now. A Chocolatey check that
+   * fails after installing never reaches its own uninstall, and its shim on
+   * PATH would answer the Scoop check's `looptroop` instead.
+   */
+  it('clears a failed Chocolatey install before the Scoop check in the same job', () => {
+    const steps = workflows.get('ci.yml')!.jobs!['channel-windows']!.steps ?? []
+    const index = (name: string) => steps.findIndex((step) => step.name === name)
+    const choco = index('Install it with Chocolatey, run it, and uninstall it again')
+    const cleanup = index('Remove what a failed Chocolatey check left installed')
+    expect(choco).toBeGreaterThan(-1)
+    expect(cleanup).toBe(choco + 1)
+    expect(index('Install Scoop')).toBeGreaterThan(cleanup)
+    expect((steps[choco] as Step & { id?: string }).id).toBe('choco')
+    expect(steps[cleanup]!.if).toBe("${{ !cancelled() && steps.choco.outcome == 'failure' }}")
   })
 
   /**
@@ -1434,8 +1498,19 @@ describe('release workflow policy', () => {
     const step = job.steps![0]!
     expect(step.env?.GATE_STEP).toBe(GATE_STEP)
 
-    const stub = 'gh() { if [ "$1" = api ]; then printf "%s" "$FIXTURE"; else printf "%s\\n" "$*" >> "$GH_CALLS"; fi; }\n'
-    const execute = (jobsInRun: unknown[]) => {
+    // Each API call answers with what its --jq would have extracted.
+    const stub = [
+      'gh() {',
+      '  if [ "$1" != api ]; then printf "%s\\n" "$*" >> "$GH_CALLS"; return; fi',
+      '  case "$*" in',
+      '    *"/attempts/"*) printf "%s" "$FIXTURE" ;;',
+      '    *"/workflows/"*) printf "%s" "$NEWEST" ;;',
+      '    *) printf "%s" "$CURRENT_ATTEMPT" ;;',
+      '  esac',
+      '}',
+      '',
+    ].join('\n')
+    const execute = (jobsInRun: unknown[], state: { newest?: string; currentAttempt?: string } = {}) => {
       const directory = mkdtempSync(join(tmpdir(), 'looptroop-rerun-'))
       const calls = join(directory, 'calls')
       try {
@@ -1444,10 +1519,15 @@ describe('release workflow policy', () => {
           env: {
             ...process.env,
             FIXTURE: JSON.stringify([{ jobs: jobsInRun }]),
+            NEWEST: state.newest ?? '42',
+            CURRENT_ATTEMPT: state.currentAttempt ?? '1',
             GH_CALLS: calls,
             GH_REPO: 'looptroop-ai/LoopTroop',
             RUN_ID: '42',
             ATTEMPT: '1',
+            WORKFLOW_ID: '7',
+            HEAD_BRANCH: 'topic',
+            EVENT: 'pull_request',
             GATE_STEP,
           },
         })
@@ -1471,6 +1551,15 @@ describe('release workflow policy', () => {
     const ran = execute([finding, gate])
     expect(ran.calls).toBe('')
     expect(ran.output).toContain('nothing to re-run')
+
+    const replaced = execute([unacquired, gate], { newest: '43' })
+    expect(replaced.calls, 'a newer run for the branch would be cancelled by the re-run').toBe('')
+    expect(replaced.output).toContain('replaced by run 43')
+    const moved = execute([unacquired, gate], { currentAttempt: '2' })
+    expect(moved.calls, 'a later attempt decides for itself').toBe('')
+    expect(moved.output).toContain('already at attempt 2')
+    expect(step.env?.HEAD_BRANCH, 'a fork-chosen name reaches the script only through the environment').toBe('${{ github.event.workflow_run.head_branch }}')
+    expect(String(step.run)).not.toContain('${{')
   })
 
   /**

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -79,7 +79,11 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
   }
   for (const file of ['project/.git/config', 'project/.git/worktrees/ticket-worktree/gitdir', 'ticket-worktree/.git']) {
     const path = join(root, file)
-    writeFileSync(path, readFileSync(path, 'utf8').replaceAll(basename(template.root), basename(root)))
+    const relinked = readFileSync(path, 'utf8').replaceAll(basename(template.root), basename(root))
+    // Rewritten in place: Git for Windows hides the worktree's `.git` file, and
+    // Windows refuses the default truncate-and-recreate open on a hidden file.
+    writeFileSync(path, relinked, { flag: 'r+' })
+    truncateSync(path, Buffer.byteLength(relinked))
   }
   const fixture = {
     ...template.fixture,

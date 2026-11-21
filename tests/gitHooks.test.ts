@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HOOKS_PATH, installGitHooks, planHooks, runPrepareScript, type HookState } from '../scripts/install-git-hooks'
 
@@ -105,7 +106,9 @@ describe('installGitHooks', () => {
   // smoke parse npm's stdout as JSON: one line of ours there broke both.
   it('reports on stderr and keeps stdout empty', () => {
     const directory = gitRepo({ hooksDir: true })
-    const script = `import { runPrepareScript } from ${JSON.stringify(join(repo, 'scripts', 'install-git-hooks.ts'))}\nrunPrepareScript(${JSON.stringify(directory)})`
+    // A URL, because Windows reads an absolute path's drive letter as a URL scheme.
+    const specifier = pathToFileURL(join(repo, 'scripts', 'install-git-hooks.ts')).href
+    const script = `import { runPrepareScript } from ${JSON.stringify(specifier)}\nrunPrepareScript(${JSON.stringify(directory)})`
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8',
       env: { ...process.env, CI: '' },

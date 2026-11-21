@@ -528,13 +528,17 @@ function App() {
           // The route moved while the dialog was open — Create & start in the New
           // Ticket dialog opens the new ticket. The entry Back landed on is where
           // the dialog was opened, so it stays and the new route goes on top:
-          // Back from the new ticket returns to the board. Overwriting it made
-          // that Back skip the board and leave for whatever came before it. Only
-          // an entry the app could not show again, a ticket deleted meanwhile,
-          // is replaced.
+          // Back from the new ticket returns to it. Overwriting it made that Back
+          // skip the board and leave for whatever came before it. It stays when
+          // the app can show it again: the board, a routed modal, a ticket, or
+          // a ticket whose list has not arrived yet (not known to be gone, as
+          // applyPop treats it too). Only an entry it cannot show, a ticket
+          // deleted meanwhile or a path it has no route for, is replaced.
           const landed = window.location.pathname
-          const landedStillShows = canonicalizePathname(landed) === ROUTE_ROOT
-            || matchTicketRoute(landed, ticketsRef.current).kind === 'ticket'
+          const landedTicket = matchTicketRoute(landed, ticketsRef.current).kind
+          const landedStillShows = canonicalizePathname(landed) === ROUTE_ROOT || landed === ''
+            || modalForPathname(landed) !== null
+            || landedTicket === 'ticket' || landedTicket === 'pending'
           window.history[landedStillShows ? 'pushState' : 'replaceState'](null, '', target)
         }
         return

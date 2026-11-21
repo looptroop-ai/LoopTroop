@@ -998,6 +998,52 @@ describe('App route ownership', () => {
     await expectBoardAt('/')
   })
 
+  /**
+   * Create & start closes the dialog with the app's own Back and then writes
+   * the new ticket's route. Where that Back lands decides how: kept (the new
+   * route pushed on top) when the app can show it again, overwritten only when
+   * it cannot. Back itself is held here, and the landing is staged by hand.
+   */
+  async function startTicketLandingOn(landed: string, beforeStart: () => void = () => {}) {
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined)
+    fireEvent.click(screen.getByRole('button', { name: 'New Ticket' }))
+    expect(await screen.findByText('Ticket Form')).toBeInTheDocument()
+    beforeStart()
+    fireEvent.click(screen.getByRole('button', { name: 'Create & start' }))
+    await waitFor(() => expect(back).toHaveBeenCalledTimes(1))
+    window.history.replaceState(null, '', landed)
+    const history = watchHistory()
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    return history
+  }
+
+  it('keeps a routed modal that Back lands on, under the newly started ticket', async () => {
+    mockState.tickets = [{ id: 'ticket-2', externalId: 'LT-2' }]
+    renderApp()
+    const history = await startTicketLandingOn('/config')
+    await waitFor(() => history.expectPushedWith('/ticket/LT-2'))
+  })
+
+  it('keeps a ticket entry Back lands on while the ticket list has not arrived', async () => {
+    mockState.tickets = [{ id: 'ticket-2', externalId: 'LT-2' }]
+    const { rerenderApp } = renderAppWithProbe()
+    const history = await startTicketLandingOn('/ticket/LT-1', () => {
+      mockState.ticketsFetched = false
+      mockState.ticketsLoading = true
+      rerenderApp()
+    })
+    await waitFor(() => history.expectPushedWith('/ticket/LT-2'))
+  })
+
+  it('overwrites the entry Back lands on when its ticket was deleted meanwhile', async () => {
+    mockState.tickets = [{ id: 'ticket-2', externalId: 'LT-2' }]
+    renderApp()
+    const history = await startTicketLandingOn('/ticket/LT-9')
+    await waitFor(() => history.expectReplacedWith('/ticket/LT-2'))
+  })
+
   it('handles browser Back from a pushed dialog with one more Back to the board', async () => {
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
     renderAppWithProbe()

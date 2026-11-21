@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -40,7 +40,7 @@ function hooksPath(directory: string) {
 }
 
 describe('planHooks', () => {
-  const ready: HookState = { ci: false, hooksDirExists: true, ownWorkTree: true, current: null, existingHooks: [] }
+  const ready: HookState = { ci: false, hooksDirExists: true, workTree: 'own', current: null, existingHooks: [] }
 
   it('sets the hooks path on a clone that has none', () => {
     expect(planHooks(ready)).toEqual({ action: 'set' })
@@ -53,7 +53,8 @@ describe('planHooks', () => {
   it.each([
     [{ ci: true }, 'CI runs no git hooks.'],
     [{ hooksDirExists: false }, 'there is no .githooks/ directory.'],
-    [{ ownWorkTree: false }, 'this directory is not the top of its own git work tree.'],
+    [{ workTree: 'other' }, 'this directory is not the top of its own git work tree.'],
+    [{ workTree: 'none' }, 'git reports no work tree here, or could not run (see git rev-parse --show-toplevel).'],
     [{ current: '/home/me/hooks' }, 'core.hooksPath is already /home/me/hooks, which is left as it is.'],
     [{ existingHooks: ['commit-msg', 'pre-commit'] }, 'your own hooks (commit-msg, pre-commit) would stop running; to use .githooks/ anyway, run git config core.hooksPath .githooks.'],
   ] as const)('skips when %o', (change, reason) => {
@@ -124,9 +125,18 @@ describe('installGitHooks', () => {
     const log: string[] = []
     expect(installGitHooks(directory, {}, (line) => log.push(line))).toEqual({
       action: 'skip',
-      reason: 'this directory is not the top of its own git work tree.',
+      reason: 'git reports no work tree here, or could not run (see git rev-parse --show-toplevel).',
     })
     expect(log[0]).toContain('not installed')
+  })
+
+  // Git reports the resolved path; the project can be reached through another
+  // spelling of it (a symlink here, an 8.3 short name on Windows CI).
+  it.skipIf(process.platform === 'win32')('recognises its own work tree reached through another spelling of the path', () => {
+    const directory = gitRepo({ hooksDir: true })
+    const alias = join(scratch(), 'alias')
+    symlinkSync(directory, alias, 'dir')
+    expect(installGitHooks(alias, {}, () => {})).toEqual({ action: 'set' })
   })
 
   // A source copy unpacked inside another repository is "inside a work tree",
@@ -200,17 +210,24 @@ describe('installGitHooks', () => {
 // The hook is a POSIX shell script that Git for Windows runs under its own sh;
 // the test drives it with a stand-in npm, which is a shell script here too.
 describe.skipIf(process.platform === 'win32')('the pre-push hook', () => {
-  function push(stdin: string, options: { failing?: string; cwd?: string } = {}) {
+  function push(stdin: string, options: { failing?: string; cwd?: string; withoutNpm?: boolean } = {}) {
     const bin = scratch()
     const calls = join(bin, 'calls')
     const npm = join(bin, 'npm')
     writeFileSync(npm, `#!/bin/sh\necho "$*" >> "${calls}"\n[ "$*" != "${options.failing ?? ''}" ]\n`)
     chmodSync(npm, 0o755)
+    // Without npm: a PATH holding nothing but sh, which the hook needs no more of.
+    let path = `${bin}${delimiter}${process.env.PATH ?? ''}`
+    if (options.withoutNpm) {
+      const bare = scratch()
+      symlinkSync('/bin/sh', join(bare, 'sh'))
+      path = bare
+    }
     const result = spawnSync('sh', [join(repo, HOOKS_PATH, 'pre-push'), 'origin', 'https://example.invalid/repo.git'], {
       cwd: options.cwd ?? repo,
       input: stdin,
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
+      env: { ...process.env, PATH: path },
     })
     return { status: result.status, stderr: result.stderr, calls: existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : [] }
   }
@@ -248,5 +265,11 @@ describe.skipIf(process.platform === 'win32')('the pre-push hook', () => {
     const result = push(commit, { cwd: scratch() })
     expect(result).toMatchObject({ status: 0, calls: [] })
     expect(result.stderr).toContain('no dependencies installed')
+  })
+
+  it('skips, and says why, when the git client has no npm on its PATH', () => {
+    const result = push(commit, { withoutNpm: true })
+    expect(result).toMatchObject({ status: 0, calls: [] })
+    expect(result.stderr).toContain('npm is not on this git client')
   })
 })

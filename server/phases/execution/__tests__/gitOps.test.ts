@@ -65,6 +65,9 @@ function headSha(dir: string): string {
 function createBareRemote(): string {
   const dir = makeTempDir('gitops-remote-')
   execFileSync('git', ['init', '--bare', dir], { stdio: 'pipe' })
+  // Tests push here, and a received push starts the same detached maintenance
+  // the template avoids; it would race the directory's removal.
+  disableGitAutoMaintenance(dir)
   pinGitLineEndings(dir)
   return dir
 }

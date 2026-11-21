@@ -33,7 +33,7 @@ function initializeGitRepo(repoDir: string) {
   // on checkout, so byte-for-byte assertions fail there and nowhere else.
   appendFileSync(
     join(repoDir, '.git', 'config'),
-    '[user]\n\temail = test@example.com\n\tname = LoopTroop Tests\n[core]\n\tautocrlf = false\n\teol = lf\n',
+    '\n[user]\n\temail = test@example.com\n\tname = LoopTroop Tests\n[core]\n\tautocrlf = false\n\teol = lf\n',
   )
   execFileSync('git', ['-C', repoDir, 'add', '.'], { stdio: 'pipe' })
   execFileSync('git', ['-C', repoDir, 'commit', '-m', 'init'], { stdio: 'pipe' })

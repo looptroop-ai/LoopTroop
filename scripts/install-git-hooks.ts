@@ -31,8 +31,12 @@ export type HookPlan =
 export interface HookState {
   ci: boolean
   hooksDirExists: boolean
-  /** Whether this project's root is the top of its own git work tree. */
-  ownWorkTree: boolean
+  /**
+   * `own`: this project's root is the top of its own git work tree. `other`:
+   * it is a folder inside someone else's. `none`: git names no work tree here,
+   * or could not run at all (missing, or refusing a repository it distrusts).
+   */
+  workTree: 'own' | 'other' | 'none'
   /** The configured core.hooksPath, or null when unset. */
   current: string | null
   /** Hooks already in git's default hooks directory, other than git's samples. */
@@ -42,7 +46,8 @@ export interface HookState {
 export function planHooks(state: HookState): HookPlan {
   if (state.ci) return { action: 'skip', reason: 'CI runs no git hooks.' }
   if (!state.hooksDirExists) return { action: 'skip', reason: `there is no ${HOOKS_PATH}/ directory.` }
-  if (!state.ownWorkTree) return { action: 'skip', reason: 'this directory is not the top of its own git work tree.' }
+  if (state.workTree === 'none') return { action: 'skip', reason: 'git reports no work tree here, or could not run (see git rev-parse --show-toplevel).' }
+  if (state.workTree === 'other') return { action: 'skip', reason: 'this directory is not the top of its own git work tree.' }
   if (state.current === HOOKS_PATH) return { action: 'keep' }
   if (state.current) return { action: 'skip', reason: `core.hooksPath is already ${state.current}, which is left as it is.` }
   if (state.existingHooks.length > 0) {
@@ -75,9 +80,14 @@ function toStderr(line: string): void {
   process.stderr.write(`${line}\n`)
 }
 
+/**
+ * `.native`: on Windows git reports the long path (`C:/Users/runneradmin/…`)
+ * while the temp directory is often its 8.3 form (`C:\Users\RUNNER~1\…`), and
+ * only the native realpath expands short names. Both sides go through it.
+ */
 function samePath(a: string, b: string): boolean {
   try {
-    return realpathSync(a) === realpathSync(b)
+    return realpathSync.native(a) === realpathSync.native(b)
   } catch {
     return false
   }
@@ -104,13 +114,14 @@ export function installGitHooks(
   const hooksDirExists = existsSync(join(root, HOOKS_PATH))
   // Asks git nothing when the answer cannot change the plan.
   const topLevel = ci || !hooksDirExists ? null : run(['rev-parse', '--show-toplevel'], root)
-  const ownWorkTree = topLevel !== null && samePath(topLevel, root)
-  const current = ownWorkTree ? run(['config', '--get', 'core.hooksPath'], root) || null : null
-  const defaultHooks = ownWorkTree && current === null ? run(['rev-parse', '--git-path', 'hooks'], root) : null
+  const workTree = topLevel === null ? 'none' : samePath(topLevel, root) ? 'own' : 'other'
+  const own = workTree === 'own'
+  const current = own ? run(['config', '--get', 'core.hooksPath'], root) || null : null
+  const defaultHooks = own && current === null ? run(['rev-parse', '--git-path', 'hooks'], root) : null
   const plan = planHooks({
     ci,
     hooksDirExists,
-    ownWorkTree,
+    workTree,
     current,
     existingHooks: defaultHooks === null ? [] : existingHooks(resolve(root, defaultHooks)),
   })

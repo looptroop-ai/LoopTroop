@@ -889,9 +889,10 @@ describe("AIQuestionProvider", () => {
     function Answerer({ ticketId }: { ticketId: string }) {
       const { answerRequest, getTicketRequests } = useAIQuestions();
       const request = getTicketRequests(ticketId)[0];
+      // "loading" until the snapshot lands: answering before that sends nothing.
       return (
         <>
-          <div>error:{request?.error ?? "none"}</div>
+          <div>error:{request ? (request.error ?? "none") : "loading"}</div>
           <button
             onClick={() => answerRequest(ticketId, "question-1", [["Small"]])}
           >

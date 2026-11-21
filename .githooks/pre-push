@@ -1,0 +1,26 @@
+#!/bin/sh
+# Runs before every `git push` from a clone of this repository: the lint and
+# the typecheck that the required Verify job runs, so a push that would fail
+# them fails here, before CI spends a run on it. A hook rather than a line in
+# AGENTS.md, because a hook does not depend on anyone remembering it.
+#
+# `npm install` points git here (scripts/install-git-hooks.ts sets
+# core.hooksPath). Skip it for one push with `git push --no-verify`.
+set -eu
+
+# Git passes one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+# A deletion's local sha is all zeros, and a push of nothing but deletions
+# carries no code to check.
+pushes_commits=false
+while read -r _ local_sha _ _; do
+  case "${local_sha}" in
+    *[!0]*) pushes_commits=true ;;
+  esac
+done
+if [ "${pushes_commits}" = false ]; then
+  exit 0
+fi
+
+echo "pre-push: npm run lint, then npm run typecheck (skip once with git push --no-verify)" >&2
+npm run lint
+npm run typecheck

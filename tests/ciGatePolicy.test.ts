@@ -8,55 +8,63 @@ const ci = loadYaml(readFileSync(join(process.cwd(), '.github/workflows/ci.yml')
   jobs: Record<string, {
     if?: string
     needs?: string[]
+    'continue-on-error'?: unknown
     steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }>
   }>
 }
 
-const packagingJobs = [
-  'dependency-review',
-  'test-matrix',
-  'smoke-installer',
-  'node-managers',
-  'bundle',
-  'bundle-runs',
-  'formula-audit',
-  'channel-install',
-  'choco-install',
-  'binary',
-  'winget-install',
-  'aur-package',
-]
+/** Jobs that report but do not decide a merge: a third party's upload, and the advisory next-Node lane. */
+const NOT_GATING = ['codecov', 'early-warning']
+/** The one job whose normal result for most pull requests is "skipped". */
+const MAY_SKIP = ['windows-gate']
+const GATE_STEP = 'Require every needed job to have succeeded'
 
 const hasBashAndJq = spawnSync('bash', ['-euo', 'pipefail', '-c', 'command -v jq'], { encoding: 'utf8' }).status === 0
 
-describe('CI packaging gate policy', () => {
-  it.skipIf(!hasBashAndJq)('blocks packaging unless every required job succeeds', () => {
+describe('CI merge gate policy', () => {
+  /**
+   * Derived from the workflow rather than listed here: a job added later is
+   * gated the moment it exists, unless it is named as not gating above. The
+   * only advisory job must say so with continue-on-error.
+   */
+  it('makes Packaging wait on every job that is not explicitly advisory', () => {
     const packaging = ci.jobs.packaging
     if (!packaging?.needs) throw new Error('ci.yml: packaging dependencies missing')
-    expect([...packaging.needs].sort()).toEqual([...packagingJobs].sort())
+    const expected = Object.keys(ci.jobs).filter((job) => job !== 'packaging' && !NOT_GATING.includes(job))
+    expect([...packaging.needs].sort()).toEqual(expected.sort())
     expect(packaging.if).toBe('always()')
+    expect(ci.jobs['early-warning']?.['continue-on-error']).toBe(true)
+    for (const job of expected) expect(ci.jobs[job]?.['continue-on-error'], job).toBeUndefined()
+  })
 
-    const gate = packaging.steps?.find((step) => step.name === 'Require every packaging job to have succeeded')
+  it.skipIf(!hasBashAndJq)('blocks the merge unless every needed job succeeds', () => {
+    const packaging = ci.jobs.packaging!
+    const gate = packaging.steps?.find((step) => step.name === GATE_STEP)
     if (!gate?.run) throw new Error('ci.yml: packaging result gate missing')
     expect(gate.env?.RESULTS).toBe('${{ toJSON(needs) }}')
+    expect(gate.env?.MAY_SKIP?.split(' ')).toEqual(MAY_SKIP)
 
-    const allSuccessful = Object.fromEntries(packagingJobs.map((job) => [job, { result: 'success' }]))
+    const needs = packaging.needs!
+    const allSuccessful = Object.fromEntries(needs.map((job) => [job, { result: 'success' }]))
     const runGate = (results: Record<string, { result: string }>) => spawnSync(
       'bash',
       ['-euo', 'pipefail', '-c', gate.run!],
-      { encoding: 'utf8', env: { ...process.env, RESULTS: JSON.stringify(results) } },
+      { encoding: 'utf8', env: { ...process.env, RESULTS: JSON.stringify(results), MAY_SKIP: gate.env!.MAY_SKIP } },
     )
 
     const success = runGate(allSuccessful)
     expect(success.status, success.stderr).toBe(0)
-    expect(success.stdout).toContain('Every packaging job succeeded.')
+    expect(success.stdout).toContain('Every needed job succeeded.')
 
-    for (const job of packagingJobs) {
+    for (const job of needs) {
       for (const result of ['failure', 'cancelled', 'skipped']) {
-        const results = { ...allSuccessful, [job]: { result } }
-        const failed = runGate(results)
-        expect(failed.status, `${job}=${result}: ${failed.stderr}`).toBe(1)
-        expect(failed.stdout, `${job}=${result}`).toContain(`${job}: ${result}`)
+        const outcome = runGate({ ...allSuccessful, [job]: { result } })
+        if (result === 'skipped' && MAY_SKIP.includes(job)) {
+          expect(outcome.status, `${job}=${result}: ${outcome.stderr}`).toBe(0)
+          continue
+        }
+        expect(outcome.status, `${job}=${result}: ${outcome.stderr}`).toBe(1)
+        expect(outcome.stdout, `${job}=${result}`).toContain(`${job}: ${result}`)
       }
     }
   })

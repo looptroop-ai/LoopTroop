@@ -1,10 +1,21 @@
 import { defineConfig } from 'vitest/config'
+import { BaseSequencer, type Reporter, type TestModule, type TestSpecification, type Vitest } from 'vitest/node'
 import react from '@vitejs/plugin-react'
 import { availableParallelism } from 'node:os'
-import { resolve, dirname } from 'path'
+import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { getBackendOrigin, getDocsBaseUrl } from './shared/appConfig.ts'
 import { readPackageVersion } from './scripts/package-version.ts'
+import {
+  assignShards,
+  readTimings,
+  SHARD_PLAN_FILE,
+  SHARD_REPORT_FILE,
+  toTestFile,
+  writeJson,
+  type ShardPlan,
+  type ShardReport,
+} from './scripts/test-shards.ts'
 
 // Never add tests that hard-code ticket/project-specific fixture ids, refs, shortnames, or worktree names.
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -329,6 +340,7 @@ const serverIntegrationTests = [
   'tests/wireContract.test.ts',
   // These policy tests launch shell or Node child processes.
   'tests/ciGatePolicy.test.ts',
+  'tests/gitHooks.test.ts',
   'tests/thirdPartyNotices.test.ts',
   'tests/workflowPolicy.test.ts',
 
@@ -347,6 +359,55 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/interviewBatchClaims.test.ts',
 ] as const
 
+/**
+ * Where a CI shard writes its plan and its report. Set only by the Windows test
+ * lanes, which split one run over two machines (see scripts/test-shards.ts);
+ * every other run keeps Vitest's own sequencer and reporters.
+ */
+const shardDir = process.env.VITEST_SHARD_DIR
+
+/**
+ * Splits by the file times `main` recorded instead of by file count, and writes
+ * down what it chose, so the lane's result job can prove no file was dropped.
+ */
+class TimedShardSequencer extends BaseSequencer {
+  override async shard(specs: TestSpecification[]): Promise<TestSpecification[]> {
+    const { root, shard } = this.ctx.config
+    if (!shard || !shardDir) return super.shard(specs)
+    const fileOf = (spec: TestSpecification) => toTestFile(root, spec.moduleId)
+    const all = [...new Set(specs.map(fileOf))].sort()
+    const files = assignShards(all, readTimings(process.env.VITEST_SHARD_TIMINGS), shard.count)[shard.index - 1] ?? []
+    const plan: ShardPlan = { version: 1, index: shard.index, count: shard.count, all, files }
+    writeJson(join(shardDir, SHARD_PLAN_FILE), plan)
+    const mine = new Set(files)
+    return specs.filter((spec) => mine.has(fileOf(spec)))
+  }
+}
+
+/** What actually ran on this shard, with each file's full duration (setup and imports included). */
+class ShardReporter implements Reporter {
+  private root = ''
+
+  onInit(vitest: Vitest) {
+    this.root = vitest.config.root
+  }
+
+  onTestRunEnd(testModules: ReadonlyArray<TestModule>, unhandledErrors: ReadonlyArray<unknown>, reason: string) {
+    if (!shardDir) return
+    const report: ShardReport = {
+      version: 1,
+      reason,
+      unhandledErrors: unhandledErrors.length,
+      files: testModules.map((testModule) => ({
+        file: toTestFile(this.root, testModule.moduleId),
+        state: testModule.state(),
+        durationMs: testModule.diagnostic().duration,
+      })),
+    }
+    writeJson(join(shardDir, SHARD_REPORT_FILE), report)
+  }
+}
+
 export default defineConfig({
   resolve: sharedResolve,
   cacheDir: './.vitest-cache',
@@ -357,6 +418,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
+    ...(shardDir ? { sequence: { sequencer: TimedShardSequencer }, reporters: ['default', new ShardReporter()] } : {}),
     // Every mock's call history is cleared before each test, so no test can
     // pass or fail on calls an earlier one recorded. Vitest 5 made this the
     // default; it is stated here so the choice survives the next default.

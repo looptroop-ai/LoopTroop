@@ -17,8 +17,34 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The startup restore notice identifies saved local data, and long dialogs stay usable on short screens.
 - The README demo and screenshot gallery show the current app, including manual QA, AI questions and the assistant chat.
 - Security hardening: the ticket-size scan resolves containment before reading, and request-derived values on affected console logs are escaped.
+- CI runs once per commit instead of twice and spreads the slowest Windows tests over two machines, so pull request checks finish sooner; it also gained a workflow security audit, a shuffled-order test lane and a pre-push hook for lint and typecheck.
+
+### Added
+
+- Verify audits every workflow and local action with zizmor, pinned and checksum-verified like actionlint. Any finding fails the check unless `.github/zizmor.yml`, or a comment beside the line, excuses it with a reason.
+- The Ubuntu declared-floor test lane runs files and tests in a shuffled order, which catches a test that only passes, or only fails, after another one. The seed is the run id and the job summary shows the command that reproduces the order.
+- `npm install` points git at `.githooks/`, whose pre-push hook runs `npm run lint` and `npm run typecheck` before every push. `git push --no-verify` skips it once; it does nothing in CI and leaves an existing `core.hooksPath` alone.
+- A CI job that GitHub never gave a machine to, which has happened often since its macOS arm64 runners became scarce in November 2026, is re-run automatically, at most twice. Nothing that ran and failed is re-run.
 
 ### Changed
+
+- CI runs for pull requests, pushes to `main` and on request (`gh workflow run ci.yml --ref <branch>`), no longer once more for every branch push. Each commit used to start two full runs, 86 jobs, against an account limit of 20 jobs and 5 Macs at a time, so most of a run's time was spent waiting for a machine.
+- The required Packaging check now waits on every CI job except the Codecov upload and the advisory early-warning lane, so no failing job can be merged past.
+- A quick Linux install check runs first, and every Mac and Windows job waits for it, so a commit that cannot install no longer starts forty jobs that each fail at their own install.
+- The fourteen small install and package-manager jobs are now one job per platform with one install and one build each. Every step still runs after an earlier one fails, so a run still lists every broken install path. WinGet runs in the Windows binary job, which already has the binary.
+- Each Windows test lane runs on two machines, split by the per-file times `main` recorded on its last run. A result job under the lane's usual name passes only if both halves passed and together ran every test file exactly once.
+- The test suite runs once on Ubuntu with the toolchain Node, collecting coverage there; Verify no longer runs it a second time. Verify runs its remaining checks even after one fails, so one run reports every problem.
+- Renovate rebases its pull requests only when they conflict with `main`. Before merging one that has fallen behind, tick the rebase box in its description.
+- The early-warning lane tests the Node major after the toolchain's, its alpha or nightly builds, worked out from `.nvmrc` on each run. It had been testing Node 26 since the toolchain itself moved to Node 26.
+- The Windows gate decides on Linux whether a pull request touches its files, instead of starting a Windows machine to find out.
+
+### Fixed
+
+- npm's download cache in CI is filled again. setup-node cached by itself in jobs that installed nothing, which then saved empty caches that every later job restored: macOS jobs got 1 KB and downloaded every package. Caches are now saved only on `main`, after a successful install, which also keeps the repository under GitHub's 10 GB cache limit.
+
+### Security
+
+- Fixed the workflow findings the new audit reported: a matrix value spliced into a script in `published-smoke.yml` now goes through the environment, and CI checkouts no longer keep the access token on disk. Release and repair workflows no longer restore an npm cache at all.
 
 - PRD revision instructions now ask for exact current and revised item titles, separate records for changed epics and stories, and a reason for each gap resolution. For resolved gaps, section-only changes can have no affected item references, while mixed changes keep affected stories; unresolved source contradictions use an empty list. Empty change lists remain accepted during coverage; the review can derive a diff from saved PRD versions, and supplied records keep their existing validation behavior.
 - Raw artifact views place **Copy** beside line, character, and estimated token counts. Plain text and missing-output states use the same header layout.

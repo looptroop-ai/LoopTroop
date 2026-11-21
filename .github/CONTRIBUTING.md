@@ -67,7 +67,9 @@ npm run test
 npm run test:coverage
 ```
 
-`npm run test:coverage` runs all four Vitest projects, writes `coverage/lcov.info` and `coverage/coverage-summary.json`, and prints a text report. The command fails below 90% global line coverage or 80% branch coverage. CI uses it in the required Ubuntu Verify job and retains the files as a seven-day artifact. A separate OIDC Codecov job uploads LCOV and reports project and patch status; Codecov is not a required gate.
+`npm run test:coverage` runs all four Vitest projects, writes `coverage/lcov.info` and `coverage/coverage-summary.json`, and prints a text report. The command fails below 90% global line coverage or 80% branch coverage. CI runs it in the Ubuntu toolchain test lane, the required `Test (ubuntu-latest, toolchain floor)` check, and keeps the files as a seven-day artifact. A separate OIDC Codecov job uploads LCOV and reports project and patch status; Codecov is not a required gate.
+
+`npm install` also points git at `.githooks/`. Its pre-push hook runs `npm run lint` and `npm run typecheck`, the checks the required Verify job runs, before every push. To skip it for one push, use `git push --no-verify`. It does nothing in CI, and it leaves an existing `core.hooksPath` setting alone.
 
 `typecheck` runs two projects: the application (`tsconfig.json`) and the root
 `tests/` directory (`tsconfig.tests.json`). They are separate so that adding a
@@ -197,11 +199,14 @@ dependency installs, and `scripts/pin-npm.mjs` enforces its reviewed policy in
 CI. The container install uses the release lockfile with lifecycle scripts
 disabled, so it does not download a second npm version.
 
-`main` requires a branch to be up to date, so merging one Renovate pull request
-leaves the others behind. Renovate rebases them itself in its nightly window.
-To have one sooner, tick the rebase box in its description. Do not press
-GitHub's *Update branch*: that commit is yours, not Renovate's, and Renovate
-stops maintaining a branch someone else has committed to.
+Renovate rebases its pull requests only when they conflict with `main`. A
+rebase used to follow every merge, and each one was a full CI run, mostly for
+pull requests that would be rebased again before anyone merged them. `main`
+requires a branch to be up to date, so before merging a Renovate pull request
+that has fallen behind, tick the rebase box in its description and wait for its
+checks. Do not press GitHub's *Update branch*: that commit is yours, not
+Renovate's, and Renovate stops maintaining a branch someone else has committed
+to.
 
 Renovate raises `engines.node` on its own, to the newest Node release that has
 been out for 90 days within the same major. Everything but the merge happens
@@ -235,6 +240,34 @@ old major in words, so read its pages for those.
 
 The floor cannot go below the oldest Node the npm in `packageManager` supports,
 because the declared-floor test lanes install dependencies on it.
+
+## Continuous integration
+
+CI runs once for each commit of a pull request, and once for each push to
+`main`. A branch with no pull request yet runs nothing on push; to test it
+anyway, run `gh workflow run ci.yml --ref <branch>`.
+
+- `Packaging` decides whether a pull request can merge. It waits on every job
+  except the Codecov upload and the advisory early-warning lane, which tests
+  the next Node major. A job added to the workflow is gated once it is in
+  Packaging's `needs`, and a test fails if it is missing.
+- Every Mac and Windows job waits for `Install check (ubuntu)`, which installs
+  the dependencies and checks the third-party notices. A commit that cannot
+  install fails there, before it holds any Mac or Windows machine.
+- Each Windows test lane runs on two machines. The split follows the per-file
+  times `main` recorded on its last run, and
+  `Test (windows-latest, <lane> floor)` passes only if both halves passed and
+  together ran every test file exactly once.
+- The Ubuntu declared-floor lane runs the tests in a shuffled order, to catch a
+  test that only passes, or only fails, after another one. The seed is the run
+  id, shown in the job summary; reproduce a failure with
+  `npx vitest run --sequence.shuffle --sequence.seed=<seed>`.
+- A job that GitHub never gave a machine to is re-run automatically, at most
+  twice, by `rerun-unacquired.yml`. A job that ran and failed is never re-run:
+  a failure is a finding.
+- Verify lints the workflows with actionlint and audits them with zizmor. A
+  zizmor finding fails the check unless `.github/zizmor.yml`, or a
+  `# zizmor: ignore[...]` comment beside the line, excuses it with a reason.
 
 ## Issues
 

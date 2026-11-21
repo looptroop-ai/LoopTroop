@@ -1,9 +1,20 @@
 name: CI
 
 on:
-  # Verify pull requests before merge and keep direct pushes covered on every branch.
-  push:
+  # One run per commit. A pull request is tested on its merge with the base,
+  # which is what main will hold once it merges; a push to main refreshes what
+  # pull requests read from it: the npm cache, the Windows test timings, and
+  # Codecov's base. A branch with no pull request yet runs nothing on push;
+  # start a run on it with `gh workflow run ci.yml --ref <branch>`.
+  #
+  # Every commit on a branch used to run twice, once for the push and once for
+  # the pull request: 86 jobs per commit, 16 of them on Macs, against an
+  # account limit of 20 jobs and 5 Macs at a time, so most of a run's wall
+  # clock was spent queueing. Both copies also reported under the same
+  # required check names, which GitHub documents as ambiguous.
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -24,38 +35,15 @@ env:
   NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
 
 jobs:
-  dependency-review:
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - name: 'Checkout Repository'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: 'Dependency Review'
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          fail-on-scopes: runtime,development,unknown
-          # Push and manual runs must enforce the same dependency gate as PRs.
-          # Use exact PR commits, or the default branch and head for other events.
-          base-ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
-          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-  # 4,400+ lines of workflow YAML, most of it inline bash and PowerShell that no
-  # other check reads. `npm run lint` covers the application and never opens
-  # `.github/`, so a typo'd expression, an unreachable `if:`, a shell variable
-  # that is never quoted, or a job referencing an output that does not exist all
-  # reach main and are discovered by a release that half-runs.
-  #
-  # actionlint parses the workflow schema, checks every `${{ }}` expression, and
-  # hands `run:` blocks to shellcheck.
-  workflows:
-    name: Workflow lint
+  # Runs first, and every Mac and Windows job waits for it. A commit that cannot
+  # even install would otherwise start forty jobs that all fail at their own
+  # `npm ci` — a broken dependency update did exactly that twelve times in one
+  # week — and Renovate's branches, which fail on stale third-party notices
+  # until a workflow commits regenerated ones, would hold Mac and Windows
+  # machines for a run that is about to be replaced. Linux jobs start straight
+  # away; they are the cheap ones.
+  install-check:
+    name: Install check (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -65,7 +53,58 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
 
+      - name: Install dependencies
+        uses: ./.github/actions/npm-ci
+
+      # A redistributed package must declare a licence. The check also fails
+      # when the committed file is out of date.
+      - name: Verify third-party notices are current
+        run: npm run licenses:check
+
+  verify:
+    # Named for the lane's purpose, not for the version it happens to pin. This
+    # name is what branch protection matches on, so putting the toolchain
+    # version in it made every floor bump a change to repository settings: the
+    # renamed check reported under a name nothing required, the required name
+    # was never reported at all, and GitHub waits on an unreported required
+    # check forever rather than failing it. The bump therefore looked green and
+    # merged never.
+    #
+    # Every check here runs even when an earlier one failed, so one run lists
+    # every problem instead of the first: a lint error used to hide the
+    # typecheck, the build and every verification behind it until the next
+    # push. Only the steps that need the install, or the build, wait for it.
+    # The test suite runs in parallel, in the Ubuntu toolchain test lane.
+    name: Verify (ubuntu, toolchain floor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # 4,400+ lines of workflow YAML, most of it inline bash and PowerShell that
+      # no other check reads. `npm run lint` covers the application and never
+      # opens `.github/`, so a typo'd expression, an unreachable `if:`, a shell
+      # variable that is never quoted, or a job referencing an output that does
+      # not exist all reach main and are discovered by a release that half-runs.
+      #
+      # actionlint parses the workflow schema, checks every `${{ }}` expression,
+      # and hands `run:` blocks to shellcheck.
       - name: Install actionlint
         run: |
           set -euo pipefail
@@ -80,9 +119,10 @@ jobs:
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
 
       # shellcheck ships with the runner image, and actionlint silently skips
-      # shell linting when it is missing — losing half the value of this job
+      # shell linting when it is missing — losing half the value of this check
       # without failing it. Checked explicitly so that stays impossible.
       - name: Check shellcheck is available
+        if: ${{ !cancelled() }}
         run: shellcheck --version
 
       # `-S warning` because every `info` and `style` finding in these workflows
@@ -90,86 +130,92 @@ jobs:
       # blocks, where expansion is exactly what must not happen and double quotes
       # would break the embedded JavaScript. Errors and warnings still fail.
       - name: Lint the workflows
+        if: ${{ !cancelled() }}
         run: /tmp/actionlint -color -shellcheck="shellcheck -S warning"
 
-  verify:
-    # Named for the lane's purpose, not for the version it happens to pin. This
-    # name is what branch protection matches on, so putting the toolchain
-    # version in it made every floor bump a change to repository settings: the
-    # renamed check reported under a name nothing required, the required name
-    # was never reported at all, and GitHub waits on an unreported required
-    # check forever rather than failing it. The bump therefore looked green and
-    # merged never.
-    name: Verify (ubuntu, toolchain floor)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
+      # actionlint asks whether a workflow is well formed; zizmor asks whether it
+      # is safe: template injection, credentials left in a checkout, overbroad
+      # permissions, dangerous triggers, actions with known vulnerabilities, and
+      # hash pins whose version comment lies. Pinned and verified like
+      # actionlint, and online (the token is read-only) so the audits that need
+      # GitHub's API run too. Reviewed exceptions live in .github/zizmor.yml or
+      # as `zizmor: ignore[...]` comments beside the line they excuse.
+      - name: Install zizmor
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          version=1.32.0
+          sha256=bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
+          url="https://github.com/zizmorcore/zizmor/releases/download/v${version}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 -o /tmp/zizmor.tgz "${url}"
+          echo "${sha256}  /tmp/zizmor.tgz" | sha256sum --check --status
+          tar -xzf /tmp/zizmor.tgz -C /tmp zizmor
 
-      # Codecov associates PR coverage with the head SHA, so collect from that
-      # same source tree. Other required jobs keep GitHub's default merge ref.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Audit the workflows for security problems
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /tmp/zizmor --format github --no-progress .github
+
+      - name: Dependency Review
+        if: ${{ !cancelled() }}
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
+          fail-on-scopes: runtime,development,unknown
+          # Push and manual runs must enforce the same dependency gate as PRs.
+          # Use exact PR commits, or the default branch and head for other events.
+          base-ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: ${{ !cancelled() }}
         with:
           # The toolchain pin from .nvmrc, exact rather than floating "24". Not
           # engines.node: the floor users are held to is lower on purpose, and
           # the "declared floor" lanes of the test matrix are what exercise it.
           node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        id: install
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/npm-ci
 
       - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run lint
 
       - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run typecheck
-
-      - name: Test and generate coverage report
-        run: npm run test:coverage
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: coverage-report
-          path: coverage/
-          if-no-files-found: error
-          retention-days: 7
 
       # Exercises real filesystem chownSync and private directory traversal checks
       # as root on Linux, which would otherwise skip on unprivileged runners.
       - name: Test executable resolver as root
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: sudo --preserve-env=PATH env "PATH=$PATH" npm test -- server/lib/__tests__/executablePath.test.ts
 
       - name: Build application
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build
 
       # Guards the packaging premise: a native addon needs a compiler on the
       # user's machine and cannot go into a standalone binary.
       - name: Verify no native addons in the production package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run verify:no-native-addons
 
       # `files` is an allowlist, so both a missing runtime asset and a stray
       # working-tree file are silent until someone installs the tarball.
       - name: Verify published package contents
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run verify:package
 
       # package.json is the single source of truth for the version; a literal
       # copy elsewhere goes stale silently on the next release.
       - name: Verify version is single-sourced
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run verify:version
 
       # Every script in scripts/ is run as `node scripts/<name>.ts` from a
@@ -177,6 +223,7 @@ jobs:
       # them — and it refuses syntax that both `tsc --noEmit` and vitest's
       # esbuild accept. Without this the first place that shows up is a job.
       - name: Verify the release scripts run under bare node
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run verify:strip-types
 
       # Pinned, not @latest: an unpinned validator makes this check
@@ -184,17 +231,13 @@ jobs:
       # Use the prebuilt distribution rather than installing its deprecated
       # transitive npm packages on each run; strict validation stays the same.
       - name: Validate Renovate configuration
+        if: ${{ !cancelled() }}
         run: >-
           docker run --rm
           --mount "type=bind,src=$PWD,dst=/repo,readonly"
           --workdir /repo
           ghcr.io/renovatebot/renovate:44.115.10@sha256:e262ed52b23dd8c545c80faf5b1ad5c95a07b3f198888de8d7b8928f45c307c7
           renovate-config-validator --strict
-
-      # A redistributed package must declare a licence. The check also fails
-      # when the committed file is out of date.
-      - name: Verify third-party notices are current
-        run: npm run licenses:check
 
       # The #135 guard: a floor above what a package feed offers breaks the
       # install instructions for everyone on that feed. A pull request that
@@ -205,14 +248,10 @@ jobs:
       # someone added it to the branch ruleset. Every other pull request skips
       # the network entirely, so no unrelated change waits on a third party.
       #
-      # On every event, not only pull requests. CI runs twice for each commit
-      # on a branch, once for the push and once for the pull request, and both
-      # runs report under this job's required name — which GitHub documents as
-      # ambiguous. A push run that skipped this step would be a green copy of
-      # the check that a red one could be read past. So a push compares with
-      # the default branch, a pull request with its base, and both reach the
-      # same verdict whichever GitHub reads.
+      # A pull request compares with its base, a push to main or a manual run
+      # with the default branch. No event skips the step.
       - name: Check every feed offers a changed Node floor
+        if: ${{ !cancelled() }}
         shell: bash
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
@@ -234,6 +273,7 @@ jobs:
       # Guards against build steps mutating tracked files. Generated output
       # must land in ignored directories so releases are reproducible.
       - name: Verify working tree is clean after build
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             echo "::error::Build modified tracked files. Generated output must not be committed."
@@ -244,12 +284,279 @@ jobs:
 
       # Report-only. Never auto-fix: remediation must be a reviewed change.
       - name: Audit production dependencies
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm audit --omit=dev || true
+
+  test-matrix:
+    # Every lane here blocks. There is deliberately no advisory lane and no
+    # `continue-on-error`: a required check pointed at a continue-on-error job
+    # reports success however the job went, so a lane that is blocking in one
+    # commit and advisory in the next is a required check that quietly stops
+    # meaning anything. `tests/workflowPolicy.test.ts` refuses both.
+    #
+    # `matrix.label` rather than a version: a name branch protection matches
+    # on must not change when the thing it describes is bumped. Both labels
+    # survive a version move — "toolchain floor" for the runtime this
+    # repository builds on, "declared floor" for the one `engines.node`
+    # promises to users. Windows runs the same two lanes, split over two
+    # machines each, in `test-windows` below.
+    #
+    # The `include` entries add to two existing Ubuntu lanes and add no lane:
+    # the toolchain lane collects coverage for Codecov (Verify used to run the
+    # whole suite a second time to do that), and the declared-floor lane runs
+    # files and tests in a shuffled order, which flushes out tests that only
+    # pass after, or only fail after, some other test. Its seed is the run id,
+    # printed in the log and the job summary, so a red run reproduces exactly.
+    name: Test (${{ matrix.os }}, ${{ matrix.label }})
+    needs: install-check
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every platform runs both, because a macOS-only regression would
+        # otherwise reach users.
+        os: [ubuntu-latest, macos-latest]
+        label: [toolchain floor, declared floor]
+        include:
+          - os: ubuntu-latest
+            label: toolchain floor
+            coverage: true
+          - os: ubuntu-latest
+            label: declared floor
+            shuffle: true
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      # Codecov associates PR coverage with the head SHA, so the coverage lane
+      # collects from that same source tree. Every other lane keeps GitHub's
+      # default merge ref.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ matrix.coverage && (github.event.pull_request.head.sha || github.sha) || '' }}
+          persist-credentials: false
+
+      # The runtime this repository builds and ships on, from `.nvmrc`. Exact,
+      # not a floating "24": a range resolves to whatever shipped this week,
+      # so nothing would be pinned to what the container and the release
+      # binaries actually run.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      # The declared-floor lanes then move to the oldest Node `engines.node`
+      # promises. Read from it at run time rather than written here, so that
+      # when Renovate raises the floor — once a Node release is 90 days old —
+      # no workflow file changes: its pull request is finished by a workflow
+      # whose token cannot push to `.github/workflows`.
+      #
+      # The floor cannot go below 24.15.0 while this repository needs npm 12,
+      # which declares `^24.15.0` and has to install the dependencies here.
+      # Below Node 24.13.1 the application itself breaks: `rmSync(path,
+      # { recursive: true, force: true })` does not remove a dangling symlink,
+      # which `clearExecutionSetupRuntimeArtifacts` relies on.
+      - name: Read the declared floor
+        if: matrix.label == 'declared floor'
+        id: floor
+        shell: bash
+        run: >-
+          node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
+          import { readFileSync } from 'node:fs';
+          console.log('node=' + formatNodeVersion(parseNodeFloor(JSON.parse(readFileSync('package.json', 'utf8')).engines.node)))"
+          >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: matrix.label == 'declared floor'
+        with:
+          node-version: ${{ steps.floor.outputs.node }}
+          package-manager-cache: false
+
+      - name: Install dependencies
+        uses: ./.github/actions/npm-ci
+
+      - name: Test
+        if: ${{ !matrix.coverage && !matrix.shuffle }}
+        run: npm run test
+
+      - name: Test and generate coverage report
+        if: ${{ matrix.coverage }}
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: ${{ matrix.coverage }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+      - name: Test in a shuffled order
+        if: ${{ matrix.shuffle }}
+        shell: bash
+        env:
+          SEED: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "Shuffled with seed ${SEED}. Reproduce: \`npx vitest run --sequence.shuffle --sequence.seed=${SEED}\`" >> "$GITHUB_STEP_SUMMARY"
+          npm run test -- --sequence.shuffle --sequence.seed="${SEED}"
+
+  # The two Windows lanes were the slowest in the workflow, 16 to 20 minutes on
+  # one machine: nearly all of it git worktrees and SQLite files on a
+  # filesystem with far more per-call overhead than the other two. So each lane
+  # is split over two machines. The split follows the per-file times main
+  # recorded on its last run (scripts/test-shards.ts) rather than Vitest's
+  # split by file count, which can hand one machine most of the slow files;
+  # with no recording yet it falls back to an even split by count.
+  test-windows:
+    name: Test shard ${{ matrix.shard }}/2 (windows-latest, ${{ matrix.lane }} floor)
+    needs: install-check
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [toolchain, declared]
+        shard: [1, 2]
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      # As in test-matrix: the declared floor is read from engines.node at run time.
+      - name: Read the declared floor
+        if: matrix.lane == 'declared'
+        id: floor
+        shell: bash
+        run: >-
+          node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
+          import { readFileSync } from 'node:fs';
+          console.log('node=' + formatNodeVersion(parseNodeFloor(JSON.parse(readFileSync('package.json', 'utf8')).engines.node)))"
+          >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: matrix.lane == 'declared'
+        with:
+          node-version: ${{ steps.floor.outputs.node }}
+          package-manager-cache: false
+
+      - name: Install dependencies
+        uses: ./.github/actions/npm-ci
+
+      # Written by this lane's result job on every push to main. A miss only
+      # costs balance: the split falls back to an even split by file count.
+      - name: Restore the test timings main recorded
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/test-timings.json
+          key: test-timings-windows-${{ matrix.lane }}-${{ github.run_id }}
+          restore-keys: test-timings-windows-${{ matrix.lane }}-
+
+      - name: Test
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          VITEST_SHARD_DIR: ${{ runner.temp }}/test-shard
+          VITEST_SHARD_TIMINGS: ${{ runner.temp }}/test-timings.json
+        run: npm run test -- --shard="${SHARD}/2"
+
+      # Whatever happened, so the result job can tell a failed shard from one
+      # that never ran.
+      - name: Upload the shard's plan and report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-windows-${{ matrix.lane }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-shard/
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
+
+  # One status per Windows lane, under the name the lane always reported, so
+  # branch protection keeps matching it. It passes only if both halves ran and
+  # passed, and together ran every test file exactly once: a split that drops
+  # a file would otherwise pass in silence, which is worse than slow.
+  test-windows-result:
+    name: Test (windows-latest, ${{ matrix.lane }} floor)
+    needs: test-windows
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [toolchain, declared]
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: |
+            .nvmrc
+            .github/actions/download-artifact
+            scripts/test-shards.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      # A shard that never ran uploads nothing, and the next step says so by
+      # name; a failed download must not stand in for that verdict.
+      - name: Download the shard reports
+        continue-on-error: true
+        uses: ./.github/actions/download-artifact
+        with:
+          pattern: test-windows-${{ matrix.lane }}-shard-*
+          path: ${{ runner.temp }}/shards
+
+      # Named like Packaging's gate on purpose: a failure here means a shard
+      # failed or never ran, which rerun-unacquired.yml reads off that name.
+      - name: Require every needed job to have succeeded
+        id: require
+        if: ${{ !cancelled() }}
+        run: node scripts/test-shards.ts require --dir "${RUNNER_TEMP}/shards" --count 2
+
+      - name: Check the shards together ran every test file
+        if: ${{ !cancelled() && steps.require.outcome == 'success' }}
+        run: node scripts/test-shards.ts cover --dir "${RUNNER_TEMP}/shards" --count 2
+
+      - name: Record the file timings for the next run
+        id: timings
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && success()
+        run: node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings.json"
+
+      - name: Save the file timings
+        if: steps.timings.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/test-timings.json
+          key: test-timings-windows-${{ matrix.lane }}-${{ github.run_id }}
 
   codecov:
     name: Codecov
     runs-on: ubuntu-latest
-    needs: verify
+    needs: test-matrix
     timeout-minutes: 10
     permissions:
       contents: read
@@ -345,109 +652,34 @@ jobs:
           plugins: noop
           fail_ci_if_error: true
 
-  test-matrix:
-    # Every lane here blocks. There is deliberately no advisory lane and no
-    # `continue-on-error`: a required check pointed at a continue-on-error job
-    # reports success however the job went, so a lane that is blocking in one
-    # commit and advisory in the next is a required check that quietly stops
-    # meaning anything. `tests/workflowPolicy.test.ts` refuses both.
-    #
-    # `matrix.label` rather than a version: a name branch protection matches
-    # on must not change when the thing it describes is bumped. Both labels
-    # survive a version move — "toolchain floor" for the runtime this
-    # repository builds on, "declared floor" for the one `engines.node`
-    # promises to users.
-    # This skipped push copy is not the required merge-ref test. Give only that
-    # row a separate name so its success cannot satisfy or mask the PR check.
-    name: Test (${{ matrix.os }}, ${{ matrix.label }})${{ github.event_name == 'push' && matrix.os == 'ubuntu-latest' && matrix.label == 'toolchain floor' && ' [push]' || '' }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 30 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Every platform runs both, because a macOS-only regression would
-        # otherwise reach users.
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        label: [toolchain floor, declared floor]
+  # Decides on Linux whether the Windows gate below has anything to check, so a
+  # pull request that touches none of its files does not boot a Windows machine
+  # just to find that out. A push to main has no diff to scope, so the gate
+  # does not run there.
+  windows-gate-scope:
+    name: Windows gate scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      affected: ${{ steps.scope.outputs.affected }}
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      # The runtime this repository builds and ships on, from `.nvmrc`. Exact,
-      # not a floating "24": a range resolves to whatever shipped this week,
-      # so nothing would be pinned to what the container and the release
-      # binaries actually run.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      # The declared-floor lanes then move to the oldest Node `engines.node`
-      # promises. Read from it at run time rather than written here, so that
-      # when Renovate raises the floor — once a Node release is 90 days old —
-      # no workflow file changes: its pull request is finished by a workflow
-      # whose token cannot push to `.github/workflows`.
-      #
-      # The floor cannot go below 24.15.0 while this repository needs npm 12,
-      # which declares `^24.15.0` and has to install the dependencies here.
-      # Below Node 24.13.1 the application itself breaks: `rmSync(path,
-      # { recursive: true, force: true })` does not remove a dangling symlink,
-      # which `clearExecutionSetupRuntimeArtifacts` relies on.
-      - name: Read the declared floor
-        if: matrix.label == 'declared floor'
-        id: floor
-        shell: bash
-        run: >-
-          node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
-          import { readFileSync } from 'node:fs';
-          console.log('node=' + formatNodeVersion(parseNodeFloor(JSON.parse(readFileSync('package.json', 'utf8')).engines.node)))"
-          >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        if: matrix.label == 'declared floor'
-        with:
-          node-version: ${{ steps.floor.outputs.node }}
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Test
-        # Verify covers this lane on pushes; the push-only job name keeps this
-        # skipped step out of the identically named required pull_request check.
-        if: github.event_name != 'push' || matrix.os != 'ubuntu-latest' || matrix.label != 'toolchain floor'
-        run: npm run test
-
-  # A small Windows PR gate for changes that can alter executable resolution or
-  # the published-smoke workflow. The normal matrix is broad, but it is not a
-  # substitute for this profile: the extensionless-first shim regression only
-  # exists on Windows and must run against the real win32 path rules.
-  windows-gate:
-    name: Windows gate profile (affected files)
-    if: github.event_name == 'pull_request'
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
+      # Full history for the two-commit diff, without the file contents.
       - name: Checkout the pull request
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - name: Check whether the Windows profile is affected
         id: scope
+        if: github.event_name == 'pull_request'
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -471,26 +703,38 @@ jobs:
           echo "affected=${affected}" >> "$GITHUB_OUTPUT"
           echo "Windows gate affected: ${affected}"
 
+  # A small Windows PR gate for changes that can alter executable resolution or
+  # the published-smoke workflow. The normal matrix is broad, but it is not a
+  # substitute for this profile: the extensionless-first shim regression only
+  # exists on Windows and must run against the real win32 path rules.
+  windows-gate:
+    name: Windows gate profile (affected files)
+    needs: [install-check, windows-gate-scope]
+    if: needs.windows-gate-scope.outputs.affected == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        if: steps.scope.outputs.affected == 'true'
         with:
           node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        if: steps.scope.outputs.affected == 'true'
-        run: node scripts/pin-npm.mjs
-        shell: bash
+          package-manager-cache: false
 
       - name: Install dependencies
-        if: steps.scope.outputs.affected == 'true'
-        run: npm ci
+        uses: ./.github/actions/npm-ci
 
       # The driver installs this published candidate itself. Resolve the stable
       # package that is actually available instead of the checkout version,
       # which may be a release candidate that has not reached npm yet.
       - name: Resolve a published npm candidate
-        if: steps.scope.outputs.affected == 'true'
         id: candidate
         shell: bash
         run: |
@@ -504,7 +748,6 @@ jobs:
       # first in PATH. The executablePath suite checks the same resolver's
       # ENOENT path preservation.
       - name: Run the Windows resolver and published-smoke gates
-        if: steps.scope.outputs.affected == 'true'
         shell: bash
         env:
           VERSION: ${{ steps.candidate.outputs.version }}
@@ -523,10 +766,25 @@ jobs:
   # already holds every file the daemon needs. This installs the tarball the way
   # a user would and drives the CLI against it, which is the only place a
   # mispacked asset or a cwd-relative path can fail.
+  #
+  # One job per platform runs every install path that platform has, after one
+  # checkout, one `npm ci` and one build: the packed tarball installed
+  # globally on the declared floor, the installer wrappers, `bun`, `pnpm` and
+  # `yarn` global installs, the Linux-built bundle run bare, and Homebrew. They
+  # used to be fourteen jobs, each spending a minute or more on its own setup
+  # to do a minute or two of work, and every one of the Mac ones was another
+  # chance at GitHub's macOS runner shortage. Each step still runs when an
+  # earlier one failed, so a run lists every broken path as the separate jobs
+  # did.
+  #
+  # Order matters. Steps that change the rest of the job for good come last:
+  # the package managers put their own directories on PATH, the declared floor
+  # replaces the toolchain Node, and Homebrew's directory goes first on PATH.
   smoke-install:
     name: Install smoke test (${{ matrix.os }})
+    needs: [install-check, bundle]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -541,26 +799,132 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # Built the way every other job builds — the toolchain Node and npm 12 —
       # so the dependency install keeps its install-script policy.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/npm-ci
 
       - name: Build application
+        id: build
         run: npm run build
+
+      # The two installer wrappers are what looptroop.ovh/install serves, and the
+      # core they embed is unit-tested. What is not covered by that is the
+      # wrappers themselves: a broken heredoc, a missing `param` block, or a
+      # PowerShell here-string that swallowed its terminator all pass the unit
+      # tests and fail on a user's first command. `--tarball`, not the network
+      # path, because hitting the GitHub API from every runner on every push is
+      # slow and rate-limited; the network path is proved against a real release
+      # by `published-smoke.yml`, which runs the published one-liners — on Linux
+      # and macOS as well as Windows, and both the default and `--binary` modes —
+      # after the release has been un-drafted.
+      - name: Install through the real installer wrapper
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node scripts/smoke-installer.mjs
+
+      # Windows PowerShell 5.1, which is what a user who has never installed
+      # PowerShell 7 runs `irm .../install.ps1 | iex` in. It is a different
+      # runtime from pwsh, and it is the one that ships with Windows, so the
+      # documented one-liner has to work there — the step above proves only
+      # pwsh.
+      - name: Install through the wrapper under Windows PowerShell 5.1
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Windows' }}
+        run: node scripts/smoke-installer.mjs --shell powershell
+
+      # Homebrew's own checks, run before anything is published rather than
+      # after: the tap has no CI of its own, so an objection discovered
+      # afterwards is already on somebody's machine. Offline, against a
+      # release-shaped formula — `--online` fetches the URL and verifies the
+      # checksum, which only means anything once the release assets exist, and
+      # the publish job does that. Before `brew update` below, as it always ran.
+      - name: Audit the formula this release would publish
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: >
+          node scripts/audit-formula.ts
+          --version 9.9.9
+          --url https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz
+          --sha256 0000000000000000000000000000000000000000000000000000000000000000
+
+      # The bundle the managed package channels install is resolved and archived
+      # once, on Linux, in the bundle job. The portability gate in
+      # build-bundle.mjs proves no package *declares* itself platform-specific;
+      # only running it proves the tree actually executes. Windows runs it in
+      # channel-windows, beside Scoop and Chocolatey.
+      - name: Download the bundle
+        id: bundle
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        uses: ./.github/actions/download-artifact
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle
+
+      # No `npm ci` behind it that matters: the whole claim is that this archive
+      # needs nothing but Node.
+      - name: Unpack the bundle and drive the CLI
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        shell: bash
+        run: node scripts/smoke-bundle.mjs --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+
+      # The roadmap claimed for a long time that `bun add -g` and `pnpm add -g`
+      # work natively, and nothing had ever run either. They do work — but both
+      # installations reported themselves as `npm` and were handed `npm install
+      # -g looptroop@latest`, which installs a second copy instead of upgrading.
+      # Found by running the thing rather than by reading it. Windows runs them
+      # too because the shim is the part that differs — `.cmd` wrappers there,
+      # symlinks and scripts elsewhere — and the shim is what a user invokes.
+      #
+      # Each manager is installed from npm at a pinned, integrity-locked version
+      # rather than through a setup action, so there is one place versions live
+      # and no new third-party action in the supply chain. The setup copies
+      # Bun's native binary after npm finishes, avoiding its Windows shim race,
+      # and puts the manager's directory on PATH for the rest of the job.
+      - name: Install bun
+        id: bun
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os != 'macOS' }}
+        shell: bash
+        run: |
+          npm ci --ignore-scripts --prefix scripts/ci-tools/bun
+          node scripts/setup-ci-tool.cjs bun
+
+      - name: Install globally with bun and check what it reports
+        if: ${{ !cancelled() && steps.bun.outcome == 'success' }}
+        run: node scripts/smoke-node-manager.mjs bun
+
+      - name: Install pnpm
+        id: pnpm
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os != 'macOS' }}
+        shell: bash
+        run: |
+          npm ci --ignore-scripts --prefix scripts/ci-tools/pnpm
+          node scripts/setup-ci-tool.cjs pnpm
+
+      - name: Install globally with pnpm and check what it reports
+        if: ${{ !cancelled() && steps.pnpm.outcome == 'success' }}
+        run: node scripts/smoke-node-manager.mjs pnpm
+
+      - name: Install yarn
+        id: yarn
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os != 'macOS' }}
+        shell: bash
+        run: |
+          npm ci --ignore-scripts --prefix scripts/ci-tools/yarn
+          node scripts/setup-ci-tool.cjs yarn
+
+      - name: Install globally with yarn and check what it reports
+        if: ${{ !cancelled() && steps.yarn.outcome == 'success' }}
+        run: node scripts/smoke-node-manager.mjs yarn
 
       - name: Read the declared floor
         id: floor
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: >-
           node --input-type=module -e "import { formatNodeVersion, parseNodeFloor } from './shared/nodeFloor.ts';
@@ -573,9 +937,12 @@ jobs:
       # npm. Every job used to, which is how `engines.npm` came to name an npm no
       # Node release has ever bundled while every lane stayed green.
       # `tests/workflowPolicy.test.ts` holds this job to that order.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - id: floor-node
+        if: ${{ !cancelled() && steps.floor.outcome == 'success' }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ steps.floor.outputs.node }}
+          package-manager-cache: false
 
       # The script mocks OpenCode itself, packs into its own scratch tree, and
       # tears the whole thing down in a `finally`.
@@ -590,6 +957,7 @@ jobs:
       # which npm's launcher deliberately does not read, so the install itself
       # is unaffected. The comparison below fails the job if it ever leaks again.
       - name: Pack, install globally, and drive the CLI
+        if: ${{ !cancelled() && steps.floor-node.outcome == 'success' }}
         shell: bash
         env:
           npm_config_prefix: ${{ runner.temp }}/floor-npm-prefix
@@ -602,6 +970,150 @@ jobs:
             exit 1
           fi
           node scripts/smoke-install.mjs
+
+      # Homebrew, through itself, from a throwaway tap and a bundle served on
+      # loopback. Rendering a formula and checking its text proves the text;
+      # what it cannot prove is that `brew install` produces a command that runs
+      # — and every mistake available here is of that kind. The formula also
+      # serves Linuxbrew, and the docs say so. The public tap is never touched.
+      #
+      # Homebrew is installed on the ubuntu images but deliberately kept off
+      # PATH, so `brew` is simply not a command there until this runs.
+      - name: Put Linuxbrew on PATH
+        id: linuxbrew
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          brew --version
+
+      # The image's Homebrew is a snapshot, and the one on the ubuntu runners
+      # aborted mid-install with "unknown install step: run" from its own
+      # install-steps runner — while pouring a core dependency, and telling us
+      # to run `brew update` before reporting it. Updating first is both the
+      # remedy it asks for and what a user's machine does on its own.
+      - name: Update Homebrew
+        id: brew-update
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' && (runner.os == 'macOS' || steps.linuxbrew.outcome == 'success') }}
+        run: brew update --quiet
+
+      # `--strip-node` on macOS only, and it is the point of the step there:
+      # node@24 is keg-only, so the formula has to put the keg's node on PATH
+      # itself. On a runner that already has Node, a formula that forgot would
+      # pass anyway and fail for the user who does not.
+      - name: Install it with Homebrew the way a user would, and run it
+        if: ${{ !cancelled() && steps.brew-update.outcome == 'success' }}
+        shell: bash
+        run: >
+          node scripts/smoke-channel.ts
+          --channel homebrew
+          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+          ${{ runner.os == 'macOS' && '--strip-node' || '' }}
+
+  # Windows installs through its package managers, from the Linux-built bundle:
+  # the bundle run bare, Chocolatey, and Scoop, through the managers themselves
+  # rather than from rendered text. WinGet takes the standalone binary instead
+  # and runs in the binary job, which already has it.
+  channel-windows:
+    name: Channel install (windows-latest)
+    needs: [install-check, bundle]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Download the bundle
+        id: bundle
+        uses: ./.github/actions/download-artifact
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle
+
+      # No `npm ci`: the whole claim is that this archive needs nothing but Node.
+      - name: Unpack the bundle and drive the CLI
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        shell: bash
+        run: node scripts/smoke-bundle.mjs --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+
+      # Chocolatey, which unlike Scoop is preinstalled on the Windows runners.
+      # Packed and installed from the local file rather than the community feed:
+      # moderation is unbounded, so a package that installs and then does not run
+      # would otherwise be discovered by whoever installed it. A release-shaped
+      # URL, recorded in VERIFICATION.txt and never fetched from: the release
+      # this would name does not exist while CI is running.
+      - name: Pack the Chocolatey package
+        id: choco-pack
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        shell: bash
+        run: >
+          node scripts/build-choco.ts
+          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+          --url "https://github.com/looptroop-ai/LoopTroop/releases/download/v$(node -p "require('./package.json').version")/$(basename "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)")"
+          --out "${RUNNER_TEMP}/choco"
+
+      - name: Install it with Chocolatey, run it, and uninstall it again
+        if: ${{ !cancelled() && steps.choco-pack.outcome == 'success' }}
+        shell: bash
+        run: node scripts/smoke-choco.ts --nupkg "$(ls "${RUNNER_TEMP}"/choco/*.nupkg)"
+
+      # Last, because Scoop's shims go on PATH for the rest of the job. Not
+      # preinstalled on the Windows runners, unlike Chocolatey. `-RunAsAdmin`
+      # because the runner user is an administrator and Scoop refuses to install
+      # for one otherwise.
+      - name: Install Scoop
+        id: scoop
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          iex "& {$(irm https://get.scoop.sh)} -RunAsAdmin"
+          # The installer adds the shim directory to the *user* PATH, which this
+          # process has already read; without this the next step's `scoop` is
+          # not a command.
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
+          scoop --version
+
+          # Scoop ships its own private 7-Zip and downloads it the first time it
+          # has to unpack anything. That download failed the job once already —
+          # `The SSL connection could not be established` fetching 7z2602-x64.msi
+          # from GitHub releases — which is a network hiccup entirely outside
+          # this repository failing a check about a LoopTroop manifest.
+          #
+          # The runner image already carries 7-Zip, so pointing Scoop at it
+          # removes the download rather than retrying it. Retrying would re-run
+          # the same fetch against the same flaky path; this makes the fetch
+          # unnecessary.
+          #
+          # `Get-Command` first, and fatal: if the image ever stops putting 7z
+          # on PATH, this must fail here saying so, rather than silently leaving
+          # `use_external_7zip` pointing at nothing and turning a fixed flake
+          # into a permanent red.
+          Get-Command 7z -ErrorAction Stop | Out-Null
+          scoop config use_external_7zip true
+
+      - name: Install it with Scoop the way a user would, and run it
+        if: ${{ !cancelled() && steps.scoop.outcome == 'success' }}
+        shell: bash
+        run: >
+          node scripts/smoke-channel.ts
+          --channel scoop
+          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
 
   # The image is a release channel like the tarball, and nothing above ever
   # builds it. Without this job a Dockerfile that stopped building, or an image
@@ -628,17 +1140,15 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/npm-ci
 
       - name: Build application
         run: npm run build
@@ -682,132 +1192,11 @@ jobs:
       - name: Run the container smoke test
         run: node scripts/smoke-container.mjs --image looptroop:smoke
 
-  # A global install belongs to the machine, not the user: /usr/local/lib, a
-  # Homebrew cellar, C:\Program Files, a locked-down image layer. Everything
-  # above installs into a prefix the job owns, so a cache or lock dropped beside
-  # the bundle passes there and fails on the first machine where the install is
-  # not writable.
-  #
-  # Linux only, and the script says so itself rather than pretending: proving
-  # this needs a filesystem the running user cannot write to, and only the bind
-  # mount is enforced against root. macOS would need a disk image and Windows an
-  # ACL an administrator can take ownership around — machinery enough to become
-  # its own source of flakes, for a property that is not platform-specific.
-  #
-  # The two installer wrappers are what looptroop.ovh/install serves, and the
-  # core they embed is unit-tested. What is not covered by that is the wrappers
-  # themselves: a broken heredoc, a missing `param` block, or a PowerShell
-  # here-string that swallowed its terminator all pass the unit tests and fail on
-  # a user's first command. `--tarball`, not the network path, because hitting
-  # the GitHub API from every runner on every push is slow and rate-limited; the
-  # network path is proved against a real release by `published-smoke.yml`,
-  # which runs the published one-liners — on Linux and macOS as well as
-  # Windows, and both the default and `--binary` modes — after the release has
-  # been un-drafted. That claim stood here for several releases before any job
-  # made it true, so it is worth keeping the pointer accurate.
-  smoke-installer:
-    name: Installer script (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build application
-        run: npm run build
-
-      - name: Install through the real installer wrapper
-        run: node scripts/smoke-installer.mjs
-
-      # Windows PowerShell 5.1, which is what a user who has never installed
-      # PowerShell 7 runs `irm .../install.ps1 | iex` in. It is a different
-      # runtime from pwsh, and it is the one that ships with Windows, so the
-      # documented one-liner has to work there — the step above proves only
-      # pwsh.
-      - name: Install through the wrapper under Windows PowerShell 5.1
-        if: runner.os == 'Windows'
-        run: node scripts/smoke-installer.mjs --shell powershell
-
-  # The roadmap has claimed since it was written that `bun add -g` and
-  # `pnpm add -g` work natively, and until now nothing had ever run either. They
-  # do work — but both installations reported themselves as `npm` and were handed
-  # `npm install -g looptroop@latest`, which does not upgrade either of them. It
-  # installs a second copy under npm's prefix and leaves the first where it was,
-  # after which PATH order decides which one answers.
-  #
-  # That is the Homebrew-upgrade bug in a different manager, and it was found by
-  # running the thing rather than by reading it. Windows is in the matrix because
-  # the shim is the part that differs — `.cmd` wrappers there, symlinks and
-  # scripts elsewhere — and the shim is what a user actually invokes.
-  #
-  # Both managers are installed from npm at pinned versions rather than through
-  # a setup action, so there is one place versions live and no new third-party
-  # action in the supply chain.
-  node-managers:
-    name: Global install (${{ matrix.manager }} on ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        manager: [bun, pnpm, yarn]
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build application
-        run: npm run build
-
-      # Each manager has its own integrity-locked install. Our setup copies the
-      # native Bun binary after npm finishes, avoiding its Windows shim race.
-      - name: Install ${{ matrix.manager }}
-        shell: bash
-        run: |
-          npm ci --ignore-scripts --prefix scripts/ci-tools/${{ matrix.manager }}
-          node scripts/setup-ci-tool.cjs ${{ matrix.manager }}
-
-      - name: Install globally with ${{ matrix.manager }} and check what it reports
-        run: node scripts/smoke-node-manager.mjs ${{ matrix.manager }}
-
   # The bundle the managed package channels will install. It is resolved and
-  # archived once, on Linux, and then unpacked by Homebrew on macOS and by Scoop
-  # and Chocolatey on Windows — so it is built here exactly once too, and the
-  # same bytes are carried to the other two runners.
+  # archived once, on Linux, and then unpacked by Homebrew on macOS and Linux,
+  # by Scoop and Chocolatey on Windows, and by makepkg in the Arch container —
+  # so it is built here exactly once too, and the same bytes are carried to
+  # the other runners.
   bundle:
     name: Bundle (build)
     runs-on: ubuntu-latest
@@ -819,17 +1208,15 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/npm-ci
 
       - name: Build application
         run: npm run build
@@ -858,212 +1245,7 @@ jobs:
           path: ${{ runner.temp }}/bundle-a/*.tar.gz
           if-no-files-found: error
           retention-days: 7
-
-  # Downloads the Linux-built bundle and runs it. The portability gate in
-  # build-bundle.mjs proves no package *declares* itself platform-specific;
-  # only this proves the tree actually executes. Without it the first machine to
-  # run those node_modules on macOS is a user's.
-  bundle-runs:
-    name: Bundle runs (${{ matrix.os }})
-    needs: [bundle]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-
-      - name: Download the bundle
-        uses: ./.github/actions/download-artifact
-        with:
-          name: bundle
-          path: ${{ runner.temp }}/bundle
-
-      # No `npm ci`: the whole claim is that this archive needs nothing but Node.
-      - name: Unpack it and drive the CLI
-        shell: bash
-        run: node scripts/smoke-bundle.mjs --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
-
-  # Homebrew's own checks, run before anything is published rather than after:
-  # the tap has no CI of its own, so an objection discovered afterwards is
-  # already on somebody's machine. Offline, against a release-shaped formula —
-  # `--online` fetches the URL and verifies the checksum, which only means
-  # anything once the release assets exist, and the publish job does that.
-  formula-audit:
-    name: Formula audit (macos)
-    runs-on: macos-latest
-    timeout-minutes: 20
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-
-      - name: Audit the formula this release would publish
-        run: >
-          node scripts/audit-formula.ts
-          --version 9.9.9
-          --url https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz
-          --sha256 0000000000000000000000000000000000000000000000000000000000000000
-
-  # Installs through the package managers themselves, from a throwaway tap and a
-  # local manifest pointing at a bundle served on loopback. Rendering a formula
-  # and checking its text proves the text; what it cannot prove is that `brew
-  # install` produces a command that runs — and every mistake available here is
-  # of that kind. The public tap and bucket are never touched.
-  channel-install:
-    name: Channel install (${{ matrix.channel }} on ${{ matrix.os }})
-    needs: [bundle]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The formula also serves Linuxbrew, and the docs will say so.
-          - { channel: homebrew, os: ubuntu-latest }
-          - { channel: homebrew, os: macos-latest }
-          - { channel: scoop, os: windows-latest }
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-
-      - name: Download the bundle
-        uses: ./.github/actions/download-artifact
-        with:
-          name: bundle
-          path: ${{ runner.temp }}/bundle
-
-      # Homebrew is installed on the ubuntu images but deliberately kept off
-      # PATH, so `brew` is simply not a command there until this runs.
-      - name: Put Linuxbrew on PATH
-        if: matrix.channel == 'homebrew' && runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
-            echo "::error::This runner image no longer ships Homebrew at the expected path."
-            exit 1
-          fi
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
-          brew --version
-
-      # The image's Homebrew is a snapshot, and the one on the ubuntu runners
-      # aborted mid-install with "unknown install step: run" from its own
-      # install-steps runner — while pouring a core dependency, and telling us
-      # to run `brew update` before reporting it. Updating first is both the
-      # remedy it asks for and what a user's machine does on its own.
-      - name: Update Homebrew
-        if: matrix.channel == 'homebrew'
-        run: brew update --quiet
-
-      # Not preinstalled on the Windows runners, unlike Chocolatey. `-RunAsAdmin`
-      # because the runner user is an administrator and Scoop refuses to install
-      # for one otherwise.
-      - name: Install Scoop
-        if: matrix.channel == 'scoop'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          iex "& {$(irm https://get.scoop.sh)} -RunAsAdmin"
-          # The installer adds the shim directory to the *user* PATH, which this
-          # process has already read; without this the next step's `scoop` is
-          # not a command.
-          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
-          scoop --version
-
-          # Scoop ships its own private 7-Zip and downloads it the first time it
-          # has to unpack anything. That download failed the job once already —
-          # `The SSL connection could not be established` fetching 7z2602-x64.msi
-          # from GitHub releases — which is a network hiccup entirely outside
-          # this repository failing a check about a LoopTroop manifest.
-          #
-          # The runner image already carries 7-Zip, so pointing Scoop at it
-          # removes the download rather than retrying it. Retrying would re-run
-          # the same fetch against the same flaky path; this makes the fetch
-          # unnecessary.
-          #
-          # `Get-Command` first, and fatal: if the image ever stops putting 7z
-          # on PATH, this must fail here saying so, rather than silently leaving
-          # `use_external_7zip` pointing at nothing and turning a fixed flake
-          # into a permanent red.
-          Get-Command 7z -ErrorAction Stop | Out-Null
-          scoop config use_external_7zip true
-
-      # `--strip-node` on macOS only, and it is the point of the job there:
-      # node@24 is keg-only, so the formula has to put the keg's node on PATH
-      # itself. On a runner that already has Node, a formula that forgot to
-      # would pass anyway and fail for the user who does not.
-      - name: Install it the way a user would, and run it
-        shell: bash
-        run: >
-          node scripts/smoke-channel.ts
-          --channel ${{ matrix.channel }}
-          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
-          ${{ matrix.os == 'macos-latest' && '--strip-node' || '' }}
-
-  # Chocolatey, which unlike Scoop is preinstalled on the Windows runners.
-  # Packed and installed from the local file rather than the community feed:
-  # moderation is unbounded, so a package that installs and then does not run
-  # would otherwise be discovered by whoever installed it.
-  choco-install:
-    name: Chocolatey install (windows)
-    needs: [bundle]
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-
-      - name: Download the bundle
-        uses: ./.github/actions/download-artifact
-        with:
-          name: bundle
-          path: ${{ runner.temp }}/bundle
-
-      # A release-shaped URL, recorded in VERIFICATION.txt and never fetched
-      # from: the release this would name does not exist while CI is running.
-      - name: Pack the Chocolatey package
-        shell: bash
-        run: >
-          node scripts/build-choco.ts
-          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
-          --url "https://github.com/looptroop-ai/LoopTroop/releases/download/v$(node -p "require('./package.json').version")/$(basename "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)")"
-          --out "${RUNNER_TEMP}/choco"
-
-      - name: Install it, run it, and uninstall it again
-        shell: bash
-        run: node scripts/smoke-choco.ts --nupkg "$(ls "${RUNNER_TEMP}"/choco/*.nupkg)"
-
+          overwrite: true
 
   # The standalone binaries: LoopTroop with a Node runtime inside it, for
   # machines that have none. Built on the runner that matches the target,
@@ -1082,6 +1264,7 @@ jobs:
   # release, because `build` requires all four archives.
   binary:
     name: Binary (${{ matrix.target }})
+    needs: install-check
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -1094,20 +1277,18 @@ jobs:
           - { os: windows-latest, target: win-x64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           # Node 26.9.0 is the standalone builder runtime. Package, npm and
           # container jobs keep the `.nvmrc` toolchain pin, which is above the
           # `engines.node` floor users are held to.
           node-version: 26.9.0
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/npm-ci
 
       - name: Build application
         run: npm run build
@@ -1126,12 +1307,14 @@ jobs:
       # it.
       - name: Build the binary twice and require identical bytes
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           node scripts/build-binary.mjs --out "${RUNNER_TEMP}/bin-a"
           node scripts/build-binary.mjs --out "${RUNNER_TEMP}/bin-b"
-          a=$(openssl dgst -sha256 -r "${RUNNER_TEMP}"/bin-a/looptroop-*-${{ matrix.target }}* | cut -d' ' -f1 | sort | tr -d '\n')
-          b=$(openssl dgst -sha256 -r "${RUNNER_TEMP}"/bin-b/looptroop-*-${{ matrix.target }}* | cut -d' ' -f1 | sort | tr -d '\n')
+          a=$(openssl dgst -sha256 -r "${RUNNER_TEMP}"/bin-a/looptroop-*-"${TARGET}"* | cut -d' ' -f1 | sort | tr -d '\n')
+          b=$(openssl dgst -sha256 -r "${RUNNER_TEMP}"/bin-b/looptroop-*-"${TARGET}"* | cut -d' ' -f1 | sort | tr -d '\n')
           if [ "${a}" != "${b}" ]; then
             echo "::error::Two builds of this commit produced different binaries."
             exit 1
@@ -1139,18 +1322,20 @@ jobs:
           echo "Reproducible."
 
       # This is a blocking application check of the runtime that will ship in
-      # the executable. The ordinary Node 26 early-warning lane is advisory;
+      # the executable. The ordinary early-warning lane is advisory;
       # this command runs the built artifact itself and therefore cannot be
       # replaced by a compatible-but-different host runtime.
       - name: Run blocking application checks on the embedded runtime
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           binary=$(find "${RUNNER_TEMP}/bin-a" -maxdepth 1 -type f \
-            -name 'looptroop-*-${{ matrix.target }}*' \
+            -name "looptroop-*-${TARGET}*" \
             ! -name '*.tar.gz' ! -name '*.zip' | head -1)
           if [ -z "${binary}" ]; then
-            echo "::error::The binary build produced no executable for ${{ matrix.target }}."
+            echo "::error::The binary build produced no executable for ${TARGET}."
             exit 1
           fi
           test "$("${binary}" --version)" = "$(node -p 'require("./package.json").version')"
@@ -1206,53 +1391,20 @@ jobs:
           archive=$(find "${RUNNER_TEMP}/bin-a" -maxdepth 1 \( -name 'looptroop-*.tar.gz' -o -name 'looptroop-*.zip' \) | head -1)
           node scripts/smoke-binary-install.mjs --archive "${archive}"
 
-      - name: Upload the archive
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: binary-${{ matrix.target }}
-          path: |
-            ${{ runner.temp }}/bin-a/*.tar.gz
-            ${{ runner.temp }}/bin-a/*.zip
-          if-no-files-found: error
-          retention-days: 7
-
-
-  # WinGet, from manifests rendered in the job and the Windows binary archive
-  # served on loopback — never the public winget-pkgs repository. A submission
-  # there is a human-reviewed pull request, so the package is proved before it
-  # is offered rather than after.
-  #
-  # This channel installs the standalone binary rather than the bundle the
-  # other three take, and not by preference: `winget validate` refuses a
-  # portable whose `RelativeFilePath` is anything but an `.exe`, and rejected
-  # the bundle's `.cmd` shim outright. Keeping that rejection caught here is
-  # most of why this job exists.
-  winget-install:
-    name: WinGet install (windows)
-    needs: [binary]
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-
-      - name: Download the Windows binary
-        uses: ./.github/actions/download-artifact
-        with:
-          name: binary-win-x64
-          path: ${{ runner.temp }}/binary
-
+      # WinGet, from manifests rendered here and this archive served on loopback
+      # — never the public winget-pkgs repository. A submission there is a
+      # human-reviewed pull request, so the package is proved before it is
+      # offered rather than after. This channel installs the standalone binary
+      # rather than the bundle the others take, and not by preference: `winget
+      # validate` refuses a portable whose `RelativeFilePath` is anything but an
+      # `.exe`, and rejected the bundle's `.cmd` shim outright. Keeping that
+      # rejection caught here is most of why this step exists.
+      #
       # Preinstalled on the Windows Server 2025 image and absent from 2022.
       # Checked rather than assumed, so a runner image change fails with a clear
       # message instead of deep inside the smoke script.
       - name: Check winget is available
+        if: matrix.target == 'win-x64'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1267,15 +1419,40 @@ jobs:
       # rather than a missing setting. Needs administrator rights, which the
       # runner has.
       - name: Allow installing from a local manifest
+        if: matrix.target == 'win-x64'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           winget settings --enable LocalManifestFiles
 
-      - name: Validate the manifests, install, run, and uninstall
+      - name: Validate the WinGet manifests, install, run, and uninstall
+        if: matrix.target == 'win-x64'
         shell: bash
-        run: node scripts/smoke-winget.ts --archive "$(ls "${RUNNER_TEMP}"/binary/*.zip)"
+        run: node scripts/smoke-winget.ts --archive "$(ls "${RUNNER_TEMP}"/bin-a/*.zip)"
 
+      - name: Upload the archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/bin-a/*.tar.gz
+            ${{ runner.temp }}/bin-a/*.zip
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  # A global install belongs to the machine, not the user: /usr/local/lib, a
+  # Homebrew cellar, C:\Program Files, a locked-down image layer. Every smoke
+  # above installs into a prefix the job owns, so a cache or lock dropped beside
+  # the bundle passes there and fails on the first machine where the install is
+  # not writable.
+  #
+  # Linux only, and the script says so itself rather than pretending: proving
+  # this needs a filesystem the running user cannot write to, and only the bind
+  # mount is enforced against root. macOS would need a disk image and Windows an
+  # ACL an administrator can take ownership around — machinery enough to become
+  # its own source of flakes, for a property that is not platform-specific.
+  #
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making
   # that choice is the same on all three platforms. What differs per platform is
@@ -1292,17 +1469,15 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
-          cache: npm
-
-      - name: Pin npm to the declared version
-        run: node scripts/pin-npm.mjs
-        shell: bash
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/npm-ci
 
       - name: Build application
         run: npm run build
@@ -1319,10 +1494,15 @@ jobs:
           LOOPTROOP_READONLY_REQUIRED: '1'
         run: sudo -E "$(which node)" scripts/verify-readonly-install.mjs
 
-  # Node 26 is Current, not LTS. Breakage here is upstream news rather than a
-  # defect, so it warns without blocking.
+  # The next Node major, before it ships: its alpha releases once Node publishes
+  # them (from October, under the once-a-year schedule that starts with 27),
+  # its nightly builds before that. Worked out from `.nvmrc` at run time, so the
+  # lane moves on by itself when the toolchain does: typed as "26", it spent
+  # three weeks testing the toolchain's own major after the toolchain moved
+  # there. Breakage here is upstream news rather than a defect, so it warns
+  # without blocking.
   early-warning:
-    name: Early warning (ubuntu, Node 26)
+    name: Early warning (ubuntu, next Node major)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
@@ -1333,10 +1513,33 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # The release index lists newest first, so the first entry of the next
+      # major is its latest alpha (or later its release); none yet means only
+      # nightly builds exist.
+      - name: Pick the next Node major
+        id: next
+        shell: bash
+        run: |
+          set -euo pipefail
+          next=$(( $(sed 's/^v//; s/\..*//' .nvmrc) + 1 ))
+          version=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+            https://nodejs.org/download/release/index.json \
+            | NEXT="${next}" node -e '
+              const releases = JSON.parse(require("node:fs").readFileSync(0, "utf8"))
+              const found = releases.find((release) => release.version.startsWith(`v${process.env.NEXT}.`))
+              process.stdout.write(found ? found.version.slice(1) : "")
+            ')
+          if [ -z "${version}" ]; then version="${next}-nightly"; fi
+          echo "Early warning on Node ${version}."
+          echo "node=${version}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 26
-          cache: npm
+          node-version: ${{ steps.next.outputs.node }}
+          package-manager-cache: false
 
       # Keep bundled npm within the reviewed major. Otherwise report the mismatch
       # and bootstrap our approved npm so Node compatibility tests still run.
@@ -1410,6 +1613,8 @@ jobs:
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Download the bundle
         uses: ./.github/actions/download-artifact
@@ -1426,30 +1631,30 @@ jobs:
           chmod -R a+rX .
           node scripts/smoke-aur.ts --bundle "${RUNNER_TEMP}/bundle/looptroop-"*-bundle.tar.gz
 
-  # One status for everything that decides whether a release can be packaged.
+  # One status for everything in this workflow that blocks a merge.
   # ---------------------------------------------------------------------------
-  # The jobs above prove the release artefacts: the bundle is reproducible and
-  # runs on all three platforms, the installer wrappers work, the formula
-  # audits, and LoopTroop installs through Homebrew, Scoop and Chocolatey. All
-  # of that was green and none of it was required, so a version bump could have
-  # merged with every one of them red — and merging a version bump is what
-  # starts a release. The gap was widest exactly where it mattered most.
+  # Every job above that proves the code or the release artefacts. Aggregated
+  # into one status rather than making each context required, so that adding,
+  # merging or renaming a job later means editing `needs` here instead of a
+  # branch ruleset that lives outside the repository — where nobody reviewing
+  # a workflow change would think to look. The name stays "Packaging", which
+  # is what branch protection already requires; this job used to cover only the
+  # packaging half, and a version bump could merge with the rest red.
   #
-  # Aggregated into one status rather than making nine contexts required, so
-  # that adding a packaging job later means adding it to `needs` here instead of
-  # editing a branch ruleset that lives outside the repository — where nobody
-  # reviewing a workflow change would think to look.
-  #
-  # `test-matrix` is here for the same reason. Its toolchain lanes are required
-  # by name, but its declared-floor lanes are not, and a release whose suite
-  # fails on the Node it promises users is not releasable either.
+  # Not here: Codecov, which reports to a third party and can fail for reasons
+  # of its own, and the advisory early-warning lane.
   #
   # `always()`, or this is skipped the moment a dependency fails and reports
   # success by never running. A skipped job is a failure here too: these are
-  # unconditional, so skipped means a dependency of theirs failed.
+  # unconditional, so skipped means a dependency of theirs failed. The one
+  # exception is the Windows gate, which runs only for pull requests that touch
+  # its files; skipped is its normal result, and its scope job is required.
+  #
+  # The gate step's name is read by rerun-unacquired.yml: a failure there is a
+  # consequence of the jobs it waits on, never a finding of its own.
   packaging:
     name: Packaging
-    needs: [dependency-review, test-matrix, smoke-installer, node-managers, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install, aur-package]
+    needs: [install-check, verify, test-matrix, test-windows, test-windows-result, windows-gate-scope, windows-gate, smoke-install, channel-windows, container, bundle, binary, verify-readonly, aur-package]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1459,15 +1664,21 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Require every packaging job to have succeeded
+      - name: Require every needed job to have succeeded
         env:
           RESULTS: ${{ toJSON(needs) }}
+          MAY_SKIP: windows-gate
         run: |
           set -euo pipefail
-          bad=$(printf '%s' "${RESULTS}" | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"')
+          bad=$(printf '%s' "${RESULTS}" | jq -r --arg may_skip "${MAY_SKIP}" '
+            ($may_skip | split(" ")) as $optional
+            | to_entries[]
+            | select(.value.result != "success")
+            | select((.value.result == "skipped" and (.key as $job | $optional | index($job) != null)) | not)
+            | "\(.key): \(.value.result)"')
           if [ -n "${bad}" ]; then
-            echo "::error::Packaging is not releasable:"
+            echo "::error::Not mergeable:"
             printf '%s\n' "${bad}"
             exit 1
           fi
-          echo "Every packaging job succeeded."
+          echo "Every needed job succeeded."

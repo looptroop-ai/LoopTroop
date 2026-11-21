@@ -12,7 +12,7 @@
   "prConcurrentLimit": 10,
   "prHourlyLimit": 0,
   "automerge": false,
-  "rebaseWhen": "behind-base-branch",
+  "rebaseWhen": "conflicted",
   "labels": [
     "dependencies"
   ],

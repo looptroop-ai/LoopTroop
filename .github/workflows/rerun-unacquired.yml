@@ -1,0 +1,70 @@
+name: Re-run unacquired CI jobs
+
+# GitHub sometimes never gives a job a machine. Since early November 2026 its
+# macOS arm64 pool has been short, and such a job is cancelled after a while
+# with "The job was not acquired by Runner of type hosted even after multiple
+# attempts": no runner, no steps, no result. CI then reports a failure that
+# says nothing about the code, and someone has to notice and re-run it — or
+# main stays red, as it did after #358.
+#
+# This re-runs a failed CI run's failed jobs, at most twice, but only when
+# every job that failed either never got a machine or is one of the aggregate
+# gates failing on its gate step (a consequence of the first kind, by
+# construction). Any other failure — a test, a lint error, a timeout, a job
+# that ran and was cancelled — is a finding, and the run is left exactly as it
+# is: a check that needs a retry has a bug, and retrying it would hide that.
+#
+# `workflow_run` runs from the default branch with this workflow's own token.
+# It checks out nothing and runs nothing from the run it looks at: it reads the
+# job list through the API and asks GitHub to re-run.
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  rerun:
+    name: Re-run jobs no runner picked up
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run the jobs no runner picked up
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          # The gate step every aggregate job in ci.yml uses; its failure only
+          # repeats the result of the jobs it waits on.
+          GATE_STEP: Require every needed job to have succeeded
+        run: |
+          set -euo pipefail
+          jobs=$(gh api --paginate --slurp "repos/${GH_REPO}/actions/runs/${RUN_ID}/attempts/${ATTEMPT}/jobs")
+          # shellcheck disable=SC2016
+          report=$(printf '%s' "${jobs}" | jq -r --arg gate "${GATE_STEP}" '
+            [.[].jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")] as $bad
+            | def unacquired: ((.runner_name // "") == "" and ((.steps // []) | length) == 0);
+              def gated: ([.steps[]? | select(.conclusion == "failure") | .name] as $failed
+                | ($failed | length) > 0 and all($failed[]; . == $gate));
+            ($bad | map(select(unacquired) | .name)) as $lost
+            | ($bad | map(select((unacquired or gated) | not) | .name)) as $findings
+            | if ($lost | length) == 0 then "none"
+              elif ($findings | length) > 0 then "findings\t" + ($findings | join(", "))
+              else "rerun\t" + ($lost | join(", ")) end')
+          case "${report%%$'\t'*}" in
+            rerun)
+              echo "No runner ever picked up: ${report#*$'\t'}. Re-running the failed jobs of run ${RUN_ID}."
+              gh run rerun "${RUN_ID}" --failed
+              ;;
+            findings)
+              echo "Jobs failed on their own, so run ${RUN_ID} is left as it is: ${report#*$'\t'}."
+              ;;
+            *)
+              echo "Every failed job in run ${RUN_ID} ran; nothing to re-run."
+              ;;
+          esac

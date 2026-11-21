@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
+import { disableGitAutoMaintenance, makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
   captureBeadDiff,
   commitBeadChanges,
@@ -28,6 +28,7 @@ const BRANCH = TEST.externalId
 function buildGitRepo(): string {
   const dir = makeTempDir('gitops-template-')
   execFileSync('git', ['-C', dir, 'init'], { stdio: 'pipe' })
+  disableGitAutoMaintenance(dir)
   pinGitLineEndings(dir)
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test'], { stdio: 'pipe' })

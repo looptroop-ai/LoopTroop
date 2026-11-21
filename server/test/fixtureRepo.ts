@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { clearProjectDatabaseCache } from '../db/project'
-import { canonicalTmpdir } from './tempDir'
+import { canonicalTmpdir, disableGitAutoMaintenance } from './tempDir'
 
 function closeProjectDatabases() {
   try {
@@ -27,6 +27,7 @@ function writeFixtureFiles(rootDir: string, files: Record<string, string>) {
 
 function initializeGitRepo(repoDir: string) {
   execFileSync('git', ['-C', repoDir, 'init', '--initial-branch=main'], { stdio: 'pipe' })
+  disableGitAutoMaintenance(repoDir)
   // Appended rather than set with `git config`, which takes one process per key.
   // Git for Windows defaults to autocrlf=true and would rewrite fixture content
   // on checkout, so byte-for-byte assertions fail there and nowhere else.

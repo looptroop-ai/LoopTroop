@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import * as github from '../github'
 import * as commands from '../runCommand'
 import { reconcileMergedPullRequestCandidate, EarlyMergeRecoveryManualError } from '../earlyMergedPullRequestRecovery'
-import { pinGitLineEndings } from '../../test/tempDir'
+import { disableGitAutoMaintenance, pinGitLineEndings } from '../../test/tempDir'
 
 const roots: string[] = []
 
@@ -107,6 +107,8 @@ function buildFixture(root: string, options: FixtureOptions): Fixture {
   mkdirSync(remotePath)
   execFileSync('git', ['init', '--bare', remotePath], { stdio: 'ignore' })
   execFileSync('git', ['-C', projectPath, 'init'], { stdio: 'ignore' })
+  disableGitAutoMaintenance(remotePath)
+  disableGitAutoMaintenance(projectPath)
   pinGitLineEndings(remotePath)
   pinGitLineEndings(projectPath)
   git(projectPath, ['config', 'user.name', 'Test'])

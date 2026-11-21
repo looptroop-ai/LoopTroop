@@ -30,7 +30,7 @@ import { readProcessStartToken } from '../server/lib/processIdentity'
 import { normalizeFolderPath } from '../server/storage/paths'
 import { leaderlessProcessGroup } from '../server/test/processGroup'
 import { attachProject } from '../server/storage/projects'
-import { removeTempDir } from '../server/test/tempDir'
+import { disableGitAutoMaintenance, removeTempDir } from '../server/test/tempDir'
 import {
   ensureWorktreeOwnerMarker,
   getWorktreeOwnerMarkerPath,
@@ -127,8 +127,10 @@ describe('clean command', () => {
 
   function buildProject(remote: string, root: string): void {
     git(remote, ['init', '--bare', '--initial-branch=main'])
+    disableGitAutoMaintenance(remote)
 
     git(root, ['init', '--initial-branch=main'])
+    disableGitAutoMaintenance(root)
     git(root, ['config', 'user.email', 'test@example.com'])
     git(root, ['config', 'user.name', 'Test'])
     writeFileSync(resolve(root, 'README.md'), '# project\n')

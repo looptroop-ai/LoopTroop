@@ -17,7 +17,7 @@ import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../../lib/constants'
 function shellSpec(script: string) {
   return createShellCommandSpec(script, detectHostContext().preferredShell)
 }
-import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
+import { disableGitAutoMaintenance, makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
 afterEach(() => {
@@ -48,6 +48,7 @@ function makeRepo(root = makeTempDir('looptroop-hook-validation-')): string {
 
 function buildRepo(root: string): string {
   execFileSync('git', ['init', root], { stdio: 'ignore' })
+  disableGitAutoMaintenance(root)
   pinGitLineEndings(root)
   execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com'])
   execFileSync('git', ['-C', root, 'config', 'user.name', 'Test'])

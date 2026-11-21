@@ -4,20 +4,34 @@
 # them fails here, before CI spends a run on it. A hook rather than a line in
 # AGENTS.md, because a hook does not depend on anyone remembering it.
 #
-# `npm install` points git here (scripts/install-git-hooks.ts sets
-# core.hooksPath). Skip it for one push with `git push --no-verify`.
+# It checks the files of the current checkout, not the commits being pushed,
+# so uncommitted edits count. `npm run hooks`, which `npm run dev` runs first,
+# points git here (scripts/install-git-hooks.ts sets core.hooksPath). Skip it
+# for one push with `git push --no-verify`.
 set -eu
 
 # Git passes one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
-# A deletion's local sha is all zeros, and a push of nothing but deletions
-# carries no code to check.
-pushes_commits=false
-while read -r _ local_sha _ _; do
+# Only an update of a branch carries code to check: a deletion's local sha is
+# all zeros, and a tag points at a commit some branch push already checked.
+pushes_branch=false
+while read -r _ local_sha remote_ref _; do
+  case "${remote_ref}" in
+    refs/heads/*) ;;
+    *) continue ;;
+  esac
   case "${local_sha}" in
-    *[!0]*) pushes_commits=true ;;
+    *[!0]*) pushes_branch=true ;;
   esac
 done
-if [ "${pushes_commits}" = false ]; then
+if [ "${pushes_branch}" = false ]; then
+  exit 0
+fi
+
+# Hooks run from the top of the work tree. A linked worktree shares this
+# setting but not node_modules, and lint without its dependencies can only
+# fail with "eslint: not found".
+if [ ! -e node_modules/.bin/eslint ] || [ ! -e node_modules/.bin/tsc ]; then
+  echo "pre-push: skipped, because this checkout has no dependencies installed (run npm ci here to check before pushing)." >&2
   exit 0
 fi
 

@@ -22,9 +22,11 @@ permissions:
 
 # A newer commit cancels a pull request's older run, which it supersedes. A
 # push to main is never cancelled: each one saves the npm cache, the Windows
-# test timings and Codecov's base, and is the record of that commit.
+# test timings and Codecov's base, and is the record of that commit. Its group
+# is the commit itself, because GitHub keeps one pending run per group and a
+# third push would otherwise replace the second one's run before it started.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -604,9 +606,12 @@ jobs:
         if: ${{ !cancelled() && steps.require.outcome == 'success' }}
         run: node scripts/test-shards.ts cover --dir "${RUNNER_TEMP}/shards" --count 2
 
+      # Only balance depends on it, so failing to record times must not turn the
+      # lane's required check red; the save below then does not run.
       - name: Record the file timings for the next run
         id: timings
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && success()
+        continue-on-error: true
         env:
           LANE: ${{ matrix.lane }}
         run: node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings/windows-${LANE}.json"
@@ -737,7 +742,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      affected: ${{ steps.scope.outputs.affected }}
+      affected: ${{ steps.scope.outputs.affected || steps.manual.outputs.affected }}
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
@@ -753,6 +758,13 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      # A manual run is meant as a full run, and has no pull request to scope.
+      - name: Run the Windows profile on a manual run
+        if: github.event_name == 'workflow_dispatch'
+        id: manual
+        shell: bash
+        run: echo "affected=true" >> "$GITHUB_OUTPUT"
+
       - name: Check whether the Windows profile is affected
         id: scope
         if: github.event_name == 'pull_request'
@@ -763,15 +775,18 @@ jobs:
         # Three dots: only what the pull request itself changed. Two dots also
         # counted every change main gained since the branch was cut, so a
         # branch behind main ran the gate for files it never touched.
+        # --no-renames: a renamed file lists its old path too, and the old path
+        # of a watched file is a change to the profile.
         run: |
           set -euo pipefail
           affected=false
-          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
+          changed="$(git diff --name-only --no-renames "${BASE_SHA}...${HEAD_SHA}")"
           while IFS= read -r path; do
             case "${path}" in
               .github/workflows/*|.github/actions/*|package.json|package-lock.json|scripts/install.sh|scripts/install.ps1|\
               scripts/installer-core.mjs|scripts/installer-core.d.mts|scripts/smoke-installer.mjs|\
               scripts/smoke-lib.mjs|scripts/smoke-lib.d.mts|scripts/smoke-published.mjs|scripts/smoke-published.d.mts|scripts/tool-path.ts|\
+              scripts/package-manifests.ts|server/cli/processControl.ts|server/lib/processIdentity.ts|server/test/tempDir.ts|\
               server/lib/executablePath.ts|server/lib/__tests__/executablePath.test.ts|\
               tests/installer.test.ts|tests/smokePublished.test.ts)
                 affected=true
@@ -862,6 +877,11 @@ jobs:
   smoke-install:
     name: Install smoke test (${{ matrix.os }})
     needs: [install-check, bundle]
+    # Runs when only the bundle failed: the installer wrappers, the package
+    # manager installs and the floor install never touch it, and they were
+    # jobs of their own before, which a broken bundle did not stop. Only the
+    # steps that read the bundle wait for it. The bundle job reports itself.
+    if: ${{ !cancelled() && needs.install-check.result == 'success' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -939,7 +959,7 @@ jobs:
       # channel-windows, beside Scoop and Chocolatey.
       - name: Download the bundle
         id: bundle
-        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && runner.os != 'Windows' && needs.bundle.result == 'success' }}
         uses: ./.github/actions/download-artifact
         with:
           name: bundle

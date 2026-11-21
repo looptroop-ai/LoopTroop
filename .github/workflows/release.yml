@@ -1432,7 +1432,9 @@ jobs:
                 -c user.email='release@looptroop.ovh' \
                 tag -a "v${VERSION}" "${TARGET}" \
                 -m "LoopTroop v${VERSION}"
-            git push origin "refs/tags/v${VERSION}"
+            # No repository hook runs in the one job holding a write token, as
+            # in every other workflow that pushes.
+            git -c core.hooksPath=/dev/null push origin "refs/tags/v${VERSION}"
           fi
 
       # --verify-tag refuses to publish if the tag is missing, rather than

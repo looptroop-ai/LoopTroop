@@ -42,46 +42,60 @@ jobs:
           WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
           # Through the environment, never into the script: a fork names its own branch.
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           EVENT: ${{ github.event.workflow_run.event }}
           # The gate step every aggregate job in ci.yml uses; its failure only
           # repeats the result of the jobs it waits on.
           GATE_STEP: Require every needed job to have succeeded
+          # ci.yml's advisory jobs, by display name. Their failure decides no
+          # merge, so it must not stop a re-run either: the next-Node lane
+          # reports `failure` even though it continues on error.
+          NOT_GATED: '["Codecov", "Early warning (ubuntu, next Node major)"]'
         run: |
           set -euo pipefail
           jobs=$(gh api --paginate --slurp "repos/${GH_REPO}/actions/runs/${RUN_ID}/attempts/${ATTEMPT}/jobs")
+          # A job that never got a machine has no runner and no steps; a
+          # startup failure can look the same, and is the same no-code-ran kind.
           # shellcheck disable=SC2016
-          report=$(printf '%s' "${jobs}" | jq -r --arg gate "${GATE_STEP}" '
-            [.[].jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")] as $bad
+          report=$(printf '%s' "${jobs}" | jq -r --arg gate "${GATE_STEP}" --argjson not_gated "${NOT_GATED}" '
+            [.[].jobs[]
+              | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "startup_failure")
+              | select(.name as $name | $not_gated | index($name) | not)] as $bad
             | def unacquired: ((.runner_name // "") == "" and ((.steps // []) | length) == 0);
               def gated: ([.steps[]? | select(.conclusion == "failure") | .name] as $failed
                 | ($failed | length) > 0 and all($failed[]; . == $gate));
             ($bad | map(select(unacquired) | .name)) as $lost
             | ($bad | map(select((unacquired or gated) | not) | .name)) as $findings
-            | if ($lost | length) == 0 then "none"
-              elif ($findings | length) > 0 then "findings\t" + ($findings | join(", "))
-              else "rerun\t" + ($lost | join(", ")) end')
+            | if ($findings | length) > 0 then
+                "findings\t" + ($findings | join(", ")) + (if ($lost | length) > 0 then "; never got a machine: " + ($lost | join(", ")) else "" end)
+              elif ($lost | length) > 0 then "rerun\t" + ($lost | join(", "))
+              else "none" end')
           case "${report%%$'\t'*}" in
             rerun)
               # Re-run only what was judged, and only while it still matters: a
               # later attempt was started by someone else and decides for
               # itself, and re-running a run a newer commit replaced would join
-              # its concurrency group and cancel that newer run.
+              # its concurrency group and cancel that newer run. Newest among
+              # this repository's runs for the branch: a fork can use the same
+              # branch name.
               current=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" --jq '.run_attempt')
               newest=$(gh api -X GET "repos/${GH_REPO}/actions/workflows/${WORKFLOW_ID}/runs" \
-                -f branch="${HEAD_BRANCH}" -f event="${EVENT}" -F per_page=1 --jq '.workflow_runs[0].id')
+                -f branch="${HEAD_BRANCH}" -f event="${EVENT}" -F per_page=30 \
+                --jq '[.workflow_runs[] | select(.head_repository.full_name == env.HEAD_REPO)][0].id')
               if [ "${current}" != "${ATTEMPT}" ]; then
                 echo "Run ${RUN_ID} is already at attempt ${current}, not ${ATTEMPT}; that attempt decides for itself."
               elif [ "${newest}" != "${RUN_ID}" ]; then
                 echo "Run ${RUN_ID} was replaced by run ${newest}; re-running it would cancel the newer one."
               else
                 echo "No runner ever picked up: ${report#*$'\t'}. Re-running the failed jobs of run ${RUN_ID}."
-                gh run rerun "${RUN_ID}" --failed
+                # Refused when someone re-ran it meanwhile: theirs decides, and this run must not turn red for it.
+                gh run rerun "${RUN_ID}" --failed || echo "::warning::GitHub refused to re-run run ${RUN_ID}; it may already be re-running."
               fi
               ;;
             findings)
               echo "Jobs failed on their own, so run ${RUN_ID} is left as it is: ${report#*$'\t'}."
               ;;
             *)
-              echo "Every failed job in run ${RUN_ID} ran; nothing to re-run."
+              echo "Nothing in run ${RUN_ID} failed for want of a machine; nothing to re-run."
               ;;
           esac

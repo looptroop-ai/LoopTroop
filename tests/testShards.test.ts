@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -234,6 +234,22 @@ describe('mergeTimings and the artifact layout', () => {
       { index: 2, plan: plan(2, ['b.test.ts']), report: undefined },
     ])
     expect(readShardResults(join(root, 'absent'))).toEqual([])
+  })
+
+  it('reports a parseable report that lacks its file list instead of crashing', () => {
+    const listless = { index: 2, plan: plan(2, ['b.test.ts', 'd.test.ts']), report: { version: 1, reason: 'passed', unhandledErrors: 0 } as unknown as ShardReport }
+    expect(checkShardsPassed([result(1, ['a.test.ts', 'c.test.ts']), listless], 2)).toEqual(['Shard 2/2 wrote a report without its list of files.'])
+    expect(checkShardCoverage([result(1, ['a.test.ts', 'c.test.ts']), listless], 2)).toEqual([
+      'Shard 2 was given b.test.ts but never ran it.',
+      'Shard 2 was given d.test.ts but never ran it.',
+    ])
+  })
+
+  it.skipIf(process.platform === 'win32')('skips an entry that vanished or dangles since the listing', () => {
+    const root = scratch()
+    writeShard(root, 'test-windows-toolchain-shard-1', plan(1, ['a.test.ts']), report(['a.test.ts']))
+    symlinkSync(join(root, 'gone'), join(root, 'dangling'))
+    expect(readShardResults(root)).toEqual([{ index: 1, plan: plan(1, ['a.test.ts']), report: report(['a.test.ts']) }])
   })
 
   // A pattern download that matches one artifact extracts it without a folder.

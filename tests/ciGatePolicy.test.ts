@@ -35,6 +35,10 @@ describe('CI merge gate policy', () => {
     const expected = Object.keys(ci.jobs).filter((job) => job !== 'packaging' && !NOT_GATING.includes(job))
     expect([...packaging.needs].sort()).toEqual(expected.sort())
     expect(packaging.if).toBe('always()')
+    // The context branch protection matches, and after the post-merge trim the
+    // only one: a renamed gate would leave GitHub waiting for a check that never
+    // reports.
+    expect(packaging.name).toBe('Packaging')
     expect(ci.jobs['early-warning']?.['continue-on-error']).toBe(true)
     for (const job of expected) expect(ci.jobs[job]?.['continue-on-error'], job).toBeUndefined()
   })

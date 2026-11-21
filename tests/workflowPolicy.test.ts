@@ -196,7 +196,7 @@ describe('release workflow policy', () => {
     })
     expect((ci.packaging as Job & { needs: string[] }).needs).toContain('verify')
     expect((ci.packaging as Job & { if: string }).if).toBe('always()')
-    const gate = ci.packaging!.steps!.find((step) => step.run !== undefined)!
+    const gate = ci.packaging!.steps!.find((step) => step.name === GATE_STEP)!
     for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
       const results = { verify: { result }, 'test-matrix': { result: 'success' } }
       const run = spawnSync('bash', ['-euo', 'pipefail', '-c', `gh() { printf '{"jobs":[]}'; }\n${String(gate.run)}`], {
@@ -364,7 +364,7 @@ describe('release workflow policy', () => {
    * The only typed versions are named exceptions: the standalone builder's
    * embedded runtime, which the binary-job test below confines to those jobs;
    * the declared-floor lanes, which read `engines.node` at run time; and the
-   * Node 26 early-warning lane, which floats on purpose.
+   * early-warning lane, which works out the major after `.nvmrc`'s at run time.
    */
   it('types no copy of the toolchain Node into any workflow', () => {
     const typed = [...source].flatMap(([file, text]) =>
@@ -472,7 +472,7 @@ describe('release workflow policy', () => {
   /**
    * A typed selector must be a named exception. An expression is the floor lane
    * reading `engines.node`; a concrete version is held by the test above; a
-   * bare major floats to whatever shipped this week, which only the Node 26
+   * bare major floats to whatever shipped this week, which only the
    * early-warning lane may do.
    */
   function expectNamedNodeSelector({ where, steps, index }: SetupNodeStep) {
@@ -643,6 +643,15 @@ describe('release workflow policy', () => {
     for (const step of steps.slice(buildStep + 1)) {
       expect(String(step.if ?? ''), `smoke-install: ${String(step.name ?? step.id)} runs after an earlier failure`).toContain('!cancelled()')
     }
+    // A failed bundle must not hide them either: the job starts once the install
+    // check passed, and only the bundle's own steps wait for the bundle job.
+    expect((job as Job & { if?: string }).if).toBe("${{ !cancelled() && needs.install-check.result == 'success' }}")
+    const download = steps.find((step) => step.name === 'Download the bundle')
+    expect(download?.if).toBe("${{ !cancelled() && runner.os != 'Windows' && needs.bundle.result == 'success' }}")
+    expect(steps.find((step) => step.id === 'brew-update')?.if).toContain("steps.bundle.outcome == 'success'")
+    for (const step of steps.filter((candidate) => text(candidate).includes('RUNNER_TEMP}"/bundle/'))) {
+      expect(step.if, `${String(step.name)} waits for the bundle`).toMatch(/steps\.(?:bundle|brew-update)\.outcome == 'success'/)
+    }
 
     // Step order is not enough on Windows, where npm's launcher prefers any npm
     // in the shared global prefix — and the build step pinned npm 12 there. The
@@ -794,7 +803,11 @@ describe('release workflow policy', () => {
     const scope = jobs['windows-gate-scope'] as Job & { outputs?: Record<string, unknown> }
     const gate = jobs['windows-gate'] as Job & { needs?: string[] }
     expect(scope['runs-on']).toBe('ubuntu-latest')
-    expect(scope.outputs).toEqual({ affected: '${{ steps.scope.outputs.affected }}' })
+    expect(scope.outputs).toEqual({ affected: '${{ steps.scope.outputs.affected || steps.manual.outputs.affected }}' })
+    // A manual run is a full run: it has no pull request to scope, so the profile runs.
+    const manual = (scope.steps ?? []).find((step) => (step as Step & { id?: string }).id === 'manual')
+    expect(manual?.if).toBe("github.event_name == 'workflow_dispatch'")
+    expect(manual?.run).toBe('echo "affected=true" >> "$GITHUB_OUTPUT"')
     expect(gate['runs-on']).toBe('windows-latest')
     expect(gate.needs).toContain('windows-gate-scope')
     expect(gate.if).toBe("needs.windows-gate-scope.outputs.affected == 'true'")
@@ -807,13 +820,18 @@ describe('release workflow policy', () => {
     const windowsGate = workflows.get('ci.yml')!.jobs?.['windows-gate-scope']
     const scope = windowsGate?.steps?.find((step) => step.name === 'Check whether the Windows profile is affected')?.run
     if (typeof scope !== 'string') throw new Error('Windows gate scope script missing')
-    // Three dots: what the pull request changed, not what main gained since.
-    expect(scope).toContain('changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"')
+    // Three dots: what the pull request changed, not what main gained since;
+    // --no-renames: a renamed watched file lists its old path too.
+    expect(scope).toContain('changed="$(git diff --name-only --no-renames "${BASE_SHA}...${HEAD_SHA}")"')
     expect(scope).toContain('done <<< "${changed}"')
     expect(scope).not.toContain('< <(git diff')
 
     // The gate installs through the shared action, so a change to it is a change to the gate.
-    for (const path of ['scripts/smoke-lib.mjs', 'scripts/installer-core.mjs', 'scripts/smoke-installer.mjs', '.github/actions/npm-ci/action.yml']) {
+    // ...and the modules the gated smoke script and tests import.
+    for (const path of [
+      'scripts/smoke-lib.mjs', 'scripts/installer-core.mjs', 'scripts/smoke-installer.mjs', '.github/actions/npm-ci/action.yml',
+      'server/cli/processControl.ts', 'server/lib/processIdentity.ts', 'scripts/package-manifests.ts', 'server/test/tempDir.ts',
+    ]) {
       const affected = executeWindowsScope(scope, [path])
       expect(affected.status).toBe(0)
       expect(affected.output).toBe('affected=true\n')
@@ -840,6 +858,12 @@ describe('release workflow policy', () => {
     const push = releasePr.slice(releasePr.indexOf('  - name: Push the release branch'), releasePr.indexOf('  - name: Open the pull request'))
     expect(push).toContain('unset RELEASE_TOKEN')
     expect(push).toContain('core.hooksPath=/dev/null')
+    // Every push from a workflow skips repository hooks, not only that one.
+    for (const [file, text] of source) {
+      for (const line of text.split('\n').filter((candidate) => /\bgit\b.*\bpush\b/.test(candidate) && !candidate.trim().startsWith('#'))) {
+        expect(line, `${file}: ${line.trim()}`).toContain('core.hooksPath=/dev/null')
+      }
+    }
   })
 
   it('bounds npm network retries without adding a test retry loop', () => {
@@ -1329,10 +1353,11 @@ describe('release workflow policy', () => {
     expect(Object.keys(ci.on ?? {}).sort()).toEqual(['pull_request', 'push', 'workflow_dispatch'])
     expect(ci.on?.pull_request).toBeNull()
     expect(ci.on?.push).toEqual({ branches: ['main'] })
-    // A newer commit cancels a pull request's older run; a run on main, which
-    // saves what pull requests read, always finishes.
+    // A newer commit cancels a pull request's older run; a push to main, which
+    // saves what pull requests read, gets a group of its own, since GitHub
+    // keeps one pending run per group and a third push replaced the second's.
     expect(ci.concurrency).toEqual({
-      group: 'ci-${{ github.workflow }}-${{ github.ref }}',
+      group: "ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}",
       'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
     })
     // Nothing in the workflow tells a push copy apart from a pull request copy any more.
@@ -1457,6 +1482,7 @@ describe('release workflow policy', () => {
     expect(cover?.if, 'coverage is judged only once every shard reported').toBe("${{ !cancelled() && steps.require.outcome == 'success' }}")
     const record = resultSteps.find((step) => step.name === 'Record the file timings for the next run')
     expect(record?.if, 'only main records the timings everyone splits by').toBe("github.event_name == 'push' && github.ref == 'refs/heads/main' && success()")
+    expect((record as Step & { 'continue-on-error'?: boolean })['continue-on-error'], 'failing to record times costs balance, not the required check').toBe(true)
     expect(record?.run).toBe('node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings/windows-${LANE}.json"')
     expect(record?.env).toEqual({ LANE: '${{ matrix.lane }}' })
     expect(jobs.packaging!.steps!.some((step) => step.name === GATE_STEP)).toBe(true)
@@ -1527,8 +1553,10 @@ describe('release workflow policy', () => {
             ATTEMPT: '1',
             WORKFLOW_ID: '7',
             HEAD_BRANCH: 'topic',
+            HEAD_REPO: 'looptroop-ai/LoopTroop',
             EVENT: 'pull_request',
             GATE_STEP,
+            NOT_GATED: String(step.env?.NOT_GATED),
           },
         })
         expect(result.status, result.stderr).toBe(0)
@@ -1546,11 +1574,26 @@ describe('release workflow policy', () => {
     const lost = execute([unacquired, gate, passed])
     expect(lost.calls).toBe('run rerun 42 --failed\n')
     expect(lost.output).toContain('No runner ever picked up: Test (macos-latest, toolchain floor).')
-    expect(execute([unacquired, gate, finding]).calls, 'a real failure in the same run is never re-run').toBe('')
+    const mixed = execute([unacquired, gate, finding])
+    expect(mixed.calls, 'a real failure in the same run is never re-run').toBe('')
+    expect(mixed.output).toContain('left as it is: Verify (ubuntu, toolchain floor); never got a machine: Test (macos-latest, toolchain floor).')
     expect(execute([unacquired, timedOut]).calls, 'a timeout is a finding').toBe('')
     const ran = execute([finding, gate])
     expect(ran.calls).toBe('')
-    expect(ran.output).toContain('nothing to re-run')
+    expect(ran.output, 'an ordinary failure is named as one').toContain('Jobs failed on their own, so run 42 is left as it is: Verify (ubuntu, toolchain floor).')
+
+    // An advisory job's failure decides no merge, so it does not stop a re-run;
+    // the next-Node lane reports `failure` although it continues on error.
+    const advisory = (name: string) => ({ name, conclusion: 'failure', runner_name: 'runner-5', steps: [{ name: 'Test', conclusion: 'failure' }] })
+    expect(execute([unacquired, gate, advisory('Early warning (ubuntu, next Node major)'), advisory('Codecov')]).calls).toBe('run rerun 42 --failed\n')
+    const onlyAdvisory = execute([advisory('Codecov')])
+    expect(onlyAdvisory.calls).toBe('')
+    expect(onlyAdvisory.output).toContain('nothing to re-run')
+    // A startup failure with no runner and no steps is the same no-code-ran kind.
+    expect(execute([{ ...unacquired, conclusion: 'startup_failure' }, gate]).calls).toBe('run rerun 42 --failed\n')
+    // The advisory names are ci.yml's own display names.
+    const ci = workflows.get('ci.yml')!.jobs! as Record<string, Job & { name?: string }>
+    expect(JSON.parse(String(step.env?.NOT_GATED))).toEqual([ci.codecov!.name, ci['early-warning']!.name])
 
     const replaced = execute([unacquired, gate], { newest: '43' })
     expect(replaced.calls, 'a newer run for the branch would be cancelled by the re-run').toBe('')
@@ -1560,6 +1603,20 @@ describe('release workflow policy', () => {
     expect(moved.output).toContain('already at attempt 2')
     expect(step.env?.HEAD_BRANCH, 'a fork-chosen name reaches the script only through the environment').toBe('${{ github.event.workflow_run.head_branch }}')
     expect(String(step.run)).not.toContain('${{')
+    // "Newest" among this repository's runs: a fork can push a branch of the same name.
+    expect(step.env?.HEAD_REPO).toBe('${{ github.event.workflow_run.head_repository.full_name }}')
+    expect(String(step.run)).toContain('select(.head_repository.full_name == env.HEAD_REPO)')
+    // A re-run someone else started meanwhile is refused; that must not turn this run red.
+    const refused = spawnSync('bash', ['-euo', 'pipefail', '-c', `${stub.replace('if [ "$1" != api ]; then printf "%s\\n" "$*" >> "$GH_CALLS"; return; fi', 'if [ "$1" != api ]; then return 1; fi')}${String(step.run)}`], {
+      encoding: 'utf8',
+      env: {
+        ...process.env, FIXTURE: JSON.stringify([{ jobs: [unacquired, gate] }]), NEWEST: '42', CURRENT_ATTEMPT: '1',
+        GH_REPO: 'looptroop-ai/LoopTroop', RUN_ID: '42', ATTEMPT: '1', WORKFLOW_ID: '7', HEAD_BRANCH: 'topic', HEAD_REPO: 'looptroop-ai/LoopTroop',
+        EVENT: 'pull_request', GATE_STEP, NOT_GATED: String(step.env?.NOT_GATED),
+      },
+    })
+    expect(refused.status, refused.stderr).toBe(0)
+    expect(refused.stdout).toContain('::warning::GitHub refused to re-run run 42')
   })
 
   /**

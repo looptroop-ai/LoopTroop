@@ -126,6 +126,9 @@ describe('coverage and Codecov policy', () => {
     for (const job of ['verify', 'test-windows']) {
       expect(requiredJob(job).steps?.some((candidate) => /test:coverage/.test(candidate.run ?? '')), job).toBe(false)
     }
+    // Nor the plain suite: Verify runs it no second time. (Its targeted root run
+    // of one test file is not the suite.)
+    expect(requiredJob('verify').steps?.some((candidate) => candidate.run === 'npm run test' || candidate.run === 'npm test'), 'verify').toBe(false)
 
     expect(upload.needs).toBe('test-matrix')
     // Waits for the matrix, not for its success: a failed or never-started Mac

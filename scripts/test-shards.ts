@@ -3,10 +3,11 @@
  * Splits one Vitest run across machines by recorded file time, and proves the
  * machines together ran every file.
  *
- * Vitest's own `--shard` splits by file count. That balances badly here: on
- * Windows 32 of the ~550 files hold about two thirds of the test time (they
- * drive real git worktrees), and a count split can hand most of them to one
- * machine. When CI sets `VITEST_SHARD_DIR`, the sequencer in vitest.config.ts
+ * Vitest's own `--shard` orders the files by a hash of their paths and cuts
+ * that order into equal counts, ignoring how long each file takes. That
+ * balances badly here: on Windows 32 of the ~550 files hold about two thirds of
+ * the test time (they drive real git worktrees), and a split blind to time can
+ * hand most of them to one machine. When CI sets `VITEST_SHARD_DIR`, the sequencer in vitest.config.ts
  * calls `assignShards` with the per-file times `main` recorded on its last full
  * run, writes what it chose to `plan.json`, and a reporter writes what actually
  * ran to `report.json`.
@@ -155,7 +156,8 @@ export function readShardResults(directory: string): ShardResult[] {
   if (flat) results.push({ index: flat.index, plan: flat, report: readJson<ShardReport>(join(directory, SHARD_REPORT_FILE)) })
   for (const entry of readdirSync(directory).sort(byCodeUnit)) {
     const path = join(directory, entry)
-    if (!statSync(path).isDirectory()) continue
+    // An entry gone or dangling since the listing is not a shard; a crash here would hide the verdict.
+    if (!statSync(path, { throwIfNoEntry: false })?.isDirectory()) continue
     const plan = readJson<ShardPlan>(join(path, SHARD_PLAN_FILE))
     if (!plan) continue
     results.push({ index: plan.index, plan, report: readJson<ShardReport>(join(path, SHARD_REPORT_FILE)) })
@@ -193,7 +195,9 @@ export function checkShardsPassed(results: readonly ShardResult[], count: number
     }
     if (report.reason !== 'passed') problems.push(`Shard ${index}/${count} finished as "${report.reason}".`)
     if (report.unhandledErrors > 0) problems.push(`Shard ${index}/${count} had ${report.unhandledErrors} unhandled error(s).`)
-    for (const file of report.files) {
+    // `?? []`: a report that parses but lacks its list is a problem to report, not a crash.
+    if (!Array.isArray(report.files)) problems.push(`Shard ${index}/${count} wrote a report without its list of files.`)
+    for (const file of report.files ?? []) {
       if (file.state === 'failed') problems.push(`Shard ${index}/${count}: ${file.file} failed.`)
       else if (file.state !== 'passed' && file.state !== 'skipped') problems.push(`Shard ${index}/${count}: ${file.file} never finished (${file.state}).`)
     }
@@ -234,7 +238,7 @@ export function checkShardCoverage(results: readonly ShardResult[], count: numbe
   }
   for (const { index, plan, report } of results) {
     if (!plan || !report) continue
-    const ran = new Set(report.files.map((file) => file.file))
+    const ran = new Set((report.files ?? []).map((file) => file.file))
     for (const file of plan.files) if (!ran.has(file)) problems.push(`Shard ${index} was given ${file} but never ran it.`)
     for (const file of ran) if (!plan.files.includes(file)) problems.push(`Shard ${index} ran ${file}, which it was not given.`)
   }

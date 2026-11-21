@@ -38,6 +38,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Renovate rebases its pull requests only when they conflict with `main`. Before merging one that has fallen behind, tick the rebase box in its description.
 - The early-warning lane tests the Node major after the toolchain's, its alpha or nightly builds, worked out from `.nvmrc` on each run. It had been testing Node 26 since the toolchain itself moved to Node 26.
 - The Windows gate decides on Linux whether a pull request touches its files, instead of starting a Windows machine to find out.
+- Four git-heavy test files build their fixture repositories once per file and copy them for each test, which cuts their git processes by 21–45%. Every fixture template switches off git's background maintenance, so a copy never races it. The shuffled-order lane has also found seven test files that passed only in file order, and each now resets the state it shares.
 
 ### Fixed
 

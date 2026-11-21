@@ -19,7 +19,8 @@ import { hasInterviewRecoveryRequested } from './phases/interviewPhase'
 const ERR_DELIBERATION_DATA_LOST = 'Council data lost after restart. Retry to re-run deliberation.'
 const ERR_PRD_DATA_LOST = 'Council data lost after restart. Retry to re-run PRD drafting.'
 const ERR_BEADS_DATA_LOST = 'Council data lost after restart. Retry to re-run beads drafting.'
-const cancellationCleanupInFlight = new Set<string>()
+/** Each pass's own token, so a pass releases only the claim it made. */
+const cancellationCleanupInFlight = new Map<string, symbol>()
 const cancellationCleanupRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const cancellationCleanupRetryAttempts = new Map<string, number>()
 const CANCELLATION_CLEANUP_RETRY_BASE_MS = 250
@@ -274,7 +275,8 @@ async function attemptCancellationCleanup(
   if (state !== 'CANCELED' && !isTicketCancellationPending(ticketId)) return
   if (cancellationCleanupInFlight.has(ticketId)) return
 
-  cancellationCleanupInFlight.add(ticketId)
+  const claim = Symbol(ticketId)
+  cancellationCleanupInFlight.set(ticketId, claim)
   let dispatchedCancel = false
   const cancellationGeneration = getTicketCancellationGeneration(ticketId)
   const isCancellationStillOwned = () => (
@@ -367,7 +369,9 @@ async function attemptCancellationCleanup(
       void attemptCancellationCleanup(ticketId, actor, sendEvent)
     })
   } finally {
-    cancellationCleanupInFlight.delete(ticketId)
+    // Only this pass's own claim: the state can have been reset under a pass
+    // still finishing, and a newer pass's claim must survive this one ending.
+    if (cancellationCleanupInFlight.get(ticketId) === claim) cancellationCleanupInFlight.delete(ticketId)
     if (dispatchedCancel
       && resolveSnapshotState(actor.getSnapshot()) === 'CANCELED'
       && !cancellationCleanupRetryTimers.has(ticketId)) {

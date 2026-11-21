@@ -79,7 +79,11 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
   }
   for (const file of ['project/.git/config', 'project/.git/worktrees/ticket-worktree/gitdir', 'ticket-worktree/.git']) {
     const path = join(root, file)
-    const relinked = readFileSync(path, 'utf8').replaceAll(basename(template.root), basename(root))
+    const recorded = readFileSync(path, 'utf8')
+    // A file that no longer names the template would keep the copy pointing at
+    // the template's remote or worktree, and every later copy would share it.
+    if (!recorded.includes(basename(template.root))) throw new Error(`${file} no longer records the fixture's directory; the copy cannot be relinked`)
+    const relinked = recorded.replaceAll(basename(template.root), basename(root))
     // Rewritten in place: Git for Windows hides the worktree's `.git` file, and
     // Windows refuses the default truncate-and-recreate open on a hidden file.
     writeFileSync(path, relinked, { flag: 'r+' })

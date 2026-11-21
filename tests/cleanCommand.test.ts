@@ -119,7 +119,10 @@ describe('clean command', () => {
     cpSync(projectTemplate.remote, remote, { recursive: true })
     cpSync(projectTemplate.root, root, { recursive: true })
     const config = resolve(root, '.git', 'config')
-    writeFileSync(config, readFileSync(config, 'utf8').replaceAll(basename(projectTemplate.remote), basename(remote)))
+    const recorded = readFileSync(config, 'utf8')
+    // Without the template's remote in it, the copy would push to that shared remote.
+    if (!recorded.includes(basename(projectTemplate.remote))) throw new Error('the template config no longer records its remote; the copy cannot be relinked')
+    writeFileSync(config, recorded.replaceAll(basename(projectTemplate.remote), basename(remote)))
     // Copied files carry new stat data; refresh so the index matches them.
     git(root, ['update-index', '--refresh'])
     return root

@@ -976,6 +976,12 @@ describe('App route ownership', () => {
 
   it('keeps a newly started ticket after closing the pushed New Ticket dialog', async () => {
     mockState.tickets = [{ id: 'ticket-2', externalId: 'LT-2' }]
+    // Something the app would show differently sits before the board, so a Back
+    // that skipped the board entry lands on Configuration instead of passing by
+    // luck. The board entry used to be overwritten with the new ticket, which a
+    // shuffled run exposed: the entry before it was then another test's `/config`.
+    window.history.replaceState(null, '', '/config')
+    window.history.pushState(null, '', '/')
 
     renderApp()
 

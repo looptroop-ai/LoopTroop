@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { patchTicket } from '../../storage/tickets'
 import { getTicketPaths } from '../../storage/ticketQueries'
 import * as ticketQueries from '../../storage/ticketQueries'
@@ -29,6 +29,7 @@ import {
   SILENT_READ_ONLY_PERMISSIONS,
 } from '../../opencode/toolPolicy'
 import {
+  clearAllOpenCodePromptDispatchCountsForTests,
   runOpenCodePrompt,
   runOpenCodeSessionPrompt,
   type OpenCodePromptDispatchEvent,
@@ -278,6 +279,16 @@ function expectGuardedPromptPermissions(adapter: TestOpenCodeAdapter, callIndex:
 
 describe('runOpenCodePrompt', () => {
   const repoManager = createTestRepoManager('run-opencode-prompt-')
+
+  // Every fake here answers with session `ses-1`, and state keyed by session id
+  // outlived the test that wrote it: a prompt with no ticket of its own took its
+  // permissions from an earlier test's persisted session row, and prompt numbers
+  // carried on from an earlier test's count. Shuffled runs exposed both.
+  beforeEach(() => {
+    resetTestDb()
+    clearAllPendingSessionContinuationsForTests()
+    clearAllOpenCodePromptDispatchCountsForTests()
+  })
 
   it('reserves a continuation for its own step while another step uses a fresh session', async () => {
     resetTestDb()

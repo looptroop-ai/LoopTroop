@@ -525,7 +525,17 @@ function App() {
         // repair token to reconcile any state changes made while Back was queued.
         setRouteRepairToken(token => token + 1)
         if (target && window.location.pathname !== target) {
-          window.history.replaceState(null, '', target)
+          // The route moved while the dialog was open — Create & start in the New
+          // Ticket dialog opens the new ticket. The entry Back landed on is where
+          // the dialog was opened, so it stays and the new route goes on top:
+          // Back from the new ticket returns to the board. Overwriting it made
+          // that Back skip the board and leave for whatever came before it. Only
+          // an entry the app could not show again, a ticket deleted meanwhile,
+          // is replaced.
+          const landed = window.location.pathname
+          const landedStillShows = canonicalizePathname(landed) === ROUTE_ROOT
+            || matchTicketRoute(landed, ticketsRef.current).kind === 'ticket'
+          window.history[landedStillShows ? 'pushState' : 'replaceState'](null, '', target)
         }
         return
       }

@@ -17,6 +17,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The startup restore notice identifies saved local data, and long dialogs stay usable on short screens.
 - The README demo and screenshot gallery show the current app, including manual QA, AI questions and the assistant chat.
 - Security hardening: the ticket-size scan resolves containment before reading, and request-derived values on affected console logs are escaped.
+- Browser Back after starting a ticket from the New Ticket dialog returns to the board again.
 - CI runs once per commit instead of twice and spreads the slowest Windows tests over two machines, so pull request checks finish sooner; it also gained a workflow security audit, a shuffled-order test lane and a pre-push hook for lint and typecheck.
 
 ### Added
@@ -40,6 +41,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 
+- After **Create & start** in the New Ticket dialog, browser Back from the new ticket returns to the board. The board's history entry used to be overwritten with the ticket's, so Back skipped the board and left for whatever page came before it. The new shuffled test lane found this: the existing test passed only because the entry before the board happened to be the board too.
 - npm's download cache in CI is filled again. setup-node cached by itself in jobs that installed nothing, which then saved empty caches that every later job restored: macOS jobs got 1 KB and downloaded every package. Caches are now saved only on `main`, after a successful install, which also keeps the repository under GitHub's 10 GB cache limit.
 
 ### Security

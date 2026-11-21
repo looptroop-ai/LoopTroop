@@ -186,6 +186,11 @@ export function clearOpenCodePromptDispatchCount(sessionId: string): void {
   sessionPromptDispatchCounts.delete(sessionId)
 }
 
+/** Tests reuse session ids across cases; a count left over from one shifts the next one's prompt numbers. */
+export function clearAllOpenCodePromptDispatchCountsForTests(): void {
+  sessionPromptDispatchCounts.clear()
+}
+
 export function formatPromptText(parts: PromptPart[]): string {
   if (parts.length === 1 && !parts[0]?.source) {
     return parts[0]?.content ?? ''

@@ -24,36 +24,26 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 - Verify audits every workflow and local action with zizmor, pinned and checksum-verified like actionlint. Any finding fails the check unless `.github/zizmor.yml`, or a comment beside the line, excuses it with a reason.
 - The Ubuntu declared-floor test lane runs files and tests in a shuffled order, which catches a test that only passes, or only fails, after another one. The seed is the run id and the job summary shows the command that reproduces the order.
-- `npm install` points git at `.githooks/`, whose pre-push hook runs `npm run lint` and `npm run typecheck` before every push. `git push --no-verify` skips it once; it does nothing in CI and leaves an existing `core.hooksPath` alone.
+- `npm run dev` points git at `.githooks/` (`npm run hooks` does only that), whose pre-push hook runs `npm run lint` and `npm run typecheck` before every push that updates a branch. `git push --no-verify` skips it once. It does nothing in CI or in a checkout without its dependencies installed, and it changes nothing when `core.hooksPath` is already set, when `.git/hooks` holds hooks of your own, or when the folder is not the top of its own git repository. It is not an install script, so the published package carries none.
 - A CI job that GitHub never gave a machine to, which has happened often since its macOS arm64 runners became scarce in November 2026, is re-run automatically, at most twice. Nothing that ran and failed is re-run.
 
 ### Changed
-
-- CI runs for pull requests, pushes to `main` and on request (`gh workflow run ci.yml --ref <branch>`), no longer once more for every branch push. Each commit used to start two full runs, 86 jobs, against an account limit of 20 jobs and 5 Macs at a time, so most of a run's time was spent waiting for a machine.
-- The required Packaging check now waits on every CI job except the Codecov upload and the advisory early-warning lane, so no failing job can be merged past.
-- A quick Linux install check runs first, and every Mac and Windows job waits for it, so a commit that cannot install no longer starts forty jobs that each fail at their own install.
-- The fourteen small install and package-manager jobs are now one job per platform with one install and one build each. Every step still runs after an earlier one fails, so a run still lists every broken install path. WinGet runs in the Windows binary job, which already has the binary.
-- Each Windows test lane runs on two machines, split by the per-file times `main` recorded on its last run. A result job under the lane's usual name passes only if both halves passed and together ran every test file exactly once.
-- The test suite runs once on Ubuntu with the toolchain Node, collecting coverage there; Verify no longer runs it a second time. Verify runs its remaining checks even after one fails, so one run reports every problem.
-- Renovate rebases its pull requests only when they conflict with `main`. Before merging one that has fallen behind, tick the rebase box in its description.
-- The early-warning lane tests the Node major after the toolchain's, its alpha or nightly builds, worked out from `.nvmrc` on each run. It had been testing Node 26 since the toolchain itself moved to Node 26.
-- The Windows gate decides on Linux whether a pull request touches its files, instead of starting a Windows machine to find out.
-- Four git-heavy test files build their fixture repositories once per file and copy them for each test, which cuts their git processes by 21–45%. Every fixture template switches off git's background maintenance, so a copy never races it. The shuffled-order lane has also found eight test files that passed only in file order, and each now resets the state it shares or waits for what it needs.
-
-### Fixed
-
-- After **Create & start** in the New Ticket dialog, browser Back from the new ticket returns to the board. The board's history entry used to be overwritten with the ticket's, so Back skipped the board and left for whatever page came before it. The new shuffled test lane found this: the existing test passed only because the entry before the board happened to be the board too.
-- npm's download cache in CI is filled again. setup-node cached by itself in jobs that installed nothing, which then saved empty caches that every later job restored: macOS jobs got 1 KB and downloaded every package. Caches are now saved only on `main`, after a successful install, which also keeps the repository under GitHub's 10 GB cache limit.
-
-### Security
-
-- Fixed the workflow findings the new audit reported: a matrix value spliced into a script in `published-smoke.yml` now goes through the environment, and CI checkouts no longer keep the access token on disk. Release and repair workflows no longer restore an npm cache at all.
 
 - PRD revision instructions now ask for exact current and revised item titles, separate records for changed epics and stories, and a reason for each gap resolution. For resolved gaps, section-only changes can have no affected item references, while mixed changes keep affected stories; unresolved source contradictions use an empty list. Empty change lists remain accepted during coverage; the review can derive a diff from saved PRD versions, and supplied records keep their existing validation behavior.
 - Raw artifact views place **Copy** beside line, character, and estimated token counts. Plain text and missing-output states use the same header layout.
 - The startup restore notice explains when saved profile or project data was found, shows its local database location, and says dismissal lasts for that database.
 - Long shared dialogs and the Startup Restore, Welcome Disclaimer, and Keyboard Shortcuts overlays keep their content within the viewport and scrollable.
 - Startup notices stay above routed dialogs and hold them hidden instead of unmounting them, so a direct link such as Configuration opens after the notice without losing a draft typed in the meantime.
+- CI runs for pull requests, pushes to `main` and on request (`gh workflow run ci.yml --ref <branch>`), no longer once more for every branch push. Each commit used to start two full runs, 86 jobs, against an account limit of 20 jobs and 5 Macs at a time, so most of a run's time was spent waiting for a machine. A newer commit still cancels a pull request's older run, but a run on `main` always finishes.
+- The required Packaging check now waits on every CI job except the Codecov upload and the advisory early-warning lane, so no failing job can be merged past. It also reads every job's own result, because GitHub reports a matrix as passed when one of its legs never got a machine and was cancelled.
+- A quick Linux install check runs first, and every Mac and Windows job, as well as the test matrix, waits for it, so a commit that cannot install no longer starts forty jobs that each fail at their own install.
+- The 21 install and package-manager job legs are now four jobs: one per platform, with one install and one build each, and one Windows job for Chocolatey and Scoop. Every step still runs after an earlier one fails, so a run still lists every broken install path. WinGet runs in the Windows binary job, which already has the binary.
+- Each Windows test lane runs on two machines, split by the per-file times `main` recorded on its last run, setup and imports included. The install check takes one copy of those times per run, so both halves, and a re-run of either, split the same way. A result job under the lane's usual name passes only if both halves passed and together ran every test file exactly once.
+- The test suite runs once on Ubuntu with the toolchain Node, collecting coverage there; Verify no longer runs it a second time. Verify runs its remaining checks even after one fails, so one run reports every problem.
+- Renovate rebases its pull requests only when they conflict with `main`. Before merging one that has fallen behind, tick the rebase box in its description.
+- The early-warning lane tests the Node major after the toolchain's, its alpha or nightly builds, worked out from `.nvmrc` on each run. It had been testing Node 26 since the toolchain itself moved to Node 26.
+- The Windows gate decides on Linux whether a pull request touches its files, instead of starting a Windows machine to find out, and counts only what the pull request itself changed.
+- Four git-heavy test files build their fixture repositories once per file and copy them for each test, which cuts their git processes by 21–45%. Every fixture template switches off git's background maintenance, so a copy never races it. The shuffled-order lane has also found eight test files that passed only in file order, and each now resets the state it shares or waits for what it needs.
 
 ### Fixed
 
@@ -66,10 +56,15 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Clearing local logs reloads requested server history so open coverage summaries do not remain stuck loading.
 - PRD and Beads approval waits while coverage reports refresh, and stays blocked if that refresh fails until a retry succeeds, preventing approval against a cached report from an earlier attempt.
 - Local and self-hosted API requests run even when the browser reports offline.
+- After **Create & start** in the New Ticket dialog, browser Back from the new ticket returns to the board, or to whatever the dialog was opened from: Configuration, or a ticket whose list was still loading. That history entry used to be overwritten with the ticket's, so Back skipped it and left for whatever page came before it. Only an entry the app cannot show any more, a ticket deleted meanwhile, is still replaced. The new shuffled test lane found this: the existing test passed only because the entry before the board happened to be the board too.
+- npm's download cache in CI is filled again. setup-node cached by itself in jobs that installed nothing, which then saved empty caches that every later job restored: macOS jobs got 1 KB and downloaded every package. Caches are now saved only on `main`, after a successful install, which also keeps the repository under GitHub's 10 GB cache limit.
+- Dependency Review and the Node floor check compare a push to `main` with the commit it replaced. They compared `main` with itself, which by then is the pushed commit, and so checked nothing on push.
+- An automatic re-run of a CI run that a newer commit has replaced is skipped; re-running it would have cancelled the newer run.
 
 ### Security
 
 - The ticket-size endpoint resolves the worktree's contained path once and uses it for the stat and the size scans, so a path cannot be checked and then read through a different spelling. Request-derived values on the affected console lines are escaped before interpolation, including logged errors, which are rendered as one escaped line.
+- Fixed the workflow findings the new audit reported: a matrix value spliced into a script in `published-smoke.yml` now goes through the environment, and CI checkouts no longer keep the access token on disk. Release and repair workflows no longer restore an npm cache at all.
 
 ### Documentation
 

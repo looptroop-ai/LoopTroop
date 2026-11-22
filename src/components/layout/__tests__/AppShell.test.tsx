@@ -351,6 +351,7 @@ describe('AppShell', () => {
       setTimeoutSpy.mockClear()
       fireEvent.blur(search)
       const hideTimer = setTimeoutSpy.mock.results.at(-1)?.value as number
+      expect(hideTimer).toBeDefined()
       clearTimeoutSpy.mockClear()
       view.unmount()
       expect(clearTimeoutSpy).toHaveBeenCalledWith(hideTimer)

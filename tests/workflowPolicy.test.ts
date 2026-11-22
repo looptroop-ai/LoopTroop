@@ -1,5 +1,5 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, posix } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as yaml from 'js-yaml'
@@ -814,6 +814,48 @@ describe('release workflow policy', () => {
     expect((gate.steps ?? []).some((step) => String(step.name ?? '').includes('affected')), 'the Windows job no longer scopes itself').toBe(false)
     const checkout = (scope.steps ?? []).find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
     expect(checkout?.with).toMatchObject({ 'fetch-depth': 0, filter: 'blob:none', 'persist-credentials': false })
+  })
+
+  /**
+   * The scope's watched list is the gated code's import closure. Kept by hand
+   * it went stale twice: modules the smoke script imports, then two modules
+   * those import. Here it is derived instead: from the files the gate job
+   * runs, every runtime import followed to the end must match a watched
+   * pattern (type-only imports change nothing that runs).
+   */
+  it('watches every module the Windows gate runs, followed through its imports', () => {
+    const jobs = workflows.get('ci.yml')!.jobs!
+    const gateRuns = (jobs['windows-gate']!.steps ?? []).map((step) => String(step.run ?? '')).join('\n')
+    const entries = [...new Set([...gateRuns.matchAll(/(?:^|\s)((?:tests|server|scripts)\/[\w./-]+\.(?:ts|mjs))(?=\s|$)/gm)].map((match) => match[1]!))]
+    expect(entries.sort()).toEqual(['scripts/smoke-published.mjs', 'server/lib/__tests__/executablePath.test.ts', 'tests/installer.test.ts', 'tests/smokePublished.test.ts'])
+    const aliases: Array<[string, string]> = [['@shared/', 'shared/'], ['@server/', 'server/'], ['@/', 'src/']]
+    const resolveImport = (from: string, specifier: string): string | null => {
+      const alias = aliases.find(([prefix]) => specifier.startsWith(prefix))
+      const base = alias ? alias[1] + specifier.slice(alias[0].length)
+        : specifier.startsWith('.') ? posix.normalize(posix.join(posix.dirname(from), specifier)) : null
+      if (base === null) return null
+      return [base, `${base}.ts`, `${base}.tsx`, `${base}.mjs`, `${base}.js`, `${base}/index.ts`]
+        .find((candidate) => existsSync(join(repo, candidate)) && statSync(join(repo, candidate)).isFile()) ?? null
+    }
+    const closure = new Set<string>()
+    const queue = [...entries]
+    while (queue.length > 0) {
+      const file = queue.shift()!
+      if (closure.has(file)) continue
+      closure.add(file)
+      const text = readFileSync(join(repo, file), 'utf8')
+      const specifiers = text.matchAll(/^\s*(?:import|export)\s+(?!type\b)[^'"]*?\sfrom\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/gm)
+      for (const match of specifiers) {
+        const resolved = resolveImport(file, match[1] ?? match[2] ?? match[3] ?? '')
+        if (resolved !== null) queue.push(resolved)
+      }
+    }
+    const scope = String((jobs['windows-gate-scope']!.steps ?? []).find((step) => step.name === 'Check whether the Windows profile is affected')?.run)
+    const arms = scope.slice(scope.indexOf('case "${path}" in') + 'case "${path}" in'.length)
+    const patterns = arms.slice(0, arms.indexOf(')')).split(/[|\\\n]/).map((pattern) => pattern.trim()).filter(Boolean)
+    const watched = (file: string) => patterns.some((pattern) => pattern.endsWith('/*') ? file.startsWith(pattern.slice(0, -1)) : pattern === file)
+    expect(closure.size, 'the closure was followed').toBeGreaterThan(entries.length)
+    expect([...closure].filter((file) => !watched(file)).sort(), 'modules the gate runs that its scope does not watch').toEqual([])
   })
 
   it('executes the Windows affected-file scope against affected and unrelated paths', () => {

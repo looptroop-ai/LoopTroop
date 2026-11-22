@@ -776,7 +776,9 @@ jobs:
         # counted every change main gained since the branch was cut, so a
         # branch behind main ran the gate for files it never touched.
         # --no-renames: a renamed file lists its old path too, and the old path
-        # of a watched file is a change to the profile.
+        # of a watched file is a change to the profile. The list is every
+        # module the gate runs, imports followed; a policy test derives that
+        # set and fails when one is missing here.
         run: |
           set -euo pipefail
           affected=false
@@ -787,6 +789,7 @@ jobs:
               scripts/installer-core.mjs|scripts/installer-core.d.mts|scripts/smoke-installer.mjs|\
               scripts/smoke-lib.mjs|scripts/smoke-lib.d.mts|scripts/smoke-published.mjs|scripts/smoke-published.d.mts|scripts/tool-path.ts|\
               scripts/package-manifests.ts|server/cli/processControl.ts|server/lib/processIdentity.ts|server/test/tempDir.ts|\
+              shared/installChannel.ts|shared/nodeFloor.ts|\
               server/lib/executablePath.ts|server/lib/__tests__/executablePath.test.ts|\
               tests/installer.test.ts|tests/smokePublished.test.ts)
                 affected=true

@@ -54,6 +54,11 @@ function DashboardSearchInput({
   onEscapeWithEmptyQuery?: () => void
 }) {
   const [isFocused, setIsFocused] = useState(false)
+  // Hiding the suggestions waits a moment after the box loses focus, so a click
+  // on one still lands. Focusing again cancels that wait, and so does
+  // unmounting: a late update would reach a component that is gone.
+  const blurTimerRef = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(blurTimerRef.current), [])
   const trimmedValue = value.trim()
   const hasValue = trimmedValue.length > 0
   const shouldShowSuggestions = isFocused && hasValue && suggestions.length > 0
@@ -70,9 +75,12 @@ function DashboardSearchInput({
         disabled={isDisabled}
         placeholder="Search"
         autoComplete="off"
-        onFocus={() => setIsFocused(true)}
+        onFocus={() => {
+          window.clearTimeout(blurTimerRef.current)
+          setIsFocused(true)
+        }}
         onBlur={() => {
-          window.setTimeout(() => setIsFocused(false), 100)
+          blurTimerRef.current = window.setTimeout(() => setIsFocused(false), 100)
         }}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {

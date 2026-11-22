@@ -60,6 +60,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - npm's download cache in CI is filled again. setup-node cached by itself in jobs that installed nothing, which then saved empty caches that every later job restored: macOS jobs got 1 KB and downloaded every package. Caches are now saved only on `main`, after a successful install, which also keeps the repository under GitHub's 10 GB cache limit.
 - Dependency Review and the Node floor check compare a push to `main` with the commit it replaced. They compared `main` with itself, which by then is the pushed commit, and so checked nothing on push.
 - An automatic re-run of a CI run that a newer commit has replaced is skipped; re-running it would have cancelled the newer run.
+- Focusing the ticket search again right after leaving it keeps its project suggestions open; they used to close a moment later anyway. Its hide timer is also cancelled when the search unmounts, which was the source of an intermittent "window is not defined" error in the test suite.
 
 ### Security
 

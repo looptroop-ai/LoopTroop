@@ -1,7 +1,7 @@
 name: Install dependencies
 description: >-
   Pin npm, restore npm's download cache, run npm ci, and save the cache from
-  pushes to main only.
+  runs on main only.
 
 # Why this and not setup-node's own cache:
 #
@@ -15,9 +15,12 @@ description: >-
 #
 # So setup-node's caching is switched off everywhere (`package-manager-cache:
 # false`), and this action owns npm's cache: it saves right after a successful
-# `npm ci`, never from an empty or half-filled directory, and only on main.
-# Pull requests read main's copy, falling back to the newest one for an older
-# lockfile, which still holds nearly every package a dependency update needs.
+# `npm ci`, never from an empty or half-filled directory, and only on main: a
+# push that runs in full, or the weekly run. A merge whose pull request run
+# already tested it installs nothing, so a changed lockfile can wait up to a
+# week for its exact copy. Pull requests read main's copy, falling back to the
+# newest one for an older lockfile, which still holds nearly every package a
+# dependency update needs.
 runs:
   using: composite
   steps:
@@ -47,7 +50,7 @@ runs:
     # Several jobs on one push reach this at once; the first saves the key and
     # the others are told it is taken, which the action reports as a warning.
     - name: Save the npm cache from main
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'
+      if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.cache.outputs.dir }}

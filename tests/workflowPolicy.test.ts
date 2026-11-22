@@ -51,6 +51,10 @@ const EMBEDDED_BUILDER = '26.9.0'
 const PLATFORMS = ['macos-latest', 'ubuntu-latest', 'windows-latest']
 /** The gate step every aggregate job in ci.yml shares; rerun-unacquired.yml reads failures of it as consequences. */
 const GATE_STEP = 'Require every needed job to have succeeded'
+/** What a job's `if` says to skip on a merge the merge check found already tested. */
+const UNLESS_TESTED = "needs.merge-check.outputs.tested != 'true'"
+/** Where the jobs that run only on main save what pull requests read: pushes, and the weekly run. */
+const ON_MAIN = "(github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'"
 
 type MatrixEntry = Record<string, unknown>
 
@@ -186,7 +190,8 @@ describe('release workflow policy', () => {
   it('requires dependency review on every CI event before Packaging can pass', () => {
     const ci = workflows.get('ci.yml')!.jobs!
     const verify = ci.verify as Job & { if?: string }
-    expect(verify.if).toBeUndefined()
+    // Skipped only on a merge whose pull request run already reviewed the same change.
+    expect(verify.if).toBe(`\${{ !cancelled() && ${UNLESS_TESTED} }}`)
     const action = verify.steps!.find((step) => String(step.uses).startsWith('actions/dependency-review-action@')) as SetupStep
     expect(action.if, 'no event skips the review, and an earlier failure does not hide it').toBe('${{ !cancelled() }}')
     expect(action.with).toMatchObject({
@@ -195,7 +200,7 @@ describe('release workflow policy', () => {
       'head-ref': '${{ github.event.pull_request.head.sha || github.sha }}',
     })
     expect((ci.packaging as Job & { needs: string[] }).needs).toContain('verify')
-    expect((ci.packaging as Job & { if: string }).if).toBe('always()')
+    expect((ci.packaging as Job & { if: string }).if).toBe(`\${{ always() && ${UNLESS_TESTED} }}`)
     const gate = ci.packaging!.steps!.find((step) => step.name === GATE_STEP)!
     for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
       const results = { verify: { result }, 'test-matrix': { result: 'success' } }
@@ -215,8 +220,9 @@ describe('release workflow policy', () => {
    */
   it('compares a push with the commit it replaced, not with itself', () => {
     const verify = workflows.get('ci.yml')!.jobs!.verify as Job & { env?: Record<string, string> }
+    // A scheduled run carries no event to read, and compares its commit with itself.
     expect(verify.env?.DIFF_BASE).toBe(
-      "${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.event.repository.default_branch }}",
+      "${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.event.repository.default_branch || github.sha }}",
     )
     const floor = verify.steps!.find((step) => step.name === 'Check every feed offers a changed Node floor')!
     expect(String(floor.run)).toContain('git fetch --no-tags --depth=1 origin "${DIFF_BASE}"')
@@ -810,7 +816,8 @@ describe('release workflow policy', () => {
     expect(manual?.run).toBe('echo "affected=true" >> "$GITHUB_OUTPUT"')
     expect(gate['runs-on']).toBe('windows-latest')
     expect(gate.needs).toContain('windows-gate-scope')
-    expect(gate.if).toBe("needs.windows-gate-scope.outputs.affected == 'true'")
+    // Its own condition, stated in full: see ciGatePolicy's rule for jobs below the merge check.
+    expect(gate.if).toBe("${{ !cancelled() && needs.install-check.result == 'success' && needs.windows-gate-scope.outputs.affected == 'true' }}")
     expect((gate.steps ?? []).some((step) => String(step.name ?? '').includes('affected')), 'the Windows job no longer scopes itself').toBe(false)
     const checkout = (scope.steps ?? []).find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
     expect(checkout?.with).toMatchObject({ 'fetch-depth': 0, filter: 'blob:none', 'persist-credentials': false })
@@ -1390,11 +1397,12 @@ describe('release workflow policy', () => {
    * request's, doubling every job against an account limit of 20 jobs and 5
    * Macs at a time, with both copies reporting under the same required names.
    */
-  it('runs CI once per commit: for pull requests, for pushes to main, and on demand', () => {
+  it('runs CI once per commit: for pull requests, for pushes to main, weekly, and on demand', () => {
     const ci = workflows.get('ci.yml') as Workflow & { on?: Record<string, unknown>; concurrency?: Record<string, unknown> }
-    expect(Object.keys(ci.on ?? {}).sort()).toEqual(['pull_request', 'push', 'workflow_dispatch'])
+    expect(Object.keys(ci.on ?? {}).sort()).toEqual(['pull_request', 'push', 'schedule', 'workflow_dispatch'])
     expect(ci.on?.pull_request).toBeNull()
     expect(ci.on?.push).toEqual({ branches: ['main'] })
+    expect(ci.on?.schedule).toEqual([{ cron: '37 3 * * 1' }])
     // A newer commit cancels a pull request's older run; a push to main, which
     // saves what pull requests read, gets a group of its own, since GitHub
     // keeps one pending run per group and a third push replaced the second's.
@@ -1435,7 +1443,7 @@ describe('release workflow policy', () => {
     expect(restore).toBeGreaterThan(-1)
     expect(install).toBeGreaterThan(restore)
     expect(save, 'saves only what a successful npm ci downloaded').toBeGreaterThan(install)
-    expect(steps[save]?.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'")
+    expect(steps[save]?.if).toBe(`${ON_MAIN} && steps.restore.outputs.cache-hit != 'true'`)
     expect(steps[restore]?.with?.['restore-keys'], 'a changed lockfile still starts from main\'s newest cache').toBe('npm-${{ runner.os }}-${{ runner.arch }}-')
     expect(steps[save]?.with?.key).toBe(steps[restore]?.with?.key)
     for (const file of ['release.yml', 'channel-republish.yml', 'container-republish.yml']) {
@@ -1459,7 +1467,7 @@ describe('release workflow policy', () => {
       const needs = (job as { needs?: string | string[] }).needs
       expect([needs].flat(), `${name} waits for the install check`).toContain('install-check')
     }
-    expect((jobs['install-check'] as { needs?: unknown }).needs).toBeUndefined()
+    expect((jobs['install-check'] as { needs?: unknown }).needs, 'waits only for the merge check, which skips at once on a pull request').toBe('merge-check')
   })
 
   /**
@@ -1511,8 +1519,8 @@ describe('release workflow policy', () => {
     expect(handOff?.with).toMatchObject({ name: 'test-timings-windows', path: '${{ runner.temp }}/test-timings/', 'if-no-files-found': 'error', overwrite: true })
 
     const result = jobs['test-windows-result']!
-    expect((result as { needs?: unknown }).needs).toBe('test-windows')
-    expect(result.if).toBe('always()')
+    expect((result as { needs?: unknown }).needs).toEqual(['merge-check', 'test-windows'])
+    expect(result.if, 'reports a lost half, except on a merge already tested, where no half ran').toBe(`\${{ always() && ${UNLESS_TESTED} }}`)
     const resultSteps = result.steps ?? []
     const download = resultSteps.find((step) => step.name === 'Download the shard reports')
     expect(download?.with?.pattern).toBe('test-windows-${{ matrix.lane }}-shard-*')
@@ -1523,7 +1531,7 @@ describe('release workflow policy', () => {
     expect(cover?.run).toBe(`node scripts/test-shards.ts cover --dir "\${RUNNER_TEMP}/shards" --count ${shards.length}`)
     expect(cover?.if, 'coverage is judged only once every shard reported').toBe("${{ !cancelled() && steps.require.outcome == 'success' }}")
     const record = resultSteps.find((step) => step.name === 'Record the file timings for the next run')
-    expect(record?.if, 'only main records the timings everyone splits by').toBe("github.event_name == 'push' && github.ref == 'refs/heads/main' && success()")
+    expect(record?.if, 'only main records the timings everyone splits by').toBe(`${ON_MAIN} && success()`)
     expect((record as Step & { 'continue-on-error'?: boolean })['continue-on-error'], 'failing to record times costs balance, not the required check').toBe(true)
     expect(record?.run).toBe('node scripts/test-shards.ts timings --dir "${RUNNER_TEMP}/shards" --out "${RUNNER_TEMP}/test-timings/windows-${LANE}.json"')
     expect(record?.env).toEqual({ LANE: '${{ matrix.lane }}' })

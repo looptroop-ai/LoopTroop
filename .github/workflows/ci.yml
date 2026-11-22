@@ -2,10 +2,9 @@ name: CI
 
 on:
   # One run per commit. A pull request is tested on its merge with the base,
-  # which is what main will hold once it merges; a push to main refreshes what
-  # pull requests read from it: the npm cache, the Windows test timings, and
-  # Codecov's base. A branch with no pull request yet runs nothing on push;
-  # start a run on it with `gh workflow run ci.yml --ref <branch>`.
+  # which is what main will hold once it merges. A branch with no pull request
+  # yet runs nothing on push; start a run on it with
+  # `gh workflow run ci.yml --ref <branch>`.
   #
   # Every commit on a branch used to run twice, once for the push and once for
   # the pull request: 86 jobs per commit, 16 of them on Macs, against an
@@ -13,18 +12,29 @@ on:
   # clock was spent queueing. Both copies also reported under the same
   # required check names, which GitHub documents as ambiguous.
   pull_request:
+  # main takes a pull request only when it is up to date and Packaging passed,
+  # so a merge usually holds exactly the code that pull request's last run
+  # tested. The merge check below finds those merges, and their run skips the
+  # rest: it would prove nothing new while holding the machines the next pull
+  # request waits for. Any other push to main runs in full.
   push:
     branches: [main]
+  # What a run on main refreshes for pull requests, the npm cache and the
+  # Windows test timings, is refreshed here at least weekly, and every test
+  # runs again in a new random order. Codecov's base comes from each merge.
+  schedule:
+    - cron: '37 3 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # A newer commit cancels a pull request's older run, which it supersedes. A
-# push to main is never cancelled: each one saves the npm cache, the Windows
-# test timings and Codecov's base, and is the record of that commit. Its group
-# is the commit itself, because GitHub keeps one pending run per group and a
-# third push would otherwise replace the second one's run before it started.
+# run on main is never cancelled: it gives Codecov that commit's coverage, a
+# full one also saves the npm cache and the Windows test timings, and it is
+# the record of that commit. Its group is the commit itself, because GitHub
+# keeps one pending run per group and a third push would otherwise replace
+# the second one's run before it started.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -40,6 +50,56 @@ env:
   NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
 
 jobs:
+  # Decides, on a push to main, whether that push merged code a pull request's
+  # run already tested in full; scripts/merge-check.ts lists what that takes.
+  # If so, every job that starts a chain skips, the rest skip with them, and
+  # Codecov gets the pull request run's coverage report. Any doubt, a failed
+  # API call included, answers no, and the run is a full one.
+  #
+  # Skipped on every other event, which costs nothing: GitHub skips a job on
+  # its `if` without a machine. That is also why every job below it states
+  # its own condition with a status function, such as
+  # `!cancelled() && needs.install-check.result == 'success'`. A job without
+  # one is skipped when any job above it was skipped, not only one it names
+  # in `needs`, so it would be skipped on every pull request: the first run of
+  # this design skipped every test that way.
+  merge-check:
+    name: Merge check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      tested: ${{ steps.decide.outputs.tested }}
+      run_id: ${{ steps.decide.outputs.run_id }}
+    steps:
+      - name: Audit runner network activity
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .nvmrc
+            scripts/merge-check.ts
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Decide whether this merge was already tested
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: node scripts/merge-check.ts
+
   # Runs first, and every Mac and Windows job waits for it. A commit that cannot
   # even install would otherwise start forty jobs that all fail at their own
   # `npm ci` — a broken dependency update did exactly that twelve times in one
@@ -50,6 +110,8 @@ jobs:
   # its Ubuntu lanes too, since `needs` cannot differ between matrix legs.
   install-check:
     name: Install check (ubuntu)
+    needs: merge-check
+    if: ${{ !cancelled() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -138,6 +200,8 @@ jobs:
     # push. Only the steps that need the install, or the build, wait for it.
     # The test suite runs in parallel, in the Ubuntu toolchain test lane.
     name: Verify (ubuntu, toolchain floor)
+    needs: merge-check
+    if: ${{ !cancelled() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -147,8 +211,10 @@ jobs:
       # push, the commit it replaced, since by now the default branch is the
       # pushed commit and comparing it with itself would check nothing; for a
       # manual run, the default branch. A branch's first push has no previous
-      # commit (all zeros) and compares with the default branch too.
-      DIFF_BASE: ${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.event.repository.default_branch }}
+      # commit (all zeros) and compares with the default branch too. A
+      # scheduled run has no event to read either, and compares the commit
+      # with itself: it changes nothing.
+      DIFF_BASE: ${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.event.repository.default_branch || github.sha }}
     steps:
       - name: Audit runner network activity
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
@@ -375,6 +441,7 @@ jobs:
     # printed in the log and the job summary, so a red run reproduces exactly.
     name: Test (${{ matrix.os }}, ${{ matrix.label }})
     needs: install-check
+    if: ${{ !cancelled() && needs.install-check.result == 'success' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -482,6 +549,7 @@ jobs:
   test-windows:
     name: Test shard ${{ matrix.shard }}/2 (windows-latest, ${{ matrix.lane }} floor)
     needs: install-check
+    if: ${{ !cancelled() && needs.install-check.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -556,10 +624,12 @@ jobs:
   # branch protection keeps matching it. It passes only if both halves ran and
   # passed, and together ran every test file exactly once: a split that drops
   # a file would otherwise pass in silence, which is worse than slow.
+  # `always()` so a failed or lost half still reports here, except on a merge
+  # the merge check found already tested, where no half ran at all.
   test-windows-result:
     name: Test (windows-latest, ${{ matrix.lane }} floor)
-    needs: test-windows
-    if: always()
+    needs: [merge-check, test-windows]
+    if: ${{ always() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -610,7 +680,7 @@ jobs:
       # lane's required check red; the save below then does not run.
       - name: Record the file timings for the next run
         id: timings
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && success()
+        if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && success()
         continue-on-error: true
         env:
           LANE: ${{ matrix.lane }}
@@ -629,13 +699,19 @@ jobs:
   # toolchain lane makes the coverage report, and a Mac lane that failed or
   # never got a machine must not keep that report from Codecov. Without a
   # report (the coverage lane itself failed, and says so) nothing is uploaded.
+  #
+  # On a merge the merge check found already tested, no test ran here: the
+  # report is the one the pull request's run made from the same code, and it
+  # is uploaded for the merge commit, as Codecov's base for later pull
+  # requests. Reading another run's artifacts is what `actions: read` is for.
   codecov:
     name: Codecov
     runs-on: ubuntu-latest
-    needs: test-matrix
+    needs: [merge-check, test-matrix]
     if: ${{ !cancelled() }}
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -655,9 +731,12 @@ jobs:
               output.write('path=' + tempfile.mkdtemp(prefix='verified-artifact-', dir=os.environ['RUNNER_TEMP']) + '\n')
           PY
 
+      # A missing report is normal when the coverage lane failed, and that lane
+      # says so. On a merge already tested it is the only thing the run does,
+      # and nothing else would say Codecov got no base, so there it fails here.
       - name: Download coverage report
         id: coverage
-        continue-on-error: true
+        continue-on-error: ${{ needs.merge-check.outputs.tested != 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-report
@@ -665,6 +744,9 @@ jobs:
           merge-multiple: false
           skip-decompress: true
           digest-mismatch: error
+          # Without a token the action reads this run; with one, the run named.
+          run-id: ${{ needs.merge-check.outputs.run_id || github.run_id }}
+          github-token: ${{ needs.merge-check.outputs.run_id && github.token || '' }}
 
       - name: Extract verified artifacts without repository code
         if: steps.coverage.outcome == 'success'
@@ -735,10 +817,12 @@ jobs:
 
   # Decides on Linux whether the Windows gate below has anything to check, so a
   # pull request that touches none of its files does not boot a Windows machine
-  # just to find that out. A push to main has no diff to scope, so the gate
-  # does not run there.
+  # just to find that out. A push to main, or the weekly run, has no pull
+  # request to scope, so the gate does not run there.
   windows-gate-scope:
     name: Windows gate scope
+    needs: merge-check
+    if: ${{ !cancelled() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -807,7 +891,7 @@ jobs:
   windows-gate:
     name: Windows gate profile (affected files)
     needs: [install-check, windows-gate-scope]
-    if: needs.windows-gate-scope.outputs.affected == 'true'
+    if: ${{ !cancelled() && needs.install-check.result == 'success' && needs.windows-gate-scope.outputs.affected == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -1124,6 +1208,7 @@ jobs:
   channel-windows:
     name: Channel install (windows-latest)
     needs: [install-check, bundle]
+    if: ${{ !cancelled() && needs.install-check.result == 'success' && needs.bundle.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -1239,6 +1324,8 @@ jobs:
   # amd64 runner plus `docker/setup-qemu-action` rather than dropping arm64.
   container:
     name: Container image (${{ matrix.arch }})
+    needs: merge-check
+    if: ${{ !cancelled() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -1310,6 +1397,8 @@ jobs:
   # the other runners.
   bundle:
     name: Bundle (build)
+    needs: merge-check
+    if: ${{ !cancelled() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1376,6 +1465,7 @@ jobs:
   binary:
     name: Binary (${{ matrix.target }})
     needs: install-check
+    if: ${{ !cancelled() && needs.install-check.result == 'success' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -1571,6 +1661,8 @@ jobs:
   # decision, so the missing lanes are a scope choice and not a gap to close.
   verify-readonly:
     name: Read-only install (ubuntu)
+    needs: merge-check
+    if: ${{ !cancelled() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -1614,6 +1706,8 @@ jobs:
   # without blocking.
   early-warning:
     name: Early warning (ubuntu, next Node major)
+    needs: merge-check
+    if: ${{ !cancelled() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
@@ -1676,6 +1770,7 @@ jobs:
   aur-package:
     name: AUR package (arch)
     needs: [bundle]
+    if: ${{ !cancelled() && needs.bundle.result == 'success' }}
     runs-on: ubuntu-latest
     container: archlinux:latest@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6
     timeout-minutes: 20
@@ -1756,16 +1851,21 @@ jobs:
   #
   # `always()`, or this is skipped the moment a dependency fails and reports
   # success by never running. A skipped job is a failure here too: these are
-  # unconditional, so skipped means a dependency of theirs failed. The one
-  # exception is the Windows gate, which runs only for pull requests that touch
-  # its files; skipped is its normal result, and its scope job is required.
+  # unconditional, so skipped means a dependency of theirs failed. The
+  # exceptions: the Windows gate, which runs only for pull requests that touch
+  # its files and whose scope job is required, and the merge check, which runs
+  # only on pushes to main. Skipped is their normal result.
+  #
+  # Skipped itself on a merge the merge check found already tested: nothing
+  # ran for it to judge, and that pull request's own Packaging passed on the
+  # same code.
   #
   # The gate step's name is read by rerun-unacquired.yml: a failure there is a
   # consequence of the jobs it waits on, never a finding of its own.
   packaging:
     name: Packaging
-    needs: [install-check, verify, test-matrix, test-windows, test-windows-result, windows-gate-scope, windows-gate, smoke-install, channel-windows, container, bundle, binary, verify-readonly, aur-package]
-    if: always()
+    needs: [merge-check, install-check, verify, test-matrix, test-windows, test-windows-result, windows-gate-scope, windows-gate, smoke-install, channel-windows, container, bundle, binary, verify-readonly, aur-package]
+    if: ${{ always() && needs.merge-check.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # To read each job's own conclusion; see the gate step.
@@ -1786,11 +1886,11 @@ jobs:
       - name: Require every needed job to have succeeded
         env:
           RESULTS: ${{ toJSON(needs) }}
-          MAY_SKIP: windows-gate
+          MAY_SKIP: windows-gate merge-check
           GH_TOKEN: ${{ github.token }}
           # The same jobs by their display names, as the jobs API reports them.
           NOT_GATED: '["Packaging", "Codecov", "Early warning (ubuntu, next Node major)"]'
-          MAY_SKIP_NAME: Windows gate profile (affected files)
+          MAY_SKIP_NAMES: '["Windows gate profile (affected files)", "Merge check"]'
         run: |
           set -euo pipefail
           bad=$(printf '%s' "${RESULTS}" | jq -r --arg may_skip "${MAY_SKIP}" '
@@ -1807,11 +1907,11 @@ jobs:
             fi
             sleep 5
           done
-          legs=$(printf '%s' "${jobs}" | jq -rs --argjson not_gated "${NOT_GATED}" --arg may_skip "${MAY_SKIP_NAME}" '
+          legs=$(printf '%s' "${jobs}" | jq -rs --argjson not_gated "${NOT_GATED}" --argjson may_skip "${MAY_SKIP_NAMES}" '
             [.[].jobs[]][]
             | select(.name as $name | $not_gated | index($name) | not)
             | select(.conclusion != "success")
-            | select((.conclusion == "skipped" and .name == $may_skip) | not)
+            | select((.conclusion == "skipped" and (.name as $name | $may_skip | index($name) != null)) | not)
             | "\(.name): \(.conclusion // .status)"')
           bad=$(printf '%s\n%s\n' "${bad}" "${legs}" | sed '/^$/d')
           if [ -n "${bad}" ]; then

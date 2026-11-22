@@ -74,4 +74,8 @@ Object.defineProperty(globalThis, 'localStorage', {
 afterEach(() => {
   cleanup()
   storage.clear()
+  // jsdom keeps sessionStorage for a whole file, and the assistant window's
+  // position and the chunk- and recovery-reload guards live there, so one
+  // test's state became the next one's starting point. A shuffled run found it.
+  window.sessionStorage.clear()
 })

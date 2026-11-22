@@ -16,8 +16,6 @@ const manifest = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as
   allowScripts: Record<string, boolean>
 }
 const workflowDir = join(repo, '.github/workflows')
-// Spell the GitHub marker without making the source look like JS interpolation.
-const githubExpressionPrefix = String.fromCharCode(36, 123, 123)
 const workflows = readdirSync(workflowDir).filter((file) => /\.ya?ml$/.test(file)).map((file) => ({
   file,
   document: yaml.load(readFileSync(join(workflowDir, file), 'utf8')) as {
@@ -71,12 +69,28 @@ describe('dependency install script policy', () => {
     expect(manifest.allowScripts).toEqual(policy)
   })
 
+  /**
+   * The shared install action pins npm before its own `npm ci`, so a job that
+   * uses it has checked the policy for every install after it, too.
+   */
   it('checks npm policy before every workflow dependency install', () => {
+    const action = yaml.load(readFileSync(join(repo, '.github/actions/npm-ci/action.yml'), 'utf8')) as {
+      runs: { using: string; steps: Array<{ run?: string }> }
+    }
+    const actionRuns = action.runs.steps.map(({ run = '' }) => run.trim())
+    expect(action.runs.using).toBe('composite')
+    expect(actionRuns.indexOf('node scripts/pin-npm.mjs')).toBeGreaterThan(-1)
+    expect(actionRuns.indexOf('node scripts/pin-npm.mjs')).toBeLessThan(actionRuns.indexOf('npm ci'))
+
     let installs = 0
     for (const { file, document } of workflows) {
       for (const [job, { steps = [] }] of Object.entries(document.jobs)) {
         let checked = false
-        for (const { run = '' } of steps) {
+        for (const { run = '', uses = '' } of steps as Array<{ run?: string; uses?: string }>) {
+          if (uses === './.github/actions/npm-ci') {
+            checked = true
+            installs++
+          }
           for (const line of run.split('\n')) {
             if (/^\s*node scripts\/pin-npm\.mjs(?: --prefer-bundled)?\s*$/.test(line)) {
               expect(line.trim()).toBe(`node scripts/pin-npm.mjs${file === 'ci.yml' && job === 'early-warning' ? ' --prefer-bundled' : ''}`)
@@ -128,8 +142,10 @@ describe('dependency install script policy', () => {
   })
 
   it.each([
-    ['ci.yml', 'node-managers', `Install ${githubExpressionPrefix} matrix.manager }}`, 'scripts', `${githubExpressionPrefix} matrix.manager }}`],
-    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', `${githubExpressionPrefix} matrix.channel }}`],
+    ['ci.yml', 'smoke-install', 'Install bun', 'scripts', 'bun'],
+    ['ci.yml', 'smoke-install', 'Install pnpm', 'scripts', 'pnpm'],
+    ['ci.yml', 'smoke-install', 'Install yarn', 'scripts', 'yarn'],
+    ['published-smoke.yml', 'smoke', 'Install the node manager', '.ci-tools-source/scripts', '"${CHANNEL}"'],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v2', '.ci-tools-source/scripts', 'opencode-v2'],
     ['published-smoke.yml', 'smoke', 'Install OpenCode v1 on Windows', '.ci-tools-source/scripts', 'opencode-v1'],
   ])('installs then prepares the locked tool in %s / %s / %s', (file, job, name, scripts, tool) => {

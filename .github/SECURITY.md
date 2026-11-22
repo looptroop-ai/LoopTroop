@@ -163,7 +163,7 @@ committing them.
 
 ## Dependencies
 
-`npm audit` runs on every push and pull request as a report. Fixes are applied
+`npm audit` runs on every pull request and every push to main as a report. Fixes are applied
 as reviewed changes rather than automatically, so an advisory never rewrites the
 lockfile without a human deciding to.
 
@@ -198,10 +198,19 @@ under test. Generated-input tests exercise network trust boundaries through
 fast-check in the ordinary test suite.
 
 Dependency Review checks pull requests for known vulnerabilities in runtime,
-development, and unknown dependency scopes. The required Packaging check blocks
-failed, cancelled, or skipped reviews on every CI event. Pull requests compare
-their base and head commits. Pushes and manual runs compare the workflow commit
-with the default branch, so a branch-push check cannot bypass the review.
+development, and unknown dependency scopes. It is a step of the required Verify
+check, which Packaging waits on, so a failed, cancelled, or skipped review
+blocks the merge on every CI event. Pull requests compare their base and head
+commits. A push to main compares with the commit it replaced, and a manual run
+compares its commit with the default branch.
+
+Verify also audits every workflow and local action with zizmor, pinned and
+checksum-verified like actionlint. Any finding fails the check unless
+`.github/zizmor.yml`, or a `zizmor: ignore` comment beside the line, excuses it
+with a reason. The audits that read other repositories' current state (a moved
+tag, a newly published advisory, a stale action) are switched off there, so an
+upstream release cannot turn an unrelated pull request red; Renovate moves the
+pins those audits would flag.
 
 Renovate manages dependency updates. CI runs its strict configuration validator
 from the official container, pinned by version and image digest, with a read-only

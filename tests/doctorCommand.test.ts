@@ -745,7 +745,10 @@ describe('doctor command', () => {
   it('reports the OpenCode URL recorded by the daemon', async () => {
     const configDir = useConfigDir()
     process.env.LOOPTROOP_OPENCODE_MODE = 'real'
-    process.env.LOOPTROOP_OPENCODE_BASE_URL = 'http://127.0.0.1:4096'
+    // Stubbed, not assigned: afterEach restores stubs, and an assigned address
+    // outlived this test and turned a later "start moves OpenCode" warning into
+    // a "start will fail", which a shuffled run exposed.
+    vi.stubEnv('LOOPTROOP_OPENCODE_BASE_URL', 'http://127.0.0.1:4096')
     const daemonOpenCodeUrl = 'http://127.0.0.1:4321'
     writeDaemonState({
       instanceId: 'actual-opencode-daemon',

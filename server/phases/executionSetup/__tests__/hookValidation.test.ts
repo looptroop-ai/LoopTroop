@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import {
   getHookValidationRestoreMarkerPath,
   runExplicitGitHookValidation,
@@ -17,21 +17,38 @@ import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../../lib/constants'
 function shellSpec(script: string) {
   return createShellCommandSpec(script, detectHostContext().preferredShell)
 }
-import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
+import { disableGitAutoMaintenance, makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) removeTempDir(root)
 })
 
+let templateRepo: string | undefined
+afterAll(() => {
+  if (templateRepo) removeTempDir(templateRepo)
+})
+
 /**
  * Validation only runs where its side effects can be undone, so every fixture
  * is a real repository — which is what production always hands it.
+ *
+ * Each is a copy of one built per file: a build is seven git processes, a copy
+ * is one. The repository records no absolute path (no remote, no worktree), so
+ * the copy differs only in its files' stat data, which the refresh brings into
+ * the index as a fresh build would have it.
  */
 function makeRepo(root = makeTempDir('looptroop-hook-validation-')): string {
   roots.push(root)
-  mkdirSync(root, { recursive: true })
+  templateRepo ??= buildRepo(makeTempDir('looptroop-hook-validation-template-'))
+  cpSync(templateRepo, root, { recursive: true })
+  execFileSync('git', ['-C', root, 'update-index', '--refresh'], { stdio: 'ignore' })
+  return root
+}
+
+function buildRepo(root: string): string {
   execFileSync('git', ['init', root], { stdio: 'ignore' })
+  disableGitAutoMaintenance(root)
   pinGitLineEndings(root)
   execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com'])
   execFileSync('git', ['-C', root, 'config', 'user.name', 'Test'])

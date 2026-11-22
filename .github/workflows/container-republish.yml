@@ -108,6 +108,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -326,6 +327,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Pin npm
         run: node scripts/pin-npm.mjs
@@ -653,6 +655,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Prepare an isolated artifact download
         id: artifact_raw_1
@@ -783,6 +786,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # Both registries; see release.yml for why this is anonymous.
       - name: Both registries serve the release anonymously
@@ -856,6 +860,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Splice the container block into the notes
         env:

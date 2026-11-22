@@ -1,0 +1,54 @@
+name: Install dependencies
+description: >-
+  Pin npm, restore npm's download cache, run npm ci, and save the cache from
+  pushes to main only.
+
+# Why this and not setup-node's own cache:
+#
+# package.json names a `packageManager`, so setup-node turns caching on in every
+# job it runs in, including jobs that never install anything. Those finish
+# first and save an empty cache under the key every later job restores, and a
+# saved key is never overwritten: macOS jobs restored 1 KB and downloaded every
+# package again for as long as the lockfile stayed the same. Every branch also
+# saved its own copy of ~80 MB per platform, which kept the repository at
+# GitHub's 10 GB cache limit and evicted the copies main had saved.
+#
+# So setup-node's caching is switched off everywhere (`package-manager-cache:
+# false`), and this action owns npm's cache: it saves right after a successful
+# `npm ci`, never from an empty or half-filled directory, and only on main.
+# Pull requests read main's copy, falling back to the newest one for an older
+# lockfile, which still holds nearly every package a dependency update needs.
+runs:
+  using: composite
+  steps:
+    # Before anything touches npm, so the install runs under the version the
+    # repository declares and its install-script policy applies.
+    - name: Pin npm to the declared version
+      shell: bash
+      run: node scripts/pin-npm.mjs
+
+    - name: Locate the npm cache
+      id: cache
+      shell: bash
+      run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the npm cache
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.cache.outputs.dir }}
+        key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: npm-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Install dependencies
+      shell: bash
+      run: npm ci
+
+    # Several jobs on one push reach this at once; the first saves the key and
+    # the others are told it is taken, which the action reports as a warning.
+    - name: Save the npm cache from main
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.cache.outputs.dir }}
+        key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}

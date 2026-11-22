@@ -43,7 +43,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` after the dev server starts.
+Open `http://localhost:5173` after the dev server starts. The tests need Git 2.28 or newer: their fixture repositories are created with `git init --initial-branch`.
 
 Running the stack over a tunnel or a remote link? The dev server sends every
 source file as a separate request, and each one pays the round trip. Serve the
@@ -67,7 +67,9 @@ npm run test
 npm run test:coverage
 ```
 
-`npm run test:coverage` runs all four Vitest projects, writes `coverage/lcov.info` and `coverage/coverage-summary.json`, and prints a text report. The command fails below 90% global line coverage or 80% branch coverage. CI uses it in the required Ubuntu Verify job and retains the files as a seven-day artifact. A separate OIDC Codecov job uploads LCOV and reports project and patch status; Codecov is not a required gate.
+`npm run test:coverage` runs all four Vitest projects, writes `coverage/lcov.info` and `coverage/coverage-summary.json`, and prints a text report. The command fails below 90% global line coverage or 80% branch coverage. CI runs it in the Ubuntu toolchain test lane, the required `Test (ubuntu-latest, toolchain floor)` check, and keeps the files as a seven-day artifact. A separate OIDC Codecov job uploads LCOV and reports project and patch status; Codecov is not a required gate.
+
+`npm run dev` also points git at `.githooks/` (`npm run hooks` does only that). Its pre-push hook runs `npm run lint` and `npm run typecheck`, two of the checks the required Verify job runs, before every push that updates a branch. It checks the files in the current checkout, uncommitted edits included, rather than the pushed commits. To skip it for one push, use `git push --no-verify`. It does nothing in CI or in a checkout without its dependencies installed, and it changes nothing when `core.hooksPath` is already set, when `.git/hooks` holds hooks of your own, or when this folder is not the top of its own git repository. It is not an install script, because npm 12 would then warn everyone who installs the published package from a tarball.
 
 `typecheck` runs two projects: the application (`tsconfig.json`) and the root
 `tests/` directory (`tsconfig.tests.json`). They are separate so that adding a
@@ -197,11 +199,14 @@ dependency installs, and `scripts/pin-npm.mjs` enforces its reviewed policy in
 CI. The container install uses the release lockfile with lifecycle scripts
 disabled, so it does not download a second npm version.
 
-`main` requires a branch to be up to date, so merging one Renovate pull request
-leaves the others behind. Renovate rebases them itself in its nightly window.
-To have one sooner, tick the rebase box in its description. Do not press
-GitHub's *Update branch*: that commit is yours, not Renovate's, and Renovate
-stops maintaining a branch someone else has committed to.
+Renovate rebases its pull requests only when they conflict with `main`. A
+rebase used to follow every merge, and each one was a full CI run, mostly for
+pull requests that would be rebased again before anyone merged them. `main`
+requires a branch to be up to date, so before merging a Renovate pull request
+that has fallen behind, tick the rebase box in its description and wait for its
+checks. Do not press GitHub's *Update branch*: that commit is yours, not
+Renovate's, and Renovate stops maintaining a branch someone else has committed
+to.
 
 Renovate raises `engines.node` on its own, to the newest Node release that has
 been out for 90 days within the same major. Everything but the merge happens
@@ -235,6 +240,43 @@ old major in words, so read its pages for those.
 
 The floor cannot go below the oldest Node the npm in `packageManager` supports,
 because the declared-floor test lanes install dependencies on it.
+
+## Continuous integration
+
+CI runs once for each commit of a pull request, and once for each push to
+`main`. A branch with no pull request yet runs nothing on push; to test it
+anyway, run `gh workflow run ci.yml --ref <branch>`. A pull request with a merge
+conflict runs nothing either, because GitHub makes no merge commit to test:
+its checks wait until the conflict is resolved. A newer commit cancels a pull
+request's older run; a run on `main` always finishes.
+
+- `Packaging` decides whether a pull request can merge. It waits on every job
+  except the Codecov upload and the advisory early-warning lane, which tests
+  the next Node major. A job added to the workflow is gated once it is in
+  Packaging's `needs`, and a test fails if it is missing. It also reads every
+  job's own result, because GitHub reports a matrix as passed when one of its
+  legs never got a machine.
+- Every Mac and Windows job, and the test matrix with its Ubuntu lanes, waits
+  for `Install check (ubuntu)`, which installs the dependencies, builds the
+  client and checks the third-party notices. A commit that cannot install
+  fails there, before it holds any Mac or Windows machine.
+- Each Windows test lane runs on two machines. The split follows the per-file
+  times `main` recorded on its last run, taken once per run by the install
+  check so both halves split the same way, and
+  `Test (windows-latest, <lane> floor)` passes only if both halves passed and
+  together ran every test file exactly once.
+- The Ubuntu declared-floor lane runs the tests in a shuffled order, to catch a
+  test that only passes, or only fails, after another one. The seed is the run
+  id, shown in the job summary; reproduce a failure with
+  `npx vitest run --sequence.shuffle --sequence.seed=<seed>`.
+- A job that GitHub never gave a machine to is re-run automatically, at most
+  twice, by `rerun-unacquired.yml`, unless a newer commit already replaced the
+  run. Nothing that failed on its own is re-run: a failure is a finding. A gate
+  that failed only because such a job never ran is re-run with it, and an
+  advisory job's failure (Codecov, the next-Node lane) does not stop that.
+- Verify lints the workflows with actionlint and audits them with zizmor. A
+  zizmor finding fails the check unless `.github/zizmor.yml`, or a
+  `# zizmor: ignore[...]` comment beside the line, excuses it with a reason.
 
 ## Issues
 

@@ -52,7 +52,8 @@
   ],
   "packageManager": "npm@12.2.2",
   "scripts": {
-    "predev": "node scripts/dev-preflight.mjs",
+    "predev": "node scripts/dev-preflight.mjs && npm run hooks",
+    "hooks": "node scripts/install-git-hooks.ts",
     "dev": "tsx scripts/dev.ts",
     "dev:app": "concurrently -n fe,be -c blue,green \"npm:dev:frontend\" \"npm:dev:backend\"",
     "deps:sync": "tsx scripts/dev-deps.ts",

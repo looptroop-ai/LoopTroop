@@ -83,24 +83,26 @@ function makeLiveErrorTicket(
   });
 }
 
-describe("ErrorView", () => {
-  beforeEach(() => {
-    logSectionMock.mockClear();
-    mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false });
-    mockUseTicketHistoricalLogs.mockReset();
-    mockUseTicketHistoricalLogs.mockReturnValue({
-      entries: [],
-      isLoading: false,
-      isError: false,
-      retryHistoricalLogs: vi.fn(),
-    });
-    mockUseCancelTicket.mockReturnValue({
-      mutate: vi.fn(),
-      mutateAsync: vi.fn(),
-      isPending: false,
-    });
+// At file level: every suite renders ErrorView, which calls these hooks, and a
+// shuffled run can start with any suite.
+beforeEach(() => {
+  logSectionMock.mockClear();
+  mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false });
+  mockUseTicketHistoricalLogs.mockReset();
+  mockUseTicketHistoricalLogs.mockReturnValue({
+    entries: [],
+    isLoading: false,
+    isError: false,
+    retryHistoricalLogs: vi.fn(),
   });
+  mockUseCancelTicket.mockReturnValue({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+  });
+});
 
+describe("ErrorView", () => {
   it.each([
     [BEAD_AGENT_RESPONSE_INVALID, "CODING", "Agent response incomplete"],
     [BEAD_ITERATION_TIMEOUT, "CODING", "Implementation attempt timed out"],

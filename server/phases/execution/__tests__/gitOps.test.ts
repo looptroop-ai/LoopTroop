@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
+import { disableGitAutoMaintenance, makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
   captureBeadDiff,
   commitBeadChanges,
@@ -25,15 +25,36 @@ const BRANCH = TEST.externalId
 // Helpers for integration tests — real git repos in OS temp directories
 // ---------------------------------------------------------------------------
 
-function createGitRepo(): string {
-  const dir = makeTempDir('gitops-test-')
+function buildGitRepo(): string {
+  const dir = makeTempDir('gitops-template-')
   execFileSync('git', ['-C', dir, 'init'], { stdio: 'pipe' })
+  disableGitAutoMaintenance(dir)
   pinGitLineEndings(dir)
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test'], { stdio: 'pipe' })
   writeFileSync(join(dir, 'hello.ts'), 'const x = 1\n')
   execFileSync('git', ['-C', dir, 'add', '.'], { stdio: 'pipe' })
   execFileSync('git', ['-C', dir, 'commit', '-m', 'initial'], { stdio: 'pipe' })
+  return dir
+}
+
+let templateRepo: string | undefined
+
+afterAll(() => {
+  if (templateRepo) removeTempDir(templateRepo)
+})
+
+/**
+ * A fresh repository per test, copied from one built once per file: a build
+ * is seven git processes, a copy is one. The repository records no absolute
+ * path (no remote, no worktree), so the copy differs only in its files' stat
+ * data, and refreshing the index makes it match them as a fresh build would.
+ */
+function createGitRepo(): string {
+  templateRepo ??= buildGitRepo()
+  const dir = makeTempDir('gitops-test-')
+  cpSync(templateRepo, dir, { recursive: true })
+  execFileSync('git', ['-C', dir, 'update-index', '--refresh'], { stdio: 'pipe' })
   return dir
 }
 
@@ -44,6 +65,9 @@ function headSha(dir: string): string {
 function createBareRemote(): string {
   const dir = makeTempDir('gitops-remote-')
   execFileSync('git', ['init', '--bare', dir], { stdio: 'pipe' })
+  // Tests push here, and a received push starts the same detached maintenance
+  // the template avoids; it would race the directory's removal.
+  disableGitAutoMaintenance(dir)
   pinGitLineEndings(dir)
   return dir
 }

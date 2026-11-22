@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as github from '../github'
 import * as commands from '../runCommand'
 import { reconcileMergedPullRequestCandidate, EarlyMergeRecoveryManualError } from '../earlyMergedPullRequestRecovery'
-import { pinGitLineEndings } from '../../test/tempDir'
+import { disableGitAutoMaintenance, pinGitLineEndings } from '../../test/tempDir'
 
 const roots: string[] = []
 
@@ -27,7 +27,7 @@ function commit(cwd: string, message: string, allowEmpty = false): string {
   return git(cwd, ['rev-parse', 'HEAD'])
 }
 
-function makeFixture(options: {
+interface FixtureOptions {
   conflictOnBaseUpdate?: boolean
   addRemoteOnlyPath?: boolean
   sameTreeCandidate?: boolean
@@ -36,9 +36,74 @@ function makeFixture(options: {
   candidateRemovesMergedFile?: boolean
   candidateUpdatesMergedFile?: boolean
   squashMerge?: boolean
-} = {}) {
+}
+
+interface Fixture {
+  projectPath: string
+  worktreePath: string
+  remotePath: string
+  mergedHeadSha: string
+  landedCommitSha: string
+  candidateCommitSha: string
+}
+
+function makeRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'looptroop-early-merge-'))
   roots.push(root)
+  return root
+}
+
+const fixtureTemplates = new Map<string, { root: string; fixture: Fixture }>()
+
+/**
+ * Gives each test its own copy of a fixture variant built once per file.
+ *
+ * Building one takes ~30 git processes, three of them pushes, and on Windows
+ * that was most of this file's run time. The copy differs from a fresh build
+ * only in its root directory's name, which git recorded in exactly three
+ * files: the remote URL and the two links between the project and its worktree.
+ * Both roots share the same parent, so swapping the name in those files gives
+ * the bytes git itself would have written there.
+ */
+function makeFixture(options: FixtureOptions = {}): Fixture {
+  const key = JSON.stringify(Object.entries(options).filter(([, enabled]) => enabled).sort())
+  let template = fixtureTemplates.get(key)
+  if (!template) {
+    const templateRoot = makeRoot()
+    template = { root: templateRoot, fixture: buildFixture(templateRoot, options) }
+    fixtureTemplates.set(key, template)
+  }
+  const root = makeRoot()
+  for (const entry of ['project', 'origin.git', 'ticket-worktree']) {
+    cpSync(join(template.root, entry), join(root, entry), { recursive: true })
+  }
+  for (const file of ['project/.git/config', 'project/.git/worktrees/ticket-worktree/gitdir', 'ticket-worktree/.git']) {
+    const path = join(root, file)
+    const recorded = readFileSync(path, 'utf8')
+    // A file that no longer names the template would keep the copy pointing at
+    // the template's remote or worktree, and every later copy would share it.
+    if (!recorded.includes(basename(template.root))) throw new Error(`${file} no longer records the fixture's directory; the copy cannot be relinked`)
+    const relinked = recorded.replaceAll(basename(template.root), basename(root))
+    // Rewritten in place: Git for Windows hides the worktree's `.git` file, and
+    // Windows refuses the default truncate-and-recreate open on a hidden file.
+    writeFileSync(path, relinked, { flag: 'r+' })
+    truncateSync(path, Buffer.byteLength(relinked))
+  }
+  const fixture = {
+    ...template.fixture,
+    projectPath: resolve(root, 'project'),
+    worktreePath: resolve(root, 'ticket-worktree'),
+    remotePath: resolve(root, 'origin.git'),
+  }
+  // Copied files carry new stat data. Refresh both indexes so they match their
+  // checkouts as they would after a fresh build; this also fails loudly if a
+  // relinked path does not resolve.
+  git(fixture.projectPath, ['update-index', '--refresh'])
+  git(fixture.worktreePath, ['update-index', '--refresh'])
+  return fixture
+}
+
+function buildFixture(root: string, options: FixtureOptions): Fixture {
   const projectPath = resolve(root, 'project')
   const worktreePath = resolve(root, 'ticket-worktree')
   const remotePath = resolve(root, 'origin.git')
@@ -46,6 +111,8 @@ function makeFixture(options: {
   mkdirSync(remotePath)
   execFileSync('git', ['init', '--bare', remotePath], { stdio: 'ignore' })
   execFileSync('git', ['-C', projectPath, 'init'], { stdio: 'ignore' })
+  disableGitAutoMaintenance(remotePath)
+  disableGitAutoMaintenance(projectPath)
   pinGitLineEndings(remotePath)
   pinGitLineEndings(projectPath)
   git(projectPath, ['config', 'user.name', 'Test'])

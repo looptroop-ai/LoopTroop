@@ -322,6 +322,45 @@ describe('AppShell', () => {
     }
   })
 
+  it('keeps the suggestions when the search is focused again before they hide', () => {
+    vi.useFakeTimers()
+    try {
+      renderShell(makeUIValue({ filters: makeFilters('L') }))
+      const search = screen.getByRole('searchbox', { name: /search tickets/i })
+      fireEvent.focus(search)
+      fireEvent.blur(search)
+      act(() => { vi.advanceTimersByTime(50) })
+      fireEvent.focus(search)
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(screen.getByRole('listbox')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A blur just before the shell unmounts left a timer that fired later; in a
+  // test run it fired after the environment was gone ("window is not defined").
+  it('cancels the pending hide when the search unmounts', () => {
+    vi.useFakeTimers()
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout')
+    try {
+      const view = renderShell(makeUIValue({ filters: makeFilters('L') }))
+      const search = screen.getByRole('searchbox', { name: /search tickets/i })
+      fireEvent.focus(search)
+      setTimeoutSpy.mockClear()
+      fireEvent.blur(search)
+      const hideTimer = setTimeoutSpy.mock.results.at(-1)?.value as number
+      clearTimeoutSpy.mockClear()
+      view.unmount()
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(hideTimer)
+    } finally {
+      setTimeoutSpy.mockRestore()
+      clearTimeoutSpy.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it.each([
     ['input', () => document.createElement('input')],
     ['textarea', () => document.createElement('textarea')],

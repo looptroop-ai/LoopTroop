@@ -57,9 +57,12 @@ jobs:
   # API call included, answers no, and the run is a full one.
   #
   # Skipped on every other event, which costs nothing: GitHub skips a job on
-  # its `if` without a machine. That is also why every job that needs this one
-  # starts its `if` with a status function. Without one, a skipped dependency
-  # would skip it, on every pull request.
+  # its `if` without a machine. That is also why every job below it states
+  # its own condition with a status function, such as
+  # `!cancelled() && needs.install-check.result == 'success'`. A job without
+  # one is skipped when any job above it was skipped, not only one it names
+  # in `needs`, so it would be skipped on every pull request: the first run of
+  # this design skipped every test that way.
   merge-check:
     name: Merge check
     if: github.event_name == 'push'
@@ -438,6 +441,7 @@ jobs:
     # printed in the log and the job summary, so a red run reproduces exactly.
     name: Test (${{ matrix.os }}, ${{ matrix.label }})
     needs: install-check
+    if: ${{ !cancelled() && needs.install-check.result == 'success' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -545,6 +549,7 @@ jobs:
   test-windows:
     name: Test shard ${{ matrix.shard }}/2 (windows-latest, ${{ matrix.lane }} floor)
     needs: install-check
+    if: ${{ !cancelled() && needs.install-check.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -883,7 +888,7 @@ jobs:
   windows-gate:
     name: Windows gate profile (affected files)
     needs: [install-check, windows-gate-scope]
-    if: needs.windows-gate-scope.outputs.affected == 'true'
+    if: ${{ !cancelled() && needs.install-check.result == 'success' && needs.windows-gate-scope.outputs.affected == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -1200,6 +1205,7 @@ jobs:
   channel-windows:
     name: Channel install (windows-latest)
     needs: [install-check, bundle]
+    if: ${{ !cancelled() && needs.install-check.result == 'success' && needs.bundle.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -1456,6 +1462,7 @@ jobs:
   binary:
     name: Binary (${{ matrix.target }})
     needs: install-check
+    if: ${{ !cancelled() && needs.install-check.result == 'success' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -1760,6 +1767,7 @@ jobs:
   aur-package:
     name: AUR package (arch)
     needs: [bundle]
+    if: ${{ !cancelled() && needs.bundle.result == 'success' }}
     runs-on: ubuntu-latest
     container: archlinux:latest@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6
     timeout-minutes: 20

@@ -816,7 +816,8 @@ describe('release workflow policy', () => {
     expect(manual?.run).toBe('echo "affected=true" >> "$GITHUB_OUTPUT"')
     expect(gate['runs-on']).toBe('windows-latest')
     expect(gate.needs).toContain('windows-gate-scope')
-    expect(gate.if).toBe("needs.windows-gate-scope.outputs.affected == 'true'")
+    // Its own condition, stated in full: see ciGatePolicy's rule for jobs below the merge check.
+    expect(gate.if).toBe("${{ !cancelled() && needs.install-check.result == 'success' && needs.windows-gate-scope.outputs.affected == 'true' }}")
     expect((gate.steps ?? []).some((step) => String(step.name ?? '').includes('affected')), 'the Windows job no longer scopes itself').toBe(false)
     const checkout = (scope.steps ?? []).find((step) => String(step.uses ?? '').startsWith('actions/checkout@'))
     expect(checkout?.with).toMatchObject({ 'fetch-depth': 0, filter: 'blob:none', 'persist-credentials': false })

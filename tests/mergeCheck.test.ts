@@ -119,6 +119,20 @@ describe('merge check decision', () => {
     }
   })
 
+  it('checks every value it puts in a request path before asking anything', async () => {
+    const asked: string[] = []
+    const recording: GetJson = async (path) => { asked.push(path); return [] }
+    for (const [field, value, message] of [
+      ['repository', 'looptroop-ai/LoopTroop/../x', 'unexpected repository'],
+      ['workflow', '../ci.yml', 'unexpected workflow file'],
+      ['sha', 'main', 'unexpected pushed commit'],
+      ['before', `${BEFORE}?x=1`, 'unexpected previous commit'],
+    ] as const) {
+      await expect(decide({ ...push, [field]: value }, recording)).rejects.toThrow(message)
+    }
+    expect(asked).toEqual([])
+  })
+
   it('refuses to compare trees it could not read, rather than finding two missing ones equal', async () => {
     const noTree = api({
       [`/repos/${REPO}/git/commits/${MERGED}`]: { tree: {} },
@@ -198,13 +212,16 @@ describe('GitHub API access', () => {
         ? new Response('{"message":"Not Found"}', { status: 404 })
         : Response.json({ ok: true })
     }) as typeof fetch
+    // The host is fixed: an API URL from the environment cannot send the token elsewhere.
     const get = githubGet({ GITHUB_API_URL: 'https://api.example', GITHUB_TOKEN: 'secret' }, fetchStub)
     await expect(get('/present')).resolves.toEqual({ ok: true })
     await expect(get('/missing')).rejects.toThrow('GET /missing answered HTTP 404')
     expect(calls[0]).toEqual({
-      url: 'https://api.example/present',
+      url: 'https://api.github.com/present',
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: 'Bearer secret' },
     })
+    await expect(get('@evil.example/x')).rejects.toThrow('not an API path: @evil.example/x')
+    expect(calls).toHaveLength(2)
     await githubGet({}, fetchStub)('/present')
     expect(calls[2]?.url).toBe('https://api.github.com/present')
     expect(calls[2]?.headers.Authorization).toBeUndefined()

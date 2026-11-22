@@ -19,8 +19,9 @@
  *
  * Usage, in the workflow: node scripts/merge-check.ts
  * Reads GITHUB_REPOSITORY, GITHUB_SHA, GITHUB_WORKFLOW_REF, BEFORE (the commit
- * main held before the push), GITHUB_TOKEN and GITHUB_API_URL; writes
- * `tested` and `run_id` to GITHUB_OUTPUT and one line to the job summary.
+ * main held before the push) and GITHUB_TOKEN, which goes to api.github.com
+ * and nowhere else; writes `tested` and `run_id` to GITHUB_OUTPUT and one line
+ * to the job summary.
  */
 import { appendFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -48,23 +49,30 @@ export type Decision =
 const untested = (reason: string): Decision => ({ tested: false, reason })
 
 export async function decide(push: Push, get: GetJson): Promise<Decision> {
-  const repo = `/repos/${push.repository}`
-  const pull = list(await get(`${repo}/commits/${push.sha}/pulls`), 'pull requests')
+  // Every value that goes into a request path is checked, then encoded.
+  const parts = /^([\w.-]+)\/([\w.-]+)$/.exec(push.repository)
+  if (!parts) throw new Error(`unexpected repository ${push.repository}`)
+  if (!/^[\w.-]+\.ya?ml$/.test(push.workflow)) throw new Error(`unexpected workflow file ${push.workflow}`)
+  const sha = objectId(push.sha, 'pushed commit')
+  const previous = objectId(push.before, 'previous commit')
+  const repo = `/repos/${encodeURIComponent(parts[1]!)}/${encodeURIComponent(parts[2]!)}`
+
+  const pull = list(await get(`${repo}/commits/${encodeURIComponent(sha)}/pulls`), 'pull requests')
     .map(readPull)
-    .find((candidate) => candidate.merged && candidate.mergeCommit === push.sha)
+    .find((candidate) => candidate.merged && candidate.mergeCommit === sha)
   if (!pull) return untested('it is not the merge of a pull request')
   const name = `pull request #${pull.number}`
   if (pull.headRepository !== push.repository) return untested(`${name} came from another repository`)
-  if (/^0+$/.test(push.before)) return untested('the push has no earlier commit to compare with')
+  if (/^0+$/.test(previous)) return untested('the push has no earlier commit to compare with')
 
   const [merged, head, before] = await Promise.all([
-    treeOf(get, repo, push.sha), treeOf(get, repo, pull.headSha), treeOf(get, repo, push.before)])
+    treeOf(get, repo, sha), treeOf(get, repo, pull.headSha), treeOf(get, repo, previous)])
   if (merged !== head) return untested(`its code differs from ${name}'s last commit`)
   const [ciNow, ciBefore] = await Promise.all([githubDirectoryOf(get, repo, merged), githubDirectoryOf(get, repo, before)])
   if (ciNow !== ciBefore) return untested('it changes .github, and a pull request run never exercises the steps only main runs')
 
   const runs = list(record(await get(
-    `${repo}/actions/workflows/${push.workflow}/runs?event=pull_request&head_sha=${pull.headSha}&per_page=100`,
+    `${repo}/actions/workflows/${encodeURIComponent(push.workflow)}/runs?event=pull_request&head_sha=${encodeURIComponent(pull.headSha)}&per_page=100`,
   ), 'workflow runs').workflow_runs, 'workflow runs')
     .map(readRun)
     .filter((run) => run.headRepository === push.repository)
@@ -76,7 +84,7 @@ export async function decide(push: Push, get: GetJson): Promise<Decision> {
   }
 
   const artifacts = list(record(await get(
-    `${repo}/actions/runs/${run.id}/artifacts?name=${COVERAGE_ARTIFACT}`,
+    `${repo}/actions/runs/${encodeURIComponent(run.id)}/artifacts?name=${COVERAGE_ARTIFACT}`,
   ), 'artifacts').artifacts, 'artifacts')
   const coverage = artifacts.some((artifact) => {
     const fields = record(artifact, 'artifact')
@@ -88,12 +96,12 @@ export async function decide(push: Push, get: GetJson): Promise<Decision> {
 
 /** The root tree of a commit. */
 async function treeOf(get: GetJson, repo: string, commit: string): Promise<string> {
-  return objectId(record(record(await get(`${repo}/git/commits/${commit}`), 'commit').tree, 'commit tree').sha, `tree of ${commit}`)
+  return objectId(record(record(await get(`${repo}/git/commits/${encodeURIComponent(commit)}`), 'commit').tree, 'commit tree').sha, `tree of ${commit}`)
 }
 
 /** The tree .github points at inside a root tree. */
 async function githubDirectoryOf(get: GetJson, repo: string, tree: string): Promise<string> {
-  const entries = list(record(await get(`${repo}/git/trees/${tree}`), 'tree').tree, 'tree entries')
+  const entries = list(record(await get(`${repo}/git/trees/${encodeURIComponent(tree)}`), 'tree').tree, 'tree entries')
   const entry = entries.map((candidate) => record(candidate, 'tree entry')).find((candidate) => candidate.path === '.github')
   if (!entry) throw new Error(`tree ${tree} has no .github`)
   return objectId(entry.sha, `.github in ${tree}`)
@@ -140,16 +148,21 @@ function integer(value: unknown, what: string): number {
 
 /** Two trees are the same code only if both ids are real: two missing ones would compare equal. */
 function objectId(value: unknown, what: string): string {
-  if (typeof value !== 'string' || !/^[0-9a-f]{40}$/.test(value)) throw new Error(`unexpected ${what} from the API`)
+  if (typeof value !== 'string' || !/^[0-9a-f]{40}$/.test(value)) throw new Error(`unexpected ${what}: ${String(value)}`)
   return value
 }
 
-/** A GET against the GitHub REST API that throws on anything but success. */
+const GITHUB_API = 'https://api.github.com'
+
+/**
+ * A GET against the GitHub REST API that throws on anything but success. The
+ * host is fixed, so the token cannot be sent anywhere else.
+ */
 export function githubGet(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch = fetch): GetJson {
-  const base = env.GITHUB_API_URL ?? 'https://api.github.com'
   const token = env.GITHUB_TOKEN
   return async (path) => {
-    const response = await fetchImpl(base + path, {
+    if (!path.startsWith('/')) throw new Error(`not an API path: ${path}`)
+    const response = await fetchImpl(GITHUB_API + path, {
       headers: {
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',

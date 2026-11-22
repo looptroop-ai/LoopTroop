@@ -152,15 +152,32 @@ describe('CI merge check', () => {
   })
 
   /**
+   * GitHub skips a job whose `if` has no status function when any job above
+   * it was skipped, not only one it names in `needs`: the first run of this
+   * design skipped every test on its own pull request, because the merge
+   * check, skipped there, sits above all of them. So every job below the
+   * check states its own condition.
+   */
+  it('makes every job below the merge check state its own condition', () => {
+    const below = (job: string): boolean => [ci.jobs[job]?.needs ?? []].flat().some((need) => need === 'merge-check' || below(need))
+    const jobs = Object.keys(ci.jobs).filter((job) => job !== 'merge-check')
+    expect(jobs.length).toBeGreaterThan(10)
+    for (const job of jobs) {
+      expect(below(job), `${job} waits for the merge check`).toBe(true)
+      expect(ci.jobs[job]?.if, `${job} states its condition with a status function`).toMatch(/\$\{\{ (?:!cancelled\(\)|always\(\)) /)
+    }
+  })
+
+  /**
    * Works out from the workflow which jobs run, the way GitHub decides it: a
-   * job whose `if` has no status function is skipped when a job it needs was
-   * skipped; one with a status function is decided by its condition alone,
+   * job whose `if` has no status function is skipped when any job above it
+   * was skipped; one with a status function is decided by its condition alone,
    * read here for the merge check's answer and for a needed job's success.
-   * The trap it guards: a job that needs the merge check without a status
-   * function would be skipped on every pull request, where the check is.
    */
   it('runs everything for a pull request, a full push and the weekly run, and only the Codecov hand-off for a merge already tested', () => {
     type Outcome = 'runs' | 'skipped'
+    const needsOf = (job: string) => [ci.jobs[job]?.needs ?? []].flat()
+    const above = (job: string): string[] => needsOf(job).flatMap((need) => [need, ...above(need)])
     const simulate = (check: 'skipped' | 'untested' | 'tested') => {
       const outcomes = new Map<string, Outcome>()
       const visit = (job: string): Outcome => {
@@ -168,7 +185,6 @@ describe('CI merge check', () => {
         if (known) return known
         const definition = ci.jobs[job]
         if (!definition) throw new Error(`ci.yml: unknown job ${job}`)
-        const needed = [definition.needs ?? []].flat().map(visit)
         const condition = definition.if ?? ''
         let outcome: Outcome
         if (job === 'merge-check') {
@@ -178,7 +194,7 @@ describe('CI merge check', () => {
           const neededSuccess = [...condition.matchAll(/needs\.([\w-]+)\.result == 'success'/g)].map((match) => match[1]!)
           outcome = skippedForTested || neededSuccess.some((need) => visit(need) === 'skipped') ? 'skipped' : 'runs'
         } else {
-          outcome = needed.includes('skipped') ? 'skipped' : 'runs'
+          outcome = above(job).some((ancestor) => visit(ancestor) === 'skipped') ? 'skipped' : 'runs'
         }
         outcomes.set(job, outcome)
         return outcome
@@ -190,11 +206,6 @@ describe('CI merge check', () => {
     expect(simulate('skipped'), 'a pull request, or the weekly run').toEqual(everyJob.filter((job) => job !== 'merge-check'))
     expect(simulate('untested'), 'a push to main that runs in full').toEqual(everyJob)
     expect(simulate('tested'), 'a merge already tested').toEqual(['codecov', 'merge-check'])
-    // Every job that starts a chain waits for the answer, so nothing begins before it.
-    for (const [job, definition] of Object.entries(ci.jobs)) {
-      const needs = [definition.needs ?? []].flat()
-      if (job !== 'merge-check' && needs.every((need) => need === 'merge-check')) expect(needs, job).toEqual(['merge-check'])
-    }
   })
 
   it('runs in full once a week, on main', () => {

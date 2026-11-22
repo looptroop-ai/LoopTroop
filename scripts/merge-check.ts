@@ -12,8 +12,11 @@
  * - the merged code is the pull request's last commit, git tree for git tree;
  * - nothing under .github changed in the push: the steps that run only on
  *   main are never exercised by a pull request's run;
- * - the newest pull request run of this workflow on that commit finished, and
- *   every job in it passed;
+ * - no other pull request ever had that commit at the head of the same branch
+ *   (one opened against another base, say), and the run comes from that
+ *   branch: once a pull request merges, its runs no longer name it;
+ * - the newest such run of this workflow, by its latest attempt, finished, and
+ *   every job in it passed or was skipped, the advisory ones included;
  * - that run's coverage report has not expired, because main's run hands it to
  *   Codecov as the baseline later pull requests are compared with.
  *
@@ -71,17 +74,32 @@ export async function decide(push: Push, get: GetJson): Promise<Decision> {
   const [ciNow, ciBefore] = await Promise.all([githubDirectoryOf(get, repo, merged), githubDirectoryOf(get, repo, before)])
   if (ciNow !== ciBefore) return untested('it changes .github, and a pull request run never exercises the steps only main runs')
 
+  // A merged pull request's runs no longer name it, but they keep its branch.
+  // A run is this pull request's only if it comes from that branch and no
+  // other pull request had the branch at this commit.
+  const other = list(await get(
+    `${repo}/pulls?head=${encodeURIComponent(`${parts[1]!}:${pull.headRef}`)}&state=all&per_page=100`,
+  ), 'pull requests').map(readPull).find((candidate) => candidate.number !== pull.number && candidate.headSha === pull.headSha)
+  if (other) return untested(`${name}'s last commit was also the head of pull request #${other.number}`)
+
   const runs = list(record(await get(
     `${repo}/actions/workflows/${encodeURIComponent(push.workflow)}/runs?event=pull_request&head_sha=${encodeURIComponent(pull.headSha)}&per_page=100`,
   ), 'workflow runs').workflow_runs, 'workflow runs')
     .map(readRun)
-    .filter((run) => run.headRepository === push.repository)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .filter((run) => run.headRepository === push.repository && run.headBranch === pull.headRef)
+    // By the latest attempt: re-running an older run does not change when it was created.
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
   const run = runs[0]
   if (!run) return untested(`${name}'s last commit has no run of this workflow`)
   if (run.status !== 'completed' || run.conclusion !== 'success') {
     return untested(`run ${run.id} on ${name}'s last commit ended ${run.conclusion ?? run.status}`)
   }
+  // The run passes even when an advisory job, which continues on error, failed.
+  const jobs = record(await get(`${repo}/actions/runs/${encodeURIComponent(run.id)}/jobs?filter=latest&per_page=100`), 'jobs')
+  const jobList = list(jobs.jobs, 'jobs').map((job) => record(job, 'job'))
+  if (jobs.total_count !== jobList.length) return untested(`run ${run.id} has more jobs than one page lists`)
+  const failed = jobList.find((job) => job.conclusion !== 'success' && job.conclusion !== 'skipped')
+  if (failed) return untested(`${String(failed.name)} in run ${run.id} ended ${String(failed.conclusion ?? failed.status)}`)
 
   const artifacts = list(record(await get(
     `${repo}/actions/runs/${encodeURIComponent(run.id)}/artifacts?name=${COVERAGE_ARTIFACT}`,
@@ -111,11 +129,13 @@ function readPull(value: unknown) {
   const pull = record(value, 'pull request')
   const head = record(pull.head, 'pull request head')
   const headRepository = head.repo === null ? null : record(head.repo, 'head repository').full_name
+  if (typeof head.ref !== 'string' || head.ref === '') throw new Error('unexpected pull request branch from the API')
   return {
     number: integer(pull.number, 'pull request number'),
     merged: typeof pull.merged_at === 'string',
     mergeCommit: pull.merge_commit_sha,
     headSha: objectId(head.sha, 'pull request head'),
+    headRef: head.ref,
     headRepository,
   }
 }
@@ -126,7 +146,8 @@ function readRun(value: unknown) {
     id: integer(run.id, 'run id'),
     status: String(run.status),
     conclusion: typeof run.conclusion === 'string' ? run.conclusion : null,
-    createdAt: String(run.created_at),
+    startedAt: String(run.run_started_at ?? run.created_at),
+    headBranch: run.head_branch,
     headRepository: run.head_repository === null ? null : record(run.head_repository, 'run repository').full_name,
   }
 }

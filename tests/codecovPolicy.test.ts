@@ -138,7 +138,9 @@ describe('coverage and Codecov policy', () => {
     expect((upload as Job & { if?: string }).if).toBe('${{ !cancelled() }}')
     const download = step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false) as Step & { id?: string; 'continue-on-error'?: boolean }
     expect(download.id).toBe('coverage')
-    expect(download['continue-on-error']).toBe(true)
+    // A missing report is the coverage lane's to report, except on a merge already
+    // tested: there nothing else would show that Codecov got no base.
+    expect(download['continue-on-error']).toBe("${{ needs.merge-check.outputs.tested != 'true' }}")
     for (const later of upload.steps?.slice((upload.steps ?? []).indexOf(download) + 1) ?? []) {
       expect((later as Step & { if?: string }).if, later.name).toBe("steps.coverage.outcome == 'success'")
     }

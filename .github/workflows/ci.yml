@@ -731,9 +731,12 @@ jobs:
               output.write('path=' + tempfile.mkdtemp(prefix='verified-artifact-', dir=os.environ['RUNNER_TEMP']) + '\n')
           PY
 
+      # A missing report is normal when the coverage lane failed, and that lane
+      # says so. On a merge already tested it is the only thing the run does,
+      # and nothing else would say Codecov got no base, so there it fails here.
       - name: Download coverage report
         id: coverage
-        continue-on-error: true
+        continue-on-error: ${{ needs.merge-check.outputs.tested != 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-report

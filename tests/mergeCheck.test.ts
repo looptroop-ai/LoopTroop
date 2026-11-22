@@ -13,20 +13,30 @@ const BEFORE_TREE = '2'.repeat(40)
 const GITHUB_DIR = '3'.repeat(40)
 const push: Push = { repository: REPO, sha: MERGED, before: BEFORE, workflow: 'ci.yml' }
 
+const BRANCH = 'renovate/ci-tools'
 const pullsPath = `/repos/${REPO}/commits/${MERGED}/pulls`
+const branchPullsPath = `/repos/${REPO}/pulls?head=${encodeURIComponent(`looptroop-ai:${BRANCH}`)}&state=all&per_page=100`
 const runsPath = `/repos/${REPO}/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${HEAD}&per_page=100`
 const artifactsPath = (run: number) => `/repos/${REPO}/actions/runs/${run}/artifacts?name=${COVERAGE_ARTIFACT}`
+const jobsPath = (run: number) => `/repos/${REPO}/actions/runs/${run}/jobs?filter=latest&per_page=100`
 
 const pull = (fields: Record<string, unknown> = {}) => ({
   number: 7,
   merged_at: '2026-11-22T07:56:39Z',
   merge_commit_sha: MERGED,
-  head: { sha: HEAD, repo: { full_name: REPO } },
+  head: { sha: HEAD, ref: BRANCH, repo: { full_name: REPO } },
   ...fields,
 })
 const run = (id: number, createdAt: string, fields: Record<string, unknown> = {}) => ({
-  id, created_at: createdAt, status: 'completed', conclusion: 'success', head_repository: { full_name: REPO }, ...fields,
+  id, created_at: createdAt, run_started_at: createdAt, status: 'completed', conclusion: 'success',
+  head_branch: BRANCH, head_repository: { full_name: REPO }, ...fields,
 })
+const job = (name: string, conclusion: string | null, status = 'completed') => ({ name, conclusion, status })
+const jobs = (...list: ReturnType<typeof job>[]) => ({ total_count: list.length, jobs: list })
+const passingJobs = jobs(
+  job('Packaging', 'success'), job('Merge check', 'skipped'),
+  job('Windows gate profile (affected files)', 'skipped'), job('Early warning (ubuntu, next Node major)', 'success'),
+)
 
 /** The push merged pull request #7, whose last commit run 99 tested. */
 function api(overrides: Record<string, unknown> = {}) {
@@ -37,7 +47,10 @@ function api(overrides: Record<string, unknown> = {}) {
     [`/repos/${REPO}/git/commits/${BEFORE}`]: { sha: BEFORE, tree: { sha: BEFORE_TREE } },
     [`/repos/${REPO}/git/trees/${TREE}`]: { tree: [{ path: 'src', sha: '4'.repeat(40) }, { path: '.github', sha: GITHUB_DIR }] },
     [`/repos/${REPO}/git/trees/${BEFORE_TREE}`]: { tree: [{ path: '.github', sha: GITHUB_DIR }, { path: 'src', sha: '5'.repeat(40) }] },
+    // Renovate reuses its branches: an older pull request from the same branch had another head.
+    [branchPullsPath]: [pull(), pull({ number: 3, merge_commit_sha: 'e'.repeat(40), head: { sha: 'f'.repeat(40), ref: BRANCH, repo: { full_name: REPO } } })],
     [runsPath]: { workflow_runs: [run(99, '2026-11-22T07:42:48Z')] },
+    [jobsPath(99)]: passingJobs,
     [artifactsPath(99)]: { artifacts: [{ name: COVERAGE_ARTIFACT, expired: false }] },
     ...overrides,
   }
@@ -72,7 +85,7 @@ describe('merge check decision', () => {
 
   it('runs in full for a pull request from another repository', async () => {
     for (const repo of [{ full_name: 'someone/LoopTroop' }, null]) {
-      const decision = await decide(push, api({ [pullsPath]: [pull({ head: { sha: HEAD, repo } })] }))
+      const decision = await decide(push, api({ [pullsPath]: [pull({ head: { sha: HEAD, ref: BRANCH, repo } })] }))
       expect(decision).toEqual({ tested: false, reason: 'pull request #7 came from another repository' })
     }
   })
@@ -109,6 +122,42 @@ describe('merge check decision', () => {
     // A fork's run on the same commit says nothing about this repository's run.
     await expect(decideWith([run(102, '2026-11-22T07:59:00Z', { conclusion: 'failure', head_repository: { full_name: 'someone/LoopTroop' } }), run(99, '2026-11-22T07:42:48Z')]))
       .resolves.toMatchObject({ tested: true, runId: 99 })
+  })
+
+  it('runs in full when another pull request had this commit at the head of the same branch', async () => {
+    const twin = pull({ number: 8, merged_at: null, merge_commit_sha: null, base: { ref: 'release' } })
+    const decision = await decide(push, api({ [branchPullsPath]: [twin, pull()] }))
+    expect(decision).toEqual({ tested: false, reason: "pull request #7's last commit was also the head of pull request #8" })
+  })
+
+  it("counts only runs from the pull request's own branch", async () => {
+    // Another branch at the same commit has a newer passing run; this branch's own run failed.
+    const decision = await decide(push, api({
+      [runsPath]: { workflow_runs: [run(100, '2026-11-22T07:50:00Z', { head_branch: 'copy-of-branch' }), run(99, '2026-11-22T07:42:48Z', { conclusion: 'failure' })] },
+    }))
+    expect(decision).toEqual({ tested: false, reason: "run 99 on pull request #7's last commit ended failure" })
+  })
+
+  it('judges runs by their latest attempt, not by when they were first created', async () => {
+    const decision = await decide(push, api({
+      [runsPath]: { workflow_runs: [
+        run(99, '2026-11-22T07:42:48Z'),
+        // Created earlier, re-run later, and failed this time.
+        run(98, '2026-11-22T07:30:00Z', { run_started_at: '2026-11-22T07:58:00Z', conclusion: 'failure' }),
+      ] },
+    }))
+    expect(decision).toEqual({ tested: false, reason: "run 98 on pull request #7's last commit ended failure" })
+  })
+
+  it('runs in full when any job failed, the advisory ones too, though the run itself passed', async () => {
+    const advisory = jobs(job('Packaging', 'success'), job('Early warning (ubuntu, next Node major)', 'failure'))
+    await expect(decide(push, api({ [jobsPath(99)]: advisory }))).resolves.toEqual({
+      tested: false, reason: 'Early warning (ubuntu, next Node major) in run 99 ended failure',
+    })
+    const unread = { total_count: 150, jobs: passingJobs.jobs }
+    await expect(decide(push, api({ [jobsPath(99)]: unread }))).resolves.toEqual({
+      tested: false, reason: 'run 99 has more jobs than one page lists',
+    })
   })
 
   it('runs in full when the coverage report Codecov needs is gone', async () => {

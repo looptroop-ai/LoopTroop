@@ -250,6 +250,17 @@ conflict runs nothing either, because GitHub makes no merge commit to test:
 its checks wait until the conflict is resolved. A newer commit cancels a pull
 request's older run; a run on `main` always finishes.
 
+- A merge is not tested twice. `main` only takes a pull request that is up to
+  date and whose `Packaging` check passed, so a merge usually holds exactly
+  the code that pull request's last run tested. On a push to `main`, the
+  `Merge check` job asks the GitHub API whether that is so: the merged code
+  matches the pull request's last commit, nothing under `.github` changed, that
+  commit's newest run passed every job, and its coverage report has not
+  expired. If it is, the run hands that coverage report to Codecov for the
+  merge commit and skips everything else. Any other push, or an API error,
+  gets a full run. A full run on `main` every Monday at 03:37 UTC refreshes the
+  npm cache and the Windows test timings, and runs every test again in a new
+  random order.
 - `Packaging` decides whether a pull request can merge. It waits on every job
   except the Codecov upload and the advisory early-warning lane, which tests
   the next Node major. A job added to the workflow is gated once it is in
@@ -261,8 +272,8 @@ request's older run; a run on `main` always finishes.
   client and checks the third-party notices. A commit that cannot install
   fails there, before it holds any Mac or Windows machine.
 - Each Windows test lane runs on two machines. The split follows the per-file
-  times `main` recorded on its last run, taken once per run by the install
-  check so both halves split the same way, and
+  times `main` recorded on its last full run, at most a week old, taken once
+  per run by the install check so both halves split the same way, and
   `Test (windows-latest, <lane> floor)` passes only if both halves passed and
   together ran every test file exactly once.
 - The Ubuntu declared-floor lane runs the tests in a shuffled order, to catch a

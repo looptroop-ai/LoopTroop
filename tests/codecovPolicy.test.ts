@@ -130,10 +130,11 @@ describe('coverage and Codecov policy', () => {
     // of one test file is not the suite.)
     expect(requiredJob('verify').steps?.some((candidate) => candidate.run === 'npm run test' || candidate.run === 'npm test'), 'verify').toBe(false)
 
-    expect(upload.needs).toBe('test-matrix')
+    expect(upload.needs).toEqual(['merge-check', 'test-matrix'])
     // Waits for the matrix, not for its success: a failed or never-started Mac
     // lane must not keep the Ubuntu lane's report from Codecov. Without a report
-    // (the coverage lane failed, and says so) nothing is uploaded.
+    // (the coverage lane failed, and says so) nothing is uploaded. On a merge
+    // already tested, where the matrix is skipped, it still runs.
     expect((upload as Job & { if?: string }).if).toBe('${{ !cancelled() }}')
     const download = step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false) as Step & { id?: string; 'continue-on-error'?: boolean }
     expect(download.id).toBe('coverage')
@@ -141,15 +142,21 @@ describe('coverage and Codecov policy', () => {
     for (const later of upload.steps?.slice((upload.steps ?? []).indexOf(download) + 1) ?? []) {
       expect((later as Step & { if?: string }).if, later.name).toBe("steps.coverage.outcome == 'success'")
     }
-    expect(upload.permissions).toEqual({ contents: 'read', 'id-token': 'write' })
+    // actions: read, to download a pull request run's report on a merge already tested.
+    expect(upload.permissions).toEqual({ actions: 'read', contents: 'read', 'id-token': 'write' })
     const uploadCheckout = step(upload, (candidate) => candidate.uses?.startsWith('actions/checkout@') ?? false)
     // The same commit the coverage lane collected from.
     expect(uploadCheckout.with).toEqual({
       ref: '${{ github.event.pull_request.head.sha || github.sha }}',
       'persist-credentials': false,
     })
+    // This run's report, or on a merge already tested the pull request run's, which only a token can read.
     expect(step(upload, (candidate) => candidate.uses?.startsWith('actions/download-artifact@') ?? false).with)
-      .toMatchObject({ name: 'coverage-report', 'skip-decompress': true, 'digest-mismatch': 'error' })
+      .toMatchObject({
+        name: 'coverage-report', 'skip-decompress': true, 'digest-mismatch': 'error',
+        'run-id': '${{ needs.merge-check.outputs.run_id || github.run_id }}',
+        'github-token': "${{ needs.merge-check.outputs.run_id && github.token || '' }}",
+      })
     expect(upload.steps?.some((candidate) => candidate.uses?.startsWith('./'))).toBe(false)
     const action = step(upload, (candidate) => candidate.uses?.startsWith('codecov/codecov-action@') ?? false)
     expect(action.uses).toMatch(/^codecov\/codecov-action@[0-9a-f]{40}$/)

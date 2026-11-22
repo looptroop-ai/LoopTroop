@@ -163,9 +163,11 @@ committing them.
 
 ## Dependencies
 
-`npm audit` runs on every pull request and every push to main as a report. Fixes are applied
-as reviewed changes rather than automatically, so an advisory never rewrites the
-lockfile without a human deciding to.
+`npm audit` runs as a report on every pull request, on every full CI run on
+main, and weekly. A merge whose pull request run already passed on the same code
+is not run again. Fixes are applied as reviewed changes rather than
+automatically, so an advisory never rewrites the lockfile without a human
+deciding to.
 
 Routine dependency updates are grouped and held behind a seven-day
 release-maturity delay; security advisories shorten that delay to two days. The
@@ -202,7 +204,9 @@ development, and unknown dependency scopes. It is a step of the required Verify
 check, which Packaging waits on, so a failed, cancelled, or skipped review
 blocks the merge on every CI event. Pull requests compare their base and head
 commits. A push to main compares with the commit it replaced, and a manual run
-compares its commit with the default branch.
+compares its commit with the default branch. A merge whose pull request run
+already passed on the same code is not reviewed again: that run reviewed the
+same change.
 
 Verify also audits every workflow and local action with zizmor, pinned and
 checksum-verified like actionlint. Any finding fails the check unless

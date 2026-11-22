@@ -161,8 +161,9 @@ const GITHUB_API = 'https://api.github.com'
 export function githubGet(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch = fetch): GetJson {
   const token = env.GITHUB_TOKEN
   return async (path) => {
-    if (!path.startsWith('/')) throw new Error(`not an API path: ${path}`)
-    const response = await fetchImpl(GITHUB_API + path, {
+    const url = new URL(path, GITHUB_API)
+    if (!path.startsWith('/') || url.origin !== GITHUB_API) throw new Error(`not an API path: ${path}`)
+    const response = await fetchImpl(url.href, { // NOSONAR: the origin is fixed and checked above, and decide() checks and encodes every value in the path.
       headers: {
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',

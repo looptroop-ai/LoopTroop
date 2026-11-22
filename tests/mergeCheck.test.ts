@@ -221,6 +221,8 @@ describe('GitHub API access', () => {
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: 'Bearer secret' },
     })
     await expect(get('@evil.example/x')).rejects.toThrow('not an API path: @evil.example/x')
+    // A path the URL parser reads as another host.
+    await expect(get('//evil.example/x')).rejects.toThrow('not an API path: //evil.example/x')
     expect(calls).toHaveLength(2)
     await githubGet({}, fetchStub)('/present')
     expect(calls[2]?.url).toBe('https://api.github.com/present')

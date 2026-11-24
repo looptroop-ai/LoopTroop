@@ -78,13 +78,13 @@ frontend packages inlined into the client bundle.
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
 | `hast-util-to-jsx-runtime` | 2.3.6 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `hast-util-whitespace` | 3.0.0 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
-| `hono` | 4.13.18 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
+| `hono` | 4.13.19 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `html-url-attributes` | 3.0.1 | MIT | Copyright (c) Titus Wormer |
 | `inline-style-parser` | 0.2.7 | MIT | Copyright (c) 2012 TJ Holowaychuk <tj@vision-media.ca> |
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.5.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.73.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.74.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `mdast-util-from-markdown` | 2.1.0 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-hast` | 13.2.1 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-string` | 4.0.0 | MIT | Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com> |
@@ -1071,7 +1071,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `hono@4.13.18`
+Applies to: `hono@4.13.19`
 
 ```text
 MIT License
@@ -1187,7 +1187,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.73.0`
+Applies to: `lucide-react@1.74.0`
 
 ```text
 ISC License

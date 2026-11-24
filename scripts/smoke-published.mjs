@@ -1341,10 +1341,17 @@ function probeChocoLatest() {
   return chocoSearch([])
 }
 
-/** Chocolatey's queue state for a version, for the moderation decision. */
+/**
+ * Chocolatey's queue state for a version, for the moderation decision.
+ *
+ * Bounded like `npmTarballServed`: it now runs inside the presence poll, whose
+ * deadline is checked only between polls. A timeout throws into the callers'
+ * existing fallbacks.
+ */
 async function probeChocoSubmission(version) {
   const response = await fetch(`${CHOCO_FEED}Packages(Id='looptroop',Version='${version}')`, {
     headers: { accept: 'application/atom+xml' },
+    signal: AbortSignal.timeout(30_000),
   })
   if (response.status === 404) return { state: 'absent', at: null, detail: 'the feed has no entry for it' }
   if (!response.ok) throw new Error(`Chocolatey feed -> ${response.status}`)

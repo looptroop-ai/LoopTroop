@@ -2940,13 +2940,17 @@ jobs:
         run: |
           set -euo pipefail
           title="Release v${VERSION}: partial failure"
-          gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
-            --json number,title --jq ".[] | select(.title == \"${title}\") | .number" |
+          if ! numbers=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"${title}\") | .number"); then
+            echo "::warning::Could not look for an open \"${title}\" issue; close it by hand if there is one."
+            exit 0
+          fi
           while read -r number; do
+            [ -n "${number}" ] || continue
             gh issue close "${number}" --repo "${GITHUB_REPOSITORY}" \
               --comment "Every stage passed on attempt ${GITHUB_RUN_ATTEMPT} of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Closing." \
               || echo "::warning::Could not close issue #${number}; close it by hand."
-          done
+          done <<< "${numbers}"
 
       - name: Fail the run if any stage failed
         if: steps.compose.outputs.failed != ''

@@ -686,11 +686,16 @@ describe('failure issue searches', () => {
     // GitHub indexes `v9.9.9` as `v9`, `9` and `9`; a phrase that stops inside
     // a token, such as a bare `v`, matches no issue and every close is a no-op.
     const text = readFileSync('.github/workflows/published-smoke.yml', 'utf8')
-    const title = 'Published install smoke: v9.9.9'
-    expect(text).toContain('title="Published install smoke: v${VERSION}"')
-    const phrases = [...text.matchAll(/--search\s+['"]\\?"([^"\\]+)\\?" in:title/g)].map((match) => match[1]!)
+    // The title the workflow files issues under, with a version for its variable.
+    const prefix = /title="(Published install smoke: v)\$\{VERSION\}"/.exec(text)?.[1]
+    expect(prefix).toBe('Published install smoke: v')
+    const title = `${prefix}9.9.9`
+    const phrases = [...text.matchAll(/--search\s+['"]\\?"([^"\\]+)\\?" in:title/g)]
+      .map((match) => match[1] ?? '')
+      // The open-or-update step searches for the full title through its variable.
+      .map((phrase) => (/^\$\{title\}$/.test(phrase) ? title : phrase))
     expect(phrases.length).toBeGreaterThanOrEqual(2)
-    for (const phrase of phrases.map((p) => p.replace('${title}', title))) {
+    for (const phrase of phrases) {
       expect(title.startsWith(phrase), phrase).toBe(true)
       expect(title.charAt(phrase.length), phrase).not.toMatch(/[A-Za-z0-9]/)
     }

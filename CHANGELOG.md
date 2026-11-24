@@ -9,8 +9,27 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.6.5 (2026-11-24)
+
+
+### Release Highlights
+
+- **🚀 LoopTroop – What's new since v0.6.4**
+- **1.** 🔄 AI tasks can recover unfinished background commands and pending permissions after crashes, restarts or lost OpenCode connections.
+- **2.** 🛑 Background commands from previous AI tasks are stopped before new work begins, while conversation history is preserved.
+- **3.** 📝 PRD revisions explain exactly which epics and stories changed and why. Invalid AI responses are easier to recover.
+- **4.** 📊 Ticket reviews show the correct artifact versions, coverage reports and logs. Failed requests can be retried without losing previously loaded content.
+- **5.** ✅ PRD and Beads approvals wait until the latest coverage results are available.
+- **6.** 🌐 Local and self-hosted instances continue to work when the browser reports no internet connection.
+- **7.** 🎨 Dialogs fit smaller screens, unsaved drafts survive startup notifications, and copy buttons sit next to content statistics.
+- **8.** 🔍 Ticket search suggestions stay open when refocused, and browser Back works correctly after creating a ticket.
+- **9.** 🔌 Stopping LoopTroop waits for background processes to finish cleaning up, particularly on Windows.
+- **10.** 🔒 Stronger filesystem protection, safer server logs and dependency security fixes.
+- ⚠️ **Upgrade note:** Node.js 24.20.0 or newer is now required.
+
 ### Summary
 
+- Package installs now require Node.js 24.20.0 or newer.
 - OpenCode tasks recover their own background command notifications and stop old task commands before handing off the worktree, while preserving conversation history.
 - PRD coverage reviews show clearer item changes and explanations for the gaps each revision addresses.
 - Ticket review views wait for current-attempt evidence, keep raw-output controls beside metadata, and let users retry failed artifact or log loads.
@@ -30,6 +49,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Changed
 
+- The minimum supported Node.js is now 24.20.0, up from 24.19.0. The package engine, the launcher's version check, both install scripts and the README all require it.
 - PRD revision instructions now ask for exact current and revised item titles, separate records for changed epics and stories, and a reason for each gap resolution. For resolved gaps, section-only changes can have no affected item references, while mixed changes keep affected stories; unresolved source contradictions use an empty list. Empty change lists remain accepted during coverage; the review can derive a diff from saved PRD versions, and supplied records keep their existing validation behavior.
 - Raw artifact views place **Copy** beside line, character, and estimated token counts. Plain text and missing-output states use the same header layout.
 - The startup restore notice explains when saved profile or project data was found, shows its local database location, and says dismissal lasts for that database.

@@ -86,6 +86,17 @@ const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
 
 const POLL_INTERVAL_MS = 15_000
 
+/**
+ * How long a channel that installs from the npm registry waits for a release.
+ *
+ * Ten minutes, not three, because the registry lists a version before it serves
+ * the version's tarball, and its CDN caches a tarball 404 for five minutes
+ * (`cache-control: max-age=300`). One release's Registry smoke saw the version
+ * listed on its first poll and then failed every install on that 404; the
+ * tarball downloaded about five minutes later.
+ */
+const NPM_PROPAGATION_CAP_MS = 10 * 60_000
+
 /** The two release names the release tooling can publish. */
 const PUBLISHED_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-rc\.(?:[1-9]\d*))?$/
 
@@ -146,7 +157,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39121,
     opencodePort: 39621,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     publishHint: 'Check https://www.npmjs.com/package/looptroop?activeTab=versions',
     install: ({ version, pin }) =>
@@ -471,7 +482,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39128,
     opencodePort: 39628,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     install: ({ version, pin }) => ({
       command: 'bun',
@@ -495,7 +506,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39129,
     opencodePort: 39629,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     // pnpm refuses to resolve a tag to a version published in the last 24
     // hours — a supply-chain protection, on by default, and documented to
@@ -527,7 +538,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39130,
     opencodePort: 39630,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     // Yarn does not put its global binaries on PATH, and says nothing about it:
     // the add reports success and then `looptroop` is not a command. The
@@ -1079,13 +1090,55 @@ async function portIsClosed(port, timeoutMs = 20_000) {
  * but only those two. A registry outage or a network failure must surface as
  * an error rather than be polled until the cap expires and reported as a
  * missing release, which would blame the wrong thing.
+ *
+ * A listed version counts only once its tarball downloads, because that is
+ * what every install fetches next and the registry lists a version before it
+ * serves the tarball (see `NPM_PROPAGATION_CAP_MS`). Both fields come from one
+ * `npm view`, so a poll starts one npm process and has one place to fail.
+ *
+ * `view` and `fetchImpl` are injectable for the tests; the recipes call this
+ * as `published(recipe, version)`.
  */
-function probeNpmRegistry(recipe, version) {
-  const result = npm(['view', `looptroop@${version}`, 'version'])
+export async function probeNpmRegistry(_recipe, version, { view = npm, fetchImpl = fetch } = {}) {
+  const result = view(['view', `looptroop@${version}`, 'version', 'dist.tarball', '--json'])
+  if (result.code !== 0) {
+    if (/E404|is not in this registry|No match(ing versions)? found/i.test(result.combined)) return null
+    throw new Error(`npm view failed (exit ${result.code}): ${result.combined.trim().split('\n')[0]}`)
+  }
   const printed = result.stdout.trim()
-  if (result.code === 0) return printed === '' ? null : printed
-  if (/E404|is not in this registry|No match(ing versions)? found/i.test(result.combined)) return null
-  throw new Error(`npm view failed (exit ${result.code}): ${result.combined.trim().split('\n')[0]}`)
+  if (printed === '') return null
+  // One object, or an array holding it, depending on the npm release.
+  const parsed = JSON.parse(printed)
+  const entry = Array.isArray(parsed) ? parsed.at(-1) : parsed
+  if (entry?.version !== version) return entry?.version ?? null
+
+  const url = entry['dist.tarball']
+  if (!url) throw new Error(`npm view printed no dist.tarball for looptroop@${version}`)
+  if (await npmTarballServed(url, fetchImpl)) return version
+  log(`  npm lists ${version}, but ${url} still answers 404`)
+  return null
+}
+
+/**
+ * Whether the registry serves a tarball: true on 2xx, false on 404, and an
+ * error for anything else, for the same reason `probeNpmRegistry` throws on an
+ * outage. HEAD, so a poll does not download the package each time.
+ *
+ * Bounded, because `awaitPublished` checks its deadline only between polls:
+ * a request the registry accepts and never answers would otherwise hold the
+ * leg until the job's own timeout.
+ */
+export async function npmTarballServed(url, fetchImpl = fetch, timeoutMs = 30_000) {
+  let response
+  try {
+    response = await fetchImpl(url, { method: 'HEAD', signal: AbortSignal.timeout(timeoutMs) })
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new Error(`${url} did not answer within ${timeoutMs} ms`)
+    throw error
+  }
+  if (response.ok) return true
+  if (response.status === 404) return false
+  throw new Error(`${url} -> ${response.status}`)
 }
 
 /**
@@ -1163,10 +1216,12 @@ const CHOCO_FEED = 'https://community.chocolatey.org/api/v2/'
  * `choco search` prints `id|version` per match, and this is the supported way
  * to ask the community feed anything: Chocolatey documents the CLI and
  * `chocolatey.lib` as the query interface and reserves the right to refuse
- * custom OData queries. It is also the exact question that matters, because the
- * feed only lists a version a moderator has let through — the entity endpoint
- * answers 200 for a version that has only been submitted, which is what made an
- * earlier revision of this probe report a queued release as published.
+ * custom OData queries. A plain search lists only what a moderator has let
+ * through, which is what an unpinned install resolves; `--version` also finds a
+ * version that has only been submitted, so `probeChocoVersion` checks its
+ * moderation state. (The entity endpoint answers 200 for a submitted version
+ * too, which is what made an earlier revision report a queued release as
+ * published: only its `PackageStatus` tells the two apart.)
  *
  * `--exact` still matches by prefix on some Chocolatey versions, so the id is
  * compared rather than assumed.
@@ -1180,13 +1235,15 @@ export function chocolateySearchVersion(output) {
 }
 
 /**
- * What Chocolatey's moderation queue says about a version it does not serve.
+ * What Chocolatey's moderation queue says about a version.
  *
  * The one place a custom OData query is still worth making, and the only place
- * it can do no harm: this runs when the leg already knows the feed is not
- * serving the version, and every failure falls back to the release clock. What
- * it buys is the two facts the CLI cannot give — *when* the submission was made
- * and whether it was rejected — and both decide whether waiting is reasonable.
+ * it can do no harm: it runs when the leg already knows the feed is not serving
+ * the version, or when `choco search --version` found one that may only have
+ * been submitted, and every failure falls back to what the leg would have done
+ * without it. What it buys is what the CLI cannot give — *when* the submission
+ * was made, whether it was approved or rejected — and that decides whether the
+ * version is served and whether waiting is reasonable.
  *
  * Attributes are tolerated on the elements. The live payload writes
  * `<d:PackageStatus>` bare and `<d:Created m:type="Edm.DateTime">` with one, and
@@ -1247,12 +1304,36 @@ function chocoSearch(args) {
 /**
  * Whether Chocolatey serves a version — which is not whether it has one.
  *
- * Asked of `choco` rather than over HTTP, both because that is the supported
- * query path and because it is the same command the republish job already uses
- * to decide whether a version is on the feed.
+ * Asked of `choco` first, both because that is the supported query path and
+ * because it is the same command the republish job already uses to decide
+ * whether a version is on the feed.
+ *
+ * Found is not served, though: `choco search --version` also finds a version
+ * still in moderation, while `choco install looptroop` keeps resolving the last
+ * approved one. Read as served, a queued version skipped the moderation check
+ * and failed the leg on the older version it installed. So a found version that
+ * moderation still holds, or has rejected, is not served. Any other answer, a
+ * failed query included, keeps the search's verdict: the feed was answering
+ * this question on its own before, and an OData outage must not fail a version
+ * that installs.
+ *
+ * `search` and `submission` are injectable for the tests.
  */
-function probeChocoVersion(_recipe, version) {
-  return chocoSearch(['--version', version])
+export async function probeChocoVersion(
+  _recipe,
+  version,
+  { search = chocoSearch, submission = probeChocoSubmission } = {},
+) {
+  const found = search(['--version', version])
+  if (found !== version) return found
+  let state
+  try {
+    state = (await submission(version)).state
+  } catch (error) {
+    log(`  (could not ask Chocolatey whether ${version} is approved: ${error.message})`)
+    return found
+  }
+  return state === 'queued' || state === 'rejected' ? null : found
 }
 
 /** What an unpinned `choco install looptroop` resolves: the feed's latest. */
@@ -1260,10 +1341,17 @@ function probeChocoLatest() {
   return chocoSearch([])
 }
 
-/** Chocolatey's queue state for a version, for the moderation decision. */
+/**
+ * Chocolatey's queue state for a version, for the moderation decision.
+ *
+ * Bounded like `npmTarballServed`: it now runs inside the presence poll, whose
+ * deadline is checked only between polls. A timeout throws into the callers'
+ * existing fallbacks.
+ */
 async function probeChocoSubmission(version) {
   const response = await fetch(`${CHOCO_FEED}Packages(Id='looptroop',Version='${version}')`, {
     headers: { accept: 'application/atom+xml' },
+    signal: AbortSignal.timeout(30_000),
   })
   if (response.status === 404) return { state: 'absent', at: null, detail: 'the feed has no entry for it' }
   if (!response.ok) throw new Error(`Chocolatey feed -> ${response.status}`)

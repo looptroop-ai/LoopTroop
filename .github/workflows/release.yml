@@ -2901,6 +2901,12 @@ jobs:
             echo "  rather than not at all."
             echo "- **publish-aur** — \`channel-republish.yml\` does *not* cover the AUR."
             echo "  Re-run this job from the release run, or push the PKGBUILD by hand."
+            echo
+            echo "This issue closes itself only when **Re-run failed jobs** on this run"
+            echo "finishes the release: that re-runs the failed jobs and everything after"
+            echo "them in the same run. A full re-run, a new dispatch or a republish"
+            echo "workflow does not close it; close it by hand once every failed stage"
+            echo "above is repaired."
           } > /tmp/issue.md
 
           # --repo on every call: this job deliberately has no checkout, and
@@ -2914,6 +2920,37 @@ jobs:
           else
             gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file /tmp/issue.md
           fi
+
+      # Re-run failed jobs that finishes the release should not leave its
+      # failure issue open, saying the release is still broken. Only when this
+      # run's own graph reached the tag and the container notes: a full re-run
+      # over a finished release resolves to `complete` or `unverified` and never
+      # reaches `report`, and a republish workflow repairs one stage out of
+      # sight of this run. The issue body says so, and asks for a hand close
+      # there. Best effort: a release that finished stays green if closing fails.
+      - name: Close the failure issue once the release is complete
+        if: >-
+          steps.compose.outputs.failed == ''
+          && needs.detect.outputs.dry_run == 'false'
+          && needs.finalize.result == 'success'
+          && needs.container-notes.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Release v${VERSION}: partial failure"
+          if ! numbers=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"${title}\") | .number"); then
+            echo "::warning::Could not look for an open \"${title}\" issue; close it by hand if there is one."
+            exit 0
+          fi
+          while read -r number; do
+            [ -n "${number}" ] || continue
+            gh issue close "${number}" --repo "${GITHUB_REPOSITORY}" \
+              --comment "Every stage passed on attempt ${GITHUB_RUN_ATTEMPT} of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Closing." \
+              || echo "::warning::Could not close issue #${number}; close it by hand."
+          done <<< "${numbers}"
 
       - name: Fail the run if any stage failed
         if: steps.compose.outputs.failed != ''

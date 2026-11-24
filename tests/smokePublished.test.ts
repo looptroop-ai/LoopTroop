@@ -16,6 +16,8 @@ import {
   moderationSkipReason,
   npmTarballServed,
   openCodeAnswers,
+  probeChocoVersion,
+  probeNpmRegistry,
   run,
   runCaptured,
   waitForOpenCode,
@@ -244,10 +246,11 @@ describe('planMatrix', () => {
   })
 
   it('reads the served version out of a choco search listing', () => {
-    // `choco search --limit-output` prints `id|version`, and only for versions
-    // moderation has approved — which is why the feed is asked through the CLI
-    // rather than over OData: the entity endpoint answers 200 for a version
-    // that has only been submitted, and an earlier probe read that as published.
+    // `choco search --limit-output` prints `id|version`. A plain search lists
+    // only approved versions; `--version` also finds a submitted one, which is
+    // why `probeChocoVersion` checks the moderation state as well. (The OData
+    // entity endpoint answers 200 for a submitted version too, and an earlier
+    // probe read that status code as published.)
     expect(chocolateySearchVersion('looptroop|0.5.1\n')).toBe('0.5.1')
     expect(chocolateySearchVersion('')).toBeNull()
     // Chocolatey's `--exact` has matched by prefix, so the id is compared.
@@ -589,13 +592,16 @@ ${command}
 })
 
 describe('npm registry propagation', () => {
-  const respond = (status: number) => vi.fn<typeof fetch>(async () => new Response(null, { status }))
+  const respond = (status: number) => vi.fn<typeof fetch>(() => Promise.resolve(new Response(null, { status })))
   const url = 'https://registry.npmjs.org/looptroop/-/looptroop-9.9.9.tgz'
+  const viewing = (code: number, stdout: string, combined = stdout) =>
+    vi.fn(() => ({ code, stdout, stderr: '', combined }))
+  const listed = (version: string) => JSON.stringify({ version, 'dist.tarball': url })
 
-  it('counts a tarball as served only on success, with a HEAD request', async () => {
+  it('counts a tarball as served only on success, with a bounded HEAD request', async () => {
     const served = respond(200)
     await expect(npmTarballServed(url, served)).resolves.toBe(true)
-    expect(served).toHaveBeenCalledWith(url, { method: 'HEAD' })
+    expect(served).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'HEAD', signal: expect.any(AbortSignal) }))
 
     await expect(npmTarballServed(url, respond(404))).resolves.toBe(false)
   })
@@ -604,13 +610,89 @@ describe('npm registry propagation', () => {
     await expect(npmTarballServed(url, respond(503))).rejects.toThrow(`${url} -> 503`)
   })
 
+  it('gives up on a tarball request the registry never answers', async () => {
+    const hanging: typeof fetch = (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })
+    await expect(npmTarballServed(url, hanging, 20)).rejects.toThrow(`${url} did not answer within 20 ms`)
+  })
+
+  it('waits while npm lists the version but does not yet serve its tarball', async () => {
+    const view = viewing(0, listed('9.9.9'))
+    await expect(probeNpmRegistry(null, '9.9.9', { view, fetchImpl: respond(404) })).resolves.toBeNull()
+    // One npm process per poll, asking for both fields.
+    expect(view).toHaveBeenCalledOnce()
+    expect(view).toHaveBeenCalledWith(['view', 'looptroop@9.9.9', 'version', 'dist.tarball', '--json'])
+  })
+
+  it('serves a listed version once its tarball downloads, in either JSON shape npm prints', async () => {
+    for (const stdout of [listed('9.9.9'), `[${listed('9.9.9')}]`]) {
+      const fetchImpl = respond(200)
+      await expect(probeNpmRegistry(null, '9.9.9', { view: viewing(0, stdout), fetchImpl })).resolves.toBe('9.9.9')
+      expect(fetchImpl).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'HEAD' }))
+    }
+  })
+
+  it('reads an unlisted version as not published and any other npm failure as an error', async () => {
+    const fetchImpl = respond(200)
+    await expect(probeNpmRegistry(null, '9.9.9', { view: viewing(1, '', 'npm error code E404'), fetchImpl })).resolves.toBeNull()
+    await expect(probeNpmRegistry(null, '9.9.9', { view: viewing(0, ''), fetchImpl })).resolves.toBeNull()
+    await expect(probeNpmRegistry(null, '9.9.9', { view: viewing(1, '', 'npm error code ECONNRESET'), fetchImpl }))
+      .rejects.toThrow('npm view failed (exit 1): npm error code ECONNRESET')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('gives every channel that installs from the registry long enough to outlast a cached 404', () => {
     const registryChannels = Object.entries(CHANNELS)
-      .filter(([, recipe]) => recipe.published?.name === 'probeNpmRegistry')
+      .filter(([, recipe]) => recipe.published === probeNpmRegistry)
     expect(registryChannels.map(([key]) => key).sort()).toEqual(['bun', 'npm', 'pnpm', 'yarn'])
     for (const [key, recipe] of registryChannels) {
       // The registry caches a tarball 404 for five minutes after the version is listed.
       expect(recipe.propagationCapMs, key).toBeGreaterThanOrEqual(10 * 60_000)
+    }
+  })
+})
+
+describe('Chocolatey moderation', () => {
+  const submission = (state: 'queued' | 'rejected' | 'absent' | 'served') =>
+    vi.fn(() => Promise.resolve({ state, at: null, detail: state }))
+
+  it('does not serve a version that choco search finds while moderation holds or has rejected it', async () => {
+    for (const state of ['queued', 'rejected'] as const) {
+      await expect(probeChocoVersion(null, '9.9.9', { search: () => '9.9.9', submission: submission(state) }))
+        .resolves.toBeNull()
+    }
+  })
+
+  it('serves a found version that moderation approved, or that it cannot speak for', async () => {
+    for (const state of ['served', 'absent'] as const) {
+      await expect(probeChocoVersion(null, '9.9.9', { search: () => '9.9.9', submission: submission(state) }))
+        .resolves.toBe('9.9.9')
+    }
+    const failing = vi.fn(() => Promise.reject(new Error('Chocolatey feed -> 503')))
+    await expect(probeChocoVersion(null, '9.9.9', { search: () => '9.9.9', submission: failing })).resolves.toBe('9.9.9')
+  })
+
+  it('asks moderation nothing about a version the search did not find', async () => {
+    const asked = submission('served')
+    await expect(probeChocoVersion(null, '9.9.9', { search: () => null, submission: asked })).resolves.toBeNull()
+    expect(asked).not.toHaveBeenCalled()
+    expect(channel('chocolatey').published).toBe(probeChocoVersion)
+  })
+})
+
+describe('failure issue searches', () => {
+  it('end each search phrase at a token boundary of the title it looks for', () => {
+    // GitHub indexes `v9.9.9` as `v9`, `9` and `9`; a phrase that stops inside
+    // a token, such as a bare `v`, matches no issue and every close is a no-op.
+    const text = readFileSync('.github/workflows/published-smoke.yml', 'utf8')
+    const title = 'Published install smoke: v9.9.9'
+    expect(text).toContain('title="Published install smoke: v${VERSION}"')
+    const phrases = [...text.matchAll(/--search\s+['"]\\?"([^"\\]+)\\?" in:title/g)].map((match) => match[1]!)
+    expect(phrases.length).toBeGreaterThanOrEqual(2)
+    for (const phrase of phrases.map((p) => p.replace('${title}', title))) {
+      expect(title.startsWith(phrase), phrase).toBe(true)
+      expect(title.charAt(phrase.length), phrase).not.toMatch(/[A-Za-z0-9]/)
     }
   })
 })

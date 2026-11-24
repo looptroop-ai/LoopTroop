@@ -11,14 +11,16 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 
-- A release no longer stops at its install test because npm listed the new version a few minutes before it served the package, and finished releases close their own failure issues.
+- A release no longer stops at its install test because npm listed the new version a few minutes before it served the package.
+- The weekly install check reports a version still waiting in Chocolatey's moderation queue as not run instead of failing.
+- Release and install-check failure issues close themselves once the failure is fixed: after a successful "Re-run failed jobs", or when a newer release passes every channel.
 
 ### Fixed
 
-- The release's Registry smoke, and the published install smoke's npm, bun, pnpm and Yarn legs, wait until the registry serves the new version's tarball, not only until it lists the version, for up to ten minutes instead of three. The 0.6.5 release stopped at this test: npm listed the version, then answered 404 for its tarball for about five more minutes and cached that 404 for five minutes at a time. A registry error other than 404 still fails the leg at once.
-- A release run that is re-run to completion closes its "Release vX.Y.Z: partial failure" issue, but only when that run published the tag and the container notes itself, so a run that skipped a stage never closes an issue about it.
-- A published install smoke run that passes every leg also closes the open issues of earlier stable versions as superseded. The weekly run only tests the current release, so an older version's issue used to stay open after a release fixed it.
-- The published install smoke's Chocolatey leg reports a version still waiting in Chocolatey's moderation queue as not run, as intended. `choco search --version` finds a submitted version before it is approved, so the leg used to treat it as published, install the previous approved version with `choco install looptroop`, and fail.
+- The release's Registry smoke, and the published install smoke's npm, bun, pnpm and Yarn legs, wait until the registry serves the new version's tarball, not only until it lists the version, for up to ten minutes instead of three. The 0.6.5 release stopped at this test: npm listed the version, then answered 404 for its tarball for about five more minutes and cached that 404 for five minutes at a time. Each poll asks `npm view` once for both the version and the tarball address, and gives the tarball request 30 seconds. A registry error other than 404 still fails the leg at once.
+- The published install smoke's Chocolatey leg reports a version still waiting in Chocolatey's moderation queue as not run, as intended. `choco search --version` finds a submitted version before it is approved, so the leg used to treat it as published, install the previous approved version with `choco install looptroop`, and fail. A version the search finds now counts as served unless moderation says it is still queued or was rejected; if the moderation lookup itself fails, the search's answer stands.
+- **Re-run failed jobs** that finishes a release closes its "Release vX.Y.Z: partial failure" issue, provided that run reached the tag and the container notes itself. A full re-run, a new dispatch or a republish workflow cannot prove that, so the issue says to close it by hand after those.
+- A published install smoke run that covers every channel, on the full weekly tier with no filter, pin or skipped leg, also closes open issues for earlier versions as superseded, release candidates of the same or an older version included. The weekly run only tests the current release, so an older version's issue used to stay open after a release fixed it. A narrower run closes only its own version's issue, as before. It reads up to 100 open issues, leaves alone titles that are not a plain version, and reports a failed close as a warning rather than failing the run.
 
 ## 0.6.5 (2026-11-24)
 

@@ -268,8 +268,22 @@ export function openCodeAnswers(
   timeoutMs?: number,
 ): Promise<boolean>
 
-/** Whether the npm registry serves a tarball: true on 2xx, false on 404, throws otherwise. */
-export function npmTarballServed(url: string, fetchImpl?: typeof fetch): Promise<boolean>
+/** Whether the npm registry serves a tarball: true on 2xx, false on 404, throws otherwise or on timeout. */
+export function npmTarballServed(url: string, fetchImpl?: typeof fetch, timeoutMs?: number): Promise<boolean>
+
+/** The version npm serves for `version`, counted only once its tarball downloads; null while it does not. */
+export function probeNpmRegistry(
+  recipe: unknown,
+  version: string,
+  deps?: { view?: (args: string[]) => ReturnType<typeof run>, fetchImpl?: typeof fetch },
+): Promise<string | null>
+
+/** The version Chocolatey serves for `version`; null while moderation holds or has rejected it. */
+export function probeChocoVersion(
+  recipe: unknown,
+  version: string,
+  deps?: { search?: (args: string[]) => string | null, submission?: (version: string) => Promise<ChannelSubmission> },
+): Promise<string | null>
 
 /** Waits for OpenCode info readiness within an overall deadline. */
 export function waitForOpenCode(

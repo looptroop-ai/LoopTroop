@@ -268,6 +268,9 @@ export function openCodeAnswers(
   timeoutMs?: number,
 ): Promise<boolean>
 
+/** Whether the npm registry serves a tarball: true on 2xx, false on 404, throws otherwise. */
+export function npmTarballServed(url: string, fetchImpl?: typeof fetch): Promise<boolean>
+
 /** Waits for OpenCode info readiness within an overall deadline. */
 export function waitForOpenCode(
   port: number,

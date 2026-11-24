@@ -14,6 +14,7 @@ import {
   createOpenCodeAdoptCredentials,
   isOpenCodeInfoReady,
   moderationSkipReason,
+  npmTarballServed,
   openCodeAnswers,
   run,
   runCaptured,
@@ -584,6 +585,33 @@ ${command}
     // happened to share a machine.
     expect(daemonPorts).not.toContain(39117)
     for (const port of [...daemonPorts, ...opencodePorts]) expect(port).toBeGreaterThan(39117)
+  })
+})
+
+describe('npm registry propagation', () => {
+  const respond = (status: number) => vi.fn<typeof fetch>(async () => new Response(null, { status }))
+  const url = 'https://registry.npmjs.org/looptroop/-/looptroop-9.9.9.tgz'
+
+  it('counts a tarball as served only on success, with a HEAD request', async () => {
+    const served = respond(200)
+    await expect(npmTarballServed(url, served)).resolves.toBe(true)
+    expect(served).toHaveBeenCalledWith(url, { method: 'HEAD' })
+
+    await expect(npmTarballServed(url, respond(404))).resolves.toBe(false)
+  })
+
+  it('reports a registry error instead of waiting it out as a missing tarball', async () => {
+    await expect(npmTarballServed(url, respond(503))).rejects.toThrow(`${url} -> 503`)
+  })
+
+  it('gives every channel that installs from the registry long enough to outlast a cached 404', () => {
+    const registryChannels = Object.entries(CHANNELS)
+      .filter(([, recipe]) => recipe.published?.name === 'probeNpmRegistry')
+    expect(registryChannels.map(([key]) => key).sort()).toEqual(['bun', 'npm', 'pnpm', 'yarn'])
+    for (const [key, recipe] of registryChannels) {
+      // The registry caches a tarball 404 for five minutes after the version is listed.
+      expect(recipe.propagationCapMs, key).toBeGreaterThanOrEqual(10 * 60_000)
+    }
   })
 })
 

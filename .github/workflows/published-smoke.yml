@@ -709,7 +709,9 @@ jobs:
           fi
 
       # A channel that has recovered should not leave a stale open issue behind
-      # implying it is still broken.
+      # implying it is still broken. Neither should an earlier release's issue:
+      # once a newer stable version passes every leg, nobody is offered the old
+      # one, and the weekly run never tests it again to close its issue.
       - name: Close the failure issue when everything passed
         if: steps.compose.outputs.failed == '' && (inputs.report_mode == 'issue' || inputs.report_mode == '')
         shell: bash
@@ -718,14 +720,23 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          title="Published install smoke: v${VERSION}"
-          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
-            --json number --jq '.[0].number // empty')
-          if [ -n "${existing}" ]; then
-            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" \
-              --body "Every leg passed on ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Closing."
-            gh issue close "${existing}" --repo "${GITHUB_REPOSITORY}"
-          fi
+          prefix="Published install smoke: v"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${prefix}\" in:title" \
+            --json number,title --jq ".[] | select(.title | startswith(\"${prefix}\")) | \"\(.number) \(.title | ltrimstr(\"${prefix}\"))\"" |
+          while read -r number issue_version; do
+            if [ "${issue_version}" = "${VERSION}" ]; then
+              body="Every leg passed on ${run_url}. Closing."
+            # Older only by a stable version: sort -V orders 1.2.3-rc.1 after 1.2.3.
+            elif [[ "${VERSION}" != *-* ]] \
+              && [ "$(printf '%s\n%s\n' "${issue_version}" "${VERSION}" | sort -V | head -1)" = "${issue_version}" ]; then
+              body="Superseded: every leg passed for v${VERSION}, the newer release, on ${run_url}. Closing."
+            else
+              continue
+            fi
+            gh issue comment "${number}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
+            gh issue close "${number}" --repo "${GITHUB_REPOSITORY}"
+          done
 
       - name: Fail if any channel failed
         if: steps.compose.outputs.failed != ''

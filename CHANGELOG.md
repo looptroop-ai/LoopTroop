@@ -9,6 +9,16 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+
+- A release no longer stops at its install test because npm listed the new version a few minutes before it served the package, and finished releases close their own failure issues.
+
+### Fixed
+
+- The release's Registry smoke, and the published install smoke's npm, bun, pnpm and Yarn legs, wait until the registry serves the new version's tarball, not only until it lists the version, for up to ten minutes instead of three. The 0.6.5 release stopped at this test: npm listed the version, then answered 404 for its tarball for about five more minutes and cached that 404 for five minutes at a time. A registry error other than 404 still fails the leg at once.
+- A release run that is re-run to completion closes its "Release vX.Y.Z: partial failure" issue, but only when that run published the tag and the container notes itself, so a run that skipped a stage never closes an issue about it.
+- A published install smoke run that passes every leg also closes the open issues of earlier stable versions as superseded. The weekly run only tests the current release, so an older version's issue used to stay open after a release fixed it.
+
 ## 0.6.5 (2026-11-24)
 
 

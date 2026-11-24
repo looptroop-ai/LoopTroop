@@ -2915,6 +2915,30 @@ jobs:
             gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file /tmp/issue.md
           fi
 
+      # A re-run that finishes the release should not leave its failure issue
+      # open, saying the release is still broken. Only when this run carried the
+      # release through the tag and the container notes: a later run that
+      # resumes past a stage, skipping it, never proved that stage recovered.
+      - name: Close the failure issue once the release is complete
+        if: >-
+          steps.compose.outputs.failed == ''
+          && needs.detect.outputs.dry_run == 'false'
+          && needs.finalize.result == 'success'
+          && needs.container-notes.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Release v${VERSION}: partial failure"
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -1)
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Every stage passed on attempt ${GITHUB_RUN_ATTEMPT} of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Closing."
+            gh issue close "${existing}" --repo "${GITHUB_REPOSITORY}"
+          fi
+
       - name: Fail the run if any stage failed
         if: steps.compose.outputs.failed != ''
         env:

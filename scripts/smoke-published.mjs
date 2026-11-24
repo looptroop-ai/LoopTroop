@@ -86,6 +86,17 @@ const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
 
 const POLL_INTERVAL_MS = 15_000
 
+/**
+ * How long a channel that installs from the npm registry waits for a release.
+ *
+ * Ten minutes, not three, because the registry lists a version before it serves
+ * the version's tarball, and its CDN caches a tarball 404 for five minutes
+ * (`cache-control: max-age=300`). One release's Registry smoke saw the version
+ * listed on its first poll and then failed every install on that 404; the
+ * tarball downloaded about five minutes later.
+ */
+const NPM_PROPAGATION_CAP_MS = 10 * 60_000
+
 /** The two release names the release tooling can publish. */
 const PUBLISHED_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-rc\.(?:[1-9]\d*))?$/
 
@@ -146,7 +157,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39121,
     opencodePort: 39621,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     publishHint: 'Check https://www.npmjs.com/package/looptroop?activeTab=versions',
     install: ({ version, pin }) =>
@@ -471,7 +482,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39128,
     opencodePort: 39628,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     install: ({ version, pin }) => ({
       command: 'bun',
@@ -495,7 +506,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39129,
     opencodePort: 39629,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     // pnpm refuses to resolve a tag to a version published in the last 24
     // hours — a supply-chain protection, on by default, and documented to
@@ -527,7 +538,7 @@ export const CHANNELS = {
     pinnable: true,
     port: 39130,
     opencodePort: 39630,
-    propagationCapMs: 3 * 60_000,
+    propagationCapMs: NPM_PROPAGATION_CAP_MS,
     publishJob: 'npm',
     // Yarn does not put its global binaries on PATH, and says nothing about it:
     // the add reports success and then `looptroop` is not a command. The
@@ -1079,13 +1090,40 @@ async function portIsClosed(port, timeoutMs = 20_000) {
  * but only those two. A registry outage or a network failure must surface as
  * an error rather than be polled until the cap expires and reported as a
  * missing release, which would blame the wrong thing.
+ *
+ * A listed version counts only once its tarball downloads, because that is
+ * what every install fetches next and the registry lists a version before it
+ * serves the tarball (see `NPM_PROPAGATION_CAP_MS`).
  */
-function probeNpmRegistry(recipe, version) {
+async function probeNpmRegistry(recipe, version) {
   const result = npm(['view', `looptroop@${version}`, 'version'])
   const printed = result.stdout.trim()
-  if (result.code === 0) return printed === '' ? null : printed
-  if (/E404|is not in this registry|No match(ing versions)? found/i.test(result.combined)) return null
-  throw new Error(`npm view failed (exit ${result.code}): ${result.combined.trim().split('\n')[0]}`)
+  if (result.code !== 0) {
+    if (/E404|is not in this registry|No match(ing versions)? found/i.test(result.combined)) return null
+    throw new Error(`npm view failed (exit ${result.code}): ${result.combined.trim().split('\n')[0]}`)
+  }
+  if (printed !== version) return printed === '' ? null : printed
+
+  const tarball = npm(['view', `looptroop@${version}`, 'dist.tarball'])
+  const url = tarball.stdout.trim()
+  if (tarball.code !== 0 || url === '') {
+    throw new Error(`npm view dist.tarball failed (exit ${tarball.code}): ${tarball.combined.trim().split('\n')[0]}`)
+  }
+  if (await npmTarballServed(url)) return printed
+  log(`  npm lists ${version}, but ${url} still answers 404`)
+  return null
+}
+
+/**
+ * Whether the registry serves a tarball: true on 2xx, false on 404, and an
+ * error for anything else, for the same reason `probeNpmRegistry` throws on an
+ * outage. HEAD, so a poll does not download the package each time.
+ */
+export async function npmTarballServed(url, fetchImpl = fetch) {
+  const response = await fetchImpl(url, { method: 'HEAD' })
+  if (response.ok) return true
+  if (response.status === 404) return false
+  throw new Error(`${url} -> ${response.status}`)
 }
 
 /**

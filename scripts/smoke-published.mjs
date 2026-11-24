@@ -1288,9 +1288,17 @@ function chocoSearch(args) {
  * Asked of `choco` rather than over HTTP, both because that is the supported
  * query path and because it is the same command the republish job already uses
  * to decide whether a version is on the feed.
+ *
+ * Found is not served, though: `choco search --version` also finds a version
+ * still in moderation, while `choco install looptroop` keeps resolving the last
+ * approved one. Read as served, a queued version skipped the moderation check
+ * and failed the leg on the older version it installed. So a found version
+ * counts only once moderation has approved it.
  */
-function probeChocoVersion(_recipe, version) {
-  return chocoSearch(['--version', version])
+async function probeChocoVersion(_recipe, version) {
+  const found = chocoSearch(['--version', version])
+  if (found !== version) return found
+  return (await probeChocoSubmission(version)).state === 'served' ? found : null
 }
 
 /** What an unpinned `choco install looptroop` resolves: the feed's latest. */

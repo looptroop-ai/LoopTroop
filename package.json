@@ -103,7 +103,7 @@
     "db:push:project": "drizzle-kit push --config=server/db/project.config.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^2.1.8",
+    "@hono/node-server": "^2.1.9",
     "@opencode-ai/sdk": "^1.19.6",
     "drizzle-orm": "1.0.0-rc.5",
     "hono": "^4.13.19",
@@ -127,7 +127,7 @@
     "@radix-ui/react-slot": "^1.5.0",
     "@radix-ui/react-tooltip": "^1.4.1",
     "@tailwindcss/vite": "^4.3.5",
-    "@tanstack/react-query": "^5.107.1",
+    "@tanstack/react-query": "^5.108.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.19.2",
@@ -147,7 +147,7 @@
     "fast-check": "4.10.2",
     "globals": "^17.14.0",
     "jsdom": "^31.0.1",
-    "lucide-react": "^1.74.0",
+    "lucide-react": "^1.75.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

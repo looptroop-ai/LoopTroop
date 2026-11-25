@@ -104,7 +104,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.8",
-    "@opencode-ai/sdk": "^1.19.5",
+    "@opencode-ai/sdk": "^1.19.6",
     "drizzle-orm": "1.0.0-rc.5",
     "hono": "^4.13.19",
     "js-yaml": "^5.5.0",

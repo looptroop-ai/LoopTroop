@@ -97,7 +97,7 @@ jobs:
       dist_tag: ${{ steps.state.outputs.dist_tag }}
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
 
@@ -466,7 +466,7 @@ jobs:
       bundle_sha256: ${{ steps.manifest.outputs.bundle_sha256 }}
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
 
@@ -724,7 +724,7 @@ jobs:
       # The repo is needed for the smoke script itself; the *package* under test
       # comes only from the downloaded tarball.
       - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
 
@@ -788,7 +788,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
 
@@ -1293,7 +1293,7 @@ jobs:
       # "this release installs correctly" rather than two that drift. That needs
       # a checkout, which this job did not previously have.
       - name: Audit runner network activity
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
 

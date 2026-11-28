@@ -23,7 +23,7 @@ frontend packages inlined into the client bundle.
 | `@floating-ui/dom` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/utils` | 0.2.12 | MIT | Copyright (c) 2021-present Floating UI contributors |
-| `@hono/node-server` | 2.1.9 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
+| `@hono/node-server` | 2.1.11 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
 | `@lezer/common` | 1.5.4 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/highlight` | 1.2.5 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/lr` | 1.4.11 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.13 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.108.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.108.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.108.2 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.108.2 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `@ungap/structured-clone` | 1.4.0 | ISC | Copyright (c) 2021, Andrea Giammarchi, @WebReflection |
 | `argparse` | 3.0.4 | PSF-2.0 | - |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
@@ -84,7 +84,7 @@ frontend packages inlined into the client bundle.
 | `is-plain-obj` | 4.1.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.5.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.75.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.77.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `mdast-util-from-markdown` | 2.1.0 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-hast` | 13.2.1 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
 | `mdast-util-to-string` | 4.0.0 | MIT | Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com> |
@@ -115,7 +115,7 @@ frontend packages inlined into the client bundle.
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.23 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.24 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `remark-parse` | 11.0.0 | MIT | Copyright (c) 2014 Titus Wormer <tituswormer@gmail.com> |
 | `remark-rehype` | 11.1.2 | MIT | Copyright (c) Titus Wormer <tituswormer@gmail.com> |
 | `scheduler` | 0.28.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
@@ -125,7 +125,7 @@ frontend packages inlined into the client bundle.
 | `style-mod` | 4.1.4 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `style-to-js` | 1.1.21 | MIT | Copyright (c) 2020 Menglin "Mark" Xu <mark@remarkablemark.org> |
 | `style-to-object` | 1.0.14 | MIT | Copyright (c) 2017 Menglin "Mark" Xu <mark@remarkablemark.org> |
-| `tailwind-merge` | 3.7.0 | MIT | Copyright (c) 2021 Dany Castillo |
+| `tailwind-merge` | 3.7.1 | MIT | Copyright (c) 2021 Dany Castillo |
 | `trim-lines` | 3.0.1 | MIT | Copyright (c) 2015 Titus Wormer <mailto:tituswormer@gmail.com> |
 | `trough` | 2.2.0 | MIT | Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com> |
 | `tslib` | 2.8.1 | 0BSD | Copyright (c) Microsoft Corporation. |
@@ -405,7 +405,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.108.0`, `@tanstack/react-query@5.108.0`
+Applies to: `@tanstack/query-core@5.108.2`, `@tanstack/react-query@5.108.2`
 
 ```text
 MIT License
@@ -555,7 +555,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@hono/node-server@2.1.9`
+Applies to: `@hono/node-server@2.1.11`
 
 ```text
 MIT License
@@ -1187,7 +1187,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.75.0`
+Applies to: `lucide-react@1.77.0`
 
 ```text
 ISC License
@@ -1294,7 +1294,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.23`
+Applies to: `react-virtuoso@4.18.24`
 
 ```text
 MIT License
@@ -1450,7 +1450,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT
 
-Applies to: `tailwind-merge@3.7.0`
+Applies to: `tailwind-merge@3.7.1`
 
 ```text
 MIT License
